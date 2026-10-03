@@ -14,7 +14,7 @@ export default function contribute(client: PluginClientContext) {
     id: "open-orchestration",
     title: "Open orchestration dashboard",
     icon: "Activity",
-    keywords: ["orchestration", "status", "dashboard", "schedules", "agents"],
+    keywords: ["orchestration", "status", "dashboard", "schedules", "agents", "standup"],
     context: "global",
     onSelect({ openSurface }) {
       openSurface("orchestration");

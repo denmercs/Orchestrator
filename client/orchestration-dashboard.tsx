@@ -10,6 +10,7 @@ import {
   type PhaseId,
   createBoardModel,
 } from "./board-model";
+import { StandupSection } from "./standup-section";
 import { useOrchestrationCatalog } from "./use-orchestration-catalog";
 
 export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurfaceProps) {
@@ -127,6 +128,8 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
           styles={styles}
         />
       </View>
+
+      <StandupSection theme={theme} layout={layout} />
 
       <View style={styles.sectionHead}>
         <Text style={styles.sectionLabel}>
