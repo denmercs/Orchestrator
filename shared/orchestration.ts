@@ -17,3 +17,18 @@ export const listOrchestrationSchedules = defineRpc({
     schedules: z.array(orchestrationSchedule),
   }),
 });
+
+export const orchestrationParentLink = z.object({
+  agentId: z.string(),
+  parentAgentId: z.string().nullable(),
+});
+
+export const listOrchestrationParents = defineRpc({
+  name: "orchestration.parents",
+  input: z.object({
+    agentIds: z.array(z.string()),
+  }),
+  output: z.object({
+    links: z.array(orchestrationParentLink),
+  }),
+});

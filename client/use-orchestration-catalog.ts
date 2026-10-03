@@ -29,12 +29,12 @@ export function useOrchestrationCatalog() {
       setAgents(
         entries
           .map((entry) => entry.agent)
-          .filter((agent) => !agent.archivedAt),
+          .filter((agent) => !isArchivedAgent(agent)),
       );
     }
 
     function applyWorkspaces(entries: PaseoWorkspaceListResult["entries"]) {
-      setWorkspaces(entries.filter((workspace) => !workspace.archivingAt));
+      setWorkspaces(entries.filter((workspace) => !isArchivedWorkspace(workspace)));
     }
 
     void Promise.all([
@@ -75,7 +75,11 @@ export function useOrchestrationCatalog() {
               setAgents((current) => current.filter((agent) => agent.id !== update.agentId));
               return;
             }
-            if (update.kind === "upsert" && !update.agent.archivedAt) {
+            if (update.kind === "upsert") {
+              if (isArchivedAgent(update.agent)) {
+                setAgents((current) => current.filter((agent) => agent.id !== update.agent.id));
+                return;
+              }
               setAgents((current) => upsertById(current, update.agent));
             }
           },
@@ -95,7 +99,13 @@ export function useOrchestrationCatalog() {
               setWorkspaces((current) => current.filter((workspace) => workspace.id !== update.id));
               return;
             }
-            if (update.kind === "upsert" && !update.workspace.archivingAt) {
+            if (update.kind === "upsert") {
+              if (isArchivedWorkspace(update.workspace)) {
+                setWorkspaces((current) =>
+                  current.filter((workspace) => workspace.id !== update.workspace.id),
+                );
+                return;
+              }
               setWorkspaces((current) => upsertById(current, update.workspace));
             }
           },
@@ -119,6 +129,14 @@ export function useOrchestrationCatalog() {
   }, [paseo]);
 
   return { agents, workspaces, error, loading };
+}
+
+function isArchivedAgent(agent: OrchestrationAgent) {
+  return Boolean(agent.archivedAt);
+}
+
+function isArchivedWorkspace(workspace: OrchestrationWorkspace) {
+  return Boolean(workspace.archivingAt);
 }
 
 function upsertById<T extends { id: string }>(items: T[], next: T): T[] {

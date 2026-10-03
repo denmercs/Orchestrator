@@ -1,23 +1,27 @@
 import type { OrchestrationAgent, OrchestrationWorkspace } from "./use-orchestration-catalog";
 
-export type PhaseId =
-  | "todo"
-  | "planning"
-  | "awaiting-approval"
-  | "implementing"
-  | "review"
-  | "pr-open";
+export type PhaseId = "todo" | "planning" | "awaiting-approval" | "implementing" | "review";
 
 export type BoardItem = {
   id: string;
   key: string;
   title: string;
   detail: string;
+  underTitle: string | null;
+  phaseId: PhaseId;
+  phaseLabel: string;
   pr: string | null;
   retryLabel: string | null;
   progress: number | null;
   agentId: string | null;
   workspaceId: string | null;
+  isMainSession: boolean;
+  role: "story" | "epic" | "child";
+};
+
+export type BoardFamily = {
+  epic: BoardItem;
+  children: BoardItem[];
 };
 
 export type BoardModel = {
@@ -33,7 +37,9 @@ export type BoardModel = {
   waitingOnDependencies: number;
   blockedCount: number;
   waitingOnYou: BoardItem[];
-  phases: { id: PhaseId; label: string; count: number }[];
+  families: BoardFamily[];
+  stories: BoardItem[];
+  phases: { id: PhaseId; label: string; hint: string; items: BoardItem[] }[];
   merged: BoardItem[];
   blocked: BoardItem[];
 };
@@ -43,19 +49,24 @@ export type ScheduleRow = {
   name: string | null;
 };
 
-const PHASES: { id: PhaseId; label: string }[] = [
-  { id: "todo", label: "todo" },
-  { id: "planning", label: "planning" },
-  { id: "awaiting-approval", label: "Awaiting approval" },
-  { id: "implementing", label: "Implementing" },
-  { id: "review", label: "Review" },
-  { id: "pr-open", label: "PR open" },
+export type ParentLink = {
+  agentId: string;
+  parentAgentId: string | null;
+};
+
+const PHASES: { id: PhaseId; label: string; hint: string }[] = [
+  { id: "todo", label: "Idle", hint: "Not running yet" },
+  { id: "planning", label: "Starting", hint: "Agent is initializing" },
+  { id: "awaiting-approval", label: "Needs approval", hint: "Waiting on a permission" },
+  { id: "implementing", label: "Running", hint: "Working now" },
+  { id: "review", label: "Needs you", hint: "Finished, error, or attention" },
 ];
 
 export function createBoardModel(
   agents: OrchestrationAgent[],
   workspaces: OrchestrationWorkspace[],
   schedules: ScheduleRow[],
+  parentLinks: ParentLink[] = [],
   now = new Date(),
 ): BoardModel {
   const byPhase: Record<PhaseId, BoardItem[]> = {
@@ -64,31 +75,30 @@ export function createBoardModel(
     "awaiting-approval": [],
     implementing: [],
     review: [],
-    "pr-open": [],
   };
 
   const waitingOnYou: BoardItem[] = [];
   const merged: BoardItem[] = [];
   const blocked: BoardItem[] = [];
+  const activeAgents = agents.filter((agent) => !agent.archivedAt && agent.status !== "closed");
+  const parentById = parentMap(activeAgents, parentLinks);
+  const items = activeAgents.map((agent) => toAgentItem(agent, workspaces, parentById));
+  const itemsById = new Map(items.map((item) => [item.id, item]));
 
-  for (const agent of agents) {
-    const item = toAgentItem(agent);
-    const phase = phaseForAgent(agent);
-    byPhase[phase].push(item);
-
-    if (agent.status === "closed") {
-      merged.push(item);
-      continue;
+  for (const item of items) {
+    const parentId = parentById.get(item.id);
+    if (item.role === "child" && parentId) {
+      const parent = itemsById.get(parentId);
+      item.underTitle = parent ? parent.title : "archived epic";
     }
-    if (isBlocked(agent)) {
-      blocked.push(item);
-      waitingOnYou.push(item);
-    }
+    byPhase[item.phaseId].push(item);
   }
 
-  for (const workspace of workspaces) {
-    if (workspace.status === "done") {
-      merged.push(toWorkspaceItem(workspace));
+  for (const agent of activeAgents) {
+    const item = itemsById.get(agent.id);
+    if (item && isBlocked(agent)) {
+      blocked.push(item);
+      waitingOnYou.push(item);
     }
   }
 
@@ -98,33 +108,26 @@ export function createBoardModel(
   const loopRunning = schedules.some((schedule) => schedule.status === "active");
 
   return {
-    title: boardTitle(workspaces, agents),
+    title: "Sessions",
     loopStatus: loopRunning ? "running" : "stopped",
     nextLabel: next ? `${next.key} ${next.title}` : "nothing ready",
     blockedSummary: blocked.length
       ? blocked.map((item) => item.key).join("; ") + " blocked"
       : "nothing blocked",
     updatedAt: now.toLocaleTimeString(),
-    total: Math.max(agents.length, uniqueMerged.length + blocked.length + ready.length),
+    total: activeAgents.length,
     mergedCount: uniqueMerged.length,
     inProgress: byPhase.implementing.length,
     readyToStart: ready.length,
     waitingOnDependencies: byPhase.planning.length,
     blockedCount: blocked.length,
     waitingOnYou,
-    phases: PHASES.map((phase) => ({ ...phase, count: byPhase[phase.id].length })),
+    families: buildFamilies(items, parentById),
+    stories: items.filter((item) => item.role === "story"),
+    phases: PHASES.map((phase) => ({ ...phase, items: byPhase[phase.id] })),
     merged: uniqueMerged,
     blocked,
   };
-}
-
-function boardTitle(workspaces: OrchestrationWorkspace[], agents: OrchestrationAgent[]) {
-  const named = workspaces.find((workspace) => workspace.name);
-  if (named?.name) {
-    return named.name;
-  }
-  const titled = agents.find((agent) => agent.title);
-  return titled?.title ?? "Orchestration";
 }
 
 function phaseForAgent(agent: OrchestrationAgent): PhaseId {
@@ -139,9 +142,6 @@ function phaseForAgent(agent: OrchestrationAgent): PhaseId {
   }
   if (agent.status === "error" || agent.attentionReason === "error") {
     return "review";
-  }
-  if (agent.status === "closed") {
-    return "pr-open";
   }
   if (agent.requiresAttention || agent.attentionReason === "finished") {
     return "review";
@@ -162,34 +162,103 @@ function hasPendingPermission(agent: OrchestrationAgent) {
   return (agent.pendingPermissions?.length ?? 0) > 0 || agent.attentionReason === "permission";
 }
 
-function toAgentItem(agent: OrchestrationAgent): BoardItem {
-  const { key, title } = splitKey(agent.title ?? shortId(agent.id));
+function parentMap(agents: OrchestrationAgent[], links: ParentLink[]) {
+  const byId = new Map<string, string | null>();
+  for (const agent of agents) {
+    byId.set(agent.id, snapshotParentId(agent));
+  }
+  for (const link of links) {
+    byId.set(link.agentId, link.parentAgentId);
+  }
+  return byId;
+}
+
+function snapshotParentId(agent: OrchestrationAgent) {
+  const extra = agent as OrchestrationAgent & { parentAgentId?: string | null };
+  return typeof extra.parentAgentId === "string" && extra.parentAgentId.length > 0
+    ? extra.parentAgentId
+    : null;
+}
+
+function sessionRole(
+  agent: OrchestrationAgent,
+  parentById: Map<string, string | null>,
+): BoardItem["role"] {
+  if (parentById.get(agent.id)) {
+    return "child";
+  }
+  const spawned = [...parentById.values()].some((parentId) => parentId === agent.id);
+  return spawned ? "epic" : "story";
+}
+
+function toAgentItem(
+  agent: OrchestrationAgent,
+  workspaces: OrchestrationWorkspace[],
+  parentById: Map<string, string | null>,
+): BoardItem {
+  const role = sessionRole(agent, parentById);
+  const phaseId = phaseForAgent(agent);
+  const { key, title } = splitKey(agent.title ?? agent.id);
+  const workspaceName = workspaces.find((workspace) => workspace.id === agent.workspaceId)?.name;
   return {
     id: agent.id,
     key,
     title,
-    detail: agentDetail(agent),
+    detail: [agentDetail(agent), workspaceName].filter(Boolean).join(" · "),
+    underTitle: null,
+    phaseId,
+    phaseLabel: PHASES.find((phase) => phase.id === phaseId)?.label ?? phaseId,
     pr: null,
-    retryLabel: retryLabel(agent),
-    progress: agent.status === "error" ? 0.35 : agent.status === "running" ? 0.6 : null,
+    retryLabel: role === "child" ? null : sessionActionLabel(agent),
+    progress: null,
     agentId: agent.id,
     workspaceId: agent.workspaceId ?? null,
+    isMainSession: role !== "child",
+    role,
   };
 }
 
-function toWorkspaceItem(workspace: OrchestrationWorkspace): BoardItem {
-  const { key, title } = splitKey(workspace.name);
-  return {
-    id: workspace.id,
-    key,
-    title,
-    detail: workspace.projectDisplayName,
-    pr: null,
-    retryLabel: null,
-    progress: 1,
-    agentId: null,
-    workspaceId: workspace.id,
-  };
+function buildFamilies(
+  items: BoardItem[],
+  parentById: Map<string, string | null>,
+): BoardFamily[] {
+  const epics = items.filter((item) => item.role === "epic");
+  const children = items.filter((item) => item.role === "child");
+  const families = epics.map((epic) => ({
+    epic,
+    children: children.filter((child) => parentById.get(child.id) === epic.id),
+  }));
+  const attached = new Set(families.flatMap((family) => family.children.map((child) => child.id)));
+  const orphans = children.filter((child) => !attached.has(child.id));
+  const orphanGroups = new Map<string, BoardItem[]>();
+  for (const child of orphans) {
+    const parentId = parentById.get(child.id) ?? "unknown";
+    const group = orphanGroups.get(parentId) ?? [];
+    group.push(child);
+    orphanGroups.set(parentId, group);
+  }
+  for (const [parentId, group] of orphanGroups) {
+    families.push({
+      epic: {
+        id: parentId,
+        key: "",
+        title: group[0]?.underTitle ?? "Epic",
+        detail: "parent session not on the board",
+        underTitle: null,
+        phaseId: "todo",
+        phaseLabel: "Idle",
+        pr: null,
+        retryLabel: null,
+        progress: null,
+        agentId: parentId === "unknown" ? null : parentId,
+        workspaceId: null,
+        isMainSession: true,
+        role: "epic",
+      },
+      children: group,
+    });
+  }
+  return families;
 }
 
 function agentDetail(agent: OrchestrationAgent) {
@@ -205,25 +274,26 @@ function agentDetail(agent: OrchestrationAgent) {
   return [agent.provider, agent.model].filter(Boolean).join(" · ");
 }
 
-function retryLabel(agent: OrchestrationAgent) {
+function sessionActionLabel(agent: OrchestrationAgent) {
   if (hasPendingPermission(agent)) {
     return "Retry → review";
   }
   if (agent.status === "error") {
     return "Retry → implementing";
   }
-  if (agent.requiresAttention) {
-    return "Open session";
-  }
   return "Open session";
 }
 
 function splitKey(label: string) {
-  const match = label.match(/^([A-Z][A-Z0-9]+-\S+)\s+[—–-]\s+(.+)$/);
+  const match = label.match(/^([A-Z][A-Z0-9]+-\d+)\s+[—–-]\s+(.+)$/);
   if (match) {
     return { key: match[1], title: match[2] };
   }
-  return { key: shortId(label), title: label };
+  const ticket = label.match(/^([A-Z][A-Z0-9]+-\d+)\b/);
+  if (ticket) {
+    return { key: ticket[1], title: label };
+  }
+  return { key: "", title: label };
 }
 
 function uniqueById(items: BoardItem[]) {
@@ -235,8 +305,4 @@ function uniqueById(items: BoardItem[]) {
     seen.add(item.id);
     return true;
   });
-}
-
-function shortId(value: string) {
-  return value.slice(0, 8);
 }

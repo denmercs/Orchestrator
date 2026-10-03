@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { RpcOutput } from "@getpaseo/plugin";
-import { listOrchestrationSchedules } from "../shared/orchestration";
+import { listOrchestrationParents, listOrchestrationSchedules } from "../shared/orchestration";
 
 const execFileAsync = promisify(execFile);
 
@@ -73,6 +73,46 @@ async function readScheduleJson(binary: string): Promise<string> {
     maxBuffer: 2 * 1024 * 1024,
   });
   return stdout;
+}
+
+async function inspectParent(binary: string, agentId: string): Promise<string | null> {
+  const { stdout } = await execFileAsync(binary, ["inspect", agentId, "--json"], {
+    timeout: 8_000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  const row = asRecord(JSON.parse(stdout));
+  return asString(row?.parentAgentId) ?? asString(row?.ParentAgentId);
+}
+
+export async function listParents(
+  input: { agentIds: string[] },
+): Promise<RpcOutput<typeof listOrchestrationParents>> {
+  const agentIds = [...new Set(input.agentIds)].slice(0, 80);
+  if (agentIds.length === 0) {
+    return { links: [] };
+  }
+
+  let lastError: unknown;
+
+  for (const binary of PASEO_BINARIES) {
+    try {
+      const links = await Promise.all(
+        agentIds.map(async (agentId) => {
+          try {
+            return { agentId, parentAgentId: await inspectParent(binary, agentId) };
+          } catch {
+            return { agentId, parentAgentId: null };
+          }
+        }),
+      );
+      return { links };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  const message = lastError instanceof Error ? lastError.message : "Unable to list parent sessions";
+  throw new Error(message);
 }
 
 export async function listSchedules(): Promise<RpcOutput<typeof listOrchestrationSchedules>> {
