@@ -33,6 +33,55 @@ export const listOrchestrationParents = defineRpc({
   }),
 });
 
+export const jiraIssue = z.object({
+  id: z.string(),
+  key: z.string(),
+  summary: z.string(),
+  status: z.string(),
+  statusCategory: z.string(),
+  issueType: z.string(),
+  assignee: z.string(),
+  parentKey: z.string().nullable(),
+  parentSummary: z.string().nullable(),
+  url: z.string(),
+  updated: z.string().nullable(),
+  labels: z.array(z.string()),
+});
+
+export const jiraBoardOption = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: z.string(),
+  projectKey: z.string().nullable(),
+});
+
+export const listJiraBoards = defineRpc({
+  name: "orchestration.jira-boards",
+  input: z.object({}),
+  output: z.object({
+    boards: z.array(jiraBoardOption),
+    error: z.string().nullable(),
+  }),
+});
+
+export const getJiraBoard = defineRpc({
+  name: "orchestration.jira-board",
+  input: z.object({
+    boardId: z.string().optional(),
+    projectKey: z.string().optional(),
+  }),
+  output: z.object({
+    boardId: z.string().nullable(),
+    name: z.string(),
+    projectKey: z.string(),
+    issues: z.array(jiraIssue),
+    error: z.string().nullable(),
+  }),
+});
+
+export type JiraIssue = z.infer<typeof jiraIssue>;
+export type JiraBoardOption = z.infer<typeof jiraBoardOption>;
+
 export const orchestrationFolderEntry = z.object({
   name: z.string(),
   path: z.string(),
@@ -109,4 +158,3 @@ export const detectOrchestrationObsidian = defineRpc({
     label: z.string().nullable(),
   }),
 });
-

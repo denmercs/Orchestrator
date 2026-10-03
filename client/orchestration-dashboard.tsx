@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Linking, Pressable, ScrollView, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { useRpc } from "@getpaseo/plugin/client";
-import { listOrchestrationParents, listOrchestrationSchedules } from "../shared/orchestration";
+import { usePaseo, useRpc } from "@getpaseo/plugin/client";
+import {
+  getJiraBoard,
+  listJiraBoards,
+  listOrchestrationParents,
+  listOrchestrationSchedules,
+  type JiraBoardOption,
+  type JiraIssue,
+} from "../shared/orchestration";
 import {
   type BoardItem,
   type BoardModel,
@@ -10,17 +17,28 @@ import {
   type PhaseId,
   createBoardModel,
 } from "./board-model";
+import { startJiraSession } from "./start-jira-session";
 import { StandupSection } from "./standup-section";
 import { useOrchestrationCatalog } from "./use-orchestration-catalog";
 
 export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurfaceProps) {
+  const paseo = usePaseo();
   const { agents, workspaces, error, loading } = useOrchestrationCatalog();
   const listSchedules = useRpc(listOrchestrationSchedules);
   const listParents = useRpc(listOrchestrationParents);
+  const loadJiraBoard = useRpc(getJiraBoard);
+  const loadJiraBoards = useRpc(listJiraBoards);
   const [schedules, setSchedules] = useState<
     Awaited<ReturnType<typeof listSchedules>>["schedules"]
   >([]);
   const [parentLinks, setParentLinks] = useState<ParentLink[]>([]);
+  const [jiraBoards, setJiraBoards] = useState<JiraBoardOption[]>([]);
+  const [selectedBoardId, setSelectedBoardId] = useState("1");
+  const [boardMenuOpen, setBoardMenuOpen] = useState(false);
+  const [jiraIssues, setJiraIssues] = useState<JiraIssue[]>([]);
+  const [jiraError, setJiraError] = useState<string | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [startingId, setStartingId] = useState<string | null>(null);
   const [selectedPhaseId, setSelectedPhaseId] = useState<PhaseId | null>(null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const agentIds = useMemo(
@@ -53,6 +71,44 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     }
   }, [agentIds, listParents]);
 
+  const refreshJiraBoards = useCallback(async () => {
+    try {
+      const result = await loadJiraBoards({});
+      setJiraBoards(result.boards);
+      if (result.error) {
+        setJiraError(result.error);
+      }
+      setSelectedBoardId((current) => {
+        if (result.boards.some((board) => board.id === current)) {
+          return current;
+        }
+        const quickpress = result.boards.find((board) =>
+          board.name.toLowerCase().includes("quickpress"),
+        );
+        return quickpress?.id ?? result.boards[0]?.id ?? current;
+      });
+    } catch (cause) {
+      setJiraBoards([]);
+      setJiraError(cause instanceof Error ? cause.message : "Unable to list Jira boards");
+    }
+  }, [loadJiraBoards]);
+
+  const selectedJiraBoard = jiraBoards.find((board) => board.id === selectedBoardId) ?? null;
+
+  const refreshJira = useCallback(async () => {
+    try {
+      const board = await loadJiraBoard({
+        boardId: selectedBoardId,
+        projectKey: selectedJiraBoard?.projectKey ?? undefined,
+      });
+      setJiraIssues(board.issues);
+      setJiraError(board.error);
+    } catch (cause) {
+      setJiraIssues([]);
+      setJiraError(cause instanceof Error ? cause.message : "Unable to read Jira board");
+    }
+  }, [loadJiraBoard, selectedBoardId, selectedJiraBoard?.projectKey]);
+
   useEffect(() => {
     void refreshSchedules();
   }, [refreshSchedules]);
@@ -61,9 +117,25 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     void refreshParents();
   }, [refreshParents]);
 
+  useEffect(() => {
+    void refreshJiraBoards();
+  }, [refreshJiraBoards]);
+
+  useEffect(() => {
+    void refreshJira();
+  }, [refreshJira]);
+
   const board = useMemo(
-    () => createBoardModel(agents, workspaces, schedules, parentLinks),
-    [agents, workspaces, schedules, parentLinks],
+    () =>
+      createBoardModel(
+        agents,
+        workspaces,
+        schedules,
+        parentLinks,
+        jiraIssues,
+        selectedJiraBoard?.name ?? null,
+      ),
+    [agents, workspaces, schedules, parentLinks, jiraIssues, selectedJiraBoard?.name],
   );
   const selectedPhase =
     board.phases.find((phase) => phase.id === selectedPhaseId) ??
@@ -82,12 +154,49 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     }
     if (item.workspaceId && navigation) {
       navigation.openWorkspace({ workspaceId: item.workspaceId });
+      return;
+    }
+    if (item.url) {
+      void Linking.openURL(item.url);
+    }
+  }
+
+  async function startItem(item: BoardItem) {
+    if (startingId || !item.startLabel) {
+      return;
+    }
+    setStartingId(item.id);
+    setSessionError(null);
+    try {
+      const started = await startJiraSession(paseo, item);
+      if (navigation) {
+        navigation.openAgent({ agentId: started.agentId });
+      }
+    } catch (cause) {
+      setSessionError(cause instanceof Error ? cause.message : "Unable to start session");
+    } finally {
+      setStartingId(null);
     }
   }
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>{board.title}</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>{board.title}</Text>
+        {jiraBoards.length > 0 ? (
+          <BoardPicker
+            boards={jiraBoards}
+            selectedId={selectedBoardId}
+            open={boardMenuOpen}
+            styles={styles}
+            onToggle={() => setBoardMenuOpen((current) => !current)}
+            onSelect={(boardId) => {
+              setSelectedBoardId(boardId);
+              setBoardMenuOpen(false);
+            }}
+          />
+        ) : null}
+      </View>
       <View style={styles.metaRow}>
         <View style={[styles.dot, { backgroundColor: loopColor(board.loopStatus, theme) }]} />
         <Text style={styles.meta}>
@@ -103,12 +212,19 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
 
       {loading ? <Text style={styles.muted}>Loading live catalog…</Text> : null}
       {error ? <Text style={styles.danger}>{error}</Text> : null}
+      {jiraError ? <Text style={styles.danger}>{jiraError}</Text> : null}
+      {sessionError ? <Text style={styles.danger}>{sessionError}</Text> : null}
+      {board.hasJira ? (
+        <Text style={styles.muted}>
+          {selectedJiraBoard?.name ?? "Jira"} · {jiraIssues.length} issues
+        </Text>
+      ) : null}
 
       <View style={styles.stats}>
         <ProgressStat
           label="PROGRESS"
           value={`${board.inProgress}/${board.total || 0}`}
-          hint={`${board.total} active agents`}
+          hint={board.hasJira ? `${board.total} on the board` : `${board.total} active agents`}
           ratio={board.total ? board.inProgress / board.total : 0}
           styles={styles}
           theme={theme}
@@ -187,7 +303,13 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
                   </Text>
                 </Pressable>
               </View>
-              <SessionCard item={family.epic} styles={styles} onOpen={openItem} />
+              <SessionCard
+                item={family.epic}
+                styles={styles}
+                starting={startingId === family.epic.id}
+                onOpen={openItem}
+                onStart={startItem}
+              />
               {hidden ? null : childCount === 0 ? (
                 <Text style={styles.muted}>No live children.</Text>
               ) : (
@@ -197,7 +319,9 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
                     item={child}
                     nested
                     styles={styles}
+                    starting={startingId === child.id}
                     onOpen={openItem}
+                    onStart={startItem}
                   />
                 ))
               )}
@@ -226,7 +350,14 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         <Text style={styles.muted}>{board.stories.length} hidden.</Text>
       ) : (
         board.stories.map((item) => (
-          <SessionCard key={item.id} item={item} styles={styles} onOpen={openItem} />
+          <SessionCard
+            key={item.id}
+            item={item}
+            styles={styles}
+            starting={startingId === item.id}
+            onOpen={openItem}
+            onStart={startItem}
+          />
         ))
       )}
 
@@ -240,6 +371,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
               <View style={styles.waitTitleRow}>
                 <View style={[styles.dot, { backgroundColor: theme.colors.statusDanger }]} />
                 <RoleTag role={item.role} styles={styles} />
+                {item.source !== "session" ? <Text style={styles.phaseChip}>Jira</Text> : null}
                 {item.key ? <Text style={styles.waitKey}>{item.key}</Text> : null}
                 <Text style={styles.waitTitle}>
                   {item.title.startsWith("Blocked") ? item.title : `Blocked — ${item.title}`}
@@ -250,8 +382,19 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
               ) : null}
               <Text style={styles.waitDetail}>{item.detail}</Text>
             </View>
-            {item.retryLabel ? (
-              <Pill label={item.retryLabel} styles={styles} onPress={() => openItem(item)} />
+            {item.retryLabel || item.startLabel ? (
+              <View style={styles.blockedActions}>
+                {item.retryLabel ? (
+                  <Pill label={item.retryLabel} styles={styles} onPress={() => openItem(item)} />
+                ) : null}
+                {item.startLabel ? (
+                  <Pill
+                    label={startingId === item.id ? "Starting…" : item.startLabel}
+                    styles={styles}
+                    onPress={() => void startItem(item)}
+                  />
+                ) : null}
+              </View>
             ) : null}
           </View>
         ))
@@ -299,7 +442,14 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
             <Text style={styles.muted}>No sessions in this status.</Text>
           ) : (
             selectedPhase.items.map((item) => (
-              <SessionCard key={item.id} item={item} styles={styles} onOpen={openItem} />
+              <SessionCard
+                key={item.id}
+                item={item}
+                styles={styles}
+                starting={startingId === item.id}
+                onOpen={openItem}
+                onStart={startItem}
+              />
             ))
           )}
         </View>
@@ -347,6 +497,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
                 <View style={styles.blockedHead}>
                   <View style={styles.blockedHeadLeft}>
                     <RoleTag role={item.role} styles={styles} />
+                    {item.source !== "session" ? <Text style={styles.phaseChip}>Jira</Text> : null}
                     {item.key ? <Text style={styles.blockedKey}>{item.key}</Text> : null}
                   </View>
                   {item.pr ? <Text style={styles.pr}>#{item.pr}</Text> : null}
@@ -369,9 +520,18 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
                     />
                   </View>
                 ) : null}
-                {item.retryLabel ? (
+                {item.retryLabel || item.startLabel ? (
                   <View style={styles.blockedActions}>
-                    <Pill label={item.retryLabel} styles={styles} onPress={() => openItem(item)} />
+                    {item.retryLabel ? (
+                      <Pill label={item.retryLabel} styles={styles} onPress={() => openItem(item)} />
+                    ) : null}
+                    {item.startLabel ? (
+                      <Pill
+                        label={startingId === item.id ? "Starting…" : item.startLabel}
+                        styles={styles}
+                        onPress={() => void startItem(item)}
+                      />
+                    ) : null}
                   </View>
                 ) : null}
               </View>
@@ -444,12 +604,16 @@ function SessionCard({
   item,
   nested,
   styles,
+  starting,
   onOpen,
+  onStart,
 }: {
   item: BoardItem;
   nested?: boolean;
   styles: ReturnType<typeof createStyles>;
+  starting?: boolean;
   onOpen: (item: BoardItem) => void;
+  onStart: (item: BoardItem) => void;
 }) {
   return (
     <Pressable
@@ -460,6 +624,7 @@ function SessionCard({
     >
       <View style={styles.waitTitleRow}>
         <RoleTag role={item.role} styles={styles} />
+        {item.source !== "session" ? <Text style={styles.phaseChip}>Jira</Text> : null}
         <Text style={styles.phaseChip}>{item.phaseLabel}</Text>
         {item.key ? <Text style={styles.waitKey}>{item.key}</Text> : null}
         <Text style={styles.waitTitle} numberOfLines={2}>
@@ -468,7 +633,20 @@ function SessionCard({
       </View>
       {item.underTitle ? <Text style={styles.underLine}>Under {item.underTitle}</Text> : null}
       <Text style={styles.waitDetail}>{item.detail}</Text>
-      {item.retryLabel ? <Pill label={item.retryLabel} styles={styles} onPress={() => onOpen(item)} /> : null}
+      {item.retryLabel || item.startLabel ? (
+        <View style={styles.blockedActions}>
+          {item.retryLabel ? (
+            <Pill label={item.retryLabel} styles={styles} onPress={() => onOpen(item)} />
+          ) : null}
+          {item.startLabel ? (
+            <Pill
+              label={starting ? "Starting…" : item.startLabel}
+              styles={styles}
+              onPress={() => onStart(item)}
+            />
+          ) : null}
+        </View>
+      ) : null}
     </Pressable>
   );
 }
@@ -504,6 +682,68 @@ function RoleTag({
   );
 }
 
+function BoardPicker({
+  boards,
+  selectedId,
+  open,
+  styles,
+  onToggle,
+  onSelect,
+}: {
+  boards: JiraBoardOption[];
+  selectedId: string;
+  open: boolean;
+  styles: ReturnType<typeof createStyles>;
+  onToggle: () => void;
+  onSelect: (boardId: string) => void;
+}) {
+  const selected = boards.find((board) => board.id === selectedId) ?? boards[0];
+  const label = selected ? selected.name : "Board";
+  return (
+    <View style={styles.picker}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`Jira board, ${label}. ${open ? "Collapse" : "Expand"} board list`}
+        onPress={onToggle}
+        style={styles.pickerButton}
+      >
+        <Text style={styles.pickerButtonText} numberOfLines={1}>
+          {label}
+        </Text>
+        <Text style={styles.pickerChevron}>{open ? "▴" : "▾"}</Text>
+      </Pressable>
+      {open
+        ? boards.map((board) => {
+            const selectedBoard = board.id === selectedId;
+            return (
+              <Pressable
+                key={board.id}
+                accessibilityRole="button"
+                accessibilityState={{ selected: selectedBoard }}
+                accessibilityLabel={`${board.name}${board.projectKey ? `, ${board.projectKey}` : ""}`}
+                onPress={() => onSelect(board.id)}
+                style={[styles.pickerOption, selectedBoard ? styles.pickerOptionSelected : null]}
+              >
+                <Text
+                  style={[
+                    styles.pickerOptionText,
+                    selectedBoard ? styles.pickerOptionTextSelected : null,
+                  ]}
+                >
+                  {board.name}
+                </Text>
+                {board.projectKey ? (
+                  <Text style={styles.pickerOptionMeta}>{board.projectKey}</Text>
+                ) : null}
+              </Pressable>
+            );
+          })
+        : null}
+    </View>
+  );
+}
+
 function Pill({
   label,
   styles,
@@ -535,10 +775,64 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       padding: pad,
       gap: compact ? 14 : 18,
     },
+    titleRow: {
+      flexDirection: compact ? ("column" as const) : ("row" as const),
+      alignItems: compact ? ("stretch" as const) : ("flex-start" as const),
+      justifyContent: "space-between" as const,
+      gap: 12,
+    },
     title: {
       color: theme.colors.foreground,
       fontSize: compact ? 22 : 28,
       fontWeight: "600" as const,
+      flexShrink: 1,
+    },
+    picker: {
+      minWidth: compact ? undefined : 220,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      borderRadius: 12,
+      backgroundColor: theme.colors.surface1,
+      overflow: "hidden" as const,
+    },
+    pickerButton: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      justifyContent: "space-between" as const,
+      gap: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+    },
+    pickerButtonText: {
+      color: theme.colors.foreground,
+      flexShrink: 1,
+    },
+    pickerChevron: {
+      color: theme.colors.foregroundMuted,
+    },
+    pickerOption: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      justifyContent: "space-between" as const,
+      gap: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderTopWidth: 1,
+      borderTopColor: theme.colors.border,
+    },
+    pickerOptionSelected: {
+      backgroundColor: theme.colors.surface2,
+    },
+    pickerOptionText: {
+      color: theme.colors.foreground,
+      flexShrink: 1,
+    },
+    pickerOptionTextSelected: {
+      fontWeight: "600" as const,
+    },
+    pickerOptionMeta: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 12,
     },
     metaRow: {
       flexDirection: "row" as const,

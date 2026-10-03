@@ -1,15 +1,18 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { listMergedPrs } from "./server/github-prs";
+import { listAccessibleJiraBoards, loadJiraBoard } from "./server/jira";
 import { detectObsidian, listTemplates } from "./server/obsidian";
 import { listParents, listSchedules } from "./server/orchestration";
 import { listFolders, upsertStandupNote } from "./server/standup";
 import {
   detectOrchestrationObsidian,
+  getJiraBoard,
+  listJiraBoards,
   listOrchestrationFolders,
   listOrchestrationMergedPrs,
-  listOrchestrationTemplates,
   listOrchestrationParents,
   listOrchestrationSchedules,
+  listOrchestrationTemplates,
   upsertOrchestrationStandupNote,
 } from "./shared/orchestration";
 import { standupSettings } from "./shared/settings";
@@ -18,6 +21,8 @@ export default function contribute(server: PluginServerContext) {
   server.registerSettings(standupSettings);
   server.handle(listOrchestrationSchedules, listSchedules);
   server.handle(listOrchestrationParents, listParents);
+  server.handle(listJiraBoards, listAccessibleJiraBoards);
+  server.handle(getJiraBoard, loadJiraBoard);
   server.handle(listOrchestrationFolders, listFolders);
   server.handle(upsertOrchestrationStandupNote, upsertStandupNote);
   server.handle(detectOrchestrationObsidian, detectObsidian);

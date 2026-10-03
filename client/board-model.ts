@@ -1,3 +1,4 @@
+import type { JiraIssue } from "../shared/orchestration";
 import type { OrchestrationAgent, OrchestrationWorkspace } from "./use-orchestration-catalog";
 
 export type PhaseId = "todo" | "planning" | "awaiting-approval" | "implementing" | "review";
@@ -17,6 +18,11 @@ export type BoardItem = {
   workspaceId: string | null;
   isMainSession: boolean;
   role: "story" | "epic" | "child";
+  url: string | null;
+  source: "session" | "jira" | "both";
+  parentKey: string | null;
+  completed: boolean;
+  startLabel: string | null;
 };
 
 export type BoardFamily = {
@@ -42,6 +48,7 @@ export type BoardModel = {
   phases: { id: PhaseId; label: string; hint: string; items: BoardItem[] }[];
   merged: BoardItem[];
   blocked: BoardItem[];
+  hasJira: boolean;
 };
 
 export type ScheduleRow = {
@@ -67,6 +74,8 @@ export function createBoardModel(
   workspaces: OrchestrationWorkspace[],
   schedules: ScheduleRow[],
   parentLinks: ParentLink[] = [],
+  jiraIssues: JiraIssue[] = [],
+  jiraBoardName: string | null = null,
   now = new Date(),
 ): BoardModel {
   const byPhase: Record<PhaseId, BoardItem[]> = {
@@ -81,22 +90,27 @@ export function createBoardModel(
   const merged: BoardItem[] = [];
   const blocked: BoardItem[] = [];
   const activeAgents = agents.filter((agent) => !agent.archivedAt && agent.status !== "closed");
-  const parentById = parentMap(activeAgents, parentLinks);
-  const items = activeAgents.map((agent) => toAgentItem(agent, workspaces, parentById));
+  const sessionParents = parentMap(activeAgents, parentLinks);
+  const sessionItems = activeAgents.map((agent) => toAgentItem(agent, workspaces, sessionParents));
+  const items = mergeJiraItems(sessionItems, jiraIssues);
+  const parentById = familyParentMap(items, sessionParents);
   const itemsById = new Map(items.map((item) => [item.id, item]));
 
   for (const item of items) {
     const parentId = parentById.get(item.id);
     if (item.role === "child" && parentId) {
       const parent = itemsById.get(parentId);
-      item.underTitle = parent ? parent.title : "archived epic";
+      item.underTitle = parent ? parentTitle(parent) : item.underTitle ?? "archived epic";
+    }
+    if (isMergedItem(item)) {
+      merged.push(item);
+      continue;
     }
     byPhase[item.phaseId].push(item);
   }
 
-  for (const agent of activeAgents) {
-    const item = itemsById.get(agent.id);
-    if (item && isBlocked(agent)) {
+  for (const item of items) {
+    if (isBlockedItem(item, activeAgents)) {
       blocked.push(item);
       waitingOnYou.push(item);
     }
@@ -104,29 +118,31 @@ export function createBoardModel(
 
   const uniqueMerged = uniqueById(merged);
   const ready = byPhase.todo;
-  const next = ready[0] ?? waitingOnYou[0];
+  const next = byPhase.implementing[0] ?? ready[0] ?? waitingOnYou[0];
   const loopRunning = schedules.some((schedule) => schedule.status === "active");
+  const liveItems = items.filter((item) => !isMergedItem(item));
 
   return {
-    title: "Sessions",
+    title: jiraIssues.length > 0 ? (jiraBoardName ?? "Jira") : "Sessions",
     loopStatus: loopRunning ? "running" : "stopped",
-    nextLabel: next ? `${next.key} ${next.title}` : "nothing ready",
+    nextLabel: next ? `${next.key} ${next.title}`.trim() : "nothing ready",
     blockedSummary: blocked.length
-      ? blocked.map((item) => item.key).join("; ") + " blocked"
+      ? blocked.map((item) => item.key || item.title).join("; ") + " blocked"
       : "nothing blocked",
     updatedAt: now.toLocaleTimeString(),
-    total: activeAgents.length,
+    total: liveItems.length,
     mergedCount: uniqueMerged.length,
     inProgress: byPhase.implementing.length,
     readyToStart: ready.length,
     waitingOnDependencies: byPhase.planning.length,
     blockedCount: blocked.length,
     waitingOnYou,
-    families: buildFamilies(items, parentById),
-    stories: items.filter((item) => item.role === "story"),
+    families: buildFamilies(liveItems, parentById),
+    stories: liveItems.filter((item) => item.role === "story"),
     phases: PHASES.map((phase) => ({ ...phase, items: byPhase[phase.id] })),
     merged: uniqueMerged,
     blocked,
+    hasJira: jiraIssues.length > 0,
   };
 }
 
@@ -215,7 +231,164 @@ function toAgentItem(
     workspaceId: agent.workspaceId ?? null,
     isMainSession: role !== "child",
     role,
+    url: null,
+    source: "session",
+    parentKey: null,
+    completed: false,
+    startLabel: null,
   };
+}
+
+function mergeJiraItems(sessionItems: BoardItem[], jiraIssues: JiraIssue[]): BoardItem[] {
+  if (jiraIssues.length === 0) {
+    return sessionItems;
+  }
+
+  const byKey = new Map<string, BoardItem>();
+  const unmatched: BoardItem[] = [];
+  for (const item of sessionItems) {
+    if (item.key) {
+      byKey.set(item.key, item);
+    } else {
+      unmatched.push(item);
+    }
+  }
+
+  for (const issue of jiraIssues) {
+    const current = byKey.get(issue.key);
+    byKey.set(issue.key, current ? overlayJira(current, issue) : toJiraItem(issue));
+  }
+
+  return [...unmatched, ...byKey.values()];
+}
+
+function overlayJira(item: BoardItem, issue: JiraIssue): BoardItem {
+  const done = isJiraDone(issue);
+  const keepSessionPhase =
+    item.agentId != null &&
+    (item.phaseId === "implementing" ||
+      item.phaseId === "awaiting-approval" ||
+      item.phaseId === "review");
+  const phaseId = keepSessionPhase || done ? item.phaseId : phaseForJira(issue);
+  return {
+    ...item,
+    title: issue.summary || item.title,
+    detail: [issue.status, item.detail].filter(Boolean).join(" · "),
+    underTitle: issue.parentSummary ?? item.underTitle,
+    phaseId,
+    phaseLabel: done && !keepSessionPhase
+      ? issue.status
+      : (PHASES.find((phase) => phase.id === phaseId)?.label ?? phaseId),
+    retryLabel: item.retryLabel ?? (item.agentId ? "Open session" : "Open in Jira"),
+    role: jiraRole(issue, item.role),
+    url: issue.url,
+    source: item.source === "session" ? "both" : item.source,
+    parentKey: issue.parentKey ?? item.parentKey,
+    completed: done && !keepSessionPhase,
+    startLabel: done && !keepSessionPhase ? null : startLabelForRole(jiraRole(issue, item.role)),
+  };
+}
+
+function toJiraItem(issue: JiraIssue): BoardItem {
+  const merged = isJiraDone(issue);
+  const phaseId = phaseForJira(issue);
+  const role = jiraRole(issue, "story");
+  return {
+    id: `jira:${issue.key}`,
+    key: issue.key,
+    title: issue.summary,
+    detail: [issue.status, issue.assignee].filter(Boolean).join(" · "),
+    underTitle: issue.parentSummary,
+    phaseId,
+    phaseLabel: merged ? issue.status : (PHASES.find((phase) => phase.id === phaseId)?.label ?? issue.status),
+    pr: null,
+    retryLabel: "Open in Jira",
+    progress: null,
+    agentId: null,
+    workspaceId: null,
+    isMainSession: role !== "child",
+    role,
+    url: issue.url,
+    source: "jira",
+    parentKey: issue.parentKey,
+    completed: merged,
+    startLabel: merged ? null : startLabelForRole(role),
+  };
+}
+
+function startLabelForRole(role: BoardItem["role"]) {
+  return role === "epic" ? "Start epic loop" : "Start session";
+}
+
+function jiraRole(issue: JiraIssue, fallback: BoardItem["role"]): BoardItem["role"] {
+  if (issue.issueType.toLowerCase() === "epic") {
+    return "epic";
+  }
+  if (issue.parentKey || issue.issueType.toLowerCase() === "sub-task") {
+    return "child";
+  }
+  return fallback === "epic" ? "story" : fallback;
+}
+
+function phaseForJira(issue: JiraIssue): PhaseId {
+  if (isJiraDone(issue)) {
+    return "review";
+  }
+  const status = issue.status.toLowerCase();
+  const category = issue.statusCategory.toLowerCase();
+  if (status.includes("block")) {
+    return "review";
+  }
+  if (status === "selected for development") {
+    return "planning";
+  }
+  if (category === "indeterminate" || status === "in progress") {
+    return "implementing";
+  }
+  return "todo";
+}
+
+function isJiraDone(issue: JiraIssue) {
+  return (
+    issue.statusCategory.toLowerCase() === "done" || issue.status.toLowerCase() === "done"
+  );
+}
+
+function isMergedItem(item: BoardItem) {
+  return item.completed;
+}
+
+function isBlockedItem(item: BoardItem, agents: OrchestrationAgent[]) {
+  if (/\bblock/.test(`${item.detail} ${item.phaseLabel}`.toLowerCase())) {
+    return true;
+  }
+  const agent = agents.find((entry) => entry.id === item.agentId);
+  return agent ? isBlocked(agent) : false;
+}
+
+function familyParentMap(
+  items: BoardItem[],
+  sessionParents: Map<string, string | null>,
+) {
+  const idByKey = new Map<string, string>();
+  for (const item of items) {
+    if (item.key) {
+      idByKey.set(item.key, item.id);
+    }
+  }
+  const parents = new Map<string, string | null>();
+  for (const item of items) {
+    if (item.parentKey && idByKey.has(item.parentKey)) {
+      parents.set(item.id, idByKey.get(item.parentKey) ?? null);
+      continue;
+    }
+    parents.set(item.id, sessionParents.get(item.id) ?? null);
+  }
+  return parents;
+}
+
+function parentTitle(parent: BoardItem) {
+  return parent.key ? `${parent.key} ${parent.title}` : parent.title;
 }
 
 function buildFamilies(
@@ -254,11 +427,18 @@ function buildFamilies(
         workspaceId: null,
         isMainSession: true,
         role: "epic",
+        url: null,
+        source: "session",
+        parentKey: null,
+        completed: false,
+        startLabel: null,
       },
       children: group,
     });
   }
-  return families;
+  return families.filter(
+    (family) => family.children.length > 0 || family.epic.phaseId !== "todo",
+  );
 }
 
 function agentDetail(agent: OrchestrationAgent) {
