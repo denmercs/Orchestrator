@@ -4,6 +4,8 @@ import path from "node:path";
 import type { RpcOutput } from "@getpaseo/plugin";
 import {
   listOrchestrationFolders,
+  listOrchestrationStandupTodos,
+  saveOrchestrationStandupTodos,
   upsertOrchestrationStandupNote,
 } from "../shared/orchestration";
 import { listMergedPrs } from "./github-prs";
@@ -11,9 +13,11 @@ import {
   applyObsidianTemplate,
   buildStandupNote,
   formatDate,
+  parseTodoNotes,
   shippedLines,
   standupNoteRelativePath,
   writeShippedItems,
+  writeTodoNotes,
 } from "./standup-note";
 
 const MAX_FOLDER_ENTRIES = 200;
@@ -104,6 +108,66 @@ export async function upsertStandupNote(input: {
     templateName: templateDisplayName(input.templatePath),
     prs: merged.prs,
   };
+}
+
+export async function listStandupTodos(input: {
+  folderPath: string;
+}): Promise<RpcOutput<typeof listOrchestrationStandupTodos>> {
+  const notePath = await resolveNotePath(input.folderPath);
+  try {
+    const markdown = await readFile(notePath, "utf8");
+    return { notePath, exists: true, items: parseTodoNotes(markdown) };
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") {
+      throw error;
+    }
+    return { notePath, exists: false, items: [] };
+  }
+}
+
+export async function saveStandupTodos(input: {
+  folderPath: string;
+  templatePath: string | null;
+  items: { kind: "todo" | "blocker" | "note"; text: string; done: boolean }[];
+}): Promise<RpcOutput<typeof saveOrchestrationStandupTodos>> {
+  const folderPath = path.resolve(input.folderPath);
+  const notePath = await resolveNotePath(folderPath);
+  await mkdir(path.dirname(notePath), { recursive: true });
+
+  let created = false;
+  let markdown: string;
+  try {
+    markdown = await readFile(notePath, "utf8");
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") {
+      throw error;
+    }
+    markdown = await readNoteTemplate(input.templatePath, new Date());
+    created = true;
+  }
+
+  const next = writeTodoNotes(markdown, input.items.map((item) => ({ ...item, id: "" })));
+  if (created || next.changed) {
+    await writeAtomically(notePath, next.markdown);
+  }
+
+  return {
+    notePath,
+    created,
+    items: parseTodoNotes(next.markdown),
+  };
+}
+
+async function resolveNotePath(folderPath: string): Promise<string> {
+  const resolved = path.resolve(folderPath);
+  assertAllowedPath(resolved);
+  const info = await stat(resolved);
+  if (!info.isDirectory()) {
+    throw new Error("Select a folder, not a file.");
+  }
+  const notePath = path.join(resolved, standupNoteRelativePath(path.basename(resolved), new Date()));
+  assertAllowedPath(notePath);
+  return notePath;
 }
 
 async function readNoteTemplate(templatePath: string | null, now: Date): Promise<string> {

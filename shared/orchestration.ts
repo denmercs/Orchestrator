@@ -123,6 +123,50 @@ export const upsertOrchestrationStandupNote = defineRpc({
   }),
 });
 
+export const standupTodoKind = z.enum(["todo", "blocker", "note"]);
+
+export const standupTodo = z.object({
+  id: z.string(),
+  kind: standupTodoKind,
+  text: z.string(),
+  done: z.boolean(),
+});
+
+export const listOrchestrationStandupTodos = defineRpc({
+  name: "orchestration.standup.todos.list",
+  input: z.object({
+    folderPath: z.string(),
+  }),
+  output: z.object({
+    notePath: z.string(),
+    exists: z.boolean(),
+    items: z.array(standupTodo),
+  }),
+});
+
+export const saveOrchestrationStandupTodos = defineRpc({
+  name: "orchestration.standup.todos.save",
+  input: z.object({
+    folderPath: z.string(),
+    templatePath: z.string().nullable(),
+    items: z.array(
+      z.object({
+        kind: standupTodoKind,
+        text: z.string().min(1),
+        done: z.boolean(),
+      }),
+    ),
+  }),
+  output: z.object({
+    notePath: z.string(),
+    created: z.boolean(),
+    items: z.array(standupTodo),
+  }),
+});
+
+export type StandupTodo = z.infer<typeof standupTodo>;
+export type StandupTodoKind = z.infer<typeof standupTodoKind>;
+
 export const orchestrationTemplate = z.object({
   name: z.string(),
   path: z.string(),

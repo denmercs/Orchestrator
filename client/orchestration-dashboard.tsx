@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Linking, Pressable, ScrollView, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
@@ -10,11 +10,11 @@ import {
   type JiraBoardOption,
   type JiraIssue,
 } from "../shared/orchestration";
+import { PR_POLL_MS } from "../shared/timing";
 import {
   type BoardItem,
   type BoardModel,
   type ParentLink,
-  type PhaseId,
   createBoardModel,
 } from "./board-model";
 import { startJiraSession } from "./start-jira-session";
@@ -39,8 +39,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const [jiraError, setJiraError] = useState<string | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [startingId, setStartingId] = useState<string | null>(null);
-  const [selectedPhaseId, setSelectedPhaseId] = useState<PhaseId | null>(null);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const agentIds = useMemo(
     () =>
       agents
@@ -123,6 +122,12 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
 
   useEffect(() => {
     void refreshJira();
+    const timer = setInterval(() => {
+      void refreshJira();
+    }, PR_POLL_MS);
+    return () => {
+      clearInterval(timer);
+    };
   }, [refreshJira]);
 
   const board = useMemo(
@@ -137,14 +142,14 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
       ),
     [agents, workspaces, schedules, parentLinks, jiraIssues, selectedJiraBoard?.name],
   );
-  const selectedPhase =
-    board.phases.find((phase) => phase.id === selectedPhaseId) ??
-    board.phases.find((phase) => phase.items.length > 0) ??
-    board.phases[0];
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
 
-  function toggleCollapsed(id: string) {
-    setCollapsed((current) => ({ ...current, [id]: !current[id] }));
+  const trees = board.families.filter((family) => family.children.length > 0);
+  const idlePhase = board.phases.find((phase) => phase.id === "todo");
+  const livePhases = board.phases.filter((phase) => phase.id !== "todo");
+
+  function toggleExpanded(id: string) {
+    setExpanded((current) => ({ ...current, [id]: !current[id] }));
   }
 
   function openItem(item: BoardItem) {
@@ -247,298 +252,274 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
 
       <StandupSection theme={theme} layout={layout} />
 
-      <View style={styles.sectionHead}>
-        <Text style={styles.sectionLabel}>
-          EPIC TREES · {board.families.length}
-        </Text>
-        {board.families.length > 1 ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={
-              board.families.every((family) => collapsed[family.epic.id])
-                ? "Expand all epic trees"
-                : "Collapse all epic trees"
-            }
-            onPress={() => {
-              const hide = !board.families.every((family) => collapsed[family.epic.id]);
-              setCollapsed((current) => ({
-                ...current,
-                ...Object.fromEntries(board.families.map((family) => [family.epic.id, hide])),
-              }));
-            }}
-          >
-            <Text style={styles.sectionToggle}>
-              {board.families.every((family) => collapsed[family.epic.id])
-                ? "Expand all"
-                : "Collapse all"}
-            </Text>
-          </Pressable>
-        ) : null}
-      </View>
-      <Text style={styles.sectionHint}>
-        Children sit under the epic that spawned them. Tap the count to hide or show them.
-      </Text>
-      {board.families.length === 0 ? (
-        <Text style={styles.muted}>No epic orchestrations on the board.</Text>
-      ) : (
-        board.families.map((family) => {
-          const hidden = Boolean(collapsed[family.epic.id]);
-          const childCount = family.children.length;
-          return (
-            <View key={family.epic.id} style={styles.familyCard}>
-              <View style={styles.familyHead}>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ expanded: !hidden }}
-                  accessibilityLabel={
-                    hidden
-                      ? `Expand ${childCount} children`
-                      : `Collapse ${childCount} children`
-                  }
-                  onPress={() => toggleCollapsed(family.epic.id)}
-                  style={styles.familyToggle}
-                >
-                  <Text style={styles.familyToggleText}>
-                    {hidden ? "▸" : "▾"} {childCount} {childCount === 1 ? "child" : "children"}
-                  </Text>
-                </Pressable>
+      <View style={styles.panel}>
+        <View style={styles.sectionHead}>
+          <Text style={styles.panelTitle}>Phase board</Text>
+          <Text style={styles.panelMeta}>{board.total} live</Text>
+        </View>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator
+          style={styles.kanbanScroll}
+          contentContainerStyle={styles.kanban}
+        >
+          {livePhases.map((phase) => (
+            <View key={phase.id} style={styles.kanbanCol}>
+              <View style={styles.kanbanHead}>
+                <Text style={styles.kanbanTitle}>{phase.label}</Text>
+                <Text style={styles.kanbanCount}>{phase.items.length}</Text>
               </View>
-              <SessionCard
-                item={family.epic}
+              <Text style={styles.kanbanHint}>{phase.hint}</Text>
+              <PreviewList
+                items={phase.items}
+                expanded={Boolean(expanded[`phase:${phase.id}`])}
+                empty="Empty"
                 styles={styles}
-                starting={startingId === family.epic.id}
-                onOpen={openItem}
-                onStart={startItem}
-              />
-              {hidden ? null : childCount === 0 ? (
-                <Text style={styles.muted}>No live children.</Text>
-              ) : (
-                family.children.map((child) => (
+                onToggle={() => toggleExpanded(`phase:${phase.id}`)}
+                renderItem={(item) => (
                   <SessionCard
-                    key={child.id}
-                    item={child}
-                    nested
+                    key={item.id}
+                    item={item}
                     styles={styles}
-                    starting={startingId === child.id}
+                    starting={startingId === item.id}
                     onOpen={openItem}
                     onStart={startItem}
                   />
-                ))
-              )}
-            </View>
-          );
-        })
-      )}
-
-      <View style={styles.sectionHead}>
-        <Text style={styles.sectionLabel}>STORIES · {board.stories.length}</Text>
-        {board.stories.length > 0 ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ expanded: !collapsed.stories }}
-            accessibilityLabel={collapsed.stories ? "Expand stories" : "Collapse stories"}
-            onPress={() => toggleCollapsed("stories")}
-          >
-            <Text style={styles.sectionToggle}>{collapsed.stories ? "Expand" : "Collapse"}</Text>
-          </Pressable>
-        ) : null}
-      </View>
-      <Text style={styles.sectionHint}>Standalone sessions — not under an epic.</Text>
-      {board.stories.length === 0 ? (
-        <Text style={styles.muted}>No standalone stories.</Text>
-      ) : collapsed.stories ? (
-        <Text style={styles.muted}>{board.stories.length} hidden.</Text>
-      ) : (
-        board.stories.map((item) => (
-          <SessionCard
-            key={item.id}
-            item={item}
-            styles={styles}
-            starting={startingId === item.id}
-            onOpen={openItem}
-            onStart={startItem}
-          />
-        ))
-      )}
-
-      <Text style={styles.sectionLabel}>WAITING ON YOU · {board.waitingOnYou.length} items</Text>
-      {board.waitingOnYou.length === 0 ? (
-        <Text style={styles.muted}>Nothing waiting on you.</Text>
-      ) : (
-        board.waitingOnYou.map((item) => (
-          <View key={item.id} style={styles.waitRow}>
-            <View style={styles.waitMain}>
-              <View style={styles.waitTitleRow}>
-                <View style={[styles.dot, { backgroundColor: theme.colors.statusDanger }]} />
-                <RoleTag role={item.role} styles={styles} />
-                {item.source !== "session" ? <Text style={styles.phaseChip}>Jira</Text> : null}
-                {item.key ? <Text style={styles.waitKey}>{item.key}</Text> : null}
-                <Text style={styles.waitTitle}>
-                  {item.title.startsWith("Blocked") ? item.title : `Blocked — ${item.title}`}
-                </Text>
-              </View>
-              {item.underTitle ? (
-                <Text style={styles.underLine}>Under {item.underTitle}</Text>
-              ) : null}
-              <Text style={styles.waitDetail}>{item.detail}</Text>
-            </View>
-            {item.retryLabel || item.startLabel ? (
-              <View style={styles.blockedActions}>
-                {item.retryLabel ? (
-                  <Pill label={item.retryLabel} styles={styles} onPress={() => openItem(item)} />
-                ) : null}
-                {item.startLabel ? (
-                  <Pill
-                    label={startingId === item.id ? "Starting…" : item.startLabel}
-                    styles={styles}
-                    onPress={() => void startItem(item)}
-                  />
-                ) : null}
-              </View>
-            ) : null}
-          </View>
-        ))
-      )}
-
-      <Text style={styles.sectionLabel}>SESSIONS BY STATUS</Text>
-      <Text style={styles.sectionHint}>
-        Live agent status — tap a column to see those sessions.
-      </Text>
-      <View style={styles.phaseColumns}>
-        {board.phases.map((phase) => {
-          const selected = phase.id === selectedPhase?.id;
-          const count = phase.items.length;
-          return (
-            <Pressable
-              key={phase.id}
-              accessibilityRole="button"
-              accessibilityState={{ selected }}
-              accessibilityLabel={`${phase.label}, ${count} ${count === 1 ? "session" : "sessions"}. ${phase.hint}`}
-              onPress={() => setSelectedPhaseId(phase.id)}
-              style={[styles.phaseCol, selected ? styles.phaseColSelected : null]}
-            >
-              <View style={[styles.phaseHalo, selected ? styles.phaseHaloSelected : null]}>
-                <View
-                  style={[
-                    styles.phaseInner,
-                    selected || count > 0 ? { backgroundColor: theme.colors.accent } : null,
-                  ]}
-                />
-              </View>
-              <Text style={[styles.phaseLabel, selected ? styles.phaseLabelSelected : null]}>
-                {phase.label}
-              </Text>
-              <Text style={[styles.phaseCount, selected ? styles.phaseCountSelected : null]}>
-                {count}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-      {selectedPhase ? (
-        <View style={styles.phaseList}>
-          <Text style={styles.phaseListHint}>{selectedPhase.hint}</Text>
-          {selectedPhase.items.length === 0 ? (
-            <Text style={styles.muted}>No sessions in this status.</Text>
-          ) : (
-            selectedPhase.items.map((item) => (
-              <SessionCard
-                key={item.id}
-                item={item}
-                styles={styles}
-                starting={startingId === item.id}
-                onOpen={openItem}
-                onStart={startItem}
+                )}
               />
-            ))
+            </View>
+          ))}
+        </ScrollView>
+
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator
+          style={styles.kanbanScroll}
+          contentContainerStyle={styles.phaseBoard}
+        >
+          <View style={styles.idleCol}>
+            <View style={styles.colHead}>
+              <View style={[styles.dot, { backgroundColor: theme.colors.foregroundMuted }]} />
+              <Text style={styles.colTitle}>Idle</Text>
+              <Text style={styles.colCount}>{idlePhase?.items.length ?? 0}</Text>
+            </View>
+            <Text style={styles.kanbanHint}>{idlePhase?.hint ?? "Not running yet"}</Text>
+            <PreviewList
+              items={idlePhase?.items ?? []}
+              expanded={Boolean(expanded.idle)}
+              empty="Nothing idle."
+              styles={styles}
+              onToggle={() => toggleExpanded("idle")}
+              renderItem={(item) => (
+                <SessionCard
+                  key={item.id}
+                  item={item}
+                  styles={styles}
+                  starting={startingId === item.id}
+                  onOpen={openItem}
+                  onStart={startItem}
+                />
+              )}
+            />
+          </View>
+
+          <View style={styles.mergedCol}>
+            <View style={styles.colHead}>
+              <View style={[styles.dot, { backgroundColor: theme.colors.statusSuccess }]} />
+              <Text style={styles.colTitle}>Merged</Text>
+              <Text style={styles.colCount}>{board.mergedCount}</Text>
+            </View>
+            <PreviewList
+              items={board.merged}
+              expanded={Boolean(expanded.merged)}
+              empty="No merged items."
+              styles={styles}
+              onToggle={() => toggleExpanded("merged")}
+              renderItem={(item) => (
+                <Pressable
+                  key={item.id}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${item.key} ${item.title}`}
+                  onPress={() => openItem(item)}
+                  style={styles.mergedRow}
+                >
+                  <Text style={styles.mergedKey}>{item.key}</Text>
+                  <Text style={styles.mergedTitle} numberOfLines={1}>
+                    {item.title}
+                  </Text>
+                  {item.pr ? <Text style={styles.pr}>#{item.pr}</Text> : null}
+                </Pressable>
+              )}
+            />
+          </View>
+
+          <View style={styles.blockedCol}>
+            <View style={styles.colHead}>
+              <View style={[styles.dot, { backgroundColor: theme.colors.statusDanger }]} />
+              <Text style={styles.colTitle}>Blocked</Text>
+              <Text style={styles.colCount}>{board.blockedCount}</Text>
+            </View>
+            <PreviewList
+              items={board.blocked}
+              expanded={Boolean(expanded.blocked)}
+              empty="No blocked items."
+              styles={styles}
+              onToggle={() => toggleExpanded("blocked")}
+              renderItem={(item) => (
+                <View key={item.id} style={styles.blockedCard}>
+                  <View style={styles.blockedHead}>
+                    <View style={styles.blockedHeadLeft}>
+                      <RoleTag role={item.role} styles={styles} />
+                      {item.source !== "session" ? <Text style={styles.phaseChip}>Jira</Text> : null}
+                      {item.key ? <Text style={styles.blockedKey}>{item.key}</Text> : null}
+                    </View>
+                    {item.pr ? <Text style={styles.pr}>#{item.pr}</Text> : null}
+                  </View>
+                  <Text style={styles.blockedTitle}>{item.title}</Text>
+                  {item.underTitle ? (
+                    <Text style={styles.underLine}>Under {item.underTitle}</Text>
+                  ) : null}
+                  <Text style={styles.waitDetail}>{item.detail}</Text>
+                  {item.progress !== null ? (
+                    <View style={styles.barTrack}>
+                      <View
+                        style={[
+                          styles.barFill,
+                          {
+                            width: `${Math.round(item.progress * 100)}%`,
+                            backgroundColor: theme.colors.statusDanger,
+                          },
+                        ]}
+                      />
+                    </View>
+                  ) : null}
+                  {item.retryLabel || item.startLabel ? (
+                    <View style={styles.blockedActions}>
+                      {item.retryLabel ? (
+                        <Pill label={item.retryLabel} styles={styles} onPress={() => openItem(item)} />
+                      ) : null}
+                      {item.startLabel ? (
+                        <Pill
+                          label={startingId === item.id ? "Starting…" : item.startLabel}
+                          styles={styles}
+                          onPress={() => void startItem(item)}
+                        />
+                      ) : null}
+                    </View>
+                  ) : null}
+                </View>
+              )}
+            />
+          </View>
+        </ScrollView>
+      </View>
+
+      {trees.length > 0 || board.stories.length > 0 ? (
+        <View style={styles.browse}>
+          <View style={styles.sectionHead}>
+            <Text style={styles.sectionLabel}>
+              BROWSE · {trees.length} {trees.length === 1 ? "epic with children" : "epics with children"}
+              {board.stories.length > 0 ? ` · ${board.stories.length} stories` : ""}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: Boolean(expanded.browse) }}
+              accessibilityLabel={expanded.browse ? "Hide epic browse" : "Show epic browse"}
+              onPress={() => toggleExpanded("browse")}
+            >
+              <Text style={styles.sectionToggle}>{expanded.browse ? "Hide" : "Show"}</Text>
+            </Pressable>
+          </View>
+          {expanded.browse ? (
+            <>
+              <Text style={styles.sectionHint}>
+                Parent/child view for spawned work. Everything else lives on the phase board.
+              </Text>
+              {trees.map((family) => {
+                const open = Boolean(expanded[family.epic.id]);
+                const childCount = family.children.length;
+                return (
+                  <View key={family.epic.id} style={styles.familyCard}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ expanded: open }}
+                      accessibilityLabel={`${family.epic.key || family.epic.title}, ${childCount} children. ${open ? "Collapse" : "Expand"}`}
+                      onPress={() => toggleExpanded(family.epic.id)}
+                      style={styles.familySummary}
+                    >
+                      <Text style={styles.familyToggleText}>
+                        {open ? "▾" : "▸"} {childCount}
+                      </Text>
+                      {family.epic.key ? (
+                        <Text style={styles.waitKey}>{family.epic.key}</Text>
+                      ) : null}
+                      <Text style={styles.familySummaryTitle} numberOfLines={1}>
+                        {family.epic.title}
+                      </Text>
+                      <Text style={styles.phaseChip}>{family.epic.phaseLabel}</Text>
+                    </Pressable>
+                    {open ? (
+                      <>
+                        <SessionCard
+                          item={family.epic}
+                          styles={styles}
+                          starting={startingId === family.epic.id}
+                          onOpen={openItem}
+                          onStart={startItem}
+                        />
+                        {family.children.map((child) => (
+                          <SessionCard
+                            key={child.id}
+                            item={child}
+                            nested
+                            styles={styles}
+                            starting={startingId === child.id}
+                            onOpen={openItem}
+                            onStart={startItem}
+                          />
+                        ))}
+                      </>
+                    ) : null}
+                  </View>
+                );
+              })}
+              {board.stories.length > 0 ? (
+                <>
+                  <View style={styles.sectionHead}>
+                    <Text style={styles.sectionLabel}>STORIES · {board.stories.length}</Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ expanded: Boolean(expanded.stories) }}
+                      accessibilityLabel={expanded.stories ? "Hide stories" : "Show stories"}
+                      onPress={() => toggleExpanded("stories")}
+                    >
+                      <Text style={styles.sectionToggle}>
+                        {expanded.stories ? "Hide" : "Show"}
+                      </Text>
+                    </Pressable>
+                  </View>
+                  {expanded.stories
+                    ? board.stories.map((item) => (
+                        <SessionCard
+                          key={item.id}
+                          item={item}
+                          styles={styles}
+                          starting={startingId === item.id}
+                          onOpen={openItem}
+                          onStart={startItem}
+                        />
+                      ))
+                    : null}
+                </>
+              ) : null}
+            </>
+          ) : (
+            <Text style={styles.sectionHint}>
+              Optional parent/child list. Open it only when you need the tree.
+            </Text>
           )}
         </View>
       ) : null}
-
-      <View style={styles.phaseBoard}>
-        <View style={styles.mergedCol}>
-          <View style={styles.colHead}>
-            <View style={[styles.dot, { backgroundColor: theme.colors.statusSuccess }]} />
-            <Text style={styles.colTitle}>Merged</Text>
-            <Text style={styles.colCount}>{board.mergedCount}</Text>
-          </View>
-          {board.merged.length === 0 ? (
-            <Text style={styles.muted}>No merged items.</Text>
-          ) : (
-            board.merged.map((item) => (
-              <Pressable
-                key={item.id}
-                accessibilityRole="button"
-                accessibilityLabel={`${item.key} ${item.title}`}
-                onPress={() => openItem(item)}
-                style={styles.mergedRow}
-              >
-                <Text style={styles.mergedKey}>{item.key}</Text>
-                <Text style={styles.mergedTitle} numberOfLines={1}>
-                  {item.title}
-                </Text>
-                {item.pr ? <Text style={styles.pr}>#{item.pr}</Text> : null}
-              </Pressable>
-            ))
-          )}
-        </View>
-
-        <View style={styles.blockedCol}>
-          <View style={styles.colHead}>
-            <View style={[styles.dot, { backgroundColor: theme.colors.statusDanger }]} />
-            <Text style={styles.colTitle}>Blocked</Text>
-            <Text style={styles.colCount}>{board.blockedCount}</Text>
-          </View>
-          {board.blocked.length === 0 ? (
-            <Text style={styles.muted}>No blocked items.</Text>
-          ) : (
-            board.blocked.map((item) => (
-              <View key={item.id} style={styles.blockedCard}>
-                <View style={styles.blockedHead}>
-                  <View style={styles.blockedHeadLeft}>
-                    <RoleTag role={item.role} styles={styles} />
-                    {item.source !== "session" ? <Text style={styles.phaseChip}>Jira</Text> : null}
-                    {item.key ? <Text style={styles.blockedKey}>{item.key}</Text> : null}
-                  </View>
-                  {item.pr ? <Text style={styles.pr}>#{item.pr}</Text> : null}
-                </View>
-                <Text style={styles.blockedTitle}>{item.title}</Text>
-                {item.underTitle ? (
-                  <Text style={styles.underLine}>Under {item.underTitle}</Text>
-                ) : null}
-                <Text style={styles.waitDetail}>{item.detail}</Text>
-                {item.progress !== null ? (
-                  <View style={styles.barTrack}>
-                    <View
-                      style={[
-                        styles.barFill,
-                        {
-                          width: `${Math.round(item.progress * 100)}%`,
-                          backgroundColor: theme.colors.statusDanger,
-                        },
-                      ]}
-                    />
-                  </View>
-                ) : null}
-                {item.retryLabel || item.startLabel ? (
-                  <View style={styles.blockedActions}>
-                    {item.retryLabel ? (
-                      <Pill label={item.retryLabel} styles={styles} onPress={() => openItem(item)} />
-                    ) : null}
-                    {item.startLabel ? (
-                      <Pill
-                        label={startingId === item.id ? "Starting…" : item.startLabel}
-                        styles={styles}
-                        onPress={() => void startItem(item)}
-                      />
-                    ) : null}
-                  </View>
-                ) : null}
-              </View>
-            ))
-          )}
-        </View>
-      </View>
     </ScrollView>
   );
 }
@@ -600,6 +581,46 @@ function CountStat({
   );
 }
 
+const PREVIEW_LIMIT = 5;
+
+function PreviewList<T>({
+  items,
+  expanded,
+  empty,
+  styles,
+  onToggle,
+  renderItem,
+}: {
+  items: T[];
+  expanded: boolean;
+  empty: string;
+  styles: ReturnType<typeof createStyles>;
+  onToggle: () => void;
+  renderItem: (item: T) => ReactNode;
+}) {
+  if (items.length === 0) {
+    return <Text style={styles.muted}>{empty}</Text>;
+  }
+  const hidden = items.length - PREVIEW_LIMIT;
+  const visible = expanded || hidden <= 0 ? items : items.slice(0, PREVIEW_LIMIT);
+  const label = expanded ? "Collapse" : `More · ${hidden}`;
+  return (
+    <>
+      {visible.map(renderItem)}
+      {hidden > 0 ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          accessibilityLabel={expanded ? "Collapse list" : `Show ${hidden} more items`}
+          onPress={onToggle}
+        >
+          <Text style={styles.moreToggle}>{label}</Text>
+        </Pressable>
+      ) : null}
+    </>
+  );
+}
+
 function SessionCard({
   item,
   nested,
@@ -616,23 +637,29 @@ function SessionCard({
   onStart: (item: BoardItem) => void;
 }) {
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${item.role} ${item.title}`}
-      onPress={() => onOpen(item)}
-      style={[styles.phaseItem, nested ? styles.childItem : null]}
-    >
-      <View style={styles.waitTitleRow}>
-        <RoleTag role={item.role} styles={styles} />
-        {item.source !== "session" ? <Text style={styles.phaseChip}>Jira</Text> : null}
-        <Text style={styles.phaseChip}>{item.phaseLabel}</Text>
-        {item.key ? <Text style={styles.waitKey}>{item.key}</Text> : null}
-        <Text style={styles.waitTitle} numberOfLines={2}>
+    <View style={[styles.phaseItem, nested ? styles.childItem : null]}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${item.role} ${item.title}`}
+        onPress={() => onOpen(item)}
+        style={styles.cardBody}
+      >
+        <View style={styles.cardChips}>
+          <RoleTag role={item.role} styles={styles} />
+          {item.source !== "session" ? <Text style={styles.phaseChip}>Jira</Text> : null}
+          <Text style={styles.phaseChip}>{item.phaseLabel}</Text>
+        </View>
+        {item.key ? <Text style={styles.cardKey}>{item.key}</Text> : null}
+        <Text style={styles.cardTitle} numberOfLines={2}>
           {item.title}
         </Text>
-      </View>
-      {item.underTitle ? <Text style={styles.underLine}>Under {item.underTitle}</Text> : null}
-      <Text style={styles.waitDetail}>{item.detail}</Text>
+        {item.underTitle ? <Text style={styles.cardMeta}>Under {item.underTitle}</Text> : null}
+        {item.detail ? (
+          <Text style={styles.cardMeta} numberOfLines={2}>
+            {item.detail}
+          </Text>
+        ) : null}
+      </Pressable>
       {item.retryLabel || item.startLabel ? (
         <View style={styles.blockedActions}>
           {item.retryLabel ? (
@@ -647,7 +674,7 @@ function SessionCard({
           ) : null}
         </View>
       ) : null}
-    </Pressable>
+    </View>
   );
 }
 
@@ -774,6 +801,8 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
     content: {
       padding: pad,
       gap: compact ? 14 : 18,
+      alignSelf: "stretch" as const,
+      width: "100%" as const,
     },
     titleRow: {
       flexDirection: compact ? ("column" as const) : ("row" as const),
@@ -886,6 +915,88 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       height: 3,
       borderRadius: 2,
     },
+    panel: {
+      alignSelf: "stretch" as const,
+      width: "100%" as const,
+      gap: 12,
+      padding: compact ? 14 : 18,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface1,
+    },
+    panelTitle: {
+      color: theme.colors.foreground,
+      fontSize: compact ? 16 : 18,
+      fontWeight: "600" as const,
+    },
+    panelMeta: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 12,
+    },
+    kanbanScroll: {
+      alignSelf: "stretch" as const,
+      width: "100%" as const,
+    },
+    kanban: {
+      flexDirection: "row" as const,
+      alignItems: "stretch" as const,
+      alignSelf: "stretch" as const,
+      flexGrow: 1,
+      width: "100%" as const,
+      gap: 10,
+      paddingBottom: 4,
+    },
+    kanbanCol: {
+      flexGrow: 1,
+      flexShrink: 1,
+      flexBasis: 0,
+      minWidth: compact ? 180 : 0,
+      gap: 8,
+      padding: 10,
+      borderRadius: 12,
+      backgroundColor: theme.colors.surface0,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+    },
+    kanbanHead: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      justifyContent: "space-between" as const,
+      gap: 8,
+    },
+    kanbanTitle: {
+      color: theme.colors.foreground,
+      fontSize: 13,
+      fontWeight: "600" as const,
+    },
+    kanbanCount: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 12,
+    },
+    kanbanHint: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 11,
+    },
+    moreToggle: {
+      color: theme.colors.accent,
+      fontSize: 12,
+      paddingVertical: 4,
+    },
+    browse: {
+      gap: 10,
+      paddingTop: 4,
+    },
+    familySummary: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 8,
+    },
+    familySummaryTitle: {
+      color: theme.colors.foreground,
+      flex: 1,
+      flexShrink: 1,
+    },
     sectionHead: {
       flexDirection: "row" as const,
       alignItems: "center" as const,
@@ -916,7 +1027,6 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
     sectionHint: {
       color: theme.colors.foregroundMuted,
       fontSize: 12,
-      marginTop: -8,
     },
     waitRow: {
       flexDirection: compact ? ("column" as const) : ("row" as const),
@@ -966,25 +1076,31 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       fontSize: 12,
     },
     phaseBoard: {
-      flexDirection: compact ? ("column" as const) : ("row" as const),
-      gap: compact ? 16 : 20,
-      alignItems: "flex-start" as const,
+      flexDirection: "row" as const,
+      alignItems: "stretch" as const,
+      alignSelf: "stretch" as const,
+      flexGrow: 1,
+      width: "100%" as const,
+      gap: 10,
     },
     phaseColumns: {
       flexDirection: "row" as const,
       flexWrap: "wrap" as const,
-      gap: compact ? 10 : 14,
+      gap: compact ? 8 : 10,
+      width: "100%" as const,
     },
     phaseCol: {
-      width: compact ? 88 : 108,
+      flexGrow: 1,
+      flexBasis: compact ? 88 : 0,
+      minWidth: compact ? 88 : 0,
       alignItems: "center" as const,
       gap: 6,
-      paddingVertical: 8,
+      paddingVertical: 10,
       paddingHorizontal: 4,
       borderRadius: 12,
     },
     phaseColSelected: {
-      backgroundColor: theme.colors.surface1,
+      backgroundColor: theme.colors.surface0,
     },
     phaseHalo: {
       width: 28,
@@ -1026,14 +1142,57 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       gap: 8,
       width: "100%" as const,
     },
+    phaseGrid: {
+      gap: 12,
+      width: "100%" as const,
+    },
+    phaseRow: {
+      flexDirection: "row" as const,
+      alignItems: "stretch" as const,
+      gap: 12,
+      width: "100%" as const,
+    },
+    phaseCell: {
+      flex: 1,
+      maxWidth: 300,
+      minWidth: 0,
+    },
+    cardBody: {
+      flexDirection: "column" as const,
+      alignItems: "flex-start" as const,
+      alignSelf: "stretch" as const,
+      gap: 6,
+    },
+    cardChips: {
+      flexDirection: "row" as const,
+      flexWrap: "wrap" as const,
+      alignItems: "center" as const,
+      gap: 6,
+    },
+    cardKey: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 12,
+    },
+    cardTitle: {
+      color: theme.colors.foreground,
+      fontSize: 15,
+      fontWeight: "500" as const,
+    },
+    cardMeta: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 12,
+    },
     phaseListHint: {
       color: theme.colors.foregroundMuted,
       fontSize: 12,
     },
     phaseItem: {
+      flexDirection: "column" as const,
+      alignItems: "flex-start" as const,
+      alignSelf: "stretch" as const,
       gap: 6,
-      paddingVertical: 12,
-      paddingHorizontal: compact ? 12 : 16,
+      paddingVertical: 10,
+      paddingHorizontal: 10,
       borderRadius: 12,
       backgroundColor: theme.colors.surface1,
       borderColor: theme.colors.border,
@@ -1067,17 +1226,41 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       fontSize: 12,
       marginLeft: compact ? 0 : 16,
     },
-    mergedCol: {
-      flex: 1,
-      minWidth: compact ? undefined : 240,
-      alignSelf: compact ? ("stretch" as const) : undefined,
+    idleCol: {
+      flexGrow: 1,
+      flexShrink: 1,
+      flexBasis: 0,
+      minWidth: compact ? 180 : 0,
       gap: 8,
+      padding: 10,
+      borderRadius: 12,
+      backgroundColor: theme.colors.surface0,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+    },
+    mergedCol: {
+      flexGrow: 1,
+      flexShrink: 1,
+      flexBasis: 0,
+      minWidth: compact ? 180 : 0,
+      gap: 8,
+      padding: 10,
+      borderRadius: 12,
+      backgroundColor: theme.colors.surface0,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
     },
     blockedCol: {
-      flex: 1,
-      minWidth: compact ? undefined : 260,
-      alignSelf: compact ? ("stretch" as const) : undefined,
+      flexGrow: 1,
+      flexShrink: 1,
+      flexBasis: 0,
+      minWidth: compact ? 180 : 0,
       gap: 10,
+      padding: 10,
+      borderRadius: 12,
+      backgroundColor: theme.colors.surface0,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
     },
     colHead: {
       flexDirection: "row" as const,
@@ -1112,7 +1295,7 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       gap: 8,
       padding: 14,
       borderRadius: 12,
-      backgroundColor: theme.colors.surface1,
+      backgroundColor: theme.colors.surface0,
       borderColor: theme.colors.border,
       borderWidth: 1,
     },

@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { openExternalUrl, useRpc, useSettings } from "@getpaseo/plugin/client";
-import { FlatList, Icon, Modal, useToast } from "@getpaseo/plugin/client/react-native";
+import { FlatList, Icon, Modal, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import type { RpcOutput } from "@getpaseo/plugin";
 import {
   detectOrchestrationObsidian,
   listOrchestrationFolders,
   listOrchestrationMergedPrs,
+  listOrchestrationStandupTodos,
   listOrchestrationTemplates,
+  saveOrchestrationStandupTodos,
   upsertOrchestrationStandupNote,
+  type StandupTodo,
+  type StandupTodoKind,
 } from "../shared/orchestration";
 import { standupSettings } from "../shared/settings";
+import { PR_POLL_MS } from "../shared/timing";
 
 type FolderListing = RpcOutput<typeof listOrchestrationFolders>;
 type TemplateListing = RpcOutput<typeof listOrchestrationTemplates>;
@@ -26,6 +31,8 @@ export function StandupSection({
   const listTemplates = useRpc(listOrchestrationTemplates);
   const listMerged = useRpc(listOrchestrationMergedPrs);
   const upsertNote = useRpc(upsertOrchestrationStandupNote);
+  const listTodos = useRpc(listOrchestrationStandupTodos);
+  const saveTodos = useRpc(saveOrchestrationStandupTodos);
   const detectObsidian = useRpc(detectOrchestrationObsidian);
   const toast = useToast();
   const [browseOpen, setBrowseOpen] = useState(false);
@@ -41,6 +48,10 @@ export function StandupSection({
   const [vaultPath, setVaultPath] = useState<string | null>(null);
   const [detectedLabel, setDetectedLabel] = useState<string | null>(null);
   const [merged, setMerged] = useState<MergedListing>({ date: "", prs: [], error: null });
+  const [todos, setTodos] = useState<StandupTodo[]>([]);
+  const [todoKind, setTodoKind] = useState<StandupTodoKind>("todo");
+  const [todoDraft, setTodoDraft] = useState("");
+  const [todoBusy, setTodoBusy] = useState(false);
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
   const folderPath = settings.status === "ready" ? settings.values.standupFolder : "";
   const templatePath = settings.status === "ready" ? settings.values.templatePath : "";
@@ -75,16 +86,53 @@ export function StandupSection({
   }, [folderPath, refreshTemplates, vaultPath]);
 
   useEffect(() => {
-    void listMerged({})
-      .then(setMerged)
-      .catch((error) => {
-        setMerged({
-          date: "",
-          prs: [],
-          error: error instanceof Error ? error.message : "Unable to list merged pull requests.",
-        });
-      });
+    let cancelled = false;
+    async function refreshMerged() {
+      try {
+        const listing = await listMerged({});
+        if (!cancelled) {
+          setMerged(listing);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setMerged({
+            date: "",
+            prs: [],
+            error: error instanceof Error ? error.message : "Unable to list merged pull requests.",
+          });
+        }
+      }
+    }
+    void refreshMerged();
+    const timer = setInterval(() => {
+      void refreshMerged();
+    }, PR_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }, [listMerged]);
+
+  const refreshTodos = useCallback(
+    async (nextFolder: string) => {
+      try {
+        const listing = await listTodos({ folderPath: nextFolder });
+        setTodos(listing.items);
+        setNotePath(listing.notePath);
+      } catch {
+        setTodos([]);
+      }
+    },
+    [listTodos],
+  );
+
+  useEffect(() => {
+    if (!folderPath) {
+      setTodos([]);
+      return;
+    }
+    void refreshTodos(folderPath);
+  }, [folderPath, refreshTodos]);
 
   const loadFolder = useCallback(
     async (nextPath: string | null) => {
@@ -130,6 +178,7 @@ export function StandupSection({
       });
       setNotePath(result.notePath);
       setMerged((current) => ({ ...current, prs: result.prs, error: null }));
+      await refreshTodos(selectedPath);
       setBrowseOpen(false);
       toast.show(
         result.created
@@ -154,6 +203,61 @@ export function StandupSection({
     await saveFolderAndUpdate(folderPath);
   }
 
+  async function persistTodos(nextItems: StandupTodo[], nextFolder = folderPath) {
+    if (!nextFolder) {
+      throw new Error("Select a standup folder first.");
+    }
+    setTodoBusy(true);
+    try {
+      const result = await saveTodos({
+        folderPath: nextFolder,
+        templatePath: templatePath || null,
+        items: nextItems.map((item) => ({
+          kind: item.kind,
+          text: item.text,
+          done: item.done,
+        })),
+      });
+      setTodos(result.items);
+      setNotePath(result.notePath);
+      return result;
+    } finally {
+      setTodoBusy(false);
+    }
+  }
+
+  async function addTodo() {
+    const text = todoDraft.trim();
+    if (!text || !folderPath) {
+      return;
+    }
+    try {
+      await persistTodos([...todos, { id: "draft", kind: todoKind, text, done: false }]);
+      setTodoDraft("");
+      toast.show(`Added ${todoKind} to today’s note.`, { variant: "success" });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to save the todo note.");
+    }
+  }
+
+  async function toggleTodo(id: string) {
+    try {
+      await persistTodos(
+        todos.map((item) => (item.id === id ? { ...item, done: !item.done } : item)),
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to update the todo note.");
+    }
+  }
+
+  async function removeTodo(id: string) {
+    try {
+      await persistTodos(todos.filter((item) => item.id !== id));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to remove the todo note.");
+    }
+  }
+
   async function chooseTemplate(nextPath: string) {
     try {
       await saveValues({ templatePath: nextPath });
@@ -169,7 +273,7 @@ export function StandupSection({
   return (
     <View style={styles.section}>
       <View style={styles.head}>
-        <Text style={styles.label}>STANDUP</Text>
+        <Text style={styles.title}>Standup</Text>
         <View style={styles.actions}>
           <Pressable
             accessibilityRole="button"
@@ -206,48 +310,143 @@ export function StandupSection({
           ) : null}
         </View>
       </View>
-      <Text style={styles.hint}>
-        {detectedLabel
-          ? `Select opens in the “${detectedLabel}” vault so you can pick a folder.`
-          : "Choose a folder. Today’s note is created or updated there."}
-      </Text>
-      <Text style={styles.path} numberOfLines={2}>
-        {folderPath || "No folder selected yet."}
-      </Text>
-      <Text style={styles.note} numberOfLines={1}>
-        Template: {selectedTemplate?.name ?? (templatePath ? templatePath : "Built-in standup")}
-      </Text>
-      {notePath ? (
-        <Text style={styles.note} numberOfLines={2}>
-          {notePath}
-        </Text>
-      ) : null}
-
-      <Text style={styles.label}>
-        MERGED TODAY{merged.date ? ` · ${merged.date}` : ""} · {merged.prs.length}
-      </Text>
-      {merged.error ? <Text style={styles.danger}>{merged.error}</Text> : null}
-      {merged.prs.length === 0 && !merged.error ? (
-        <Text style={styles.hint}>No pull requests merged today.</Text>
-      ) : (
-        merged.prs.map((pr) => (
-          <Pressable
-            key={`${pr.repo}-${pr.number}`}
-            accessibilityRole="button"
-            accessibilityLabel={`Open pull request ${pr.number} ${pr.title}`}
-            onPress={() => {
-              void openExternalUrl(pr.url);
-            }}
-            style={styles.prRow}
-          >
-            <Text style={styles.prKey}>{pr.key || `#${pr.number}`}</Text>
-            <Text style={styles.prTitle} numberOfLines={2}>
-              {pr.title}
+      <View style={styles.body}>
+        <View style={styles.main}>
+          <Text style={styles.hint}>
+            {detectedLabel
+              ? `Select opens in the “${detectedLabel}” vault so you can pick a folder.`
+              : "Choose a folder. Today’s note is created or updated there."}
+          </Text>
+          <Text style={styles.path} numberOfLines={2}>
+            {folderPath || "No folder selected yet."}
+          </Text>
+          <Text style={styles.note} numberOfLines={1}>
+            Template: {selectedTemplate?.name ?? (templatePath ? templatePath : "Built-in standup")}
+          </Text>
+          {notePath ? (
+            <Text style={styles.note} numberOfLines={2}>
+              {notePath}
             </Text>
-            <Text style={styles.note}>#{pr.number}</Text>
+          ) : null}
+
+          <Text style={styles.label}>
+            MERGED TODAY{merged.date ? ` · ${merged.date}` : ""} · {merged.prs.length}
+          </Text>
+          {merged.error ? <Text style={styles.danger}>{merged.error}</Text> : null}
+          {merged.prs.length === 0 && !merged.error ? (
+            <Text style={styles.hint}>No pull requests merged today.</Text>
+          ) : (
+            merged.prs.map((pr) => (
+              <Pressable
+                key={`${pr.repo}-${pr.number}`}
+                accessibilityRole="button"
+                accessibilityLabel={`Open pull request ${pr.number} ${pr.title}`}
+                onPress={() => {
+                  void openExternalUrl(pr.url);
+                }}
+                style={styles.prRow}
+              >
+                <Text style={styles.prKey}>{pr.key || `#${pr.number}`}</Text>
+                <Text style={styles.prTitle} numberOfLines={2}>
+                  {pr.title}
+                </Text>
+                <Text style={styles.note}>#{pr.number}</Text>
+              </Pressable>
+            ))
+          )}
+        </View>
+
+        <View style={styles.todoPane}>
+          <Text style={styles.todoTitle}>Todo notes</Text>
+          <Text style={styles.hint}>
+            {folderPath
+              ? "Saved into today’s selected Obsidian note."
+              : "Select a folder to write todos into the daily note."}
+          </Text>
+          <View style={styles.kindRow}>
+            {(["todo", "blocker", "note"] as const).map((kind) => {
+              const selected = todoKind === kind;
+              return (
+                <Pressable
+                  key={kind}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={`Add as ${kind}`}
+                  onPress={() => {
+                    setTodoKind(kind);
+                  }}
+                  style={selected ? styles.kindSelected : styles.kindButton}
+                >
+                  <Text style={selected ? styles.kindSelectedText : styles.kindText}>
+                    {kindLabel(kind)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <TextInput
+            accessibilityLabel="Todo note text"
+            placeholder={todoPlaceholder(todoKind)}
+            placeholderTextColor={theme.colors.foregroundMuted}
+            value={todoDraft}
+            onChangeText={setTodoDraft}
+            onSubmitEditing={() => {
+              void addTodo();
+            }}
+            returnKeyType="done"
+            editable={Boolean(folderPath) && !todoBusy}
+            style={styles.todoInput}
+          />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Add ${todoKind} to today’s note`}
+            disabled={!folderPath || todoBusy || todoDraft.trim().length === 0}
+            onPress={() => {
+              void addTodo();
+            }}
+            style={styles.primaryButton}
+          >
+            <Text style={styles.primaryButtonText}>{todoBusy ? "Saving…" : `Add ${todoKind}`}</Text>
           </Pressable>
-        ))
-      )}
+          {todos.length === 0 ? (
+            <Text style={styles.hint}>No extra notes on today’s file yet.</Text>
+          ) : (
+            todos.map((item) => (
+              <View key={item.id} style={styles.todoRow}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ checked: item.done }}
+                  accessibilityLabel={`${item.done ? "Mark incomplete" : "Mark done"}: ${item.text}`}
+                  onPress={() => {
+                    void toggleTodo(item.id);
+                  }}
+                  style={item.done ? styles.todoCheckDone : styles.todoCheck}
+                >
+                  <Text style={item.done ? styles.todoCheckDoneText : styles.todoCheckText}>
+                    {item.done ? "✓" : ""}
+                  </Text>
+                </Pressable>
+                <View style={styles.todoBody}>
+                  <Text style={item.kind === "blocker" ? styles.todoKindDanger : styles.todoKind}>
+                    {kindLabel(item.kind)}
+                  </Text>
+                  <Text style={item.done ? styles.todoTextDone : styles.todoText}>{item.text}</Text>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove ${item.kind} ${item.text}`}
+                  onPress={() => {
+                    void removeTodo(item.id);
+                  }}
+                  style={styles.todoRemove}
+                >
+                  <Text style={styles.todoRemoveText}>Remove</Text>
+                </Pressable>
+              </View>
+            ))
+          )}
+        </View>
+      </View>
 
       <Modal
         title="Select standup folder"
@@ -379,10 +578,29 @@ export function StandupSection({
   );
 }
 
+function kindLabel(kind: StandupTodoKind) {
+  return kind === "todo" ? "Todo" : kind === "blocker" ? "Blocker" : "Note";
+}
+
+function todoPlaceholder(kind: StandupTodoKind) {
+  if (kind === "blocker") {
+    return "What’s blocking today?";
+  }
+  if (kind === "note") {
+    return "Additional note for the file";
+  }
+  return "What needs to get done?";
+}
+
 function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
   return {
     section: {
       gap: 8,
+      padding: compact ? 14 : 18,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface1,
     },
     head: {
       flexDirection: compact ? ("column" as const) : ("row" as const),
@@ -390,10 +608,155 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       justifyContent: "space-between" as const,
       gap: 8,
     },
+    title: {
+      color: theme.colors.foreground,
+      fontSize: compact ? 16 : 18,
+      fontWeight: "600" as const,
+    },
+    body: {
+      flexDirection: compact ? ("column" as const) : ("row" as const),
+      alignItems: "stretch" as const,
+      gap: compact ? 12 : 16,
+    },
+    main: {
+      flexGrow: compact ? 0 : 3,
+      flexShrink: 1,
+      flexBasis: compact ? ("auto" as const) : 0,
+      minWidth: 0,
+      gap: 8,
+    },
+    todoPane: {
+      flexGrow: compact ? 0 : 2,
+      flexShrink: 1,
+      flexBasis: compact ? ("auto" as const) : 0,
+      width: compact ? ("100%" as const) : undefined,
+      minWidth: 0,
+      gap: 8,
+      padding: compact ? 12 : 14,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface0,
+    },
+    todoTitle: {
+      color: theme.colors.foreground,
+      fontSize: 14,
+      fontWeight: "600" as const,
+    },
+    kindRow: {
+      flexDirection: "row" as const,
+      flexWrap: "wrap" as const,
+      gap: 6,
+    },
+    kindButton: {
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface1,
+    },
+    kindSelected: {
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 999,
+      backgroundColor: theme.colors.accent,
+    },
+    kindText: {
+      color: theme.colors.foreground,
+      fontSize: 12,
+    },
+    kindSelectedText: {
+      color: theme.colors.accentForeground,
+      fontSize: 12,
+    },
+    todoInput: {
+      color: theme.colors.foreground,
+      backgroundColor: theme.colors.surface1,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      borderRadius: 10,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      fontSize: 13,
+    },
+    todoRow: {
+      flexDirection: "row" as const,
+      alignItems: "flex-start" as const,
+      gap: 10,
+      paddingVertical: 8,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.colors.border,
+    },
+    todoCheck: {
+      width: 28,
+      height: 28,
+      borderRadius: 8,
+      borderWidth: 1.5,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface1,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      marginTop: 2,
+    },
+    todoCheckDone: {
+      width: 28,
+      height: 28,
+      borderRadius: 8,
+      borderWidth: 1.5,
+      borderColor: theme.colors.accent,
+      backgroundColor: theme.colors.accent,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      marginTop: 2,
+    },
+    todoCheckText: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 16,
+      lineHeight: 18,
+    },
+    todoCheckDoneText: {
+      color: theme.colors.accentForeground,
+      fontSize: 16,
+      lineHeight: 18,
+      fontWeight: "700" as const,
+    },
+    todoBody: {
+      flex: 1,
+      minWidth: 0,
+      gap: 2,
+    },
+    todoKind: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 10,
+      letterSpacing: 0.4,
+    },
+    todoKindDanger: {
+      color: theme.colors.statusDanger,
+      fontSize: 10,
+      letterSpacing: 0.4,
+    },
+    todoText: {
+      color: theme.colors.foreground,
+      fontSize: 13,
+    },
+    todoTextDone: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 13,
+      textDecorationLine: "line-through" as const,
+    },
+    todoRemove: {
+      paddingVertical: 2,
+    },
+    todoRemoveText: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 11,
+    },
     label: {
       color: theme.colors.foregroundMuted,
       fontSize: 11,
       letterSpacing: 0.8,
+      marginTop: 8,
     },
     hint: {
       color: theme.colors.foregroundMuted,
@@ -473,7 +836,7 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       borderRadius: 12,
       borderWidth: 1,
       borderColor: theme.colors.border,
-      backgroundColor: theme.colors.surface1,
+      backgroundColor: theme.colors.surface0,
     },
     prKey: {
       color: theme.colors.foregroundMuted,

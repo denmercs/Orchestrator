@@ -96,6 +96,7 @@ function epicLoopPrompt(item: BoardItem) {
     "3. For each ready child, create a Paseo subagent titled \"<KEY> — <summary>\" in its own worktree off this repo's main branch.",
     "4. Keep this session as the epic parent. Do not implement child tickets yourself unless a child is blocked on a decision only you can make.",
     "5. Loop: check child sessions, unblock, spawn the next ready ticket, and stop when the epic's open work is done or waiting on a human.",
+    "6. The Orchestrator plugin will poke this session when a child pull request merges (immediately after the child turn ends, and every 2 minutes as a fallback). Treat that as the signal to start the next ready ticket.",
     "",
     "Use Paseo tools or the Paseo CLI to create those child sessions.",
   ].join("\n");

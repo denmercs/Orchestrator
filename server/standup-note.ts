@@ -1,5 +1,17 @@
 export const SHIPPED_START = "<!-- orchestrator:shipped -->";
 export const SHIPPED_END = "<!-- /orchestrator:shipped -->";
+export const TODO_NOTES_START = "<!-- orchestrator:todo-notes -->";
+export const TODO_NOTES_END = "<!-- /orchestrator:todo-notes -->";
+
+export const standupTodoKinds = ["todo", "blocker", "note"] as const;
+export type StandupTodoKind = (typeof standupTodoKinds)[number];
+
+export type StandupTodo = {
+  id: string;
+  kind: StandupTodoKind;
+  text: string;
+  done: boolean;
+};
 
 const YEAR_FOLDER = /^\d{4}$/;
 
@@ -113,6 +125,8 @@ export function buildStandupNote(date: string): string {
     "## Notes",
     "- ",
     "",
+    todoNotesBlock("- (none)"),
+    "",
   ].join("\n");
 }
 
@@ -168,6 +182,75 @@ export function ensureShippedSection(markdown: string): { markdown: string; chan
 
 function shippedBlock(body: string): string {
   return [SHIPPED_START, body, SHIPPED_END].join("\n");
+}
+
+export function parseTodoNotes(markdown: string): StandupTodo[] {
+  const match = markdown.match(
+    new RegExp(`${escapeRegExp(TODO_NOTES_START)}\\n([\\s\\S]*?)\\n${escapeRegExp(TODO_NOTES_END)}`),
+  );
+  if (!match) {
+    return [];
+  }
+  return match[1]
+    .split("\n")
+    .flatMap((line, index) => {
+      const item = line.match(/^- \[([ xX])\] (todo|blocker|note):\s+(.+)$/);
+      if (!item) {
+        return [];
+      }
+      return [
+        {
+          id: `${index}:${item[2]}:${item[3]}`,
+          kind: item[2] as StandupTodoKind,
+          text: item[3].trim(),
+          done: item[1].toLowerCase() === "x",
+        },
+      ];
+    });
+}
+
+export function writeTodoNotes(
+  markdown: string,
+  items: StandupTodo[],
+): { markdown: string; changed: boolean } {
+  const ensured = ensureTodoNotesSection(markdown);
+  const body =
+    items.length === 0
+      ? "- (none)"
+      : items
+          .map((item) => `- [${item.done ? "x" : " "}] ${item.kind}: ${item.text}`)
+          .join("\n");
+  const next = ensured.markdown.replace(
+    new RegExp(`${escapeRegExp(TODO_NOTES_START)}[\\s\\S]*?${escapeRegExp(TODO_NOTES_END)}`),
+    todoNotesBlock(body),
+  );
+  return { markdown: next, changed: next !== markdown };
+}
+
+export function ensureTodoNotesSection(markdown: string): { markdown: string; changed: boolean } {
+  if (markdown.includes(TODO_NOTES_START) && markdown.includes(TODO_NOTES_END)) {
+    return { markdown, changed: false };
+  }
+
+  const block = `${todoNotesBlock("- (none)")}\n`;
+  const notesAt = markdown.search(/^## Notes\s*$/m);
+  if (notesAt >= 0) {
+    const afterHeading = markdown.indexOf("\n", notesAt);
+    const bodyStart = afterHeading >= 0 ? afterHeading + 1 : markdown.length;
+    const nextHeading = markdown.slice(bodyStart).search(/^## /m);
+    const insertAt = nextHeading >= 0 ? bodyStart + nextHeading : markdown.replace(/\s*$/, "").length;
+    const prefix = markdown.slice(0, insertAt).replace(/\s*$/, "");
+    const suffix = markdown.slice(insertAt);
+    const next = `${prefix}\n\n${block}${suffix.startsWith("\n") ? suffix : `\n${suffix}`}`;
+    return { markdown: next, changed: true };
+  }
+
+  const trimmed = markdown.replace(/\s*$/, "");
+  return { markdown: `${trimmed}\n\n## Notes\n${block}`, changed: true };
+}
+
+function todoNotesBlock(body: string): string {
+  return [TODO_NOTES_START, body, TODO_NOTES_END].join("\n");
 }
 
 function escapeRegExp(value: string): string {
