@@ -2,9 +2,13 @@ import type { RpcOutput } from "@getpaseo/plugin";
 import {
   getJiraBoard,
   listJiraBoards,
+  listJiraPullRequests,
   listOrchestrationStandupWork,
+  type JiraBoardColumn,
   type JiraBoardOption,
   type JiraIssue,
+  type JiraPullRequest,
+  type JiraSprint,
   type StandupWorkItem,
 } from "../shared/orchestration";
 import { readAtlassianMcpEnv } from "./host-mcp";
@@ -14,6 +18,26 @@ const DEFAULT_BOARD_NAME = "QuickPress";
 const ACTIVE_LIMIT = 50;
 const DONE_LIMIT = 12;
 const PARENT_LIMIT = 40;
+const BOARD_ISSUE_LIMIT = 150;
+const ISSUE_FIELDS = ["summary", "status", "issuetype", "assignee", "parent", "labels", "updated", "project"];
+
+// Used when a board's column config can't be read (no board id, or no access).
+const DEFAULT_COLUMNS: JiraBoardColumn[] = [
+  ["Backlog", ["Backlog", "To Do", "Open"]],
+  ["Selected for Development", ["Selected for Development"]],
+  ["Ready for Development", ["Ready for Development"]],
+  ["In Progress", ["In Progress"]],
+  ["Reviewing", ["Ready for Review", "In Review", "Code Review"]],
+  ["QA Ready", ["Ready for Testing", "QA Ready"]],
+  ["Testing", ["In Testing", "Testing", "QA"]],
+  ["Release Ready", ["Ready for Release", "Release Ready"]],
+  ["Done", ["Done", "Closed", "Resolved"]],
+].map(([name, statusNames]) => ({
+  name: name as string,
+  statusIds: [],
+  statusNames: statusNames as string[],
+}));
+
 const WORK_LIMIT = 50;
 // DCE is a family of Jira projects (DC, DCD, DAAFP, …) that share a "DCE:" name prefix.
 const WORK_PROJECT_PREFIX = "DCE";
@@ -31,10 +55,12 @@ type RawIssue = {
   fields?: Record<string, unknown> | null;
 };
 
-export async function listAccessibleJiraBoards(): Promise<RpcOutput<typeof listJiraBoards>> {
+export async function listAccessibleJiraBoards(
+  nameFilter?: string,
+): Promise<RpcOutput<typeof listJiraBoards>> {
   try {
     const credentials = await resolveCredentials();
-    return { boards: await fetchBoards(credentials), error: null };
+    return { boards: await fetchBoards(credentials, nameFilter), error: null };
   } catch (error) {
     return { boards: [], error: publicError(error) };
   }
@@ -46,18 +72,270 @@ export async function loadJiraBoard(
   try {
     const credentials = await resolveCredentials();
     const selected = await resolveBoard(credentials, input);
+    if (selected.boardId) {
+      const [columns, sprintBoard] = await Promise.all([
+        fetchBoardColumns(credentials, selected.boardId),
+        fetchSprintIssues(credentials, selected.boardId, selected.type),
+      ]);
+      return {
+        ...selected,
+        ...withoutBacklog(columns, sprintBoard.issues),
+        sprint: sprintBoard.sprint,
+        error: null,
+      };
+    }
     const issues = await fetchBoardIssues(credentials, selected.projectKey);
-    return { ...selected, issues, error: null };
+    return {
+      ...selected,
+      ...withoutBacklog(DEFAULT_COLUMNS, issues),
+      sprint: null,
+      error: null,
+    };
   } catch (error) {
     const projectKey = (input.projectKey ?? DEFAULT_PROJECT).toUpperCase();
     return {
       boardId: input.boardId ?? null,
       name: projectKey === DEFAULT_PROJECT ? DEFAULT_BOARD_NAME : projectKey,
       projectKey,
+      columns: withoutBacklog(DEFAULT_COLUMNS, []).columns,
+      sprint: null,
       issues: [],
       error: publicError(error),
     };
   }
+}
+
+const PR_CACHE_MS = 60_000;
+const PR_ISSUE_LIMIT = 60;
+const PR_CONCURRENCY = 6;
+const prCache = new Map<string, { at: number; prs: JiraPullRequest[] }>();
+
+// Open PRs come from Jira's GitHub integration (the issue's "Development" panel).
+export async function loadJiraPullRequests(input: {
+  issues: { id: string; key: string }[];
+}): Promise<RpcOutput<typeof listJiraPullRequests>> {
+  try {
+    const credentials = await resolveCredentials();
+    const queue = input.issues.slice(0, PR_ISSUE_LIMIT);
+    const prs: JiraPullRequest[] = [];
+    let next = 0;
+    async function worker() {
+      while (next < queue.length) {
+        const issue = queue[next++];
+        if (issue) {
+          prs.push(...(await issuePullRequests(credentials, issue)));
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: PR_CONCURRENCY }, worker));
+    return { prs, error: null };
+  } catch (error) {
+    return { prs: [], error: publicError(error) };
+  }
+}
+
+async function issuePullRequests(
+  credentials: JiraCredentials,
+  issue: { id: string; key: string },
+): Promise<JiraPullRequest[]> {
+  const cached = prCache.get(issue.id);
+  if (cached && Date.now() - cached.at < PR_CACHE_MS) {
+    return cached.prs;
+  }
+  const summary = await jiraGet(
+    credentials,
+    `/rest/dev-status/latest/issue/summary?issueId=${encodeURIComponent(issue.id)}`,
+  );
+  const byInstance = asRecord(asRecord(asRecord(summary.summary)?.pullrequest)?.byInstanceType) ?? {};
+  // The instance key (e.g. "oAuth-com.github.integration.production") is the applicationType.
+  const instances = Object.entries(byInstance)
+    .filter(([, value]) => Number(asRecord(value)?.count ?? 0) > 0)
+    .map(([key]) => key);
+  const prs: JiraPullRequest[] = [];
+  for (const instance of instances) {
+    const query = new URLSearchParams({
+      issueId: issue.id,
+      applicationType: instance,
+      dataType: "pullrequest",
+    });
+    const body = await jiraGet(credentials, `/rest/dev-status/latest/issue/detail?${query}`);
+    const details = Array.isArray(body.detail) ? body.detail : [];
+    for (const detail of details) {
+      const list = asRecord(detail)?.pullRequests;
+      for (const raw of Array.isArray(list) ? list : []) {
+        const pr = normalizePullRequest(raw, issue.key);
+        if (pr && !prs.some((existing) => existing.url === pr.url)) {
+          prs.push(pr);
+        }
+      }
+    }
+  }
+  prCache.set(issue.id, { at: Date.now(), prs });
+  return prs;
+}
+
+function normalizePullRequest(raw: unknown, issueKey: string): JiraPullRequest | null {
+  const pr = asRecord(raw);
+  const status = asString(pr?.status)?.toUpperCase();
+  const url = asString(pr?.url);
+  const title = asString(pr?.name) ?? "";
+  const branch = asString(asRecord(pr?.source)?.branch);
+  if (!pr || !url || (status !== "OPEN" && status !== "DRAFT")) {
+    return null;
+  }
+  // Jira links PRs that merely mention a key; keep the ones actually built for this issue.
+  const key = issueKey.toUpperCase();
+  if (!title.toUpperCase().includes(key) && !branch?.toUpperCase().includes(key)) {
+    return null;
+  }
+  return {
+    issueKey,
+    number: (asString(pr.id) ?? url.split("/").pop() ?? "").replace(/^#/, ""),
+    title,
+    url,
+    status,
+    branch,
+    repo: asString(pr.repositoryName),
+  };
+}
+
+async function fetchBoardColumns(
+  credentials: JiraCredentials,
+  boardId: string,
+): Promise<JiraBoardColumn[]> {
+  try {
+    const body = await jiraGet(credentials, `/rest/agile/1.0/board/${boardId}/configuration`);
+    const raw = asRecord(body.columnConfig)?.columns;
+    const columns = (Array.isArray(raw) ? raw : []).flatMap((entry): JiraBoardColumn[] => {
+      const column = asRecord(entry);
+      const name = asString(column?.name);
+      const statuses = Array.isArray(column?.statuses) ? column.statuses : [];
+      const statusIds = statuses.flatMap((status) => {
+        const id = asRecord(status)?.id;
+        return typeof id === "string" || typeof id === "number" ? [String(id)] : [];
+      });
+      // Kanban boards include an empty "Backlog" placeholder column; skip status-less columns.
+      if (!name || statusIds.length === 0) {
+        return [];
+      }
+      return [{ name: titleCase(name), statusIds, statusNames: [] }];
+    });
+    return columns.length > 0 ? columns : DEFAULT_COLUMNS;
+  } catch {
+    return DEFAULT_COLUMNS;
+  }
+}
+
+// Mirrors Jira's "Active sprints" view. Kanban boards have no sprints of their own, but their
+// issues often sit in another board's sprint, so try that first and fall back to recent work.
+async function fetchSprintIssues(
+  credentials: JiraCredentials,
+  boardId: string,
+  boardType: string,
+): Promise<{ sprint: JiraSprint | null; issues: JiraIssue[] }> {
+  const boardSprint = boardType === "scrum" ? await fetchActiveSprint(credentials, boardId) : null;
+  const inSprint = await fetchBoardPage(
+    credentials,
+    boardId,
+    "sprint in openSprints() ORDER BY Rank ASC",
+  );
+  if (inSprint.issues.length > 0 || boardSprint) {
+    return { sprint: boardSprint ?? inSprint.sprint, issues: inSprint.issues };
+  }
+  const recent = await fetchBoardPage(
+    credentials,
+    boardId,
+    "statusCategory != Done OR updated >= -14d ORDER BY updated DESC",
+  );
+  return { sprint: null, issues: recent.issues };
+}
+
+async function fetchBoardPage(
+  credentials: JiraCredentials,
+  boardId: string,
+  jql: string,
+): Promise<{ sprint: JiraSprint | null; issues: JiraIssue[] }> {
+  const issues: JiraIssue[] = [];
+  let sprint: JiraSprint | null = null;
+  let startAt = 0;
+  while (issues.length < BOARD_ISSUE_LIMIT) {
+    const query = new URLSearchParams({
+      jql,
+      startAt: String(startAt),
+      maxResults: "50",
+      fields: [...ISSUE_FIELDS, "sprint"].join(","),
+    });
+    const body = await jiraGet(credentials, `/rest/agile/1.0/board/${boardId}/issue?${query}`);
+    const page = Array.isArray(body.issues) ? body.issues : [];
+    for (const raw of page) {
+      sprint ??= activeSprintOf(raw);
+      const issue = normalizeIssue(raw, credentials.url);
+      if (issue) {
+        issues.push(issue);
+      }
+    }
+    startAt += page.length;
+    const total = typeof body.total === "number" ? body.total : issues.length;
+    if (page.length === 0 || startAt >= total) {
+      break;
+    }
+  }
+  return { sprint, issues };
+}
+
+function activeSprintOf(raw: unknown): JiraSprint | null {
+  const sprint = asRecord(asRecord(asRecord(raw)?.fields)?.sprint);
+  const name = asString(sprint?.name);
+  return name && asString(sprint?.state) === "active"
+    ? { name, goal: asString(sprint?.goal), endDate: asString(sprint?.endDate) }
+    : null;
+}
+
+// The board starts at "Selected for Development"; backlog work stays in Jira's backlog view.
+function withoutBacklog(columns: JiraBoardColumn[], issues: JiraIssue[]) {
+  const backlog = columns.filter((column) => /^backlog$/i.test(column.name.trim()));
+  if (backlog.length === 0) {
+    return { columns, issues };
+  }
+  const statusIds = new Set(backlog.flatMap((column) => column.statusIds));
+  const statusNames = new Set(
+    backlog.flatMap((column) => column.statusNames.map((name) => name.toLowerCase())),
+  );
+  return {
+    columns: columns.filter((column) => !backlog.includes(column)),
+    issues: issues.filter(
+      (issue) =>
+        !(issue.statusId != null && statusIds.has(issue.statusId)) &&
+        !statusNames.has(issue.status.toLowerCase()),
+    ),
+  };
+}
+
+async function fetchActiveSprint(
+  credentials: JiraCredentials,
+  boardId: string,
+): Promise<JiraSprint | null> {
+  try {
+    const body = await jiraGet(credentials, `/rest/agile/1.0/board/${boardId}/sprint?state=active`);
+    const first = asRecord(Array.isArray(body.values) ? body.values[0] : null);
+    const name = asString(first?.name);
+    return name
+      ? { name, goal: asString(first?.goal), endDate: asString(first?.endDate) }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function titleCase(value: string) {
+  return value === value.toUpperCase()
+    ? value
+        .toLowerCase()
+        .replace(/\b(\w)(\w*)/g, (word, first: string, rest: string) =>
+          // Keep short acronyms like "QA" upper case.
+          word.length <= 2 ? word.toUpperCase() : first.toUpperCase() + rest,
+        )
+    : value;
 }
 
 export async function listMyWorkStories(): Promise<RpcOutput<typeof listOrchestrationStandupWork>> {
@@ -148,7 +426,7 @@ async function searchIssues(
     const payload: Record<string, unknown> = {
       jql,
       maxResults: Math.min(50, remaining),
-      fields: ["summary", "status", "issuetype", "assignee", "parent", "labels", "updated", "project"],
+      fields: ISSUE_FIELDS,
     };
     if (nextPageToken) {
       payload.nextPageToken = nextPageToken;
@@ -181,14 +459,19 @@ async function searchIssues(
   return issues;
 }
 
-async function fetchBoards(credentials: JiraCredentials): Promise<JiraBoardOption[]> {
+async function fetchBoards(
+  credentials: JiraCredentials,
+  nameFilter?: string,
+): Promise<JiraBoardOption[]> {
   const boards: JiraBoardOption[] = [];
+  const name = nameFilter?.trim();
+  const nameParam = name ? `&name=${encodeURIComponent(name)}` : "";
   let startAt = 0;
 
   while (boards.length < 50) {
     const body = await jiraGet(
       credentials,
-      `/rest/agile/1.0/board?startAt=${startAt}&maxResults=50`,
+      `/rest/agile/1.0/board?startAt=${startAt}&maxResults=50${nameParam}`,
     );
     const page = Array.isArray(body.values) ? body.values : [];
     for (const raw of page) {
@@ -210,18 +493,19 @@ async function fetchBoards(credentials: JiraCredentials): Promise<JiraBoardOptio
 async function resolveBoard(
   credentials: JiraCredentials,
   input: { boardId?: string; projectKey?: string },
-): Promise<{ boardId: string | null; name: string; projectKey: string }> {
+): Promise<{ boardId: string | null; name: string; projectKey: string; type: string }> {
   if (input.boardId) {
     const body = await jiraGet(credentials, `/rest/agile/1.0/board/${input.boardId}`);
     const board = normalizeBoard(body);
     if (board?.projectKey) {
-      return { boardId: board.id, name: board.name, projectKey: board.projectKey };
+      return { boardId: board.id, name: board.name, projectKey: board.projectKey, type: board.type };
     }
     if (board) {
       return {
         boardId: board.id,
         name: board.name,
         projectKey: input.projectKey?.toUpperCase() ?? DEFAULT_PROJECT,
+        type: board.type,
       };
     }
   }
@@ -235,6 +519,7 @@ async function resolveBoard(
     boardId: match?.id ?? null,
     name: match?.name ?? (projectKey === DEFAULT_PROJECT ? DEFAULT_BOARD_NAME : projectKey),
     projectKey,
+    type: match?.type ?? "simple",
   };
 }
 
@@ -339,6 +624,7 @@ function normalizeIssue(raw: unknown, siteUrl: string): SearchedIssue | null {
     key,
     summary: asString(fields.summary) ?? key,
     status: asString(status?.name) ?? "Unknown",
+    statusId: asString(status?.id),
     statusCategory: asString(statusCategory?.key) ?? asString(statusCategory?.name) ?? "new",
     issueType: asString(issueType?.name) ?? "Task",
     assignee: asString(assignee?.displayName) ?? "Unassigned",

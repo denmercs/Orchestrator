@@ -249,7 +249,7 @@ function expandEnv(value: string | null) {
   if (!value) {
     return undefined;
   }
-  return value.replace(/\$\{([A-Z0-9_]+)\}/gi, (_match, name: string) => process.env[name] ?? "");
+  return value.replace(/\$\{(?:env:)?([A-Z0-9_]+)\}/gi, (_match, name: string) => process.env[name] ?? "");
 }
 
 async function readJsonFile(file: string): Promise<unknown | null> {
