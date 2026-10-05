@@ -67,6 +67,20 @@ function normalizeSchedule(raw: unknown): ScheduleRow | null {
   };
 }
 
+// Runs the paseo CLI with the first binary that works.
+export async function runPaseo(args: string[], timeout = 15_000): Promise<string> {
+  let lastError: unknown;
+  for (const binary of PASEO_BINARIES) {
+    try {
+      const { stdout } = await execFileAsync(binary, args, { timeout, maxBuffer: 2 * 1024 * 1024 });
+      return stdout;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("paseo CLI is not available.");
+}
+
 async function readScheduleJson(binary: string): Promise<string> {
   const { stdout } = await execFileAsync(binary, ["schedule", "ls", "--json"], {
     timeout: 10_000,

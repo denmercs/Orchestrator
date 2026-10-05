@@ -1,4 +1,4 @@
-import { defineRpc } from "@getpaseo/plugin";
+import { defineRpc, type RpcOutput } from "@getpaseo/plugin";
 import { z } from "zod";
 
 export const orchestrationSchedule = z.object({
@@ -202,3 +202,104 @@ export const detectOrchestrationObsidian = defineRpc({
     label: z.string().nullable(),
   }),
 });
+
+export const prodPulseHealthKey = z.enum(["healthy", "watch", "unhealthy", "early", "unverified", "none"]);
+
+export const prodPulseCard = z.object({
+  key: z.string(),
+  product: z.string(),
+  label: z.string(),
+  version: z.string(),
+  publishedAt: z.string().nullable(),
+  healthKey: prodPulseHealthKey,
+  healthLabel: z.string(),
+  healthWhy: z.string(),
+  crashFreeSessions: z.number().nullable(),
+  crashFreeUsers: z.number().nullable(),
+  sessions: z.number().nullable(),
+  users: z.number().nullable(),
+  newBugs: z.number(),
+  caveat: z.string().nullable(),
+  url: z.string().nullable(),
+});
+
+export const prodPulseOrigin = z.enum(["regression", "new", "unchecked", "seen-before"]);
+
+export const prodPulseIssue = z.object({
+  id: z.string(),
+  origin: prodPulseOrigin,
+  product: z.string(),
+  hit: z.string(),
+  rawTitle: z.string().nullable(),
+  trend: z.enum(["new", "rising", "flat"]),
+  top: z.boolean(),
+  users: z.string(),
+  events: z.string(),
+  firstSeen: z.string().nullable(),
+  release: z.string().nullable(),
+  shortId: z.string().nullable(),
+  sentryUrl: z.string().nullable(),
+  watchUrl: z.string().nullable(),
+  watchLabel: z.string(),
+  repro: z.array(z.string()),
+  reproMissing: z.string().nullable(),
+  findings: z.array(z.string()),
+  likely: z.string().nullable(),
+  groupedCount: z.number(),
+});
+
+export const prodPulseOlder = z.object({
+  id: z.string(),
+  product: z.string(),
+  title: z.string(),
+  users: z.number(),
+  events: z.number(),
+  status: z.string(),
+  sentryUrl: z.string().nullable(),
+});
+
+export const getProdPulse = defineRpc({
+  name: "orchestration.prod-pulse",
+  input: z.object({}),
+  output: z.object({
+    available: z.boolean(),
+    error: z.string().nullable(),
+    dashboardUrl: z.string().nullable(),
+    outcome: z.enum(["changed", "health", "no-change", "failed", "none"]),
+    checkedAt: z.string().nullable(),
+    changedAt: z.string().nullable(),
+    failReason: z.string().nullable(),
+    stale: z.boolean(),
+    systemNotes: z.array(z.string()),
+    cards: z.array(prodPulseCard),
+    issues: z.array(prodPulseIssue),
+    older: z.array(prodPulseOlder),
+    actions: z.array(z.string()),
+  }),
+});
+
+export type ProdPulse = RpcOutput<typeof getProdPulse>;
+export type ProdPulseCard = z.infer<typeof prodPulseCard>;
+export type ProdPulseIssue = z.infer<typeof prodPulseIssue>;
+export type ProdPulseOlder = z.infer<typeof prodPulseOlder>;
+
+export const prodPulseScheduleStatus = z.object({
+  name: z.string(),
+  label: z.string(),
+  cadence: z.string(),
+  status: z.enum(["active", "paused", "completed", "missing"]),
+  nextRunAt: z.string().nullable(),
+});
+
+export const getProdPulseAutomation = defineRpc({
+  name: "orchestration.prod-pulse.automation",
+  input: z.object({}),
+  output: z.object({
+    jobInstalled: z.boolean(),
+    jobPath: z.string(),
+    schedules: z.array(prodPulseScheduleStatus),
+    error: z.string().nullable(),
+  }),
+});
+
+export type ProdPulseAutomation = RpcOutput<typeof getProdPulseAutomation>;

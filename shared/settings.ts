@@ -17,3 +17,12 @@ export const standupSettings = defineSettings({
     };
   },
 });
+
+export const prodPulseSettings = defineSettings({
+  id: "prod-pulse",
+  scope: "host",
+  version: 1,
+  schema: z.object({
+    autoSchedule: z.boolean().default(false),
+  }),
+});

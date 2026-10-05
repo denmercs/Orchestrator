@@ -3,6 +3,8 @@ import { listMergedPrs } from "./server/github-prs";
 import { readHostMcpServers } from "./server/host-mcp";
 import { listAccessibleJiraBoards, loadJiraBoard } from "./server/jira";
 import { createLoopAdvance } from "./server/loop-advance";
+import { loadProdPulse } from "./server/prod-pulse";
+import { applyProdPulseAutomation, loadProdPulseAutomation } from "./server/prod-pulse-schedule";
 import { PR_POLL_MS } from "./shared/timing";
 import { detectObsidian, listTemplates } from "./server/obsidian";
 import { listParents, listSchedules } from "./server/orchestration";
@@ -10,6 +12,8 @@ import { listFolders, listStandupTodos, saveStandupTodos, upsertStandupNote } fr
 import {
   detectOrchestrationObsidian,
   getJiraBoard,
+  getProdPulse,
+  getProdPulseAutomation,
   listJiraBoards,
   listOrchestrationFolders,
   listOrchestrationMergedPrs,
@@ -20,15 +24,35 @@ import {
   saveOrchestrationStandupTodos,
   upsertOrchestrationStandupNote,
 } from "./shared/orchestration";
-import { standupSettings } from "./shared/settings";
+import { prodPulseSettings, standupSettings } from "./shared/settings";
 
 export default function contribute(server: PluginServerContext) {
   const loop = createLoopAdvance();
   server.registerSettings(standupSettings);
+  const pulseSettings = server.registerSettings(prodPulseSettings);
   server.handle(listOrchestrationSchedules, listSchedules);
   server.handle(listOrchestrationParents, listParents);
   server.handle(listJiraBoards, listAccessibleJiraBoards);
   server.handle(getJiraBoard, loadJiraBoard);
+  server.handle(getProdPulse, () => loadProdPulse());
+  server.handle(getProdPulseAutomation, () => loadProdPulseAutomation());
+  // Off by default: schedules spend Claude credits, so they only appear once the drawer's
+  // Automation switch is turned on. Off pauses them; nothing is ever deleted.
+  let lastAutoSchedule: boolean | null = null;
+  const syncPulseSettings = async (state: Awaited<ReturnType<typeof pulseSettings.read>>) => {
+    if (state.status !== "ready" || state.values.autoSchedule === lastAutoSchedule) {
+      return;
+    }
+    const first = lastAutoSchedule === null;
+    lastAutoSchedule = state.values.autoSchedule;
+    // At startup an off setting does nothing, so schedules made outside the plugin are left alone.
+    if (first && !lastAutoSchedule) {
+      return;
+    }
+    await applyProdPulseAutomation(lastAutoSchedule).catch(() => undefined);
+  };
+  const offPulseSettings = pulseSettings.subscribe(syncPulseSettings);
+  void pulseSettings.read().then(syncPulseSettings);
   server.handle(listOrchestrationFolders, listFolders);
   server.handle(upsertOrchestrationStandupNote, upsertStandupNote);
   server.handle(listOrchestrationStandupTodos, listStandupTodos);
@@ -65,6 +89,7 @@ export default function contribute(server: PluginServerContext) {
   }, PR_POLL_MS);
   timer.unref?.();
   return () => {
+    offPulseSettings();
     offBeforeCreate();
     offTurnEnded();
     clearInterval(timer);

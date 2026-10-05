@@ -17,6 +17,7 @@ import {
   type ParentLink,
   createBoardModel,
 } from "./board-model";
+import { ProdPulseButton, ProdPulseDrawer, useProdPulse } from "./prod-pulse-drawer";
 import { startJiraSession } from "./start-jira-session";
 import { StandupSection } from "./standup-section";
 import { useOrchestrationCatalog } from "./use-orchestration-catalog";
@@ -41,6 +42,8 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const [startingId, setStartingId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
+  const { pulse, refresh: refreshPulse } = useProdPulse();
+  const [pulseOpen, setPulseOpen] = useState(false);
   const agentIds = useMemo(
     () =>
       agents
@@ -225,336 +228,353 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   }
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      <View style={styles.titleRow}>
-        <Text style={styles.title}>{board.title}</Text>
-        {jiraBoards.length > 0 ? (
-          <BoardPicker
-            boards={jiraBoards}
-            selectedId={selectedBoardId}
-            open={boardMenuOpen}
-            styles={styles}
-            onToggle={() => setBoardMenuOpen((current) => !current)}
-            onSelect={(boardId) => {
-              setSelectedBoardId(boardId);
-              setBoardMenuOpen(false);
-            }}
-          />
-        ) : null}
-      </View>
-      <View style={styles.metaRow}>
-        <View style={[styles.dot, { backgroundColor: loopColor(board.loopStatus, theme) }]} />
-        <Text style={styles.meta}>
-          Loop {board.loopStatus}
-          {"  ·  "}
-          Next: {board.nextLabel}
-          {"  ·  "}
-          {board.blockedSummary}
-          {"  ·  "}
-          Updated {board.updatedAt}
-        </Text>
-      </View>
-
-      {loading ? <Text style={styles.muted}>Loading live catalog…</Text> : null}
-      {error ? <Text style={styles.danger}>{error}</Text> : null}
-      {jiraError ? <Text style={styles.danger}>{jiraError}</Text> : null}
-      {sessionError ? <Text style={styles.danger}>{sessionError}</Text> : null}
-      {board.hasJira ? (
-        <Text style={styles.muted}>
-          {selectedJiraBoard?.name ?? "Jira"} · {jiraIssues.length} issues
-        </Text>
-      ) : null}
-
-      <View style={styles.stats}>
-        <ProgressStat
-          label="PROGRESS"
-          value={`${board.inProgress}/${board.total || 0}`}
-          hint={board.hasJira ? `${board.total} on the board` : `${board.total} active agents`}
-          ratio={board.total ? board.inProgress / board.total : 0}
-          styles={styles}
-          theme={theme}
-        />
-        <CountStat label="IN PROGRESS" value={board.inProgress} hint="running" styles={styles} />
-        <CountStat
-          label="READY TO START"
-          value={board.readyToStart}
-          hint="waiting on dependencies"
-          styles={styles}
-        />
-        <CountStat
-          label="BLOCKED"
-          value={board.blockedCount}
-          hint="for the loop"
-          valueColor={theme.colors.statusDanger}
-          styles={styles}
-        />
-      </View>
-
-      <StandupSection theme={theme} layout={layout} />
-
-      <View style={styles.panel}>
-        <View style={styles.sectionHead}>
-          <Text style={styles.panelTitle}>Phase board</Text>
-          <Text style={styles.panelMeta}>{board.total} live</Text>
-        </View>
-        {layout.compact ? (
-          <View style={styles.mobileBoard}>
-            <View style={styles.laneTabs}>
-              {lanes.map((lane) => {
-                const selected = lane.id === activeLaneId;
-                return (
-                  <Pressable
-                    key={lane.id}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected }}
-                    accessibilityLabel={`${lane.label}, ${lane.count} items`}
-                    onPress={() => {
-                      setSelectedLaneId(lane.id);
-                    }}
-                    style={selected ? styles.laneTabSelected : styles.laneTab}
-                  >
-                    <Text style={selected ? styles.laneTabSelectedText : styles.laneTabText}>
-                      {lane.label}
-                    </Text>
-                    <Text style={selected ? styles.laneTabSelectedCount : styles.laneTabCount}>
-                      {lane.count}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-            {activeLane ? (
-              <View style={styles.mobileLane}>
-                <Text style={styles.kanbanHint}>{activeLane.hint}</Text>
-                <LaneItems
-                  lane={activeLane}
-                  expanded
-                  styles={styles}
-                  startingId={startingId}
-                  onToggle={() => undefined}
-                  onOpen={openItem}
-                  onStart={startItem}
-                />
-              </View>
+    <View style={styles.screen}>
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+        <View style={styles.titleRow}>
+          <Text style={styles.title}>{board.title}</Text>
+          <View style={styles.titleActions}>
+            {pulse?.available ? (
+              <ProdPulseButton pulse={pulse} theme={theme} onPress={() => setPulseOpen(true)} />
+            ) : null}
+            {jiraBoards.length > 0 ? (
+              <BoardPicker
+                boards={jiraBoards}
+                selectedId={selectedBoardId}
+                open={boardMenuOpen}
+                styles={styles}
+                onToggle={() => setBoardMenuOpen((current) => !current)}
+                onSelect={(boardId) => {
+                  setSelectedBoardId(boardId);
+                  setBoardMenuOpen(false);
+                }}
+              />
             ) : null}
           </View>
-        ) : (
-          <>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator
-              style={styles.kanbanScroll}
-              contentContainerStyle={styles.kanban}
-            >
-              {livePhases.map((phase) => (
-                <View key={phase.id} style={styles.kanbanCol}>
-                  <View style={styles.kanbanHead}>
-                    <Text style={styles.kanbanTitle}>{phase.label}</Text>
-                    <Text style={styles.kanbanCount}>{phase.items.length}</Text>
-                  </View>
-                  <Text style={styles.kanbanHint}>{phase.hint}</Text>
+        </View>
+        <View style={styles.metaRow}>
+          <View style={[styles.dot, { backgroundColor: loopColor(board.loopStatus, theme) }]} />
+          <Text style={styles.meta}>
+            Loop {board.loopStatus}
+            {"  ·  "}
+            Next: {board.nextLabel}
+            {"  ·  "}
+            {board.blockedSummary}
+            {"  ·  "}
+            Updated {board.updatedAt}
+          </Text>
+        </View>
+
+        {loading ? <Text style={styles.muted}>Loading live catalog…</Text> : null}
+        {error ? <Text style={styles.danger}>{error}</Text> : null}
+        {jiraError ? <Text style={styles.danger}>{jiraError}</Text> : null}
+        {sessionError ? <Text style={styles.danger}>{sessionError}</Text> : null}
+        {board.hasJira ? (
+          <Text style={styles.muted}>
+            {selectedJiraBoard?.name ?? "Jira"} · {jiraIssues.length} issues
+          </Text>
+        ) : null}
+
+        <View style={styles.stats}>
+          <ProgressStat
+            label="PROGRESS"
+            value={`${board.inProgress}/${board.total || 0}`}
+            hint={board.hasJira ? `${board.total} on the board` : `${board.total} active agents`}
+            ratio={board.total ? board.inProgress / board.total : 0}
+            styles={styles}
+            theme={theme}
+          />
+          <CountStat label="IN PROGRESS" value={board.inProgress} hint="running" styles={styles} />
+          <CountStat
+            label="READY TO START"
+            value={board.readyToStart}
+            hint="waiting on dependencies"
+            styles={styles}
+          />
+          <CountStat
+            label="BLOCKED"
+            value={board.blockedCount}
+            hint="for the loop"
+            valueColor={theme.colors.statusDanger}
+            styles={styles}
+          />
+        </View>
+
+        <StandupSection theme={theme} layout={layout} />
+
+        <View style={styles.panel}>
+          <View style={styles.sectionHead}>
+            <Text style={styles.panelTitle}>Phase board</Text>
+            <Text style={styles.panelMeta}>{board.total} live</Text>
+          </View>
+          {layout.compact ? (
+            <View style={styles.mobileBoard}>
+              <View style={styles.laneTabs}>
+                {lanes.map((lane) => {
+                  const selected = lane.id === activeLaneId;
+                  return (
+                    <Pressable
+                      key={lane.id}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`${lane.label}, ${lane.count} items`}
+                      onPress={() => {
+                        setSelectedLaneId(lane.id);
+                      }}
+                      style={selected ? styles.laneTabSelected : styles.laneTab}
+                    >
+                      <Text style={selected ? styles.laneTabSelectedText : styles.laneTabText}>
+                        {lane.label}
+                      </Text>
+                      <Text style={selected ? styles.laneTabSelectedCount : styles.laneTabCount}>
+                        {lane.count}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {activeLane ? (
+                <View style={styles.mobileLane}>
+                  <Text style={styles.kanbanHint}>{activeLane.hint}</Text>
                   <LaneItems
-                    lane={{
-                      id: `phase:${phase.id}`,
-                      kind: "phase",
-                      items: phase.items,
-                      empty: "Empty",
-                    }}
-                    expanded={Boolean(expanded[`phase:${phase.id}`])}
+                    lane={activeLane}
+                    expanded
                     styles={styles}
                     startingId={startingId}
-                    onToggle={() => toggleExpanded(`phase:${phase.id}`)}
+                    onToggle={() => undefined}
                     onOpen={openItem}
                     onStart={startItem}
                   />
                 </View>
-              ))}
-            </ScrollView>
-
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator
-              style={styles.kanbanScroll}
-              contentContainerStyle={styles.phaseBoard}
-            >
-              <View style={styles.idleCol}>
-                <View style={styles.colHead}>
-                  <View style={[styles.dot, { backgroundColor: theme.colors.foregroundMuted }]} />
-                  <Text style={styles.colTitle}>Idle</Text>
-                  <Text style={styles.colCount}>{idlePhase?.items.length ?? 0}</Text>
-                </View>
-                <Text style={styles.kanbanHint}>{idlePhase?.hint ?? "Not running yet"}</Text>
-                <LaneItems
-                  lane={{
-                    id: "idle",
-                    kind: "phase",
-                    items: idlePhase?.items ?? [],
-                    empty: "Nothing idle.",
-                  }}
-                  expanded={Boolean(expanded.idle)}
-                  styles={styles}
-                  startingId={startingId}
-                  onToggle={() => toggleExpanded("idle")}
-                  onOpen={openItem}
-                  onStart={startItem}
-                />
-              </View>
-
-              <View style={styles.mergedCol}>
-                <View style={styles.colHead}>
-                  <View style={[styles.dot, { backgroundColor: theme.colors.statusSuccess }]} />
-                  <Text style={styles.colTitle}>Merged</Text>
-                  <Text style={styles.colCount}>{board.mergedCount}</Text>
-                </View>
-                <LaneItems
-                  lane={{
-                    id: "merged",
-                    kind: "merged",
-                    items: board.merged,
-                    empty: "No merged items.",
-                  }}
-                  expanded={Boolean(expanded.merged)}
-                  styles={styles}
-                  startingId={startingId}
-                  onToggle={() => toggleExpanded("merged")}
-                  onOpen={openItem}
-                  onStart={startItem}
-                />
-              </View>
-
-              <View style={styles.blockedCol}>
-                <View style={styles.colHead}>
-                  <View style={[styles.dot, { backgroundColor: theme.colors.statusDanger }]} />
-                  <Text style={styles.colTitle}>Blocked</Text>
-                  <Text style={styles.colCount}>{board.blockedCount}</Text>
-                </View>
-                <LaneItems
-                  lane={{
-                    id: "blocked",
-                    kind: "blocked",
-                    items: board.blocked,
-                    empty: "No blocked items.",
-                  }}
-                  expanded={Boolean(expanded.blocked)}
-                  styles={styles}
-                  startingId={startingId}
-                  onToggle={() => toggleExpanded("blocked")}
-                  onOpen={openItem}
-                  onStart={startItem}
-                />
-              </View>
-            </ScrollView>
-          </>
-        )}
-      </View>
-
-      {trees.length > 0 || board.stories.length > 0 ? (
-        <View style={styles.browse}>
-          <View style={styles.sectionHead}>
-            <Text style={styles.sectionLabel}>
-              BROWSE · {trees.length} {trees.length === 1 ? "epic with children" : "epics with children"}
-              {board.stories.length > 0 ? ` · ${board.stories.length} stories` : ""}
-            </Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ expanded: Boolean(expanded.browse) }}
-              accessibilityLabel={expanded.browse ? "Hide epic browse" : "Show epic browse"}
-              onPress={() => toggleExpanded("browse")}
-            >
-              <Text style={styles.sectionToggle}>{expanded.browse ? "Hide" : "Show"}</Text>
-            </Pressable>
-          </View>
-          {expanded.browse ? (
+              ) : null}
+            </View>
+          ) : (
             <>
-              <Text style={styles.sectionHint}>
-                Parent/child view for spawned work. Everything else lives on the phase board.
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator
+                style={styles.kanbanScroll}
+                contentContainerStyle={styles.kanban}
+              >
+                {livePhases.map((phase) => (
+                  <View key={phase.id} style={styles.kanbanCol}>
+                    <View style={styles.kanbanHead}>
+                      <Text style={styles.kanbanTitle}>{phase.label}</Text>
+                      <Text style={styles.kanbanCount}>{phase.items.length}</Text>
+                    </View>
+                    <Text style={styles.kanbanHint}>{phase.hint}</Text>
+                    <LaneItems
+                      lane={{
+                        id: `phase:${phase.id}`,
+                        kind: "phase",
+                        items: phase.items,
+                        empty: "Empty",
+                      }}
+                      expanded={Boolean(expanded[`phase:${phase.id}`])}
+                      styles={styles}
+                      startingId={startingId}
+                      onToggle={() => toggleExpanded(`phase:${phase.id}`)}
+                      onOpen={openItem}
+                      onStart={startItem}
+                    />
+                  </View>
+                ))}
+              </ScrollView>
+
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator
+                style={styles.kanbanScroll}
+                contentContainerStyle={styles.phaseBoard}
+              >
+                <View style={styles.idleCol}>
+                  <View style={styles.colHead}>
+                    <View style={[styles.dot, { backgroundColor: theme.colors.foregroundMuted }]} />
+                    <Text style={styles.colTitle}>Idle</Text>
+                    <Text style={styles.colCount}>{idlePhase?.items.length ?? 0}</Text>
+                  </View>
+                  <Text style={styles.kanbanHint}>{idlePhase?.hint ?? "Not running yet"}</Text>
+                  <LaneItems
+                    lane={{
+                      id: "idle",
+                      kind: "phase",
+                      items: idlePhase?.items ?? [],
+                      empty: "Nothing idle.",
+                    }}
+                    expanded={Boolean(expanded.idle)}
+                    styles={styles}
+                    startingId={startingId}
+                    onToggle={() => toggleExpanded("idle")}
+                    onOpen={openItem}
+                    onStart={startItem}
+                  />
+                </View>
+
+                <View style={styles.mergedCol}>
+                  <View style={styles.colHead}>
+                    <View style={[styles.dot, { backgroundColor: theme.colors.statusSuccess }]} />
+                    <Text style={styles.colTitle}>Merged</Text>
+                    <Text style={styles.colCount}>{board.mergedCount}</Text>
+                  </View>
+                  <LaneItems
+                    lane={{
+                      id: "merged",
+                      kind: "merged",
+                      items: board.merged,
+                      empty: "No merged items.",
+                    }}
+                    expanded={Boolean(expanded.merged)}
+                    styles={styles}
+                    startingId={startingId}
+                    onToggle={() => toggleExpanded("merged")}
+                    onOpen={openItem}
+                    onStart={startItem}
+                  />
+                </View>
+
+                <View style={styles.blockedCol}>
+                  <View style={styles.colHead}>
+                    <View style={[styles.dot, { backgroundColor: theme.colors.statusDanger }]} />
+                    <Text style={styles.colTitle}>Blocked</Text>
+                    <Text style={styles.colCount}>{board.blockedCount}</Text>
+                  </View>
+                  <LaneItems
+                    lane={{
+                      id: "blocked",
+                      kind: "blocked",
+                      items: board.blocked,
+                      empty: "No blocked items.",
+                    }}
+                    expanded={Boolean(expanded.blocked)}
+                    styles={styles}
+                    startingId={startingId}
+                    onToggle={() => toggleExpanded("blocked")}
+                    onOpen={openItem}
+                    onStart={startItem}
+                  />
+                </View>
+              </ScrollView>
+            </>
+          )}
+        </View>
+
+        {trees.length > 0 || board.stories.length > 0 ? (
+          <View style={styles.browse}>
+            <View style={styles.sectionHead}>
+              <Text style={styles.sectionLabel}>
+                BROWSE · {trees.length} {trees.length === 1 ? "epic with children" : "epics with children"}
+                {board.stories.length > 0 ? ` · ${board.stories.length} stories` : ""}
               </Text>
-              {trees.map((family) => {
-                const open = Boolean(expanded[family.epic.id]);
-                const childCount = family.children.length;
-                return (
-                  <View key={family.epic.id} style={styles.familyCard}>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityState={{ expanded: open }}
-                      accessibilityLabel={`${family.epic.key || family.epic.title}, ${childCount} children. ${open ? "Collapse" : "Expand"}`}
-                      onPress={() => toggleExpanded(family.epic.id)}
-                      style={styles.familySummary}
-                    >
-                      <Text style={styles.familyToggleText}>
-                        {open ? "▾" : "▸"} {childCount}
-                      </Text>
-                      {family.epic.key ? (
-                        <Text style={styles.waitKey}>{family.epic.key}</Text>
-                      ) : null}
-                      <Text style={styles.familySummaryTitle} numberOfLines={1}>
-                        {family.epic.title}
-                      </Text>
-                      <Text style={styles.phaseChip}>{family.epic.phaseLabel}</Text>
-                    </Pressable>
-                    {open ? (
-                      <>
-                        <SessionCard
-                          item={family.epic}
-                          styles={styles}
-                          starting={startingId === family.epic.id}
-                          onOpen={openItem}
-                          onStart={startItem}
-                        />
-                        {family.children.map((child) => (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: Boolean(expanded.browse) }}
+                accessibilityLabel={expanded.browse ? "Hide epic browse" : "Show epic browse"}
+                onPress={() => toggleExpanded("browse")}
+              >
+                <Text style={styles.sectionToggle}>{expanded.browse ? "Hide" : "Show"}</Text>
+              </Pressable>
+            </View>
+            {expanded.browse ? (
+              <>
+                <Text style={styles.sectionHint}>
+                  Parent/child view for spawned work. Everything else lives on the phase board.
+                </Text>
+                {trees.map((family) => {
+                  const open = Boolean(expanded[family.epic.id]);
+                  const childCount = family.children.length;
+                  return (
+                    <View key={family.epic.id} style={styles.familyCard}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ expanded: open }}
+                        accessibilityLabel={`${family.epic.key || family.epic.title}, ${childCount} children. ${open ? "Collapse" : "Expand"}`}
+                        onPress={() => toggleExpanded(family.epic.id)}
+                        style={styles.familySummary}
+                      >
+                        <Text style={styles.familyToggleText}>
+                          {open ? "▾" : "▸"} {childCount}
+                        </Text>
+                        {family.epic.key ? (
+                          <Text style={styles.waitKey}>{family.epic.key}</Text>
+                        ) : null}
+                        <Text style={styles.familySummaryTitle} numberOfLines={1}>
+                          {family.epic.title}
+                        </Text>
+                        <Text style={styles.phaseChip}>{family.epic.phaseLabel}</Text>
+                      </Pressable>
+                      {open ? (
+                        <>
                           <SessionCard
-                            key={child.id}
-                            item={child}
-                            nested
+                            item={family.epic}
                             styles={styles}
-                            starting={startingId === child.id}
+                            starting={startingId === family.epic.id}
                             onOpen={openItem}
                             onStart={startItem}
                           />
-                        ))}
-                      </>
-                    ) : null}
-                  </View>
-                );
-              })}
-              {board.stories.length > 0 ? (
-                <>
-                  <View style={styles.sectionHead}>
-                    <Text style={styles.sectionLabel}>STORIES · {board.stories.length}</Text>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityState={{ expanded: Boolean(expanded.stories) }}
-                      accessibilityLabel={expanded.stories ? "Hide stories" : "Show stories"}
-                      onPress={() => toggleExpanded("stories")}
-                    >
-                      <Text style={styles.sectionToggle}>
-                        {expanded.stories ? "Hide" : "Show"}
-                      </Text>
-                    </Pressable>
-                  </View>
-                  {expanded.stories
-                    ? board.stories.map((item) => (
-                        <SessionCard
-                          key={item.id}
-                          item={item}
-                          styles={styles}
-                          starting={startingId === item.id}
-                          onOpen={openItem}
-                          onStart={startItem}
-                        />
-                      ))
-                    : null}
-                </>
-              ) : null}
-            </>
-          ) : (
-            <Text style={styles.sectionHint}>
-              Optional parent/child list. Open it only when you need the tree.
-            </Text>
-          )}
-        </View>
+                          {family.children.map((child) => (
+                            <SessionCard
+                              key={child.id}
+                              item={child}
+                              nested
+                              styles={styles}
+                              starting={startingId === child.id}
+                              onOpen={openItem}
+                              onStart={startItem}
+                            />
+                          ))}
+                        </>
+                      ) : null}
+                    </View>
+                  );
+                })}
+                {board.stories.length > 0 ? (
+                  <>
+                    <View style={styles.sectionHead}>
+                      <Text style={styles.sectionLabel}>STORIES · {board.stories.length}</Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityState={{ expanded: Boolean(expanded.stories) }}
+                        accessibilityLabel={expanded.stories ? "Hide stories" : "Show stories"}
+                        onPress={() => toggleExpanded("stories")}
+                      >
+                        <Text style={styles.sectionToggle}>
+                          {expanded.stories ? "Hide" : "Show"}
+                        </Text>
+                      </Pressable>
+                    </View>
+                    {expanded.stories
+                      ? board.stories.map((item) => (
+                          <SessionCard
+                            key={item.id}
+                            item={item}
+                            styles={styles}
+                            starting={startingId === item.id}
+                            onOpen={openItem}
+                            onStart={startItem}
+                          />
+                        ))
+                      : null}
+                  </>
+                ) : null}
+              </>
+            ) : (
+              <Text style={styles.sectionHint}>
+                Optional parent/child list. Open it only when you need the tree.
+              </Text>
+            )}
+          </View>
+        ) : null}
+      </ScrollView>
+      {pulse?.available ? (
+        <ProdPulseDrawer
+          pulse={pulse}
+          theme={theme}
+          compact={layout.compact}
+          open={pulseOpen}
+          onClose={() => setPulseOpen(false)}
+          onRefresh={refreshPulse}
+        />
       ) : null}
-    </ScrollView>
+    </View>
   );
 }
 
@@ -978,6 +998,11 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       alignItems: compact ? ("stretch" as const) : ("flex-start" as const),
       justifyContent: "space-between" as const,
       gap: 12,
+    },
+    titleActions: {
+      flexDirection: compact ? ("column" as const) : ("row" as const),
+      alignItems: compact ? ("stretch" as const) : ("flex-start" as const),
+      gap: 8,
     },
     title: {
       color: theme.colors.foreground,
