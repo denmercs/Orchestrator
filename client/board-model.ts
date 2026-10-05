@@ -1,4 +1,4 @@
-import type { JiraIssue } from "../shared/orchestration";
+import type { JiraBoardColumn, JiraIssue } from "../shared/orchestration";
 import type { OrchestrationAgent, OrchestrationWorkspace } from "./use-orchestration-catalog";
 
 export type PhaseId = "todo" | "planning" | "awaiting-approval" | "implementing" | "review";
@@ -49,6 +49,11 @@ export type BoardModel = {
   merged: BoardItem[];
   blocked: BoardItem[];
   hasJira: boolean;
+};
+
+export type JiraColumnGroup = {
+  name: string;
+  items: BoardItem[];
 };
 
 export type ScheduleRow = {
@@ -314,6 +319,64 @@ function toJiraItem(issue: JiraIssue): BoardItem {
     completed: merged,
     startLabel: merged ? null : startLabelForRole(role),
   };
+}
+
+// Place each issue in the board column that owns its status, the way Jira's board does.
+export function groupJiraColumns(
+  issues: JiraIssue[],
+  columns: JiraBoardColumn[],
+  sessions: BoardItem[] = [],
+): JiraColumnGroup[] {
+  const groups = columns.map((column) => ({ name: column.name, items: [] as BoardItem[] }));
+  if (groups.length === 0) {
+    return groups;
+  }
+  const sessionByKey = new Map(
+    sessions.filter((item) => item.key && item.agentId).map((item) => [item.key, item]),
+  );
+  for (const issue of issues) {
+    const index = columnIndex(issue, columns);
+    const item = {
+      ...toJiraItem(issue),
+      phaseLabel: issue.status,
+      detail: [issue.issueType, issue.assignee].filter(Boolean).join(" · "),
+    };
+    const session = sessionByKey.get(issue.key);
+    groups[index]?.items.push(
+      session
+        ? {
+            ...item,
+            agentId: session.agentId,
+            workspaceId: session.workspaceId,
+            source: "both",
+            retryLabel: "Open session",
+            startLabel: null,
+          }
+        : item,
+    );
+  }
+  return groups;
+}
+
+function columnIndex(issue: JiraIssue, columns: JiraBoardColumn[]) {
+  const status = issue.status.toLowerCase();
+  const byStatus = columns.findIndex(
+    (column) =>
+      (issue.statusId != null && column.statusIds.includes(issue.statusId)) ||
+      column.statusNames.some((name) => name.toLowerCase() === status),
+  );
+  if (byStatus >= 0) {
+    return byStatus;
+  }
+  const category = issue.statusCategory.toLowerCase();
+  if (category === "done") {
+    return columns.length - 1;
+  }
+  if (category === "indeterminate") {
+    const inProgress = columns.findIndex((column) => /progress/i.test(column.name));
+    return inProgress >= 0 ? inProgress : Math.floor(columns.length / 2);
+  }
+  return 0;
 }
 
 function startLabelForRole(role: BoardItem["role"]) {

@@ -38,6 +38,7 @@ export const jiraIssue = z.object({
   key: z.string(),
   summary: z.string(),
   status: z.string(),
+  statusId: z.string().nullable(),
   statusCategory: z.string(),
   issueType: z.string(),
   assignee: z.string(),
@@ -64,6 +65,18 @@ export const listJiraBoards = defineRpc({
   }),
 });
 
+export const jiraBoardColumn = z.object({
+  name: z.string(),
+  statusIds: z.array(z.string()),
+  statusNames: z.array(z.string()),
+});
+
+export const jiraSprint = z.object({
+  name: z.string(),
+  goal: z.string().nullable(),
+  endDate: z.string().nullable(),
+});
+
 export const getJiraBoard = defineRpc({
   name: "orchestration.jira-board",
   input: z.object({
@@ -74,13 +87,39 @@ export const getJiraBoard = defineRpc({
     boardId: z.string().nullable(),
     name: z.string(),
     projectKey: z.string(),
+    columns: z.array(jiraBoardColumn),
+    sprint: jiraSprint.nullable(),
     issues: z.array(jiraIssue),
     error: z.string().nullable(),
   }),
 });
 
+export const jiraPullRequest = z.object({
+  issueKey: z.string(),
+  number: z.string(),
+  title: z.string(),
+  url: z.string(),
+  status: z.enum(["OPEN", "DRAFT"]),
+  branch: z.string().nullable(),
+  repo: z.string().nullable(),
+});
+
+export const listJiraPullRequests = defineRpc({
+  name: "orchestration.jira-prs",
+  input: z.object({
+    issues: z.array(z.object({ id: z.string(), key: z.string() })),
+  }),
+  output: z.object({
+    prs: z.array(jiraPullRequest),
+    error: z.string().nullable(),
+  }),
+});
+
 export type JiraIssue = z.infer<typeof jiraIssue>;
+export type JiraPullRequest = z.infer<typeof jiraPullRequest>;
 export type JiraBoardOption = z.infer<typeof jiraBoardOption>;
+export type JiraBoardColumn = z.infer<typeof jiraBoardColumn>;
+export type JiraSprint = z.infer<typeof jiraSprint>;
 
 export const orchestrationFolderEntry = z.object({
   name: z.string(),

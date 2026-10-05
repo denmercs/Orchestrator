@@ -1,7 +1,12 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { listMergedPrs } from "./server/github-prs";
 import { readHostMcpServers } from "./server/host-mcp";
-import { listAccessibleJiraBoards, listMyWorkStories, loadJiraBoard } from "./server/jira";
+import {
+  listAccessibleJiraBoards,
+  listMyWorkStories,
+  loadJiraBoard,
+  loadJiraPullRequests,
+} from "./server/jira";
 import { createLoopAdvance } from "./server/loop-advance";
 import { loadProdPulse } from "./server/prod-pulse";
 import { applyProdPulseAutomation, loadProdPulseAutomation } from "./server/prod-pulse-schedule";
@@ -15,6 +20,7 @@ import {
   getProdPulse,
   getProdPulseAutomation,
   listJiraBoards,
+  listJiraPullRequests,
   listOrchestrationFolders,
   listOrchestrationMergedPrs,
   listOrchestrationParents,
@@ -30,12 +36,16 @@ import { jiraBoardSettings, prodPulseSettings, standupSettings } from "./shared/
 export default function contribute(server: PluginServerContext) {
   const loop = createLoopAdvance();
   server.registerSettings(standupSettings);
-  server.registerSettings(jiraBoardSettings);
+  const boardSettings = server.registerSettings(jiraBoardSettings);
   const pulseSettings = server.registerSettings(prodPulseSettings);
   server.handle(listOrchestrationSchedules, listSchedules);
   server.handle(listOrchestrationParents, listParents);
-  server.handle(listJiraBoards, listAccessibleJiraBoards);
+  server.handle(listJiraBoards, async () => {
+    const settings = await boardSettings.read();
+    return listAccessibleJiraBoards(settings.status === "ready" ? settings.values.boardFilter : undefined);
+  });
   server.handle(getJiraBoard, loadJiraBoard);
+  server.handle(listJiraPullRequests, loadJiraPullRequests);
   server.handle(getProdPulse, () => loadProdPulse());
   server.handle(getProdPulseAutomation, () => loadProdPulseAutomation());
   // Off by default: schedules spend Claude credits, so they only appear once the drawer's
