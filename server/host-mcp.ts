@@ -19,6 +19,7 @@ export type HostMcpServer =
 
 const ATLASSIAN_NAMES = ["mcp-atlassian", "atlassian", "jira"];
 
+// Returned env/headers hold live credentials (API tokens, auth headers). Never log or return them over RPC.
 export async function readHostMcpServers(): Promise<Record<string, HostMcpServer>> {
   const servers: Record<string, HostMcpServer> = {};
   for (const [name, raw] of await loadNamedMcpServers()) {
@@ -33,6 +34,7 @@ export async function readHostMcpServers(): Promise<Record<string, HostMcpServer
   return servers;
 }
 
+// Contains JIRA_API_TOKEN. Same rule as above.
 export async function readAtlassianMcpEnv(): Promise<Record<string, string | undefined>> {
   for (const [name, raw] of await loadNamedMcpServers()) {
     if (!isAtlassianName(name) && !jiraEnvFromServer(raw).JIRA_API_TOKEN) {
