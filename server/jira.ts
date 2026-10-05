@@ -2,8 +2,10 @@ import type { RpcOutput } from "@getpaseo/plugin";
 import {
   getJiraBoard,
   listJiraBoards,
+  listOrchestrationStandupWork,
   type JiraBoardOption,
   type JiraIssue,
+  type StandupWorkItem,
 } from "../shared/orchestration";
 import { readAtlassianMcpEnv } from "./host-mcp";
 
@@ -12,6 +14,10 @@ const DEFAULT_BOARD_NAME = "QuickPress";
 const ACTIVE_LIMIT = 50;
 const DONE_LIMIT = 12;
 const PARENT_LIMIT = 40;
+const WORK_LIMIT = 50;
+// DCE is a family of Jira projects (DC, DCD, DAAFP, …) that share a "DCE:" name prefix.
+const WORK_PROJECT_PREFIX = "DCE";
+const WORK_STATUS_ORDER = ["indeterminate", "new", "done"];
 
 type JiraCredentials = {
   url: string;
@@ -52,6 +58,41 @@ export async function loadJiraBoard(
       error: publicError(error),
     };
   }
+}
+
+export async function listMyWorkStories(): Promise<RpcOutput<typeof listOrchestrationStandupWork>> {
+  try {
+    const credentials = await resolveCredentials();
+    const issues = await searchIssues(
+      credentials,
+      "assignee = currentUser() AND issuetype not in subTaskIssueTypes() AND (statusCategory != Done OR resolved >= startOfDay()) ORDER BY updated DESC",
+      WORK_LIMIT,
+    );
+    const items = issues
+      .filter((issue) => issue.projectName?.toUpperCase().startsWith(WORK_PROJECT_PREFIX))
+      .map(toWorkItem)
+      .sort((left, right) => workRank(left) - workRank(right));
+    return { items, error: null };
+  } catch (error) {
+    return { items: [], error: publicError(error) };
+  }
+}
+
+function toWorkItem(issue: SearchedIssue): StandupWorkItem {
+  return {
+    key: issue.key,
+    summary: issue.summary,
+    status: issue.status,
+    statusCategory: issue.statusCategory,
+    issueType: issue.issueType,
+    projectKey: issue.projectKey ?? issue.key.split("-")[0],
+    url: issue.url,
+  };
+}
+
+function workRank(item: StandupWorkItem) {
+  const rank = WORK_STATUS_ORDER.indexOf(item.statusCategory);
+  return rank < 0 ? WORK_STATUS_ORDER.length : rank;
 }
 
 async function fetchBoardIssues(
@@ -97,8 +138,8 @@ async function searchIssues(
   credentials: JiraCredentials,
   jql: string,
   limit: number,
-): Promise<JiraIssue[]> {
-  const issues: JiraIssue[] = [];
+): Promise<SearchedIssue[]> {
+  const issues: SearchedIssue[] = [];
   let nextPageToken: string | undefined;
   let startAt = 0;
 
@@ -107,7 +148,7 @@ async function searchIssues(
     const payload: Record<string, unknown> = {
       jql,
       maxResults: Math.min(50, remaining),
-      fields: ["summary", "status", "issuetype", "assignee", "parent", "labels", "updated"],
+      fields: ["summary", "status", "issuetype", "assignee", "parent", "labels", "updated", "project"],
     };
     if (nextPageToken) {
       payload.nextPageToken = nextPageToken;
@@ -268,7 +309,12 @@ async function jiraRequest(
   throw lastError ?? new Error("Unable to read Jira board");
 }
 
-function normalizeIssue(raw: unknown, siteUrl: string): JiraIssue | null {
+type SearchedIssue = JiraIssue & {
+  projectKey: string | null;
+  projectName: string | null;
+};
+
+function normalizeIssue(raw: unknown, siteUrl: string): SearchedIssue | null {
   const issue = asRecord(raw) as RawIssue | null;
   const key = asString(issue?.key);
   const id = asString(issue?.id);
@@ -283,6 +329,7 @@ function normalizeIssue(raw: unknown, siteUrl: string): JiraIssue | null {
   const assignee = asRecord(fields.assignee);
   const parent = asRecord(fields.parent);
   const parentFields = asRecord(parent?.fields);
+  const project = asRecord(fields.project);
   const labels = Array.isArray(fields.labels)
     ? fields.labels.filter((label): label is string => typeof label === "string")
     : [];
@@ -300,6 +347,8 @@ function normalizeIssue(raw: unknown, siteUrl: string): JiraIssue | null {
     url: `${trimSlash(siteUrl)}/browse/${key}`,
     updated: asString(fields.updated),
     labels,
+    projectKey: asString(project?.key),
+    projectName: asString(project?.name),
   };
 }
 

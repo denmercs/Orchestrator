@@ -9,6 +9,7 @@ import {
   listOrchestrationFolders,
   listOrchestrationMergedPrs,
   listOrchestrationStandupTodos,
+  listOrchestrationStandupWork,
   listOrchestrationTemplates,
   saveOrchestrationStandupTodos,
   upsertOrchestrationStandupNote,
@@ -21,6 +22,7 @@ import { PR_POLL_MS } from "../shared/timing";
 type FolderListing = RpcOutput<typeof listOrchestrationFolders>;
 type TemplateListing = RpcOutput<typeof listOrchestrationTemplates>;
 type MergedListing = RpcOutput<typeof listOrchestrationMergedPrs>;
+type WorkListing = RpcOutput<typeof listOrchestrationStandupWork>;
 
 export function StandupSection({
   theme,
@@ -30,6 +32,7 @@ export function StandupSection({
   const listFolders = useRpc(listOrchestrationFolders);
   const listTemplates = useRpc(listOrchestrationTemplates);
   const listMerged = useRpc(listOrchestrationMergedPrs);
+  const listWork = useRpc(listOrchestrationStandupWork);
   const upsertNote = useRpc(upsertOrchestrationStandupNote);
   const listTodos = useRpc(listOrchestrationStandupTodos);
   const saveTodos = useRpc(saveOrchestrationStandupTodos);
@@ -48,6 +51,7 @@ export function StandupSection({
   const [vaultPath, setVaultPath] = useState<string | null>(null);
   const [detectedLabel, setDetectedLabel] = useState<string | null>(null);
   const [merged, setMerged] = useState<MergedListing>({ date: "", prs: [], error: null });
+  const [work, setWork] = useState<WorkListing>({ items: [], error: null });
   const [todos, setTodos] = useState<StandupTodo[]>([]);
   const [todoKind, setTodoKind] = useState<StandupTodoKind>("todo");
   const [todoDraft, setTodoDraft] = useState("");
@@ -112,6 +116,33 @@ export function StandupSection({
       clearInterval(timer);
     };
   }, [listMerged]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshWork() {
+      try {
+        const listing = await listWork({});
+        if (!cancelled) {
+          setWork(listing);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setWork({
+            items: [],
+            error: error instanceof Error ? error.message : "Unable to list DCE stories.",
+          });
+        }
+      }
+    }
+    void refreshWork();
+    const timer = setInterval(() => {
+      void refreshWork();
+    }, PR_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [listWork]);
 
   const refreshTodos = useCallback(
     async (nextFolder: string) => {
@@ -178,6 +209,9 @@ export function StandupSection({
       });
       setNotePath(result.notePath);
       setMerged((current) => ({ ...current, prs: result.prs, error: null }));
+      if (!result.workError) {
+        setWork({ items: result.work, error: null });
+      }
       await refreshTodos(selectedPath);
       setBrowseOpen(false);
       toast.show(
@@ -328,6 +362,32 @@ export function StandupSection({
               {notePath}
             </Text>
           ) : null}
+
+          <Text style={styles.label}>WORK · DCE · {work.items.length}</Text>
+          {work.error ? <Text style={styles.danger}>{work.error}</Text> : null}
+          {work.items.length === 0 && !work.error ? (
+            <Text style={styles.hint}>No DCE stories assigned to you.</Text>
+          ) : (
+            work.items.map((item) => (
+              <Pressable
+                key={item.key}
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${item.key} ${item.summary}`}
+                onPress={() => {
+                  void openExternalUrl(item.url);
+                }}
+                style={styles.prRow}
+              >
+                <Text style={styles.prKey}>{item.key}</Text>
+                <Text style={styles.prTitle} numberOfLines={2}>
+                  {item.summary}
+                </Text>
+                <Text style={item.statusCategory === "done" ? styles.note : styles.workStatus}>
+                  {item.status}
+                </Text>
+              </Pressable>
+            ))
+          )}
 
           <Text style={styles.label}>
             MERGED TODAY{merged.date ? ` · ${merged.date}` : ""} · {merged.prs.length}
@@ -877,6 +937,10 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
     prTitle: {
       color: theme.colors.foreground,
       flex: 1,
+    },
+    workStatus: {
+      color: theme.colors.foreground,
+      fontSize: 12,
     },
   };
 }

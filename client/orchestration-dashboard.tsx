@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { usePaseo, useRpc } from "@getpaseo/plugin/client";
+import { usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client";
 import {
   getJiraBoard,
   listJiraBoards,
@@ -10,6 +10,7 @@ import {
   type JiraBoardOption,
   type JiraIssue,
 } from "../shared/orchestration";
+import { jiraBoardSettings } from "../shared/settings";
 import { PR_POLL_MS } from "../shared/timing";
 import {
   type BoardItem,
@@ -29,6 +30,8 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const listParents = useRpc(listOrchestrationParents);
   const loadJiraBoard = useRpc(getJiraBoard);
   const loadJiraBoards = useRpc(listJiraBoards);
+  const boardSettings = useSettings(jiraBoardSettings);
+  const defaultBoardId = boardSettings.status === "ready" ? boardSettings.values.defaultBoardId : "";
   const [schedules, setSchedules] = useState<
     Awaited<ReturnType<typeof listSchedules>>["schedules"]
   >([]);
@@ -95,6 +98,28 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
       setJiraError(cause instanceof Error ? cause.message : "Unable to list Jira boards");
     }
   }, [loadJiraBoards]);
+
+  // The last board picked is the default; until one is picked, QuickPress (or the first board) is.
+  useEffect(() => {
+    if (defaultBoardId && jiraBoards.some((board) => board.id === defaultBoardId)) {
+      setSelectedBoardId(defaultBoardId);
+    }
+  }, [defaultBoardId, jiraBoards]);
+
+  async function chooseBoard(boardId: string) {
+    setSelectedBoardId(boardId);
+    setBoardMenuOpen(false);
+    if (boardSettings.status !== "ready" || boardId === defaultBoardId) {
+      return;
+    }
+    const saved = await boardSettings.save(
+      { ...boardSettings.values, defaultBoardId: boardId },
+      boardSettings.revision,
+    );
+    if (!saved) {
+      setJiraError(boardSettings.saveError ?? "Could not save the default board.");
+    }
+  }
 
   const selectedJiraBoard = jiraBoards.find((board) => board.id === selectedBoardId) ?? null;
 
@@ -244,8 +269,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
                 styles={styles}
                 onToggle={() => setBoardMenuOpen((current) => !current)}
                 onSelect={(boardId) => {
-                  setSelectedBoardId(boardId);
-                  setBoardMenuOpen(false);
+                  void chooseBoard(boardId);
                 }}
               />
             ) : null}
@@ -929,8 +953,9 @@ function BoardPicker({
         </Text>
         <Text style={styles.pickerChevron}>{open ? "▴" : "▾"}</Text>
       </Pressable>
-      {open
-        ? boards.map((board) => {
+      {open ? (
+        <ScrollView style={styles.pickerMenu}>
+          {boards.map((board, index) => {
             const selectedBoard = board.id === selectedId;
             return (
               <Pressable
@@ -939,7 +964,11 @@ function BoardPicker({
                 accessibilityState={{ selected: selectedBoard }}
                 accessibilityLabel={`${board.name}${board.projectKey ? `, ${board.projectKey}` : ""}`}
                 onPress={() => onSelect(board.id)}
-                style={[styles.pickerOption, selectedBoard ? styles.pickerOptionSelected : null]}
+                style={[
+                  styles.pickerOption,
+                  index === 0 ? styles.pickerOptionFirst : null,
+                  selectedBoard ? styles.pickerOptionSelected : null,
+                ]}
               >
                 <Text
                   style={[
@@ -954,8 +983,9 @@ function BoardPicker({
                 ) : null}
               </Pressable>
             );
-          })
-        : null}
+          })}
+        </ScrollView>
+      ) : null}
     </View>
   );
 }
@@ -994,6 +1024,8 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       width: "100%" as const,
     },
     titleRow: {
+      // Keeps the board menu above the sections that follow it.
+      zIndex: 10,
       flexDirection: compact ? ("column" as const) : ("row" as const),
       alignItems: compact ? ("stretch" as const) : ("flex-start" as const),
       justifyContent: "space-between" as const,
@@ -1011,12 +1043,31 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       flexShrink: 1,
     },
     picker: {
+      position: "relative" as const,
+      zIndex: 10,
       minWidth: compact ? undefined : 220,
       borderWidth: 1,
       borderColor: theme.colors.border,
       borderRadius: 12,
       backgroundColor: theme.colors.surface1,
-      overflow: "hidden" as const,
+    },
+    pickerMenu: {
+      position: "absolute" as const,
+      top: "100%" as const,
+      right: 0,
+      left: compact ? 0 : undefined,
+      minWidth: compact ? undefined : 260,
+      maxHeight: 360,
+      marginTop: 6,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      borderRadius: 12,
+      backgroundColor: theme.colors.surface1,
+      shadowColor: "#000",
+      shadowOpacity: 0.25,
+      shadowRadius: 16,
+      shadowOffset: { width: 0, height: 8 },
+      elevation: 8,
     },
     pickerButton: {
       flexDirection: "row" as const,
@@ -1042,6 +1093,9 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       paddingVertical: 10,
       borderTopWidth: 1,
       borderTopColor: theme.colors.border,
+    },
+    pickerOptionFirst: {
+      borderTopWidth: 0,
     },
     pickerOptionSelected: {
       backgroundColor: theme.colors.surface2,
