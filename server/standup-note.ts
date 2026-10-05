@@ -191,22 +191,27 @@ export function parseTodoNotes(markdown: string): StandupTodo[] {
   if (!match) {
     return [];
   }
-  return match[1]
-    .split("\n")
-    .flatMap((line, index) => {
-      const item = line.match(/^- \[([ xX])\] (todo|blocker|note):\s+(.+)$/);
-      if (!item) {
-        return [];
-      }
-      return [
-        {
-          id: `${index}:${item[2]}:${item[3]}`,
-          kind: item[2] as StandupTodoKind,
-          text: item[3].trim(),
-          done: item[1].toLowerCase() === "x",
-        },
-      ];
-    });
+  const items: StandupTodo[] = [];
+  const lines = match[1].split("\n");
+  for (const line of lines) {
+    const item = line.match(/^- \[([ xX])\] (todo|blocker|note):\s*(.*)$/);
+    if (item) {
+      items.push({
+        id: `${items.length}:${item[2]}:${item[3]}`,
+        kind: item[2] as StandupTodoKind,
+        text: item[3],
+        done: item[1].toLowerCase() === "x",
+      });
+      continue;
+    }
+    const last = items.at(-1);
+    if (last && /^ {2}/.test(line)) {
+      last.text = `${last.text}\n${line.slice(2)}`;
+    }
+  }
+  return items
+    .map((item) => ({ ...item, text: item.text.replace(/\s+$/, "") }))
+    .filter((item) => item.text.length > 0);
 }
 
 export function writeTodoNotes(
@@ -218,7 +223,14 @@ export function writeTodoNotes(
     items.length === 0
       ? "- (none)"
       : items
-          .map((item) => `- [${item.done ? "x" : " "}] ${item.kind}: ${item.text}`)
+          .map((item) => {
+            const [first = "", ...rest] = item.text.split("\n");
+            const head = `- [${item.done ? "x" : " "}] ${item.kind}: ${first}`;
+            if (rest.length === 0) {
+              return head;
+            }
+            return [head, ...rest.map((line) => `  ${line}`)].join("\n");
+          })
           .join("\n");
   const next = ensured.markdown.replace(
     new RegExp(`${escapeRegExp(TODO_NOTES_START)}[\\s\\S]*?${escapeRegExp(TODO_NOTES_END)}`),

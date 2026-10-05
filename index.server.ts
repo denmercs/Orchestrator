@@ -1,6 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { listMergedPrs } from "./server/github-prs";
-import { listAccessibleJiraBoards, loadJiraBoard } from "./server/jira";
+import { listAccessibleJiraBoards, loadJiraBoard, readAtlassianMcpServer } from "./server/jira";
 import { createLoopAdvance } from "./server/loop-advance";
 import { PR_POLL_MS } from "./shared/timing";
 import { detectObsidian, listTemplates } from "./server/obsidian";
@@ -38,6 +38,22 @@ export default function contribute(server: PluginServerContext) {
     loop.rememberPaseo(paseo);
     return listMergedPrs();
   });
+  const offBeforeCreate = server.before("agent.create", async ({ request }) => {
+    const atlassian = await readAtlassianMcpServer();
+    if (!atlassian) {
+      return;
+    }
+    return {
+      ...request,
+      config: {
+        ...request.config,
+        mcpServers: {
+          ...request.config.mcpServers,
+          "mcp-atlassian": atlassian,
+        },
+      },
+    };
+  });
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     loop.rememberPaseo(paseo);
     void loop.onTurnEnded(event);
@@ -48,6 +64,7 @@ export default function contribute(server: PluginServerContext) {
   }, PR_POLL_MS);
   timer.unref?.();
   return () => {
+    offBeforeCreate();
     offTurnEnded();
     clearInterval(timer);
   };

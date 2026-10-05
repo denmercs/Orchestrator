@@ -279,7 +279,7 @@ function overlayJira(item: BoardItem, issue: JiraIssue): BoardItem {
     phaseLabel: done && !keepSessionPhase
       ? issue.status
       : (PHASES.find((phase) => phase.id === phaseId)?.label ?? phaseId),
-    retryLabel: item.retryLabel ?? (item.agentId ? "Open session" : "Open in Jira"),
+    retryLabel: item.retryLabel ?? (item.agentId ? "Open session" : null),
     role: jiraRole(issue, item.role),
     url: issue.url,
     source: item.source === "session" ? "both" : item.source,
@@ -302,7 +302,7 @@ function toJiraItem(issue: JiraIssue): BoardItem {
     phaseId,
     phaseLabel: merged ? issue.status : (PHASES.find((phase) => phase.id === phaseId)?.label ?? issue.status),
     pr: null,
-    retryLabel: "Open in Jira",
+    retryLabel: null,
     progress: null,
     agentId: null,
     workspaceId: null,

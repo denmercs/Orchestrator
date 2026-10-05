@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Linking, Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import {
@@ -40,6 +40,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [startingId, setStartingId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
   const agentIds = useMemo(
     () =>
       agents
@@ -147,6 +148,48 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const trees = board.families.filter((family) => family.children.length > 0);
   const idlePhase = board.phases.find((phase) => phase.id === "todo");
   const livePhases = board.phases.filter((phase) => phase.id !== "todo");
+  const lanes = useMemo(
+    () => [
+      ...livePhases.map((phase) => ({
+        id: `phase:${phase.id}`,
+        label: phase.label,
+        hint: phase.hint,
+        count: phase.items.length,
+        kind: "phase" as const,
+        items: phase.items,
+      })),
+      {
+        id: "idle",
+        label: "Idle",
+        hint: idlePhase?.hint ?? "Not running yet",
+        count: idlePhase?.items.length ?? 0,
+        kind: "phase" as const,
+        items: idlePhase?.items ?? [],
+      },
+      {
+        id: "merged",
+        label: "Merged",
+        hint: "Shipped recently",
+        count: board.mergedCount,
+        kind: "merged" as const,
+        items: board.merged,
+      },
+      {
+        id: "blocked",
+        label: "Blocked",
+        hint: board.blockedSummary || "Waiting on a blocker",
+        count: board.blockedCount,
+        kind: "blocked" as const,
+        items: board.blocked,
+      },
+    ],
+    [board.blocked, board.blockedCount, board.blockedSummary, board.merged, board.mergedCount, idlePhase, livePhases],
+  );
+  const activeLaneId =
+    lanes.some((lane) => lane.id === selectedLaneId)
+      ? selectedLaneId
+      : (lanes.find((lane) => lane.count > 0)?.id ?? lanes[0]?.id ?? "idle");
+  const activeLane = lanes.find((lane) => lane.id === activeLaneId) ?? lanes[0];
 
   function toggleExpanded(id: string) {
     setExpanded((current) => ({ ...current, [id]: !current[id] }));
@@ -160,9 +203,6 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     if (item.workspaceId && navigation) {
       navigation.openWorkspace({ workspaceId: item.workspaceId });
       return;
-    }
-    if (item.url) {
-      void Linking.openURL(item.url);
     }
   }
 
@@ -257,161 +297,155 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
           <Text style={styles.panelTitle}>Phase board</Text>
           <Text style={styles.panelMeta}>{board.total} live</Text>
         </View>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator
-          style={styles.kanbanScroll}
-          contentContainerStyle={styles.kanban}
-        >
-          {livePhases.map((phase) => (
-            <View key={phase.id} style={styles.kanbanCol}>
-              <View style={styles.kanbanHead}>
-                <Text style={styles.kanbanTitle}>{phase.label}</Text>
-                <Text style={styles.kanbanCount}>{phase.items.length}</Text>
-              </View>
-              <Text style={styles.kanbanHint}>{phase.hint}</Text>
-              <PreviewList
-                items={phase.items}
-                expanded={Boolean(expanded[`phase:${phase.id}`])}
-                empty="Empty"
-                styles={styles}
-                onToggle={() => toggleExpanded(`phase:${phase.id}`)}
-                renderItem={(item) => (
-                  <SessionCard
-                    key={item.id}
-                    item={item}
-                    styles={styles}
-                    starting={startingId === item.id}
-                    onOpen={openItem}
-                    onStart={startItem}
-                  />
-                )}
-              />
+        {layout.compact ? (
+          <View style={styles.mobileBoard}>
+            <View style={styles.laneTabs}>
+              {lanes.map((lane) => {
+                const selected = lane.id === activeLaneId;
+                return (
+                  <Pressable
+                    key={lane.id}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    accessibilityLabel={`${lane.label}, ${lane.count} items`}
+                    onPress={() => {
+                      setSelectedLaneId(lane.id);
+                    }}
+                    style={selected ? styles.laneTabSelected : styles.laneTab}
+                  >
+                    <Text style={selected ? styles.laneTabSelectedText : styles.laneTabText}>
+                      {lane.label}
+                    </Text>
+                    <Text style={selected ? styles.laneTabSelectedCount : styles.laneTabCount}>
+                      {lane.count}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
-          ))}
-        </ScrollView>
-
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator
-          style={styles.kanbanScroll}
-          contentContainerStyle={styles.phaseBoard}
-        >
-          <View style={styles.idleCol}>
-            <View style={styles.colHead}>
-              <View style={[styles.dot, { backgroundColor: theme.colors.foregroundMuted }]} />
-              <Text style={styles.colTitle}>Idle</Text>
-              <Text style={styles.colCount}>{idlePhase?.items.length ?? 0}</Text>
-            </View>
-            <Text style={styles.kanbanHint}>{idlePhase?.hint ?? "Not running yet"}</Text>
-            <PreviewList
-              items={idlePhase?.items ?? []}
-              expanded={Boolean(expanded.idle)}
-              empty="Nothing idle."
-              styles={styles}
-              onToggle={() => toggleExpanded("idle")}
-              renderItem={(item) => (
-                <SessionCard
-                  key={item.id}
-                  item={item}
+            {activeLane ? (
+              <View style={styles.mobileLane}>
+                <Text style={styles.kanbanHint}>{activeLane.hint}</Text>
+                <LaneItems
+                  lane={activeLane}
+                  expanded
                   styles={styles}
-                  starting={startingId === item.id}
+                  startingId={startingId}
+                  onToggle={() => undefined}
                   onOpen={openItem}
                   onStart={startItem}
                 />
-              )}
-            />
+              </View>
+            ) : null}
           </View>
-
-          <View style={styles.mergedCol}>
-            <View style={styles.colHead}>
-              <View style={[styles.dot, { backgroundColor: theme.colors.statusSuccess }]} />
-              <Text style={styles.colTitle}>Merged</Text>
-              <Text style={styles.colCount}>{board.mergedCount}</Text>
-            </View>
-            <PreviewList
-              items={board.merged}
-              expanded={Boolean(expanded.merged)}
-              empty="No merged items."
-              styles={styles}
-              onToggle={() => toggleExpanded("merged")}
-              renderItem={(item) => (
-                <Pressable
-                  key={item.id}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${item.key} ${item.title}`}
-                  onPress={() => openItem(item)}
-                  style={styles.mergedRow}
-                >
-                  <Text style={styles.mergedKey}>{item.key}</Text>
-                  <Text style={styles.mergedTitle} numberOfLines={1}>
-                    {item.title}
-                  </Text>
-                  {item.pr ? <Text style={styles.pr}>#{item.pr}</Text> : null}
-                </Pressable>
-              )}
-            />
-          </View>
-
-          <View style={styles.blockedCol}>
-            <View style={styles.colHead}>
-              <View style={[styles.dot, { backgroundColor: theme.colors.statusDanger }]} />
-              <Text style={styles.colTitle}>Blocked</Text>
-              <Text style={styles.colCount}>{board.blockedCount}</Text>
-            </View>
-            <PreviewList
-              items={board.blocked}
-              expanded={Boolean(expanded.blocked)}
-              empty="No blocked items."
-              styles={styles}
-              onToggle={() => toggleExpanded("blocked")}
-              renderItem={(item) => (
-                <View key={item.id} style={styles.blockedCard}>
-                  <View style={styles.blockedHead}>
-                    <View style={styles.blockedHeadLeft}>
-                      <RoleTag role={item.role} styles={styles} />
-                      {item.source !== "session" ? <Text style={styles.phaseChip}>Jira</Text> : null}
-                      {item.key ? <Text style={styles.blockedKey}>{item.key}</Text> : null}
-                    </View>
-                    {item.pr ? <Text style={styles.pr}>#{item.pr}</Text> : null}
+        ) : (
+          <>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator
+              style={styles.kanbanScroll}
+              contentContainerStyle={styles.kanban}
+            >
+              {livePhases.map((phase) => (
+                <View key={phase.id} style={styles.kanbanCol}>
+                  <View style={styles.kanbanHead}>
+                    <Text style={styles.kanbanTitle}>{phase.label}</Text>
+                    <Text style={styles.kanbanCount}>{phase.items.length}</Text>
                   </View>
-                  <Text style={styles.blockedTitle}>{item.title}</Text>
-                  {item.underTitle ? (
-                    <Text style={styles.underLine}>Under {item.underTitle}</Text>
-                  ) : null}
-                  <Text style={styles.waitDetail}>{item.detail}</Text>
-                  {item.progress !== null ? (
-                    <View style={styles.barTrack}>
-                      <View
-                        style={[
-                          styles.barFill,
-                          {
-                            width: `${Math.round(item.progress * 100)}%`,
-                            backgroundColor: theme.colors.statusDanger,
-                          },
-                        ]}
-                      />
-                    </View>
-                  ) : null}
-                  {item.retryLabel || item.startLabel ? (
-                    <View style={styles.blockedActions}>
-                      {item.retryLabel ? (
-                        <Pill label={item.retryLabel} styles={styles} onPress={() => openItem(item)} />
-                      ) : null}
-                      {item.startLabel ? (
-                        <Pill
-                          label={startingId === item.id ? "Starting…" : item.startLabel}
-                          styles={styles}
-                          onPress={() => void startItem(item)}
-                        />
-                      ) : null}
-                    </View>
-                  ) : null}
+                  <Text style={styles.kanbanHint}>{phase.hint}</Text>
+                  <LaneItems
+                    lane={{
+                      id: `phase:${phase.id}`,
+                      kind: "phase",
+                      items: phase.items,
+                      empty: "Empty",
+                    }}
+                    expanded={Boolean(expanded[`phase:${phase.id}`])}
+                    styles={styles}
+                    startingId={startingId}
+                    onToggle={() => toggleExpanded(`phase:${phase.id}`)}
+                    onOpen={openItem}
+                    onStart={startItem}
+                  />
                 </View>
-              )}
-            />
-          </View>
-        </ScrollView>
+              ))}
+            </ScrollView>
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator
+              style={styles.kanbanScroll}
+              contentContainerStyle={styles.phaseBoard}
+            >
+              <View style={styles.idleCol}>
+                <View style={styles.colHead}>
+                  <View style={[styles.dot, { backgroundColor: theme.colors.foregroundMuted }]} />
+                  <Text style={styles.colTitle}>Idle</Text>
+                  <Text style={styles.colCount}>{idlePhase?.items.length ?? 0}</Text>
+                </View>
+                <Text style={styles.kanbanHint}>{idlePhase?.hint ?? "Not running yet"}</Text>
+                <LaneItems
+                  lane={{
+                    id: "idle",
+                    kind: "phase",
+                    items: idlePhase?.items ?? [],
+                    empty: "Nothing idle.",
+                  }}
+                  expanded={Boolean(expanded.idle)}
+                  styles={styles}
+                  startingId={startingId}
+                  onToggle={() => toggleExpanded("idle")}
+                  onOpen={openItem}
+                  onStart={startItem}
+                />
+              </View>
+
+              <View style={styles.mergedCol}>
+                <View style={styles.colHead}>
+                  <View style={[styles.dot, { backgroundColor: theme.colors.statusSuccess }]} />
+                  <Text style={styles.colTitle}>Merged</Text>
+                  <Text style={styles.colCount}>{board.mergedCount}</Text>
+                </View>
+                <LaneItems
+                  lane={{
+                    id: "merged",
+                    kind: "merged",
+                    items: board.merged,
+                    empty: "No merged items.",
+                  }}
+                  expanded={Boolean(expanded.merged)}
+                  styles={styles}
+                  startingId={startingId}
+                  onToggle={() => toggleExpanded("merged")}
+                  onOpen={openItem}
+                  onStart={startItem}
+                />
+              </View>
+
+              <View style={styles.blockedCol}>
+                <View style={styles.colHead}>
+                  <View style={[styles.dot, { backgroundColor: theme.colors.statusDanger }]} />
+                  <Text style={styles.colTitle}>Blocked</Text>
+                  <Text style={styles.colCount}>{board.blockedCount}</Text>
+                </View>
+                <LaneItems
+                  lane={{
+                    id: "blocked",
+                    kind: "blocked",
+                    items: board.blocked,
+                    empty: "No blocked items.",
+                  }}
+                  expanded={Boolean(expanded.blocked)}
+                  styles={styles}
+                  startingId={startingId}
+                  onToggle={() => toggleExpanded("blocked")}
+                  onOpen={openItem}
+                  onStart={startItem}
+                />
+              </View>
+            </ScrollView>
+          </>
+        )}
       </View>
 
       {trees.length > 0 || board.stories.length > 0 ? (
@@ -578,6 +612,141 @@ function CountStat({
       <Text style={[styles.statValue, valueColor ? { color: valueColor } : null]}>{value}</Text>
       <Text style={styles.statHint}>{hint}</Text>
     </View>
+  );
+}
+
+type BoardLane = {
+  id: string;
+  kind: "phase" | "merged" | "blocked";
+  items: BoardItem[];
+  empty?: string;
+};
+
+function LaneItems({
+  lane,
+  expanded,
+  styles,
+  startingId,
+  onToggle,
+  onOpen,
+  onStart,
+}: {
+  lane: BoardLane;
+  expanded: boolean;
+  styles: ReturnType<typeof createStyles>;
+  startingId: string | null;
+  onToggle: () => void;
+  onOpen: (item: BoardItem) => void;
+  onStart: (item: BoardItem) => void;
+}) {
+  const empty =
+    lane.empty ??
+    (lane.kind === "merged"
+      ? "No merged items."
+      : lane.kind === "blocked"
+        ? "No blocked items."
+        : lane.id === "idle"
+          ? "Nothing idle."
+          : "Empty");
+
+  if (lane.kind === "merged") {
+    return (
+      <PreviewList
+        items={lane.items}
+        expanded={expanded}
+        empty={empty}
+        styles={styles}
+        onToggle={onToggle}
+        renderItem={(item) => (
+          <Pressable
+            key={item.id}
+            accessibilityRole="button"
+            accessibilityLabel={`${item.key} ${item.title}`}
+            onPress={() => onOpen(item)}
+            style={styles.mergedRow}
+          >
+            <Text style={styles.mergedKey}>{item.key}</Text>
+            <Text style={styles.mergedTitle} numberOfLines={2}>
+              {item.title}
+            </Text>
+            {item.pr ? <Text style={styles.pr}>#{item.pr}</Text> : null}
+          </Pressable>
+        )}
+      />
+    );
+  }
+
+  if (lane.kind === "blocked") {
+    return (
+      <PreviewList
+        items={lane.items}
+        expanded={expanded}
+        empty={empty}
+        styles={styles}
+        onToggle={onToggle}
+        renderItem={(item) => (
+          <View key={item.id} style={styles.blockedCard}>
+            <View style={styles.blockedHead}>
+              <View style={styles.blockedHeadLeft}>
+                <RoleTag role={item.role} styles={styles} />
+                {item.source !== "session" ? <Text style={styles.phaseChip}>Jira</Text> : null}
+                {item.key ? <Text style={styles.blockedKey}>{item.key}</Text> : null}
+              </View>
+              {item.pr ? <Text style={styles.pr}>#{item.pr}</Text> : null}
+            </View>
+            <Text style={styles.blockedTitle}>{item.title}</Text>
+            {item.underTitle ? <Text style={styles.underLine}>Under {item.underTitle}</Text> : null}
+            <Text style={styles.waitDetail}>{item.detail}</Text>
+            {item.progress !== null ? (
+              <View style={styles.barTrack}>
+                <View
+                  style={[
+                    styles.blockedBarFill,
+                    {
+                      width: `${Math.round(item.progress * 100)}%`,
+                    },
+                  ]}
+                />
+              </View>
+            ) : null}
+            {item.retryLabel || item.startLabel ? (
+              <View style={styles.blockedActions}>
+                {item.retryLabel ? (
+                  <Pill label={item.retryLabel} styles={styles} onPress={() => onOpen(item)} />
+                ) : null}
+                {item.startLabel ? (
+                  <Pill
+                    label={startingId === item.id ? "Starting…" : item.startLabel}
+                    styles={styles}
+                    onPress={() => onStart(item)}
+                  />
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+        )}
+      />
+    );
+  }
+
+  return (
+    <PreviewList
+      items={lane.items}
+      expanded={expanded}
+      empty={empty}
+      styles={styles}
+      onToggle={onToggle}
+      renderItem={(item) => (
+        <SessionCard
+          key={item.id}
+          item={item}
+          styles={styles}
+          starting={startingId === item.id}
+          onOpen={onOpen}
+          onStart={onStart}
+        />
+      )}
+    />
   );
 }
 
@@ -915,6 +1084,11 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       height: 3,
       borderRadius: 2,
     },
+    blockedBarFill: {
+      height: 3,
+      borderRadius: 2,
+      backgroundColor: theme.colors.statusDanger,
+    },
     panel: {
       alignSelf: "stretch" as const,
       width: "100%" as const,
@@ -933,6 +1107,59 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
     panelMeta: {
       color: theme.colors.foregroundMuted,
       fontSize: 12,
+    },
+    mobileBoard: {
+      gap: 12,
+    },
+    laneTabs: {
+      flexDirection: "row" as const,
+      flexWrap: "wrap" as const,
+      gap: 8,
+    },
+    laneTab: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 6,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 999,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface0,
+    },
+    laneTabSelected: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 6,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 999,
+      backgroundColor: theme.colors.accent,
+    },
+    laneTabText: {
+      color: theme.colors.foreground,
+      fontSize: 13,
+    },
+    laneTabSelectedText: {
+      color: theme.colors.accentForeground,
+      fontSize: 13,
+      fontWeight: "600" as const,
+    },
+    laneTabCount: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 12,
+    },
+    laneTabSelectedCount: {
+      color: theme.colors.accentForeground,
+      fontSize: 12,
+    },
+    mobileLane: {
+      gap: 8,
+      padding: 12,
+      borderRadius: 12,
+      backgroundColor: theme.colors.surface0,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
     },
     kanbanScroll: {
       alignSelf: "stretch" as const,
@@ -1276,13 +1503,14 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
     },
     mergedRow: {
       flexDirection: "row" as const,
-      alignItems: "center" as const,
-      gap: 10,
-      paddingVertical: 6,
+      alignItems: "flex-start" as const,
+      flexWrap: "wrap" as const,
+      gap: 8,
+      paddingVertical: compact ? 10 : 6,
     },
     mergedKey: {
       color: theme.colors.foregroundMuted,
-      minWidth: 56,
+      minWidth: compact ? undefined : 56,
     },
     mergedTitle: {
       color: theme.colors.foreground,
@@ -1307,6 +1535,7 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
     blockedHeadLeft: {
       flexDirection: "row" as const,
       alignItems: "center" as const,
+      flexWrap: "wrap" as const,
       gap: 8,
       flexShrink: 1,
     },

@@ -91,14 +91,14 @@ function epicLoopPrompt(item: BoardItem) {
     "",
     `This is a Jira Epic${item.url ? ` (${item.url})` : ""}. You are the parent orchestrator.`,
     "",
-    "1. Read the epic and its child issues.",
+    "1. Read the epic and its child issues with the mcp-atlassian tools (jira_get_issue, jira_search, jira_get_board_issues). Do not open a browser and do not ask anyone to log in to Jira.",
     "2. Plan remaining open children in dependency order.",
     "3. For each ready child, create a Paseo subagent titled \"<KEY> — <summary>\" in its own worktree off this repo's main branch.",
     "4. Keep this session as the epic parent. Do not implement child tickets yourself unless a child is blocked on a decision only you can make.",
     "5. Loop: check child sessions, unblock, spawn the next ready ticket, and stop when the epic's open work is done or waiting on a human.",
     "6. The Orchestrator plugin will poke this session when a child pull request merges (immediately after the child turn ends, and every 2 minutes as a fallback). Treat that as the signal to start the next ready ticket.",
     "",
-    "Use Paseo tools or the Paseo CLI to create those child sessions.",
+    "Use Paseo tools or the Paseo CLI to create those child sessions. Jira access is already authenticated through mcp-atlassian.",
   ].join("\n");
 }
 
@@ -109,7 +109,7 @@ function storyPrompt(item: BoardItem) {
     "",
     `This is a Jira ${kind}${item.url ? ` (${item.url})` : ""}. Work in this worktree.`,
     "",
-    "1. Read the ticket and its acceptance criteria.",
+    "1. Read the ticket and its acceptance criteria with mcp-atlassian (jira_get_issue). Do not open a browser and do not ask anyone to log in to Jira. That MCP is already authenticated.",
     "2. Implement the change, with tests for the behavior you touch.",
     "3. Leave a short summary of what shipped and what is still open.",
     "",

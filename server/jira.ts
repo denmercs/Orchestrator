@@ -305,6 +305,67 @@ function normalizeIssue(raw: unknown, siteUrl: string): JiraIssue | null {
   };
 }
 
+type AtlassianMcpServer =
+  | {
+      type: "stdio";
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+      alwaysLoad?: boolean;
+    }
+  | {
+      type: "http" | "sse";
+      url: string;
+      headers?: Record<string, string>;
+      alwaysLoad?: boolean;
+    };
+
+export async function readAtlassianMcpServer(): Promise<AtlassianMcpServer | null> {
+  const file = path.join(homedir(), ".cursor", "mcp.json");
+  try {
+    const parsed: unknown = JSON.parse(await readFile(file, "utf8"));
+    const root = asRecord(parsed);
+    const servers = asRecord(root?.mcpServers) ?? asRecord(root?.servers);
+    const atlassian = asRecord(servers?.["mcp-atlassian"]) ?? asRecord(servers?.atlassian);
+    return atlassian ? toPaseoMcpServer(atlassian) : null;
+  } catch {
+    return null;
+  }
+}
+
+function toPaseoMcpServer(raw: Record<string, unknown>): AtlassianMcpServer | null {
+  const command = asString(raw.command);
+  if (command) {
+    const args = Array.isArray(raw.args)
+      ? raw.args.filter((value): value is string => typeof value === "string")
+      : undefined;
+    const envRecord = asRecord(raw.env);
+    const env = envRecord
+      ? Object.fromEntries(
+          Object.entries(envRecord).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string",
+          ),
+        )
+      : undefined;
+    return { type: "stdio", command, args, env, alwaysLoad: true };
+  }
+
+  const url = asString(raw.url);
+  if (!url) {
+    return null;
+  }
+  const headersRecord = asRecord(raw.headers);
+  const headers = headersRecord
+    ? Object.fromEntries(
+        Object.entries(headersRecord).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
+      )
+    : undefined;
+  const kind = asString(raw.type) === "sse" || url.includes("/sse") ? "sse" : "http";
+  return { type: kind, url, headers, alwaysLoad: true };
+}
+
 async function resolveCredentials(): Promise<JiraCredentials> {
   const fromEnv = credentialsFromRecord({
     JIRA_URL: process.env.JIRA_URL,

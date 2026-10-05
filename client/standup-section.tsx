@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { openExternalUrl, useRpc, useSettings } from "@getpaseo/plugin/client";
-import { FlatList, Icon, Modal, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
+import { FlatList, Icon, Modal, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import type { RpcOutput } from "@getpaseo/plugin";
 import {
@@ -363,88 +363,95 @@ export function StandupSection({
               ? "Saved into today’s selected Obsidian note."
               : "Select a folder to write todos into the daily note."}
           </Text>
-          <View style={styles.kindRow}>
-            {(["todo", "blocker", "note"] as const).map((kind) => {
-              const selected = todoKind === kind;
-              return (
-                <Pressable
-                  key={kind}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected }}
-                  accessibilityLabel={`Add as ${kind}`}
-                  onPress={() => {
-                    setTodoKind(kind);
-                  }}
-                  style={selected ? styles.kindSelected : styles.kindButton}
-                >
-                  <Text style={selected ? styles.kindSelectedText : styles.kindText}>
-                    {kindLabel(kind)}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          <TextInput
-            accessibilityLabel="Todo note text"
-            placeholder={todoPlaceholder(todoKind)}
-            placeholderTextColor={theme.colors.foregroundMuted}
-            value={todoDraft}
-            onChangeText={setTodoDraft}
-            onSubmitEditing={() => {
-              void addTodo();
-            }}
-            returnKeyType="done"
-            editable={Boolean(folderPath) && !todoBusy}
-            style={styles.todoInput}
-          />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Add ${todoKind} to today’s note`}
-            disabled={!folderPath || todoBusy || todoDraft.trim().length === 0}
-            onPress={() => {
-              void addTodo();
-            }}
-            style={styles.primaryButton}
-          >
-            <Text style={styles.primaryButtonText}>{todoBusy ? "Saving…" : `Add ${todoKind}`}</Text>
-          </Pressable>
-          {todos.length === 0 ? (
-            <Text style={styles.hint}>No extra notes on today’s file yet.</Text>
-          ) : (
-            todos.map((item) => (
-              <View key={item.id} style={styles.todoRow}>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ checked: item.done }}
-                  accessibilityLabel={`${item.done ? "Mark incomplete" : "Mark done"}: ${item.text}`}
-                  onPress={() => {
-                    void toggleTodo(item.id);
-                  }}
-                  style={item.done ? styles.todoCheckDone : styles.todoCheck}
-                >
-                  <Text style={item.done ? styles.todoCheckDoneText : styles.todoCheckText}>
-                    {item.done ? "✓" : ""}
-                  </Text>
-                </Pressable>
-                <View style={styles.todoBody}>
-                  <Text style={item.kind === "blocker" ? styles.todoKindDanger : styles.todoKind}>
-                    {kindLabel(item.kind)}
-                  </Text>
-                  <Text style={item.done ? styles.todoTextDone : styles.todoText}>{item.text}</Text>
-                </View>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Remove ${item.kind} ${item.text}`}
-                  onPress={() => {
-                    void removeTodo(item.id);
-                  }}
-                  style={styles.todoRemove}
-                >
-                  <Text style={styles.todoRemoveText}>Remove</Text>
-                </Pressable>
+          <View style={styles.todoSplit}>
+            <View style={styles.todoComposer}>
+              <View style={styles.kindRow}>
+                {(["todo", "blocker", "note"] as const).map((kind) => {
+                  const selected = todoKind === kind;
+                  return (
+                    <Pressable
+                      key={kind}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`Add as ${kind}`}
+                      onPress={() => {
+                        setTodoKind(kind);
+                      }}
+                      style={selected ? styles.kindSelected : styles.kindButton}
+                    >
+                      <Text style={selected ? styles.kindSelectedText : styles.kindText}>
+                        {kindLabel(kind)}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
               </View>
-            ))
-          )}
+              <TextInput
+                accessibilityLabel="Todo note text"
+                placeholder={todoPlaceholder(todoKind)}
+                placeholderTextColor={theme.colors.foregroundMuted}
+                value={todoDraft}
+                onChangeText={setTodoDraft}
+                multiline
+                textAlignVertical="top"
+                blurOnSubmit={false}
+                editable={Boolean(folderPath) && !todoBusy}
+                style={styles.todoInput}
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Add ${todoKind} to today’s note`}
+                disabled={!folderPath || todoBusy || todoDraft.trim().length === 0}
+                onPress={() => {
+                  void addTodo();
+                }}
+                style={styles.primaryButton}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {todoBusy ? "Saving…" : `Add ${todoKind}`}
+                </Text>
+              </Pressable>
+            </View>
+            <ScrollView style={styles.todoList} contentContainerStyle={styles.todoListContent}>
+              {todos.length === 0 ? (
+                <Text style={styles.hint}>No extra notes on today’s file yet.</Text>
+              ) : (
+                todos.map((item) => (
+                  <View key={item.id} style={styles.todoRow}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ checked: item.done }}
+                      accessibilityLabel={`${item.done ? "Mark incomplete" : "Mark done"}: ${item.text}`}
+                      onPress={() => {
+                        void toggleTodo(item.id);
+                      }}
+                      style={item.done ? styles.todoCheckDone : styles.todoCheck}
+                    >
+                      <Text style={item.done ? styles.todoCheckDoneText : styles.todoCheckText}>
+                        {item.done ? "✓" : ""}
+                      </Text>
+                    </Pressable>
+                    <View style={styles.todoBody}>
+                      <Text style={item.kind === "blocker" ? styles.todoKindDanger : styles.todoKind}>
+                        {kindLabel(item.kind)}
+                      </Text>
+                      <Text style={item.done ? styles.todoTextDone : styles.todoText}>{item.text}</Text>
+                    </View>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Remove ${item.kind} ${item.text}`}
+                      onPress={() => {
+                        void removeTodo(item.id);
+                      }}
+                      style={styles.todoRemove}
+                    >
+                      <Text style={styles.todoRemoveText}>Remove</Text>
+                    </Pressable>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+          </View>
         </View>
       </View>
 
@@ -619,14 +626,14 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       gap: compact ? 12 : 16,
     },
     main: {
-      flexGrow: compact ? 0 : 3,
+      flexGrow: compact ? 0 : 2,
       flexShrink: 1,
       flexBasis: compact ? ("auto" as const) : 0,
       minWidth: 0,
       gap: 8,
     },
     todoPane: {
-      flexGrow: compact ? 0 : 2,
+      flexGrow: compact ? 0 : 3,
       flexShrink: 1,
       flexBasis: compact ? ("auto" as const) : 0,
       width: compact ? ("100%" as const) : undefined,
@@ -642,6 +649,29 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       color: theme.colors.foreground,
       fontSize: 14,
       fontWeight: "600" as const,
+    },
+    todoSplit: {
+      flexDirection: compact ? ("column" as const) : ("row" as const),
+      alignItems: "stretch" as const,
+      gap: 12,
+      minHeight: compact ? undefined : 220,
+    },
+    todoComposer: {
+      flexGrow: compact ? 0 : 2,
+      flexShrink: 1,
+      flexBasis: compact ? ("auto" as const) : 0,
+      minWidth: 0,
+      gap: 8,
+    },
+    todoList: {
+      flexGrow: compact ? 0 : 3,
+      flexShrink: 1,
+      flexBasis: compact ? ("auto" as const) : 0,
+      minWidth: 0,
+      minHeight: compact ? 140 : 0,
+    },
+    todoListContent: {
+      gap: 0,
     },
     kindRow: {
       flexDirection: "row" as const,
@@ -677,8 +707,10 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       borderColor: theme.colors.border,
       borderRadius: 10,
       paddingHorizontal: 10,
-      paddingVertical: 8,
+      paddingVertical: 10,
       fontSize: 13,
+      minHeight: compact ? 96 : 160,
+      flexGrow: compact ? 0 : 1,
     },
     todoRow: {
       flexDirection: "row" as const,
