@@ -1,5 +1,7 @@
 export const SHIPPED_START = "<!-- orchestrator:shipped -->";
 export const SHIPPED_END = "<!-- /orchestrator:shipped -->";
+export const WORK_START = "<!-- orchestrator:work -->";
+export const WORK_END = "<!-- /orchestrator:work -->";
 export const TODO_NOTES_START = "<!-- orchestrator:todo-notes -->";
 export const TODO_NOTES_END = "<!-- /orchestrator:todo-notes -->";
 
@@ -107,6 +109,9 @@ export function buildStandupNote(date: string): string {
     "## Focus",
     "- (none in progress)",
     "",
+    "## Work",
+    workBlock("- (none)"),
+    "",
     "## Yesterday",
     "- ",
     "",
@@ -153,6 +158,45 @@ export function shippedLines(prs: { key: string; title: string; number: string; 
       return `- Merged ${ticket}${pr.title} ([#${pr.number}](${pr.url}))${repo}`;
     })
     .join("\n");
+}
+
+export function workLines(
+  items: { key: string; summary: string; status: string; url: string }[],
+): string {
+  if (items.length === 0) {
+    return "- (none)";
+  }
+  return items.map((item) => `- [${item.key}](${item.url}) — ${item.summary} · ${item.status}`).join("\n");
+}
+
+export function writeWorkItems(markdown: string, body: string): { markdown: string; changed: boolean } {
+  const ensured = ensureWorkSection(markdown);
+  const next = ensured.markdown.replace(
+    new RegExp(`${escapeRegExp(WORK_START)}[\\s\\S]*?${escapeRegExp(WORK_END)}`),
+    () => workBlock(body),
+  );
+  return { markdown: next, changed: next !== markdown };
+}
+
+export function ensureWorkSection(markdown: string): { markdown: string; changed: boolean } {
+  if (markdown.includes(WORK_START) && markdown.includes(WORK_END)) {
+    return { markdown, changed: false };
+  }
+
+  const section = ["## Work", workBlock("- (none)"), ""].join("\n");
+  for (const anchor of [/^## Yesterday\s*$/m, /^## Shipped\s*$/m, /^## Notes\s*$/m]) {
+    const at = markdown.search(anchor);
+    if (at >= 0) {
+      return { markdown: `${markdown.slice(0, at)}${section}\n${markdown.slice(at)}`, changed: true };
+    }
+  }
+
+  const trimmed = markdown.replace(/\s*$/, "");
+  return { markdown: `${trimmed}\n\n${section}`, changed: true };
+}
+
+function workBlock(body: string): string {
+  return [WORK_START, body, WORK_END].join("\n");
 }
 
 export function writeShippedItems(markdown: string, body: string): { markdown: string; changed: boolean } {

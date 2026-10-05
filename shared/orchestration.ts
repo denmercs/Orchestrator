@@ -108,6 +108,27 @@ export const orchestrationMergedPr = z.object({
   mergedAt: z.string(),
 });
 
+export const standupWorkItem = z.object({
+  key: z.string(),
+  summary: z.string(),
+  status: z.string(),
+  statusCategory: z.string(),
+  issueType: z.string(),
+  projectKey: z.string(),
+  url: z.string(),
+});
+
+export const listOrchestrationStandupWork = defineRpc({
+  name: "orchestration.standup.work",
+  input: z.object({}),
+  output: z.object({
+    items: z.array(standupWorkItem),
+    error: z.string().nullable(),
+  }),
+});
+
+export type StandupWorkItem = z.infer<typeof standupWorkItem>;
+
 export const upsertOrchestrationStandupNote = defineRpc({
   name: "orchestration.standup.upsert",
   input: z.object({
@@ -120,6 +141,8 @@ export const upsertOrchestrationStandupNote = defineRpc({
     changed: z.boolean(),
     templateName: z.string().nullable(),
     prs: z.array(orchestrationMergedPr),
+    work: z.array(standupWorkItem),
+    workError: z.string().nullable(),
   }),
 });
 

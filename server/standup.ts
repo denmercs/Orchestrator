@@ -9,6 +9,7 @@ import {
   upsertOrchestrationStandupNote,
 } from "../shared/orchestration";
 import { listMergedPrs } from "./github-prs";
+import { listMyWorkStories } from "./jira";
 import {
   applyObsidianTemplate,
   buildStandupNote,
@@ -17,7 +18,9 @@ import {
   shippedLines,
   standupNoteRelativePath,
   writeShippedItems,
+  workLines,
   writeTodoNotes,
+  writeWorkItems,
 } from "./standup-note";
 
 const MAX_FOLDER_ENTRIES = 200;
@@ -95,18 +98,22 @@ export async function upsertStandupNote(input: {
     created = true;
   }
 
-  const merged = await listMergedPrs(now);
-  const next = writeShippedItems(markdown, shippedLines(merged.prs));
-  if (created || next.changed) {
+  const [merged, work] = await Promise.all([listMergedPrs(now), listMyWorkStories()]);
+  const shipped = writeShippedItems(markdown, shippedLines(merged.prs));
+  // A failed Jira read leaves the existing Work block alone rather than blanking it.
+  const next = work.error ? shipped : writeWorkItems(shipped.markdown, workLines(work.items));
+  if (created || next.markdown !== markdown) {
     await writeAtomically(notePath, next.markdown);
   }
 
   return {
     notePath,
     created,
-    changed: created || next.changed,
+    changed: created || next.markdown !== markdown,
     templateName: templateDisplayName(input.templatePath),
     prs: merged.prs,
+    work: work.items,
+    workError: work.error,
   };
 }
 

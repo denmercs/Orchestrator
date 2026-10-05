@@ -18,6 +18,15 @@ export const standupSettings = defineSettings({
   },
 });
 
+export const jiraBoardSettings = defineSettings({
+  id: "jira-board",
+  scope: "host",
+  version: 1,
+  schema: z.object({
+    defaultBoardId: z.string().default(""),
+  }),
+});
+
 export const prodPulseSettings = defineSettings({
   id: "prod-pulse",
   scope: "host",

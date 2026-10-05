@@ -1,7 +1,7 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { listMergedPrs } from "./server/github-prs";
 import { readHostMcpServers } from "./server/host-mcp";
-import { listAccessibleJiraBoards, loadJiraBoard } from "./server/jira";
+import { listAccessibleJiraBoards, listMyWorkStories, loadJiraBoard } from "./server/jira";
 import { createLoopAdvance } from "./server/loop-advance";
 import { loadProdPulse } from "./server/prod-pulse";
 import { applyProdPulseAutomation, loadProdPulseAutomation } from "./server/prod-pulse-schedule";
@@ -20,15 +20,17 @@ import {
   listOrchestrationParents,
   listOrchestrationSchedules,
   listOrchestrationStandupTodos,
+  listOrchestrationStandupWork,
   listOrchestrationTemplates,
   saveOrchestrationStandupTodos,
   upsertOrchestrationStandupNote,
 } from "./shared/orchestration";
-import { prodPulseSettings, standupSettings } from "./shared/settings";
+import { jiraBoardSettings, prodPulseSettings, standupSettings } from "./shared/settings";
 
 export default function contribute(server: PluginServerContext) {
   const loop = createLoopAdvance();
   server.registerSettings(standupSettings);
+  server.registerSettings(jiraBoardSettings);
   const pulseSettings = server.registerSettings(prodPulseSettings);
   server.handle(listOrchestrationSchedules, listSchedules);
   server.handle(listOrchestrationParents, listParents);
@@ -57,6 +59,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(upsertOrchestrationStandupNote, upsertStandupNote);
   server.handle(listOrchestrationStandupTodos, listStandupTodos);
   server.handle(saveOrchestrationStandupTodos, saveStandupTodos);
+  server.handle(listOrchestrationStandupWork, () => listMyWorkStories());
   server.handle(detectOrchestrationObsidian, detectObsidian);
   server.handle(listOrchestrationTemplates, listTemplates);
   server.handle(listOrchestrationMergedPrs, (_input, { paseo }) => {
