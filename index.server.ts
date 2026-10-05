@@ -1,6 +1,7 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { listMergedPrs } from "./server/github-prs";
-import { listAccessibleJiraBoards, loadJiraBoard, readAtlassianMcpServer } from "./server/jira";
+import { readHostMcpServers } from "./server/host-mcp";
+import { listAccessibleJiraBoards, loadJiraBoard } from "./server/jira";
 import { createLoopAdvance } from "./server/loop-advance";
 import { PR_POLL_MS } from "./shared/timing";
 import { detectObsidian, listTemplates } from "./server/obsidian";
@@ -39,8 +40,8 @@ export default function contribute(server: PluginServerContext) {
     return listMergedPrs();
   });
   const offBeforeCreate = server.before("agent.create", async ({ request }) => {
-    const atlassian = await readAtlassianMcpServer();
-    if (!atlassian) {
+    const hostServers = await readHostMcpServers();
+    if (Object.keys(hostServers).length === 0) {
       return;
     }
     return {
@@ -49,7 +50,7 @@ export default function contribute(server: PluginServerContext) {
         ...request.config,
         mcpServers: {
           ...request.config.mcpServers,
-          "mcp-atlassian": atlassian,
+          ...hostServers,
         },
       },
     };

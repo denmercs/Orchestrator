@@ -1,6 +1,3 @@
-import { homedir } from "node:os";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import type { RpcOutput } from "@getpaseo/plugin";
 import {
   getJiraBoard,
@@ -8,6 +5,7 @@ import {
   type JiraBoardOption,
   type JiraIssue,
 } from "../shared/orchestration";
+import { readAtlassianMcpEnv } from "./host-mcp";
 
 const DEFAULT_PROJECT = "QUICK";
 const DEFAULT_BOARD_NAME = "QuickPress";
@@ -305,67 +303,6 @@ function normalizeIssue(raw: unknown, siteUrl: string): JiraIssue | null {
   };
 }
 
-type AtlassianMcpServer =
-  | {
-      type: "stdio";
-      command: string;
-      args?: string[];
-      env?: Record<string, string>;
-      alwaysLoad?: boolean;
-    }
-  | {
-      type: "http" | "sse";
-      url: string;
-      headers?: Record<string, string>;
-      alwaysLoad?: boolean;
-    };
-
-export async function readAtlassianMcpServer(): Promise<AtlassianMcpServer | null> {
-  const file = path.join(homedir(), ".cursor", "mcp.json");
-  try {
-    const parsed: unknown = JSON.parse(await readFile(file, "utf8"));
-    const root = asRecord(parsed);
-    const servers = asRecord(root?.mcpServers) ?? asRecord(root?.servers);
-    const atlassian = asRecord(servers?.["mcp-atlassian"]) ?? asRecord(servers?.atlassian);
-    return atlassian ? toPaseoMcpServer(atlassian) : null;
-  } catch {
-    return null;
-  }
-}
-
-function toPaseoMcpServer(raw: Record<string, unknown>): AtlassianMcpServer | null {
-  const command = asString(raw.command);
-  if (command) {
-    const args = Array.isArray(raw.args)
-      ? raw.args.filter((value): value is string => typeof value === "string")
-      : undefined;
-    const envRecord = asRecord(raw.env);
-    const env = envRecord
-      ? Object.fromEntries(
-          Object.entries(envRecord).filter(
-            (entry): entry is [string, string] => typeof entry[1] === "string",
-          ),
-        )
-      : undefined;
-    return { type: "stdio", command, args, env, alwaysLoad: true };
-  }
-
-  const url = asString(raw.url);
-  if (!url) {
-    return null;
-  }
-  const headersRecord = asRecord(raw.headers);
-  const headers = headersRecord
-    ? Object.fromEntries(
-        Object.entries(headersRecord).filter(
-          (entry): entry is [string, string] => typeof entry[1] === "string",
-        ),
-      )
-    : undefined;
-  const kind = asString(raw.type) === "sse" || url.includes("/sse") ? "sse" : "http";
-  return { type: kind, url, headers, alwaysLoad: true };
-}
-
 async function resolveCredentials(): Promise<JiraCredentials> {
   const fromEnv = credentialsFromRecord({
     JIRA_URL: process.env.JIRA_URL,
@@ -376,35 +313,14 @@ async function resolveCredentials(): Promise<JiraCredentials> {
     return fromEnv;
   }
 
-  const fromMcp = credentialsFromRecord(await readCursorMcpEnv());
+  const fromMcp = credentialsFromRecord(await readAtlassianMcpEnv());
   if (fromMcp) {
     return fromMcp;
   }
 
   throw new Error(
-    "Jira credentials were not found. Keep mcp-atlassian in ~/.cursor/mcp.json or set JIRA_URL, JIRA_USERNAME, and JIRA_API_TOKEN on the daemon.",
+    "Jira credentials were not found. Keep an Atlassian MCP server (mcp-atlassian) in Cursor, Claude, or Kiro, or set JIRA_URL, JIRA_USERNAME, and JIRA_API_TOKEN on the daemon.",
   );
-}
-
-async function readCursorMcpEnv(): Promise<Record<string, string | undefined>> {
-  const file = path.join(homedir(), ".cursor", "mcp.json");
-  try {
-    const parsed: unknown = JSON.parse(await readFile(file, "utf8"));
-    const root = asRecord(parsed);
-    const servers = asRecord(root?.mcpServers) ?? asRecord(root?.servers);
-    const atlassian = asRecord(servers?.["mcp-atlassian"]) ?? asRecord(servers?.atlassian);
-    const env = asRecord(atlassian?.env);
-    if (!env) {
-      return {};
-    }
-    return {
-      JIRA_URL: asString(env.JIRA_URL) ?? undefined,
-      JIRA_USERNAME: asString(env.JIRA_USERNAME) ?? undefined,
-      JIRA_API_TOKEN: asString(env.JIRA_API_TOKEN) ?? undefined,
-    };
-  } catch {
-    return {};
-  }
 }
 
 function credentialsFromRecord(
