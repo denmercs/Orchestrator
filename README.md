@@ -6,14 +6,19 @@ Paseo sidebar dashboard for live agent, workspace, and schedule status.
 
 Plugins are trusted, unsandboxed code. Enable **Settings → Plugins** on the daemon first.
 
+In the app, open **Settings → Plugins**, paste a source into **Plugin source**, and select **Install plugin**:
+
+- `/absolute/path/to/Orchestrator`
+- `github:denmercs/Orchestrator`
+
+Or from the CLI:
+
 ```bash
 cd /path/to/Orchestrator
 npm install
 npm run typecheck
 paseo plugin install /path/to/Orchestrator
 ```
-
-Or from GitHub:
 
 ```bash
 paseo plugin install github:denmercs/Orchestrator

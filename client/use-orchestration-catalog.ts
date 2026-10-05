@@ -1,17 +1,32 @@
 import { useEffect, useState } from "react";
-import type {
-  OwnedSubscription,
-  PaseoAgent,
-  PaseoAgentListResult,
-  PaseoWorkspace,
-  PaseoWorkspaceListResult,
-} from "@getpaseo/client";
 import { usePaseo } from "@getpaseo/plugin/client";
 
 const PAGE_LIMIT = 100;
 
-export type OrchestrationAgent = PaseoAgent;
-export type OrchestrationWorkspace = PaseoWorkspace;
+type PaseoApi = ReturnType<typeof usePaseo>;
+
+function listLiveAgents(paseo: PaseoApi) {
+  return paseo.agents.list({
+    subscribe: {},
+    filter: { includeArchived: false },
+    sort: [{ key: "status_priority", direction: "desc" }],
+    page: { limit: PAGE_LIMIT },
+  });
+}
+
+function listLiveWorkspaces(paseo: PaseoApi) {
+  return paseo.workspaces.list({
+    subscribe: {},
+    sort: [{ key: "status_priority", direction: "desc" }],
+    page: { limit: PAGE_LIMIT },
+  });
+}
+
+type AgentList = Awaited<ReturnType<typeof listLiveAgents>>;
+type WorkspaceList = Awaited<ReturnType<typeof listLiveWorkspaces>>;
+
+export type OrchestrationAgent = AgentList["entries"][number]["agent"];
+export type OrchestrationWorkspace = WorkspaceList["entries"][number];
 
 export function useOrchestrationCatalog() {
   const paseo = usePaseo();
@@ -22,10 +37,10 @@ export function useOrchestrationCatalog() {
 
   useEffect(() => {
     let cancelled = false;
-    let agentSubscription: OwnedSubscription<PaseoAgentListResult> | undefined;
-    let workspaceSubscription: OwnedSubscription<PaseoWorkspaceListResult> | undefined;
+    let agentSubscription: AgentList["subscription"] | undefined;
+    let workspaceSubscription: WorkspaceList["subscription"] | undefined;
 
-    function applyAgents(entries: PaseoAgentListResult["entries"]) {
+    function applyAgents(entries: AgentList["entries"]) {
       setAgents(
         entries
           .map((entry) => entry.agent)
@@ -33,23 +48,11 @@ export function useOrchestrationCatalog() {
       );
     }
 
-    function applyWorkspaces(entries: PaseoWorkspaceListResult["entries"]) {
+    function applyWorkspaces(entries: WorkspaceList["entries"]) {
       setWorkspaces(entries.filter((workspace) => !isArchivedWorkspace(workspace)));
     }
 
-    void Promise.all([
-      paseo.agents.list({
-        subscribe: {},
-        filter: { includeArchived: false },
-        sort: [{ key: "status_priority", direction: "desc" }],
-        page: { limit: PAGE_LIMIT },
-      }),
-      paseo.workspaces.list({
-        subscribe: {},
-        sort: [{ key: "status_priority", direction: "desc" }],
-        page: { limit: PAGE_LIMIT },
-      }),
-    ])
+    void Promise.all([listLiveAgents(paseo), listLiveWorkspaces(paseo)])
       .then(([agentList, workspaceList]) => {
         if (cancelled) {
           void agentList.subscription.release();

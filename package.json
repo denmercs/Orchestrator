@@ -3,6 +3,16 @@
   "private": true,
   "version": "0.1.0",
   "description": "Paseo sidebar dashboard for live agent, workspace, and schedule status",
+  "files": [
+    "paseo-plugin.json",
+    "index.client.ts",
+    "index.client.tsx",
+    "index.server.ts",
+    "index.server.tsx",
+    "client/",
+    "server/",
+    "shared/"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit"
   },

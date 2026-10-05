@@ -1,5 +1,8 @@
-import type { PaseoApi, PaseoProject } from "@getpaseo/client";
+import { usePaseo } from "@getpaseo/plugin/client";
 import type { BoardItem } from "./board-model";
+
+type PaseoApi = ReturnType<typeof usePaseo>;
+type PaseoProject = Awaited<ReturnType<PaseoApi["projects"]["list"]>>["projects"][number];
 
 const PROJECT_HINTS: Record<string, string[]> = {
   QUICK: ["quickpress", "wiscodes-quickpress"],

@@ -1,7 +1,8 @@
-import type { PaseoApi } from "@getpaseo/client";
-import type { PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
+import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
 import { PR_POLL_MS } from "../shared/timing";
 import { listMergedPrs, type MergedPr } from "./github-prs";
+
+type PaseoApi = PluginHandlerContext["paseo"];
 
 export { PR_POLL_MS };
 const PROMPT_COOLDOWN_MS = 90_000;
