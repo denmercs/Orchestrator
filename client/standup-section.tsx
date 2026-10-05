@@ -23,6 +23,8 @@ type FolderListing = RpcOutput<typeof listOrchestrationFolders>;
 type TemplateListing = RpcOutput<typeof listOrchestrationTemplates>;
 type MergedListing = RpcOutput<typeof listOrchestrationMergedPrs>;
 type WorkListing = RpcOutput<typeof listOrchestrationStandupWork>;
+type MergedPr = MergedListing["prs"][number];
+type StandupStyles = ReturnType<typeof createStyles>;
 
 export function StandupSection({
   theme,
@@ -61,6 +63,16 @@ export function StandupSection({
   const templatePath = settings.status === "ready" ? settings.values.templatePath : "";
   const selectedTemplate =
     templates.templates.find((template) => template.path === templatePath) ?? null;
+  const { workPrs, personalPrs } = useMemo(() => {
+    const workProjects = new Set(work.items.map((item) => item.projectKey));
+    const workKeys = new Set(work.items.map((item) => item.key));
+    const isWork = (pr: MergedPr) =>
+      pr.key.length > 0 && (workKeys.has(pr.key) || workProjects.has(pr.key.split("-")[0]));
+    return {
+      workPrs: merged.prs.filter(isWork),
+      personalPrs: merged.prs.filter((pr) => !isWork(pr)),
+    };
+  }, [merged.prs, work.items]);
 
   const refreshTemplates = useCallback(
     async (nextFolder: string | null) => {
@@ -363,57 +375,54 @@ export function StandupSection({
             </Text>
           ) : null}
 
-          <Text style={styles.label}>WORK · DCE · {work.items.length}</Text>
-          {work.error ? <Text style={styles.danger}>{work.error}</Text> : null}
-          {work.items.length === 0 && !work.error ? (
-            <Text style={styles.hint}>No DCE stories assigned to you.</Text>
-          ) : (
-            work.items.map((item) => (
-              <Pressable
-                key={item.key}
-                accessibilityRole="button"
-                accessibilityLabel={`Open ${item.key} ${item.summary}`}
-                onPress={() => {
-                  void openExternalUrl(item.url);
-                }}
-                style={styles.prRow}
-              >
-                <Text style={styles.prKey}>{item.key}</Text>
-                <Text style={styles.prTitle} numberOfLines={2}>
-                  {item.summary}
-                </Text>
-                <Text style={item.statusCategory === "done" ? styles.note : styles.workStatus}>
-                  {item.status}
-                </Text>
-              </Pressable>
-            ))
-          )}
+          <View style={styles.group}>
+            <Text style={styles.groupTitle}>Work · DCE</Text>
+            <Text style={styles.label}>STORIES · {work.items.length}</Text>
+            {work.error ? <Text style={styles.danger}>{work.error}</Text> : null}
+            {work.items.length === 0 && !work.error ? (
+              <Text style={styles.hint}>No DCE stories assigned to you.</Text>
+            ) : (
+              work.items.map((item) => (
+                <Pressable
+                  key={item.key}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${item.key} ${item.summary}`}
+                  onPress={() => {
+                    void openExternalUrl(item.url);
+                  }}
+                  style={styles.prRow}
+                >
+                  <Text style={styles.prKey}>{item.key}</Text>
+                  <Text style={styles.prTitle} numberOfLines={2}>
+                    {item.summary}
+                  </Text>
+                  <Text style={item.statusCategory === "done" ? styles.note : styles.workStatus}>
+                    {item.status}
+                  </Text>
+                </Pressable>
+              ))
+            )}
+            <MergedList
+              label={`MERGED TODAY${merged.date ? ` · ${merged.date}` : ""}`}
+              prs={workPrs}
+              error={merged.error}
+              empty="No DCE pull requests merged today."
+              styles={styles}
+            />
+          </View>
 
-          <Text style={styles.label}>
-            MERGED TODAY{merged.date ? ` · ${merged.date}` : ""} · {merged.prs.length}
-          </Text>
-          {merged.error ? <Text style={styles.danger}>{merged.error}</Text> : null}
-          {merged.prs.length === 0 && !merged.error ? (
-            <Text style={styles.hint}>No pull requests merged today.</Text>
-          ) : (
-            merged.prs.map((pr) => (
-              <Pressable
-                key={`${pr.repo}-${pr.number}`}
-                accessibilityRole="button"
-                accessibilityLabel={`Open pull request ${pr.number} ${pr.title}`}
-                onPress={() => {
-                  void openExternalUrl(pr.url);
-                }}
-                style={styles.prRow}
-              >
-                <Text style={styles.prKey}>{pr.key || `#${pr.number}`}</Text>
-                <Text style={styles.prTitle} numberOfLines={2}>
-                  {pr.title}
-                </Text>
-                <Text style={styles.note}>#{pr.number}</Text>
-              </Pressable>
-            ))
-          )}
+          <View style={styles.groupDivider} />
+
+          <View style={styles.group}>
+            <Text style={styles.groupTitle}>Personal projects</Text>
+            <MergedList
+              label={`MERGED TODAY${merged.date ? ` · ${merged.date}` : ""}`}
+              prs={personalPrs}
+              error={merged.error}
+              empty="No personal pull requests merged today."
+              styles={styles}
+            />
+          </View>
         </View>
 
         <View style={styles.todoPane}>
@@ -455,7 +464,6 @@ export function StandupSection({
                 multiline
                 textAlignVertical="top"
                 blurOnSubmit={false}
-                editable={Boolean(folderPath) && !todoBusy}
                 style={styles.todoInput}
               />
               <Pressable
@@ -642,6 +650,52 @@ export function StandupSection({
         </Modal.Content>
       </Modal>
     </View>
+  );
+}
+
+function MergedList({
+  label,
+  prs,
+  error,
+  empty,
+  styles,
+}: {
+  label: string;
+  prs: MergedPr[];
+  error: string | null;
+  empty: string;
+  styles: StandupStyles;
+}) {
+  return (
+    <>
+      <Text style={styles.label}>
+        {label} · {prs.length}
+      </Text>
+      {error ? <Text style={styles.danger}>{error}</Text> : null}
+      {prs.length === 0 && !error ? (
+        <Text style={styles.hint}>{empty}</Text>
+      ) : (
+        prs.map((pr) => (
+          <Pressable
+            key={`${pr.repo}-${pr.number}`}
+            accessibilityRole="button"
+            accessibilityLabel={`Open pull request ${pr.number} ${pr.title}`}
+            onPress={() => {
+              void openExternalUrl(pr.url);
+            }}
+            style={styles.prRow}
+          >
+            <Text style={styles.prKey}>{pr.key || `#${pr.number}`}</Text>
+            <Text style={styles.prTitle} numberOfLines={2}>
+              {pr.title}
+            </Text>
+            <Text style={styles.note} numberOfLines={1}>
+              {pr.repo ? `${pr.repo.split("/").pop()} ` : ""}#{pr.number}
+            </Text>
+          </Pressable>
+        ))
+      )}
+    </>
   );
 }
 
@@ -843,6 +897,20 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
     todoRemoveText: {
       color: theme.colors.foregroundMuted,
       fontSize: 11,
+    },
+    group: {
+      gap: 8,
+    },
+    groupTitle: {
+      color: theme.colors.foreground,
+      fontSize: 14,
+      fontWeight: "600" as const,
+      marginTop: 8,
+    },
+    groupDivider: {
+      height: 1,
+      marginTop: 8,
+      backgroundColor: theme.colors.border,
     },
     label: {
       color: theme.colors.foregroundMuted,
