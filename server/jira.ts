@@ -468,7 +468,7 @@ async function fetchBoards(
   const nameParam = name ? `&name=${encodeURIComponent(name)}` : "";
   let startAt = 0;
 
-  while (boards.length < 50) {
+  while (boards.length < 200) {
     const body = await jiraGet(
       credentials,
       `/rest/agile/1.0/board?startAt=${startAt}&maxResults=50${nameParam}`,

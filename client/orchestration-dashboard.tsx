@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { openExternalUrl, usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client";
-import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
+import { Icon, Modal, TextInput } from "@getpaseo/plugin/client/react-native";
 import {
   getJiraBoard,
   listJiraBoards,
@@ -368,10 +368,10 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
                 selectedId={selectedBoardId}
                 open={boardMenuOpen}
                 filter={boardFilter ?? ""}
-                mutedColor={theme.colors.foregroundMuted}
+                theme={theme}
                 styles={styles}
                 onFilterChange={(next) => void saveBoardFilter(next)}
-                onToggle={() => setBoardMenuOpen((current) => !current)}
+                onOpenChange={setBoardMenuOpen}
                 onSelect={(boardId) => {
                   void chooseBoard(boardId);
                 }}
@@ -1398,20 +1398,20 @@ function BoardPicker({
   selectedId,
   open,
   filter,
-  mutedColor,
+  theme,
   styles,
   onFilterChange,
-  onToggle,
+  onOpenChange,
   onSelect,
 }: {
   boards: JiraBoardOption[];
   selectedId: string;
   open: boolean;
   filter: string;
-  mutedColor: string;
+  theme: PluginSurfaceProps["theme"];
   styles: ReturnType<typeof createStyles>;
   onFilterChange: (filter: string) => void;
-  onToggle: () => void;
+  onOpenChange: (open: boolean) => void;
   onSelect: (boardId: string) => void;
 }) {
   const [filterDraft, setFilterDraft] = useState(filter);
@@ -1437,7 +1437,7 @@ function BoardPicker({
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
         accessibilityLabel={`Jira board, ${label}. ${open ? "Collapse" : "Expand"} board list`}
-        onPress={onToggle}
+        onPress={() => onOpenChange(!open)}
         style={styles.pickerButton}
       >
         <Text style={styles.pickerButtonText} numberOfLines={1}>
@@ -1445,53 +1445,68 @@ function BoardPicker({
         </Text>
         <Text style={styles.pickerChevron}>{open ? "▴" : "▾"}</Text>
       </Pressable>
-      {open ? (
-        <TextInput
-          accessibilityLabel="Filter Jira boards by name"
-          placeholder="Filter boards by name (empty shows all)"
-          placeholderTextColor={mutedColor}
-          value={filterDraft}
-          onChangeText={setFilterDraft}
-          onSubmitEditing={commitFilter}
-          onBlur={commitFilter}
-          autoCapitalize="none"
-          autoCorrect={false}
-          style={styles.pickerFilter}
-        />
-      ) : null}
-      {open ? (
-        <ScrollView style={styles.pickerMenu}>
-          {boards.map((board, index) => {
-            const selectedBoard = board.id === selectedId;
-            return (
-              <Pressable
-                key={board.id}
-                accessibilityRole="button"
-                accessibilityState={{ selected: selectedBoard }}
-                accessibilityLabel={`${board.name}${board.projectKey ? `, ${board.projectKey}` : ""}`}
-                onPress={() => onSelect(board.id)}
-                style={[
-                  styles.pickerOption,
-                  index === 0 ? styles.pickerOptionFirst : null,
-                  selectedBoard ? styles.pickerOptionSelected : null,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.pickerOptionText,
-                    selectedBoard ? styles.pickerOptionTextSelected : null,
-                  ]}
-                >
-                  {board.name}
-                </Text>
-                {board.projectKey ? (
-                  <Text style={styles.pickerOptionMeta}>{board.projectKey}</Text>
-                ) : null}
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-      ) : null}
+      <Modal
+        title="Jira boards"
+        icon={<Icon name="LayoutGrid" size={18} color={theme.colors.foreground} />}
+        open={open}
+        onOpenChange={onOpenChange}
+      >
+        <Modal.Content
+          scrollable={false}
+          style={{ backgroundColor: theme.colors.surface1 }}
+          contentContainerStyle={{ padding: 0, gap: 0 }}
+        >
+          <TextInput
+            accessibilityLabel="Filter Jira boards by name"
+            placeholder="Filter boards by name (empty shows all)"
+            placeholderTextColor={theme.colors.foregroundMuted}
+            value={filterDraft}
+            onChangeText={setFilterDraft}
+            onSubmitEditing={commitFilter}
+            onBlur={commitFilter}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.pickerFilter}
+          />
+          <ScrollView style={styles.pickerMenu} nestedScrollEnabled>
+            {boards.length === 0 ? (
+              <Text style={styles.pickerEmpty}>
+                No boards match this filter. Clear it and press Enter to list every board.
+              </Text>
+            ) : (
+              boards.map((board, index) => {
+                const selectedBoard = board.id === selectedId;
+                return (
+                  <Pressable
+                    key={board.id}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: selectedBoard }}
+                    accessibilityLabel={`${board.name}${board.projectKey ? `, ${board.projectKey}` : ""}`}
+                    onPress={() => onSelect(board.id)}
+                    style={[
+                      styles.pickerOption,
+                      index === 0 ? styles.pickerOptionFirst : null,
+                      selectedBoard ? styles.pickerOptionSelected : null,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.pickerOptionText,
+                        selectedBoard ? styles.pickerOptionTextSelected : null,
+                      ]}
+                    >
+                      {board.name}
+                    </Text>
+                    {board.projectKey ? (
+                      <Text style={styles.pickerOptionMeta}>{board.projectKey}</Text>
+                    ) : null}
+                  </Pressable>
+                );
+              })
+            )}
+          </ScrollView>
+        </Modal.Content>
+      </Modal>
     </View>
   );
 }
@@ -1549,8 +1564,6 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       flexShrink: 1,
     },
     picker: {
-      position: "relative" as const,
-      zIndex: 10,
       minWidth: compact ? undefined : 220,
       borderWidth: 1,
       borderColor: theme.colors.border,
@@ -1558,22 +1571,12 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       backgroundColor: theme.colors.surface1,
     },
     pickerMenu: {
-      position: "absolute" as const,
-      top: "100%" as const,
-      right: 0,
-      left: compact ? 0 : undefined,
-      minWidth: compact ? undefined : 260,
       maxHeight: 360,
-      marginTop: 6,
-      borderWidth: 1,
-      borderColor: theme.colors.border,
-      borderRadius: 12,
-      backgroundColor: theme.colors.surface1,
-      shadowColor: "#000",
-      shadowOpacity: 0.25,
-      shadowRadius: 16,
-      shadowOffset: { width: 0, height: 8 },
-      elevation: 8,
+    },
+    pickerEmpty: {
+      color: theme.colors.foregroundMuted,
+      paddingHorizontal: 12,
+      paddingVertical: 16,
     },
     pickerButton: {
       flexDirection: "row" as const,
@@ -1593,9 +1596,9 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
     pickerFilter: {
       color: theme.colors.foreground,
       paddingHorizontal: 12,
-      paddingVertical: 8,
-      borderTopWidth: 1,
-      borderTopColor: theme.colors.border,
+      paddingVertical: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.colors.border,
     },
     pickerOption: {
       flexDirection: "row" as const,

@@ -21,19 +21,21 @@ export const standupSettings = defineSettings({
 export const jiraBoardSettings = defineSettings({
   id: "jira-board",
   scope: "host",
-  version: 2,
+  version: 3,
   schema: z.object({
     defaultBoardId: z.string().default(""),
-    // Board picker name filter; empty lists every board.
-    boardFilter: z.string().default("DCE"),
+    // Board picker name filter; empty lists every board (work and personal).
+    boardFilter: z.string().default(""),
     // Assignee the Jira board opens filtered to; empty means everyone.
     developer: z.string().default(""),
   }),
   migrate(values) {
     const row = values !== null && typeof values === "object" ? (values as Record<string, unknown>) : {};
+    const rawFilter = typeof row.boardFilter === "string" ? row.boardFilter : "";
     return {
       defaultBoardId: typeof row.defaultBoardId === "string" ? row.defaultBoardId : "",
-      boardFilter: typeof row.boardFilter === "string" ? row.boardFilter : "DCE",
+      // v2 defaulted this to "DCE", which hid boards outside work.
+      boardFilter: rawFilter === "DCE" ? "" : rawFilter,
       developer: typeof row.developer === "string" ? row.developer : "",
     };
   },
