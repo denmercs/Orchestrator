@@ -26,6 +26,8 @@ type WorkListing = RpcOutput<typeof listOrchestrationStandupWork>;
 type MergedPr = MergedListing["prs"][number];
 type StandupStyles = ReturnType<typeof createStyles>;
 
+const PERSONAL_PREVIEW_COUNT = 3;
+
 export function StandupSection({
   theme,
   layout,
@@ -58,6 +60,7 @@ export function StandupSection({
   const [todoKind, setTodoKind] = useState<StandupTodoKind>("todo");
   const [todoDraft, setTodoDraft] = useState("");
   const [todoBusy, setTodoBusy] = useState(false);
+  const [personalExpanded, setPersonalExpanded] = useState(false);
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
   const folderPath = settings.status === "ready" ? settings.values.standupFolder : "";
   const templatePath = settings.status === "ready" ? settings.values.templatePath : "";
@@ -414,14 +417,44 @@ export function StandupSection({
           <View style={styles.groupDivider} />
 
           <View style={styles.group}>
-            <Text style={styles.groupTitle}>Personal projects</Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: personalExpanded }}
+              accessibilityLabel={`${personalExpanded ? "Collapse" : "Expand"} personal projects`}
+              onPress={() => {
+                setPersonalExpanded((value) => !value);
+              }}
+              style={styles.groupToggle}
+            >
+              <Text style={styles.groupTitle}>
+                {personalExpanded ? "▾" : "▸"} Personal projects
+              </Text>
+            </Pressable>
             <MergedList
               label={`MERGED TODAY${merged.date ? ` · ${merged.date}` : ""}`}
               prs={personalPrs}
+              limit={personalExpanded ? undefined : PERSONAL_PREVIEW_COUNT}
               error={merged.error}
               empty="No personal pull requests merged today."
               styles={styles}
             />
+            {personalPrs.length > PERSONAL_PREVIEW_COUNT ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={
+                  personalExpanded ? "Show fewer personal pull requests" : "Show all personal pull requests"
+                }
+                onPress={() => {
+                  setPersonalExpanded((value) => !value);
+                }}
+              >
+                <Text style={styles.note}>
+                  {personalExpanded
+                    ? "Show top 3"
+                    : `Show all ${personalPrs.length} (+${personalPrs.length - PERSONAL_PREVIEW_COUNT} more)`}
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
         </View>
 
@@ -656,16 +689,19 @@ export function StandupSection({
 function MergedList({
   label,
   prs,
+  limit,
   error,
   empty,
   styles,
 }: {
   label: string;
   prs: MergedPr[];
+  limit?: number;
   error: string | null;
   empty: string;
   styles: StandupStyles;
 }) {
+  const visible = limit === undefined ? prs : prs.slice(0, limit);
   return (
     <>
       <Text style={styles.label}>
@@ -675,7 +711,7 @@ function MergedList({
       {prs.length === 0 && !error ? (
         <Text style={styles.hint}>{empty}</Text>
       ) : (
-        prs.map((pr) => (
+        visible.map((pr) => (
           <Pressable
             key={`${pr.repo}-${pr.number}`}
             accessibilityRole="button"
@@ -906,6 +942,9 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       fontSize: 14,
       fontWeight: "600" as const,
       marginTop: 8,
+    },
+    groupToggle: {
+      alignSelf: "flex-start" as const,
     },
     groupDivider: {
       height: 1,
