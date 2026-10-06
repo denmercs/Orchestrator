@@ -44,6 +44,8 @@ export const jiraIssue = z.object({
   assignee: z.string(),
   parentKey: z.string().nullable(),
   parentSummary: z.string().nullable(),
+  // "Epic" for stories under an epic; a story's type for sub-tasks.
+  parentIssueType: z.string().nullable(),
   url: z.string(),
   updated: z.string().nullable(),
   labels: z.array(z.string()),
@@ -75,6 +77,21 @@ export const jiraSprint = z.object({
   name: z.string(),
   goal: z.string().nullable(),
   endDate: z.string().nullable(),
+});
+
+// Moves an issue into a board column by running the Jira transition that lands on one of the
+// column's statuses.
+export const moveJiraIssue = defineRpc({
+  name: "orchestration.jira-move",
+  input: z.object({
+    key: z.string(),
+    column: jiraBoardColumn,
+  }),
+  output: z.object({
+    ok: z.boolean(),
+    status: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
 });
 
 export const getJiraBoard = defineRpc({
@@ -373,3 +390,75 @@ export const getProdPulseAutomation = defineRpc({
 });
 
 export type ProdPulseAutomation = RpcOutput<typeof getProdPulseAutomation>;
+
+export const epicStory = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: z.string(),
+  dependsOn: z.array(z.string()),
+  blockedBy: z.string(),
+  blockedReason: z.string(),
+  // Set when an agent filed this story while working on another (epic-loop --file).
+  discoveredFrom: z.string(),
+  pr: z.number().nullable(),
+  attempts: z.number(),
+  cycles: z.object({ done: z.number(), total: z.number() }).nullable(),
+  planFile: z.string(),
+  preview: z.object({
+    routes: z.array(z.object({ path: z.string(), check: z.string() })),
+    note: z.string(),
+    url: z.string().nullable(),
+  }),
+  ready: z.boolean(),
+  retryAt: z.string().nullable(),
+  loopPid: z.number().nullable(),
+  session: z
+    .object({ id: z.string(), phase: z.string(), live: z.boolean(), held: z.boolean() })
+    .nullable(),
+});
+
+export const epicBoardState = z.object({
+  epic: z.object({ id: z.string(), title: z.string(), dir: z.string() }),
+  loop: z.object({ pid: z.number().nullable() }),
+  next: z.object({ story: z.string().nullable(), reason: z.string() }),
+  previewEnabled: z.boolean(),
+  repoUrl: z.string(),
+  stories: z.array(epicStory),
+  progress: z.array(z.object({ at: z.string(), text: z.string() })),
+  now: z.number(),
+});
+
+export const getEpicBoard = defineRpc({
+  name: "orchestration.epic-board",
+  input: z.object({}),
+  output: z.object({
+    repo: z.string(),
+    state: epicBoardState.nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const epicAction = z.enum([
+  "start",
+  "retry",
+  "release",
+  "approve",
+  "preview",
+  "preview-stop",
+  "loop-start",
+  "loop-stop",
+]);
+
+export const runEpicAction = defineRpc({
+  name: "orchestration.epic-action",
+  input: z.object({ action: epicAction, id: z.string().optional() }),
+  output: z.object({
+    ok: z.boolean(),
+    error: z.string().nullable(),
+    url: z.string().nullable(),
+  }),
+});
+
+export type EpicStory = z.infer<typeof epicStory>;
+export type EpicBoardState = NonNullable<RpcOutput<typeof getEpicBoard>["state"]>;
+export type EpicAction = z.infer<typeof epicAction>;

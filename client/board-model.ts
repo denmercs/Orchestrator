@@ -336,10 +336,13 @@ export function groupJiraColumns(
   );
   for (const issue of issues) {
     const index = columnIndex(issue, columns);
+    // The board is for reading the sprint; sessions start outside it, so cards only offer to
+    // reopen a session that already exists.
     const item = {
       ...toJiraItem(issue),
       phaseLabel: issue.status,
       detail: [issue.issueType, issue.assignee].filter(Boolean).join(" · "),
+      startLabel: null,
     };
     const session = sessionByKey.get(issue.key);
     groups[index]?.items.push(
@@ -350,7 +353,6 @@ export function groupJiraColumns(
             workspaceId: session.workspaceId,
             source: "both",
             retryLabel: "Open session",
-            startLabel: null,
           }
         : item,
     );
@@ -379,8 +381,10 @@ function columnIndex(issue: JiraIssue, columns: JiraBoardColumn[]) {
   return 0;
 }
 
+// Jira epics are groomed by the team and span other people's stories, so they only open in
+// Jira; sessions start from a single story.
 function startLabelForRole(role: BoardItem["role"]) {
-  return role === "epic" ? "Start epic loop" : "Start session";
+  return role === "epic" ? null : "Start session";
 }
 
 function jiraRole(issue: JiraIssue, fallback: BoardItem["role"]): BoardItem["role"] {
@@ -548,4 +552,81 @@ function uniqueById(items: BoardItem[]) {
     seen.add(item.id);
     return true;
   });
+}
+
+export type JiraEpicGroup = {
+  // Null for issues that sit under no epic.
+  key: string | null;
+  title: string;
+  url: string | null;
+  status: string | null;
+  issues: JiraIssue[];
+  done: number;
+  inProgress: number;
+};
+
+// A board carries several epics at once, so group its issues by the epic each one rolls up to.
+// Sub-tasks follow their story up to its epic when the story is on the board.
+export function groupJiraEpics(issues: JiraIssue[]): JiraEpicGroup[] {
+  const byKey = new Map(issues.map((issue) => [issue.key, issue]));
+  const epicKeyOf = (issue: JiraIssue): string | null => {
+    if (!issue.parentKey) {
+      return null;
+    }
+    if (issue.parentIssueType?.toLowerCase() === "epic") {
+      return issue.parentKey;
+    }
+    const story = byKey.get(issue.parentKey);
+    return story?.parentIssueType?.toLowerCase() === "epic" ? story.parentKey : null;
+  };
+
+  const groups = new Map<string | null, JiraEpicGroup>();
+  const groupFor = (key: string | null, issue: JiraIssue | null) => {
+    let group = groups.get(key);
+    if (!group) {
+      const epic = key ? byKey.get(key) : undefined;
+      const title = epic?.summary ?? issue?.parentSummary ?? "No epic";
+      group = {
+        key,
+        title,
+        url: epic?.url ?? (key && issue ? issue.url.replace(/\/browse\/[^/]+$/, `/browse/${key}`) : null),
+        status: epic?.status ?? null,
+        issues: [],
+        done: 0,
+        inProgress: 0,
+      };
+      groups.set(key, group);
+    }
+    return group;
+  };
+
+  for (const issue of issues) {
+    if (issue.issueType.toLowerCase() === "epic") {
+      groupFor(issue.key, null);
+      continue;
+    }
+    const key = epicKeyOf(issue);
+    // A sub-task's parentSummary is its story, not the epic; name the group from the story's parent.
+    const titleSource =
+      key && issue.parentKey !== key ? (byKey.get(issue.parentKey ?? "") ?? issue) : issue;
+    const group = groupFor(key, titleSource);
+    group.issues.push(issue);
+    const category = issue.statusCategory.toLowerCase();
+    if (category === "done") {
+      group.done += 1;
+    } else if (category === "indeterminate") {
+      group.inProgress += 1;
+    }
+  }
+
+  // Busiest epics first; epics with nothing on the board and "No epic" go last.
+  return [...groups.values()]
+    .filter((group) => group.issues.length > 0)
+    .sort(
+      (left, right) =>
+        Number(left.key === null) - Number(right.key === null) ||
+        right.inProgress - left.inProgress ||
+        right.issues.length - left.issues.length ||
+        left.title.localeCompare(right.title),
+    );
 }

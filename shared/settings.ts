@@ -28,6 +28,8 @@ export const jiraBoardSettings = defineSettings({
     boardFilter: z.string().default(""),
     // Assignee the Jira board opens filtered to; empty means everyone.
     developer: z.string().default(""),
+    // Show the board's cards grouped under their Jira epic instead of in status columns.
+    groupByEpic: z.boolean().default(false),
   }),
   migrate(values) {
     const row = values !== null && typeof values === "object" ? (values as Record<string, unknown>) : {};
@@ -37,6 +39,7 @@ export const jiraBoardSettings = defineSettings({
       // v2 defaulted this to "DCE", which hid boards outside work.
       boardFilter: rawFilter === "DCE" ? "" : rawFilter,
       developer: typeof row.developer === "string" ? row.developer : "",
+      groupByEpic: row.groupByEpic === true,
     };
   },
 });
@@ -47,5 +50,17 @@ export const prodPulseSettings = defineSettings({
   version: 1,
   schema: z.object({
     autoSchedule: z.boolean().default(false),
+  }),
+});
+
+export const epicLoopSettings = defineSettings({
+  id: "epic-loop",
+  scope: "host",
+  version: 1,
+  schema: z.object({
+    // Repo whose skillsync.config.json sets epicLoop.epic; empty hides the epic board's graph.
+    repo: z.string().default(""),
+    // skillsync checkout holding tools/lib/epic-dashboard.cjs; empty tries the repo's vendor copy.
+    skillsyncDir: z.string().default(""),
   }),
 });

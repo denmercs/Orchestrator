@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { PanResponder, Pressable, ScrollView, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { openExternalUrl, usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client";
-import { Icon, Modal, TextInput } from "@getpaseo/plugin/client/react-native";
+import { Icon, Modal, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import {
   getJiraBoard,
   listJiraBoards,
   listJiraPullRequests,
+  moveJiraIssue,
   listOrchestrationParents,
   listOrchestrationSchedules,
   type JiraBoardColumn,
@@ -24,7 +25,9 @@ import {
   type ParentLink,
   createBoardModel,
   groupJiraColumns,
+  groupJiraEpics,
 } from "./board-model";
+import { useEpicBoard } from "./epic-board";
 import { ProdPulseButton, ProdPulseDrawer, useProdPulse } from "./prod-pulse-drawer";
 import { startJiraSession } from "./start-jira-session";
 import { StandupSection } from "./standup-section";
@@ -38,6 +41,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const loadJiraBoard = useRpc(getJiraBoard);
   const loadJiraBoards = useRpc(listJiraBoards);
   const loadJiraPrs = useRpc(listJiraPullRequests);
+  const moveIssue = useRpc(moveJiraIssue);
   const boardSettings = useSettings(jiraBoardSettings);
   const defaultBoardId = boardSettings.status === "ready" ? boardSettings.values.defaultBoardId : "";
   const boardFilter = boardSettings.status === "ready" ? boardSettings.values.boardFilter : null;
@@ -57,9 +61,9 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [startingId, setStartingId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
   const { pulse, refresh: refreshPulse } = useProdPulse();
   const [pulseOpen, setPulseOpen] = useState(false);
+  const epic = useEpicBoard({ theme, compact: layout.compact, navigation });
   const agentIds = useMemo(
     () =>
       agents
@@ -131,6 +135,22 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
 
   const defaultDeveloper =
     boardSettings.status === "ready" ? boardSettings.values.developer : "";
+  const groupByEpic = boardSettings.status === "ready" ? boardSettings.values.groupByEpic : false;
+  const saveGroupByEpic = useCallback(
+    async (next: boolean) => {
+      if (boardSettings.status !== "ready") {
+        return;
+      }
+      const saved = await boardSettings.save(
+        { ...boardSettings.values, groupByEpic: next },
+        boardSettings.revision,
+      );
+      if (!saved) {
+        setJiraError(boardSettings.saveError ?? "Could not save the board grouping.");
+      }
+    },
+    [boardSettings],
+  );
   const saveDefaultDeveloper = useCallback(
     async (next: string) => {
       if (boardSettings.status !== "ready" || next === boardSettings.values.developer) {
@@ -266,51 +286,6 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
 
   const trees = board.families.filter((family) => family.children.length > 0);
-  const idlePhase = board.phases.find((phase) => phase.id === "todo");
-  const livePhases = board.phases.filter((phase) => phase.id !== "todo");
-  const lanes = useMemo(
-    () => [
-      ...livePhases.map((phase) => ({
-        id: `phase:${phase.id}`,
-        label: phase.label,
-        hint: phase.hint,
-        count: phase.items.length,
-        kind: "phase" as const,
-        items: phase.items,
-      })),
-      {
-        id: "idle",
-        label: "Idle",
-        hint: idlePhase?.hint ?? "Not running yet",
-        count: idlePhase?.items.length ?? 0,
-        kind: "phase" as const,
-        items: idlePhase?.items ?? [],
-      },
-      {
-        id: "merged",
-        label: "Merged",
-        hint: "Shipped recently",
-        count: board.mergedCount,
-        kind: "merged" as const,
-        items: board.merged,
-      },
-      {
-        id: "blocked",
-        label: "Blocked",
-        hint: board.blockedSummary || "Waiting on a blocker",
-        count: board.blockedCount,
-        kind: "blocked" as const,
-        items: board.blocked,
-      },
-    ],
-    [board.blocked, board.blockedCount, board.blockedSummary, board.merged, board.mergedCount, idlePhase, livePhases],
-  );
-  const activeLaneId =
-    lanes.some((lane) => lane.id === selectedLaneId)
-      ? selectedLaneId
-      : (lanes.find((lane) => lane.count > 0)?.id ?? lanes[0]?.id ?? "idle");
-  const activeLane = lanes.find((lane) => lane.id === activeLaneId) ?? lanes[0];
-
   function toggleExpanded(id: string) {
     setExpanded((current) => ({ ...current, [id]: !current[id] }));
   }
@@ -435,12 +410,16 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
             prColors={{ foreground: theme.colors.foreground, muted: theme.colors.foregroundMuted }}
             defaultDeveloper={defaultDeveloper}
             onDeveloperChange={(next) => void saveDefaultDeveloper(next)}
+            groupByEpic={groupByEpic}
+            onGroupByEpicChange={(next) => void saveGroupByEpic(next)}
             compact={layout.compact}
             selectedColumn={selectedJiraColumn}
             expanded={expanded}
             startingId={startingId}
             styles={styles}
             onSelectColumn={setSelectedJiraColumn}
+            onMoveIssue={(key, column) => moveIssue({ key, column })}
+            onMoved={() => void refreshJira()}
             onToggle={toggleExpanded}
             onOpen={openItem}
             onOpenJira={openInJira}
@@ -448,161 +427,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
           />
         ) : null}
 
-        <View style={styles.panel}>
-          <View style={styles.sectionHead}>
-            <Text style={styles.panelTitle}>Phase board</Text>
-            <Text style={styles.panelMeta}>{board.total} live sessions</Text>
-          </View>
-          {layout.compact ? (
-            <View style={styles.mobileBoard}>
-              <View style={styles.laneTabs}>
-                {lanes.map((lane) => {
-                  const selected = lane.id === activeLaneId;
-                  return (
-                    <Pressable
-                      key={lane.id}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected }}
-                      accessibilityLabel={`${lane.label}, ${lane.count} items`}
-                      onPress={() => {
-                        setSelectedLaneId(lane.id);
-                      }}
-                      style={selected ? styles.laneTabSelected : styles.laneTab}
-                    >
-                      <Text style={selected ? styles.laneTabSelectedText : styles.laneTabText}>
-                        {lane.label}
-                      </Text>
-                      <Text style={selected ? styles.laneTabSelectedCount : styles.laneTabCount}>
-                        {lane.count}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-              {activeLane ? (
-                <View style={styles.mobileLane}>
-                  <Text style={styles.kanbanHint}>{activeLane.hint}</Text>
-                  <LaneItems
-                    lane={activeLane}
-                    expanded
-                    styles={styles}
-                    startingId={startingId}
-                    onToggle={() => undefined}
-                    onOpen={openItem}
-                    onStart={startItem}
-                  />
-                </View>
-              ) : null}
-            </View>
-          ) : (
-            <>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator
-                style={styles.kanbanScroll}
-                contentContainerStyle={styles.kanban}
-              >
-                {livePhases.map((phase) => (
-                  <View key={phase.id} style={styles.kanbanCol}>
-                    <View style={styles.kanbanHead}>
-                      <Text style={styles.kanbanTitle}>{phase.label}</Text>
-                      <Text style={styles.kanbanCount}>{phase.items.length}</Text>
-                    </View>
-                    <Text style={styles.kanbanHint}>{phase.hint}</Text>
-                    <LaneItems
-                      lane={{
-                        id: `phase:${phase.id}`,
-                        kind: "phase",
-                        items: phase.items,
-                        empty: "Empty",
-                      }}
-                      expanded={Boolean(expanded[`phase:${phase.id}`])}
-                      styles={styles}
-                      startingId={startingId}
-                      onToggle={() => toggleExpanded(`phase:${phase.id}`)}
-                      onOpen={openItem}
-                      onStart={startItem}
-                    />
-                  </View>
-                ))}
-              </ScrollView>
-
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator
-                style={styles.kanbanScroll}
-                contentContainerStyle={styles.phaseBoard}
-              >
-                <View style={styles.idleCol}>
-                  <View style={styles.colHead}>
-                    <View style={[styles.dot, { backgroundColor: theme.colors.foregroundMuted }]} />
-                    <Text style={styles.colTitle}>Idle</Text>
-                    <Text style={styles.colCount}>{idlePhase?.items.length ?? 0}</Text>
-                  </View>
-                  <Text style={styles.kanbanHint}>{idlePhase?.hint ?? "Not running yet"}</Text>
-                  <LaneItems
-                    lane={{
-                      id: "idle",
-                      kind: "phase",
-                      items: idlePhase?.items ?? [],
-                      empty: "Nothing idle.",
-                    }}
-                    expanded={Boolean(expanded.idle)}
-                    styles={styles}
-                    startingId={startingId}
-                    onToggle={() => toggleExpanded("idle")}
-                    onOpen={openItem}
-                    onStart={startItem}
-                  />
-                </View>
-
-                <View style={styles.mergedCol}>
-                  <View style={styles.colHead}>
-                    <View style={[styles.dot, { backgroundColor: theme.colors.statusSuccess }]} />
-                    <Text style={styles.colTitle}>Merged</Text>
-                    <Text style={styles.colCount}>{board.mergedCount}</Text>
-                  </View>
-                  <LaneItems
-                    lane={{
-                      id: "merged",
-                      kind: "merged",
-                      items: board.merged,
-                      empty: "No merged items.",
-                    }}
-                    expanded={Boolean(expanded.merged)}
-                    styles={styles}
-                    startingId={startingId}
-                    onToggle={() => toggleExpanded("merged")}
-                    onOpen={openItem}
-                    onStart={startItem}
-                  />
-                </View>
-
-                <View style={styles.blockedCol}>
-                  <View style={styles.colHead}>
-                    <View style={[styles.dot, { backgroundColor: theme.colors.statusDanger }]} />
-                    <Text style={styles.colTitle}>Blocked</Text>
-                    <Text style={styles.colCount}>{board.blockedCount}</Text>
-                  </View>
-                  <LaneItems
-                    lane={{
-                      id: "blocked",
-                      kind: "blocked",
-                      items: board.blocked,
-                      empty: "No blocked items.",
-                    }}
-                    expanded={Boolean(expanded.blocked)}
-                    styles={styles}
-                    startingId={startingId}
-                    onToggle={() => toggleExpanded("blocked")}
-                    onOpen={openItem}
-                    onStart={startItem}
-                  />
-                </View>
-              </ScrollView>
-            </>
-          )}
-        </View>
+        {epic.panels}
 
         {trees.length > 0 || board.stories.length > 0 ? (
           <View style={styles.browse}>
@@ -623,7 +448,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
             {expanded.browse ? (
               <>
                 <Text style={styles.sectionHint}>
-                  Parent/child view for spawned work. Everything else lives on the phase board.
+                  Parent/child view for spawned work. Jira epics group on the board above; the harness plan has its own graph.
                 </Text>
                 {trees.map((family) => {
                   const open = Boolean(expanded[family.epic.id]);
@@ -721,6 +546,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
           onRefresh={refreshPulse}
         />
       ) : null}
+      {epic.drawer}
     </View>
   );
 }
@@ -737,12 +563,16 @@ function JiraBoard({
   prColors,
   defaultDeveloper,
   onDeveloperChange,
+  groupByEpic,
+  onGroupByEpicChange,
   compact,
   selectedColumn,
   expanded,
   startingId,
   styles,
   onSelectColumn,
+  onMoveIssue,
+  onMoved,
   onToggle,
   onOpen,
   onOpenJira,
@@ -757,17 +587,42 @@ function JiraBoard({
   prColors: { foreground: string; muted: string };
   defaultDeveloper: string;
   onDeveloperChange: (developer: string) => void;
+  groupByEpic: boolean;
+  onGroupByEpicChange: (next: boolean) => void;
   compact: boolean;
   selectedColumn: string | null;
   expanded: Record<string, boolean>;
   startingId: string | null;
   styles: ReturnType<typeof createStyles>;
   onSelectColumn: (name: string) => void;
+  onMoveIssue: (key: string, column: JiraBoardColumn) => Promise<{ ok: boolean; error: string | null }>;
+  onMoved: () => void;
   onToggle: (id: string) => void;
   onOpen: (item: BoardItem) => void;
   onOpenJira: (item: BoardItem) => void;
   onStart: (item: BoardItem) => void;
 }) {
+  const toast = useToast();
+  // Columns a card was just moved to, shown right away and dropped once Jira's answer reloads.
+  const [moved, setMoved] = useState<Record<string, JiraBoardColumn>>({});
+  useEffect(() => {
+    setMoved({});
+  }, [issues]);
+  const shownIssues = useMemo(
+    () =>
+      issues.map((issue) => {
+        const column = moved[issue.key];
+        return column
+          ? { ...issue, statusId: column.statusIds[0] ?? null, status: column.statusNames[0] ?? column.name }
+          : issue;
+      }),
+    [issues, moved],
+  );
+  const columnRefs = useRef(new Map<string, View>());
+  const columnRects = useRef(new Map<string, { x: number; y: number; width: number; height: number }>());
+  const [drag, setDrag] = useState<{ key: string; dx: number; dy: number; over: string | null } | null>(
+    null,
+  );
   const [developer, setDeveloper] = useState(defaultDeveloper || ALL_DEVELOPERS);
   // Settings load after the first render; adopt the saved default once it arrives.
   useEffect(() => {
@@ -793,14 +648,28 @@ function JiraBoard({
   const visibleIssues = useMemo(
     () =>
       activeDeveloper === ALL_DEVELOPERS
-        ? issues
-        : issues.filter((issue) => issue.assignee === activeDeveloper),
-    [issues, activeDeveloper],
+        ? shownIssues
+        : shownIssues.filter((issue) => issue.assignee === activeDeveloper),
+    [shownIssues, activeDeveloper],
   );
   const groups = useMemo(
     () => groupJiraColumns(visibleIssues, columns, sessions),
     [visibleIssues, columns, sessions],
   );
+  // The same cards, regrouped under the epic each one rolls up to. Each card keeps its column
+  // so it still shows a status.
+  const epics = useMemo(() => {
+    if (!groupByEpic) {
+      return [];
+    }
+    const placed = new Map(
+      groups.flatMap((group) => group.items.map((item) => [item.key, { item, column: group.name }] as const)),
+    );
+    return groupJiraEpics(visibleIssues).map((epic) => ({
+      ...epic,
+      cards: epic.issues.flatMap((issue) => placed.get(issue.key) ?? []),
+    }));
+  }, [groupByEpic, groups, visibleIssues]);
   const meta = sprint
     ? `${sprint.name}${sprint.endDate ? ` · ends ${new Date(sprint.endDate).toLocaleDateString()}` : ""} · ${visibleIssues.length} issues`
     : `${visibleIssues.length} issues`;
@@ -809,7 +678,64 @@ function JiraBoard({
     groups.find((group) => group.items.length > 0) ??
     groups[0];
 
-  function cards(group: JiraColumnGroup) {
+  async function move(item: BoardItem, from: string, to: string) {
+    const column = columns.find((entry) => entry.name === to);
+    if (!column || from === to) {
+      return;
+    }
+    setMoved((current) => ({ ...current, [item.key]: column }));
+    const result = await onMoveIssue(item.key, column).catch((cause: unknown) => ({
+      ok: false,
+      error: cause instanceof Error ? cause.message : null,
+    }));
+    if (!result.ok) {
+      setMoved(({ [item.key]: _failed, ...rest }) => rest);
+      toast.error(result.error ?? `Could not move ${item.key} to ${to}.`);
+      return;
+    }
+    toast.show(`${item.key} → ${to}`, { variant: "success" });
+    onMoved();
+  }
+
+  // Drop targets are measured when a drag starts, so scrolling and resizing never go stale.
+  function measureColumns() {
+    columnRects.current.clear();
+    for (const [name, node] of columnRefs.current) {
+      node.measureInWindow((x, y, width, height) => {
+        columnRects.current.set(name, { x, y, width, height });
+      });
+    }
+  }
+
+  function columnAt(x: number, y: number) {
+    for (const [name, rect] of columnRects.current) {
+      if (x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height) {
+        return name;
+      }
+    }
+    return null;
+  }
+
+  function card(item: BoardItem, column: string) {
+    return (
+      <JiraCard
+        key={item.id}
+        item={item}
+        column={column}
+        columns={columns.map((entry) => entry.name)}
+        prs={prsByKey.get(item.key) ?? []}
+        prColors={prColors}
+        styles={styles}
+        starting={startingId === item.id}
+        onOpen={onOpen}
+        onOpenJira={onOpenJira}
+        onStart={onStart}
+        onMove={(to) => void move(item, column, to)}
+      />
+    );
+  }
+
+  function cards(group: JiraColumnGroup, draggable = false) {
     const id = `jira:${group.name}`;
     return (
       <PreviewList
@@ -818,23 +744,43 @@ function JiraBoard({
         empty="Empty"
         styles={styles}
         onToggle={() => onToggle(id)}
-        renderItem={(item) => (
-          <JiraCard
-            key={item.id}
-            item={item}
-            column={group.name}
-            prs={prsByKey.get(item.key) ?? []}
-            prColors={prColors}
-            styles={styles}
-            starting={startingId === item.id}
-            onOpen={onOpen}
-            onOpenJira={onOpenJira}
-            onStart={onStart}
-          />
-        )}
+        renderItem={(item) =>
+          draggable ? (
+            <Draggable
+              key={item.id}
+              style={drag?.key === item.key ? [styles.dragging, { transform: [{ translateX: drag.dx }, { translateY: drag.dy }] }] : null}
+              onStart={() => {
+                measureColumns();
+                setDrag({ key: item.key, dx: 0, dy: 0, over: group.name });
+              }}
+              onMove={(dx, dy, x, y) => setDrag({ key: item.key, dx, dy, over: columnAt(x, y) })}
+              onEnd={(x, y) => {
+                setDrag(null);
+                const to = x === null || y === null ? null : columnAt(x, y);
+                if (to) {
+                  void move(item, group.name, to);
+                }
+              }}
+            >
+              {card(item, group.name)}
+            </Draggable>
+          ) : (
+            card(item, group.name)
+          )
+        }
       />
     );
   }
+
+  const columnRef = (name: string) => (node: View | null) => {
+    if (node) {
+      columnRefs.current.set(name, node);
+    } else {
+      columnRefs.current.delete(name);
+    }
+  };
+  const dropStyle = (name: string) =>
+    drag && drag.over === name ? styles.dropTarget : null;
 
   return (
     <View style={styles.panel}>
@@ -842,6 +788,17 @@ function JiraBoard({
         <Text style={styles.panelTitle}>{title}</Text>
         <View style={[styles.jiraHeadRight, styles.jiraHead]}>
           <Text style={styles.panelMeta}>{meta}</Text>
+          <Pressable
+            accessibilityRole="switch"
+            accessibilityState={{ checked: groupByEpic }}
+            accessibilityLabel="Group by epic"
+            onPress={() => onGroupByEpicChange(!groupByEpic)}
+            style={[styles.picker, styles.pickerButton, groupByEpic ? styles.laneTabSelected : null]}
+          >
+            <Text style={groupByEpic ? styles.laneTabSelectedText : styles.pickerButtonText}>
+              By epic
+            </Text>
+          </Pressable>
           {developers.length > 1 ? (
             <DeveloperPicker
               options={[[ALL_DEVELOPERS, issues.length] as const, ...developers]}
@@ -856,7 +813,44 @@ function JiraBoard({
         </View>
       </View>
       {sprint?.goal ? <Text style={styles.sectionHint}>{sprint.goal}</Text> : null}
-      {compact ? (
+      {groupByEpic ? (
+        <View style={styles.epicGroups}>
+          {epics.map((epic) => {
+            const id = `jira-epic:${epic.key ?? "none"}`;
+            const total = epic.issues.length;
+            const todo = total - epic.done - epic.inProgress;
+            return (
+              <View key={id} style={styles.familyCard}>
+                <View style={styles.familySummary}>
+                  {epic.key ? <Text style={styles.waitKey}>{epic.key}</Text> : null}
+                  <Text style={styles.familySummaryTitle} numberOfLines={1}>
+                    {epic.title}
+                  </Text>
+                  <Text style={styles.panelMeta}>
+                    {epic.done}/{total} done{epic.inProgress ? ` · ${epic.inProgress} in progress` : ""}
+                  </Text>
+                  {epic.url ? (
+                    <Pill label="Open in Jira" styles={styles} onPress={() => void openExternalUrl(epic.url ?? "")} />
+                  ) : null}
+                </View>
+                <View style={styles.epicTrack}>
+                  <View style={[styles.epicTrackDone, { flex: epic.done }]} />
+                  <View style={[styles.epicTrackActive, { flex: epic.inProgress }]} />
+                  <View style={{ flex: todo }} />
+                </View>
+                <PreviewList
+                  items={epic.cards}
+                  expanded={Boolean(expanded[id])}
+                  empty="Empty"
+                  styles={styles}
+                  onToggle={() => onToggle(id)}
+                  renderItem={({ item, column }) => card(item, column)}
+                />
+              </View>
+            );
+          })}
+        </View>
+      ) : compact ? (
         <View style={styles.mobileBoard}>
           <View style={styles.laneTabs}>
             {groups.map((group) => {
@@ -890,19 +884,30 @@ function JiraBoard({
               // Empty columns stay collapsed so the populated ones get the room.
               <View
                 key={group.name}
+                ref={columnRef(group.name)}
+                collapsable={false}
                 accessibilityLabel={`${group.name}, empty`}
-                style={styles.jiraColCollapsed}
+                style={[styles.jiraColCollapsed, dropStyle(group.name)]}
               >
                 <Text style={styles.kanbanCount}>0</Text>
                 <Text style={styles.jiraColCollapsedTitle}>{group.name}</Text>
               </View>
             ) : (
-              <View key={group.name} style={styles.jiraCol}>
+              <View
+                key={group.name}
+                ref={columnRef(group.name)}
+                collapsable={false}
+                style={[
+                  styles.jiraCol,
+                  dropStyle(group.name),
+                  group.items.some((item) => item.key === drag?.key) ? styles.raised : null,
+                ]}
+              >
                 <View style={styles.kanbanHead}>
                   <Text style={styles.kanbanTitle}>{group.name}</Text>
                   <Text style={styles.kanbanCount}>{group.items.length}</Text>
                 </View>
-                {cards(group)}
+                {cards(group, true)}
               </View>
             ),
           )}
@@ -978,6 +983,7 @@ function DeveloperPicker({
 function JiraCard({
   item,
   column,
+  columns,
   prs,
   prColors,
   styles,
@@ -985,9 +991,11 @@ function JiraCard({
   onOpen,
   onOpenJira,
   onStart,
+  onMove,
 }: {
   item: BoardItem;
   column: string;
+  columns: string[];
   prs: JiraPullRequest[];
   prColors: { foreground: string; muted: string };
   styles: ReturnType<typeof createStyles>;
@@ -995,7 +1003,9 @@ function JiraCard({
   onOpen: (item: BoardItem) => void;
   onOpenJira: (item: BoardItem) => void;
   onStart: (item: BoardItem) => void;
+  onMove: (column: string) => void;
 }) {
+  const [moving, setMoving] = useState(false);
   // The column already names the status; only call it out when they differ.
   const status = item.phaseLabel.toLowerCase() === column.toLowerCase() ? null : item.phaseLabel;
   return (
@@ -1052,23 +1062,78 @@ function JiraCard({
           ) : null}
         </Pressable>
       ))}
-      {item.retryLabel || item.startLabel ? (
+      <View style={styles.blockedActions}>
+        {item.retryLabel ? (
+          <Pill label={item.retryLabel} styles={styles} onPress={() => onOpen(item)} />
+        ) : null}
+        {item.retryLabel && item.url ? (
+          <Pill label="Open in Jira" styles={styles} onPress={() => onOpenJira(item)} />
+        ) : null}
+        {item.startLabel ? (
+          <Pill
+            label={starting ? "Starting…" : item.startLabel}
+            styles={styles}
+            onPress={() => onStart(item)}
+          />
+        ) : null}
+        {/* The non-drag way to change status (keyboard, touch, compact and epic views). */}
+        <Pill label={moving ? "Cancel" : "Move"} styles={styles} onPress={() => setMoving((open) => !open)} />
+      </View>
+      {moving ? (
         <View style={styles.blockedActions}>
-          {item.retryLabel ? (
-            <Pill label={item.retryLabel} styles={styles} onPress={() => onOpen(item)} />
-          ) : null}
-          {item.retryLabel && item.url ? (
-            <Pill label="Open in Jira" styles={styles} onPress={() => onOpenJira(item)} />
-          ) : null}
-          {item.startLabel ? (
-            <Pill
-              label={starting ? "Starting…" : item.startLabel}
-              styles={styles}
-              onPress={() => onStart(item)}
-            />
-          ) : null}
+          {columns
+            .filter((name) => name !== column)
+            .map((name) => (
+              <Pill
+                key={name}
+                label={`→ ${name}`}
+                styles={styles}
+                onPress={() => {
+                  setMoving(false);
+                  onMove(name);
+                }}
+              />
+            ))}
         </View>
       ) : null}
+    </View>
+  );
+}
+
+// A card you can pick up. It only claims the gesture after a few pixels of movement, so taps
+// still reach the buttons inside.
+function Draggable({
+  style,
+  onStart,
+  onMove,
+  onEnd,
+  children,
+}: {
+  style: object | null;
+  onStart: () => void;
+  onMove: (dx: number, dy: number, x: number, y: number) => void;
+  onEnd: (x: number | null, y: number | null) => void;
+  children: ReactNode;
+}) {
+  const handlers = useRef({ onStart, onMove, onEnd });
+  handlers.current = { onStart, onMove, onEnd };
+  const responder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
+          Math.abs(gesture.dx) + Math.abs(gesture.dy) > 6,
+        onPanResponderGrant: () => handlers.current.onStart(),
+        onPanResponderMove: (_event, gesture) =>
+          handlers.current.onMove(gesture.dx, gesture.dy, gesture.moveX, gesture.moveY),
+        onPanResponderRelease: (_event, gesture) => handlers.current.onEnd(gesture.moveX, gesture.moveY),
+        onPanResponderTerminate: () => handlers.current.onEnd(null, null),
+        onPanResponderTerminationRequest: () => false,
+      }),
+    [],
+  );
+  return (
+    <View {...responder.panHandlers} style={style}>
+      {children}
     </View>
   );
 }
@@ -1127,141 +1192,6 @@ function CountStat({
       <Text style={[styles.statValue, valueColor ? { color: valueColor } : null]}>{value}</Text>
       <Text style={styles.statHint}>{hint}</Text>
     </View>
-  );
-}
-
-type BoardLane = {
-  id: string;
-  kind: "phase" | "merged" | "blocked";
-  items: BoardItem[];
-  empty?: string;
-};
-
-function LaneItems({
-  lane,
-  expanded,
-  styles,
-  startingId,
-  onToggle,
-  onOpen,
-  onStart,
-}: {
-  lane: BoardLane;
-  expanded: boolean;
-  styles: ReturnType<typeof createStyles>;
-  startingId: string | null;
-  onToggle: () => void;
-  onOpen: (item: BoardItem) => void;
-  onStart: (item: BoardItem) => void;
-}) {
-  const empty =
-    lane.empty ??
-    (lane.kind === "merged"
-      ? "No merged items."
-      : lane.kind === "blocked"
-        ? "No blocked items."
-        : lane.id === "idle"
-          ? "Nothing idle."
-          : "Empty");
-
-  if (lane.kind === "merged") {
-    return (
-      <PreviewList
-        items={lane.items}
-        expanded={expanded}
-        empty={empty}
-        styles={styles}
-        onToggle={onToggle}
-        renderItem={(item) => (
-          <Pressable
-            key={item.id}
-            accessibilityRole="button"
-            accessibilityLabel={`${item.key} ${item.title}`}
-            onPress={() => onOpen(item)}
-            style={styles.mergedRow}
-          >
-            <Text style={styles.mergedKey}>{item.key}</Text>
-            <Text style={styles.mergedTitle} numberOfLines={2}>
-              {item.title}
-            </Text>
-            {item.pr ? <Text style={styles.pr}>#{item.pr}</Text> : null}
-          </Pressable>
-        )}
-      />
-    );
-  }
-
-  if (lane.kind === "blocked") {
-    return (
-      <PreviewList
-        items={lane.items}
-        expanded={expanded}
-        empty={empty}
-        styles={styles}
-        onToggle={onToggle}
-        renderItem={(item) => (
-          <View key={item.id} style={styles.blockedCard}>
-            <View style={styles.blockedHead}>
-              <View style={styles.blockedHeadLeft}>
-                <RoleTag role={item.role} styles={styles} />
-                {item.source !== "session" ? <Text style={styles.phaseChip}>Jira</Text> : null}
-                {item.key ? <Text style={styles.blockedKey}>{item.key}</Text> : null}
-              </View>
-              {item.pr ? <Text style={styles.pr}>#{item.pr}</Text> : null}
-            </View>
-            <Text style={styles.blockedTitle}>{item.title}</Text>
-            {item.underTitle ? <Text style={styles.underLine}>Under {item.underTitle}</Text> : null}
-            <Text style={styles.waitDetail}>{item.detail}</Text>
-            {item.progress !== null ? (
-              <View style={styles.barTrack}>
-                <View
-                  style={[
-                    styles.blockedBarFill,
-                    {
-                      width: `${Math.round(item.progress * 100)}%`,
-                    },
-                  ]}
-                />
-              </View>
-            ) : null}
-            {item.retryLabel || item.startLabel ? (
-              <View style={styles.blockedActions}>
-                {item.retryLabel ? (
-                  <Pill label={item.retryLabel} styles={styles} onPress={() => onOpen(item)} />
-                ) : null}
-                {item.startLabel ? (
-                  <Pill
-                    label={startingId === item.id ? "Starting…" : item.startLabel}
-                    styles={styles}
-                    onPress={() => onStart(item)}
-                  />
-                ) : null}
-              </View>
-            ) : null}
-          </View>
-        )}
-      />
-    );
-  }
-
-  return (
-    <PreviewList
-      items={lane.items}
-      expanded={expanded}
-      empty={empty}
-      styles={styles}
-      onToggle={onToggle}
-      renderItem={(item) => (
-        <SessionCard
-          key={item.id}
-          item={item}
-          styles={styles}
-          starting={startingId === item.id}
-          onOpen={onOpen}
-          onStart={onStart}
-        />
-      )}
-    />
   );
 }
 
@@ -1832,6 +1762,14 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       fontSize: 11,
       textAlign: "center" as const,
     },
+    dropTarget: {
+      borderWidth: 2,
+      borderStyle: "dashed" as const,
+      borderColor: theme.colors.accent,
+      opacity: 1,
+    },
+    raised: { zIndex: 20 },
+    dragging: { zIndex: 20, opacity: 0.85 },
     jiraCard: {
       gap: 8,
       padding: 12,
@@ -2135,6 +2073,16 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       borderColor: theme.colors.border,
       borderWidth: 1,
     },
+    epicGroups: { gap: 10 },
+    epicTrack: {
+      flexDirection: "row" as const,
+      height: 4,
+      borderRadius: 2,
+      overflow: "hidden" as const,
+      backgroundColor: theme.colors.surface2,
+    },
+    epicTrackDone: { backgroundColor: theme.colors.statusSuccess },
+    epicTrackActive: { backgroundColor: theme.colors.accent },
     familyCard: {
       gap: 8,
       padding: compact ? 10 : 12,

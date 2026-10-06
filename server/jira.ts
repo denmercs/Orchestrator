@@ -4,6 +4,7 @@ import {
   listJiraBoards,
   listJiraPullRequests,
   listOrchestrationStandupWork,
+  moveJiraIssue,
   type JiraBoardColumn,
   type JiraBoardOption,
   type JiraIssue,
@@ -102,6 +103,43 @@ export async function loadJiraBoard(
       issues: [],
       error: publicError(error),
     };
+  }
+}
+
+export async function moveIssueToColumn(
+  input: { key: string; column: JiraBoardColumn },
+): Promise<RpcOutput<typeof moveJiraIssue>> {
+  try {
+    const credentials = await resolveCredentials();
+    const key = encodeURIComponent(input.key);
+    const body = await jiraGet(credentials, `/rest/api/3/issue/${key}/transitions`);
+    const ids = new Set(input.column.statusIds);
+    const names = new Set(input.column.statusNames.map((name) => name.toLowerCase()));
+    const transition = (Array.isArray(body.transitions) ? body.transitions : [])
+      .map((raw) => asRecord(raw))
+      .find((raw) => {
+        const to = asRecord(raw?.to);
+        const toId = to?.id;
+        const toName = asString(to?.name)?.toLowerCase();
+        return (
+          ((typeof toId === "string" || typeof toId === "number") && ids.has(String(toId))) ||
+          (toName != null && names.has(toName))
+        );
+      });
+    const id = transition?.id;
+    if (!transition || (typeof id !== "string" && typeof id !== "number")) {
+      return {
+        ok: false,
+        status: null,
+        error: `Jira has no transition from ${input.key}'s current status to ${input.column.name}.`,
+      };
+    }
+    await jiraSend(credentials, `/rest/api/3/issue/${key}/transitions`, {
+      transition: { id: String(id) },
+    });
+    return { ok: true, status: asString(asRecord(transition.to)?.name), error: null };
+  } catch (error) {
+    return { ok: false, status: null, error: publicError(error) };
   }
 }
 
@@ -558,6 +596,26 @@ async function jiraGet(
   return asRecord(body) ?? {};
 }
 
+async function jiraSend(
+  credentials: JiraCredentials,
+  pathname: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const response = await fetch(new URL(pathname, credentials.url), {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: basicAuth(credentials),
+    },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    throw new Error(`Jira update failed (${response.status})`);
+  }
+}
+
 async function jiraRequest(
   credentials: JiraCredentials,
   payload: Record<string, unknown>,
@@ -630,6 +688,7 @@ function normalizeIssue(raw: unknown, siteUrl: string): SearchedIssue | null {
     assignee: asString(assignee?.displayName) ?? "Unassigned",
     parentKey: asString(parent?.key),
     parentSummary: asString(parentFields?.summary),
+    parentIssueType: asString(asRecord(parentFields?.issuetype)?.name),
     url: `${trimSlash(siteUrl)}/browse/${key}`,
     updated: asString(fields.updated),
     labels,
