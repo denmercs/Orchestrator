@@ -459,6 +459,14 @@ export const runEpicAction = defineRpc({
   }),
 });
 
+// Removes the harness initiative holding the configured epic, the loop's state, and
+// epicLoop.epic from the repo's skillsync.config.json. Refused while anything is running.
+export const deleteEpicInitiative = defineRpc({
+  name: "orchestration.epic-delete-initiative",
+  input: z.object({}),
+  output: z.object({ ok: z.boolean(), error: z.string().nullable(), deleted: z.string().nullable() }),
+});
+
 export type EpicStory = z.infer<typeof epicStory>;
 export type EpicBoardState = NonNullable<RpcOutput<typeof getEpicBoard>["state"]>;
 export type EpicAction = z.infer<typeof epicAction>;

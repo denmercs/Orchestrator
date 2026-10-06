@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { EpicAction, EpicBoardState } from "../shared/orchestration";
 
 // The epic board reads and drives skillsync's epic-loop through the same module its web
@@ -100,4 +100,53 @@ export async function runEpicLoopAction(
 
 export function stopEpicPreviews() {
   current?.actions.previews.stopAll();
+}
+
+// The initiative is the `initiatives/<name>` folder above the configured epic (an initiative
+// holds several epics). An epic outside one is removed on its own. Either way it must sit inside
+// the repo's .harness, so a misconfigured path can't reach the repo's own files.
+function initiativeDirFor(harness: string, epicDir: string) {
+  const rel = relative(harness, epicDir);
+  if (!rel || isAbsolute(rel) || rel.split(sep)[0] === "..") return null;
+  const parts = rel.split(sep);
+  const at = parts.indexOf("initiatives");
+  return at >= 0 && parts[at + 1] ? join(harness, ...parts.slice(0, at + 2)) : epicDir;
+}
+
+export async function deleteInitiative(settings: { repo: string; skillsyncDir: string }) {
+  try {
+    if (!settings.repo) {
+      throw new Error("Set the epic repo first.");
+    }
+    const root = resolve(settings.repo);
+    const configPath = join(root, "skillsync.config.json");
+    const text = readFileSync(configPath, "utf8");
+    const config = JSON.parse(text) as { epicLoop?: { epic?: unknown } };
+    if (typeof config.epicLoop?.epic !== "string") {
+      throw new Error(`No epicLoop.epic in ${configPath}.`);
+    }
+    const harness = join(root, ".harness");
+    const target = initiativeDirFor(harness, resolve(root, config.epicLoop.epic));
+    if (!target) {
+      throw new Error(`${config.epicLoop.epic} is outside .harness; delete it by hand.`);
+    }
+
+    const { actions } = await actionsFor(settings.repo, settings.skillsyncDir);
+    const state = actions.state();
+    const busy = state.stories.find((story) => story.loopPid !== null || story.session?.live);
+    if (state.loop.pid !== null || busy) {
+      throw new Error(busy ? `${busy.id} is still running. Stop it first.` : "Stop the plan first.");
+    }
+
+    actions.previews.stopAll();
+    current = null;
+    rmSync(target, { recursive: true, force: true });
+    rmSync(join(harness, "epic-loop"), { recursive: true, force: true });
+    delete config.epicLoop.epic;
+    const indent = /\n(\s+)"/.exec(text)?.[1] ?? "\t";
+    writeFileSync(configPath, `${JSON.stringify(config, null, indent)}\n`, "utf8");
+    return { ok: true, error: null, deleted: relative(root, target) };
+  } catch (cause) {
+    return { ok: false, error: cause instanceof Error ? cause.message : String(cause), deleted: null };
+  }
 }

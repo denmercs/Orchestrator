@@ -4,6 +4,7 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { openExternalUrl, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import {
+  deleteEpicInitiative,
   getEpicBoard,
   runEpicAction,
   type EpicAction,
@@ -214,6 +215,7 @@ export function useEpicBoard({
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   const loadBoard = useRpc(getEpicBoard);
   const act = useRpc(runEpicAction);
+  const removeInitiative = useRpc(deleteEpicInitiative);
   const settings = useSettings(epicLoopSettings);
   const toast = useToast();
   const [state, setState] = useState<EpicBoardState | null>(null);
@@ -222,6 +224,7 @@ export function useEpicBoard({
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [shown, setShown] = useState(false);
@@ -265,10 +268,13 @@ export function useEpicBoard({
   }, [settingsKey, refresh]);
 
   useEffect(() => {
-    if (!confirmStop) return;
-    const timer = setTimeout(() => setConfirmStop(false), 4000);
+    if (!confirmStop && !confirmDelete) return;
+    const timer = setTimeout(() => {
+      setConfirmStop(false);
+      setConfirmDelete(false);
+    }, 4000);
     return () => clearTimeout(timer);
-  }, [confirmStop]);
+  }, [confirmStop, confirmDelete]);
 
   async function run(action: EpicAction, id?: string, path?: string) {
     const key = `${action}:${id ?? ""}`;
@@ -283,6 +289,30 @@ export function useEpicBoard({
       }
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : "Action failed");
+    } finally {
+      setBusy(null);
+      void refresh();
+    }
+  }
+
+  // Deleting removes the initiative's files for good (.harness is not in git), then clears the
+  // repo so the panel folds back to "not set up".
+  async function deleteInitiative() {
+    if (busy || settings.status !== "ready") return;
+    setBusy("delete:");
+    try {
+      const result = await removeInitiative({});
+      if (!result.ok) {
+        toast.error(result.error ?? "Could not delete the initiative.");
+        return;
+      }
+      toast.show(`Deleted ${result.deleted}`, { variant: "success" });
+      setShown(false);
+      if (!(await settings.save({ ...settings.values, repo: "" }, settings.revision))) {
+        toast.error(settings.saveError ?? "Deleted, but could not clear the harness plan repo.");
+      }
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : "Could not delete the initiative.");
     } finally {
       setBusy(null);
       void refresh();
@@ -483,6 +513,22 @@ export function useEpicBoard({
               />
             ) : null}
             {!active ? <Button label="Hide" styles={styles} onPress={() => setShown(false)} /> : null}
+            {!active ? (
+              <Button
+                label={busy === "delete:" ? "Deleting…" : confirmDelete ? "Tap again to delete" : "Delete initiative"}
+                danger={confirmDelete}
+                disabled={busy !== null}
+                styles={styles}
+                onPress={() => {
+                  if (!confirmDelete) {
+                    setConfirmDelete(true);
+                    return;
+                  }
+                  setConfirmDelete(false);
+                  void deleteInitiative();
+                }}
+              />
+            ) : null}
             <Button
               label="Repo"
               styles={styles}

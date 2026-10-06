@@ -9,7 +9,7 @@ import {
   loadJiraPullRequests,
   moveIssueToColumn,
 } from "./server/jira";
-import { loadEpicBoard, runEpicLoopAction, stopEpicPreviews } from "./server/epic-loop";
+import { deleteInitiative, loadEpicBoard, runEpicLoopAction, stopEpicPreviews } from "./server/epic-loop";
 import { createLoopAdvance } from "./server/loop-advance";
 import { loadProdPulse } from "./server/prod-pulse";
 import { applyProdPulseAutomation, loadProdPulseAutomation } from "./server/prod-pulse-schedule";
@@ -18,6 +18,7 @@ import { detectObsidian, listTemplates } from "./server/obsidian";
 import { listParents, listSchedules } from "./server/orchestration";
 import { listFolders, listStandupTodos, saveStandupTodos, upsertStandupNote } from "./server/standup";
 import {
+  deleteEpicInitiative,
   detectOrchestrationObsidian,
   getDailyVerse,
   getEpicBoard,
@@ -52,6 +53,7 @@ export default function contribute(server: PluginServerContext) {
   };
   server.handle(getEpicBoard, async () => loadEpicBoard(await readEpicSettings()));
   server.handle(runEpicAction, async (input) => runEpicLoopAction(await readEpicSettings(), input));
+  server.handle(deleteEpicInitiative, async () => deleteInitiative(await readEpicSettings()));
   server.handle(listOrchestrationSchedules, listSchedules);
   server.handle(listOrchestrationParents, listParents);
   server.handle(listJiraBoards, async () => {
