@@ -44,6 +44,7 @@ export function StandupSection({
   const toast = useToast();
   const [browseOpen, setBrowseOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
+  const [completedOpen, setCompletedOpen] = useState(false);
   const [listing, setListing] = useState<FolderListing | null>(null);
   const [templates, setTemplates] = useState<TemplateListing>({
     templates: [],
@@ -57,6 +58,7 @@ export function StandupSection({
   const [merged, setMerged] = useState<MergedListing>({ date: "", prs: [], error: null });
   const [work, setWork] = useState<WorkListing>({ items: [], error: null });
   const [todos, setTodos] = useState<StandupTodo[]>([]);
+  const [today, setToday] = useState("");
   const [todoKind, setTodoKind] = useState<StandupTodoKind>("todo");
   const [todoDraft, setTodoDraft] = useState("");
   const [todoBusy, setTodoBusy] = useState(false);
@@ -76,6 +78,10 @@ export function StandupSection({
       personalPrs: merged.prs.filter((pr) => !isWork(pr)),
     };
   }, [merged.prs, work.items]);
+  // Open items from every daily note stay in view; completed ones move to a modal.
+  const openGroups = useMemo(() => groupByDate(todos.filter((item) => !item.done)), [todos]);
+  const completedGroups = useMemo(() => groupByDate(todos.filter((item) => item.done)), [todos]);
+  const completedCount = todos.length - openGroups.reduce((sum, group) => sum + group.items.length, 0);
 
   const refreshTemplates = useCallback(
     async (nextFolder: string | null) => {
@@ -164,6 +170,7 @@ export function StandupSection({
       try {
         const listing = await listTodos({ folderPath: nextFolder });
         setTodos(listing.items);
+        setToday(listing.today);
         setNotePath(listing.notePath);
       } catch {
         setTodos([]);
@@ -252,15 +259,20 @@ export function StandupSection({
     await saveFolderAndUpdate(folderPath);
   }
 
-  async function persistTodos(nextItems: StandupTodo[], nextFolder = folderPath) {
-    if (!nextFolder) {
+  /** Rewrites one daily note's items; `date` null targets today's note. */
+  async function persistTodos(
+    date: string | null,
+    nextItems: Pick<StandupTodo, "kind" | "text" | "done">[],
+  ) {
+    if (!folderPath) {
       throw new Error("Select a standup folder first.");
     }
     setTodoBusy(true);
     try {
       const result = await saveTodos({
-        folderPath: nextFolder,
+        folderPath,
         templatePath: templatePath || null,
+        date,
         items: nextItems.map((item) => ({
           kind: item.kind,
           text: item.text,
@@ -268,7 +280,7 @@ export function StandupSection({
         })),
       });
       setTodos(result.items);
-      setNotePath(result.notePath);
+      setToday(result.today);
       return result;
     } finally {
       setTodoBusy(false);
@@ -281,7 +293,8 @@ export function StandupSection({
       return;
     }
     try {
-      await persistTodos([...todos, { id: "draft", kind: todoKind, text, done: false }]);
+      const todayItems = todos.filter((item) => item.date === today);
+      await persistTodos(null, [...todayItems, { kind: todoKind, text, done: false }]);
       setTodoDraft("");
       toast.show(`Added ${todoKind} to today’s note.`, { variant: "success" });
     } catch (error) {
@@ -289,19 +302,25 @@ export function StandupSection({
     }
   }
 
-  async function toggleTodo(id: string) {
+  async function toggleTodo(target: StandupTodo) {
     try {
       await persistTodos(
-        todos.map((item) => (item.id === id ? { ...item, done: !item.done } : item)),
+        target.date,
+        todos
+          .filter((item) => item.date === target.date)
+          .map((item) => (item.id === target.id ? { ...item, done: !item.done } : item)),
       );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to update the todo note.");
     }
   }
 
-  async function removeTodo(id: string) {
+  async function removeTodo(target: StandupTodo) {
     try {
-      await persistTodos(todos.filter((item) => item.id !== id));
+      await persistTodos(
+        target.date,
+        todos.filter((item) => item.date === target.date && item.id !== target.id),
+      );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Unable to remove the todo note.");
     }
@@ -462,7 +481,7 @@ export function StandupSection({
           <Text style={styles.todoTitle}>Todo notes</Text>
           <Text style={styles.hint}>
             {folderPath
-              ? "Saved into today’s selected Obsidian note."
+              ? "New items go into today’s note. Open items from earlier notes stay listed."
               : "Select a folder to write todos into the daily note."}
           </Text>
           <View style={styles.todoSplit}>
@@ -514,43 +533,34 @@ export function StandupSection({
               </Pressable>
             </View>
             <ScrollView style={styles.todoList} contentContainerStyle={styles.todoListContent}>
-              {todos.length === 0 ? (
-                <Text style={styles.hint}>No extra notes on today’s file yet.</Text>
+              {openGroups.length === 0 ? (
+                <Text style={styles.hint}>No open todo notes in any daily file.</Text>
               ) : (
-                todos.map((item) => (
-                  <View key={item.id} style={styles.todoRow}>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityState={{ checked: item.done }}
-                      accessibilityLabel={`${item.done ? "Mark incomplete" : "Mark done"}: ${item.text}`}
-                      onPress={() => {
-                        void toggleTodo(item.id);
-                      }}
-                      style={item.done ? styles.todoCheckDone : styles.todoCheck}
-                    >
-                      <Text style={item.done ? styles.todoCheckDoneText : styles.todoCheckText}>
-                        {item.done ? "✓" : ""}
-                      </Text>
-                    </Pressable>
-                    <View style={styles.todoBody}>
-                      <Text style={item.kind === "blocker" ? styles.todoKindDanger : styles.todoKind}>
-                        {kindLabel(item.kind)}
-                      </Text>
-                      <Text style={item.done ? styles.todoTextDone : styles.todoText}>{item.text}</Text>
-                    </View>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Remove ${item.kind} ${item.text}`}
-                      onPress={() => {
-                        void removeTodo(item.id);
-                      }}
-                      style={styles.todoRemove}
-                    >
-                      <Text style={styles.todoRemoveText}>Remove</Text>
-                    </Pressable>
-                  </View>
-                ))
+                <TodoGroups
+                  groups={openGroups}
+                  today={today}
+                  styles={styles}
+                  onToggle={(item) => {
+                    void toggleTodo(item);
+                  }}
+                  onRemove={(item) => {
+                    void removeTodo(item);
+                  }}
+                />
               )}
+              {completedCount > 0 ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Show ${completedCount} completed todo notes`}
+                  onPress={() => {
+                    setCompletedOpen(true);
+                  }}
+                  style={styles.completedRow}
+                >
+                  <Text style={styles.completedText}>Completed · {completedCount}</Text>
+                  <Icon name="ChevronRight" size={14} color={theme.colors.foregroundMuted} />
+                </Pressable>
+              ) : null}
             </ScrollView>
           </View>
         </View>
@@ -627,6 +637,37 @@ export function StandupSection({
       </Modal>
 
       <Modal
+        title={`Completed · ${completedCount}`}
+        icon={<Icon name="CheckCircle" size={18} color={theme.colors.foreground} />}
+        open={completedOpen}
+        onOpenChange={setCompletedOpen}
+      >
+        <Modal.Content
+          scrollable={false}
+          style={{ backgroundColor: theme.colors.surface1 }}
+          contentContainerStyle={{ padding: 0, gap: 0 }}
+        >
+          <ScrollView style={styles.folderList} contentContainerStyle={styles.completedModalContent}>
+            {completedGroups.length === 0 ? (
+              <Text style={styles.hint}>Nothing completed yet.</Text>
+            ) : (
+              <TodoGroups
+                groups={completedGroups}
+                today={today}
+                styles={styles}
+                onToggle={(item) => {
+                  void toggleTodo(item);
+                }}
+                onRemove={(item) => {
+                  void removeTodo(item);
+                }}
+              />
+            )}
+          </ScrollView>
+        </Modal.Content>
+      </Modal>
+
+      <Modal
         title="Obsidian template"
         icon={<Icon name="FileText" size={18} color={theme.colors.foreground} />}
         open={templateOpen}
@@ -684,6 +725,77 @@ export function StandupSection({
       </Modal>
     </View>
   );
+}
+
+type TodoGroup = { date: string; items: StandupTodo[] };
+
+/** Groups items by daily note, preserving the server's newest-first order. */
+function groupByDate(items: StandupTodo[]): TodoGroup[] {
+  const groups: TodoGroup[] = [];
+  for (const item of items) {
+    const last = groups.at(-1);
+    if (last && last.date === item.date) {
+      last.items.push(item);
+    } else {
+      groups.push({ date: item.date, items: [item] });
+    }
+  }
+  return groups;
+}
+
+function TodoGroups({
+  groups,
+  today,
+  styles,
+  onToggle,
+  onRemove,
+}: {
+  groups: TodoGroup[];
+  today: string;
+  styles: StandupStyles;
+  onToggle: (item: StandupTodo) => void;
+  onRemove: (item: StandupTodo) => void;
+}) {
+  return groups.map((group) => (
+    <View key={group.date}>
+      <Text style={styles.todoDate}>
+        {group.date === today ? `TODAY · ${group.date}` : group.date} · {group.items.length}
+      </Text>
+      {group.items.map((item) => (
+        <View key={item.id} style={styles.todoRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ checked: item.done }}
+            accessibilityLabel={`${item.done ? "Mark incomplete" : "Mark done"}: ${item.text}`}
+            onPress={() => {
+              onToggle(item);
+            }}
+            style={item.done ? styles.todoCheckDone : styles.todoCheck}
+          >
+            <Text style={item.done ? styles.todoCheckDoneText : styles.todoCheckText}>
+              {item.done ? "✓" : ""}
+            </Text>
+          </Pressable>
+          <View style={styles.todoBody}>
+            <Text style={item.kind === "blocker" ? styles.todoKindDanger : styles.todoKind}>
+              {kindLabel(item.kind)}
+            </Text>
+            <Text style={item.done ? styles.todoTextDone : styles.todoText}>{item.text}</Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${item.kind} ${item.text}`}
+            onPress={() => {
+              onRemove(item);
+            }}
+            style={styles.todoRemove}
+          >
+            <Text style={styles.todoRemoveText}>Remove</Text>
+          </Pressable>
+        </View>
+      ))}
+    </View>
+  ));
 }
 
 function MergedList({
@@ -861,6 +973,33 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       fontSize: 13,
       minHeight: compact ? 96 : 160,
       flexGrow: compact ? 0 : 1,
+    },
+    todoDate: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 11,
+      letterSpacing: 0.8,
+      marginTop: 8,
+    },
+    completedRow: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      justifyContent: "space-between" as const,
+      marginTop: 8,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.surface1,
+    },
+    completedText: {
+      color: theme.colors.foregroundMuted,
+      fontSize: 12,
+      letterSpacing: 0.4,
+    },
+    completedModalContent: {
+      paddingHorizontal: 16,
+      paddingBottom: 16,
     },
     todoRow: {
       flexDirection: "row" as const,

@@ -192,7 +192,11 @@ export const standupTodo = z.object({
   kind: standupTodoKind,
   text: z.string(),
   done: z.boolean(),
+  /** YYYY-MM-DD of the daily note the item lives in. */
+  date: z.string(),
 });
+
+const standupDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 export const listOrchestrationStandupTodos = defineRpc({
   name: "orchestration.standup.todos.list",
@@ -202,6 +206,7 @@ export const listOrchestrationStandupTodos = defineRpc({
   output: z.object({
     notePath: z.string(),
     exists: z.boolean(),
+    today: z.string(),
     items: z.array(standupTodo),
   }),
 });
@@ -211,6 +216,8 @@ export const saveOrchestrationStandupTodos = defineRpc({
   input: z.object({
     folderPath: z.string(),
     templatePath: z.string().nullable(),
+    /** Daily note to write; null means today's note. */
+    date: standupDate.nullable(),
     items: z.array(
       z.object({
         kind: standupTodoKind,
@@ -222,6 +229,7 @@ export const saveOrchestrationStandupTodos = defineRpc({
   output: z.object({
     notePath: z.string(),
     created: z.boolean(),
+    today: z.string(),
     items: z.array(standupTodo),
   }),
 });

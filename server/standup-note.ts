@@ -13,17 +13,21 @@ export type StandupTodo = {
   kind: StandupTodoKind;
   text: string;
   done: boolean;
+  date: string;
 };
 
-const YEAR_FOLDER = /^\d{4}$/;
+export const YEAR_FOLDER = /^\d{4}$/;
+export const DAILY_NOTE_FILE = /^(\d{4})-\d{2}-\d{2}\.md$/;
 
 export function standupNoteRelativePath(folderName: string, now: Date): string {
-  const year = String(now.getFullYear());
-  const date = formatDate(now);
+  return standupNoteRelativePathForDate(folderName, formatDate(now));
+}
+
+export function standupNoteRelativePathForDate(folderName: string, date: string): string {
   if (YEAR_FOLDER.test(folderName)) {
     return `${date}.md`;
   }
-  return `${year}/${date}.md`;
+  return `${date.slice(0, 4)}/${date}.md`;
 }
 
 export function formatDate(now: Date): string {
@@ -228,7 +232,7 @@ function shippedBlock(body: string): string {
   return [SHIPPED_START, body, SHIPPED_END].join("\n");
 }
 
-export function parseTodoNotes(markdown: string): StandupTodo[] {
+export function parseTodoNotes(markdown: string, date: string): StandupTodo[] {
   const match = markdown.match(
     new RegExp(`${escapeRegExp(TODO_NOTES_START)}\\n([\\s\\S]*?)\\n${escapeRegExp(TODO_NOTES_END)}`),
   );
@@ -241,10 +245,11 @@ export function parseTodoNotes(markdown: string): StandupTodo[] {
     const item = line.match(/^- \[([ xX])\] (todo|blocker|note):\s*(.*)$/);
     if (item) {
       items.push({
-        id: `${items.length}:${item[2]}:${item[3]}`,
+        id: `${date}:${items.length}:${item[2]}:${item[3]}`,
         kind: item[2] as StandupTodoKind,
         text: item[3],
         done: item[1].toLowerCase() === "x",
+        date,
       });
       continue;
     }
@@ -260,7 +265,7 @@ export function parseTodoNotes(markdown: string): StandupTodo[] {
 
 export function writeTodoNotes(
   markdown: string,
-  items: StandupTodo[],
+  items: Pick<StandupTodo, "kind" | "text" | "done">[],
 ): { markdown: string; changed: boolean } {
   const ensured = ensureTodoNotesSection(markdown);
   const body =

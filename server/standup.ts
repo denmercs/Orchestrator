@@ -13,10 +13,14 @@ import { listMyWorkStories } from "./jira";
 import {
   applyObsidianTemplate,
   buildStandupNote,
+  DAILY_NOTE_FILE,
   formatDate,
   parseTodoNotes,
   shippedLines,
   standupNoteRelativePath,
+  standupNoteRelativePathForDate,
+  type StandupTodo,
+  YEAR_FOLDER,
   writeShippedItems,
   workLines,
   writeTodoNotes,
@@ -120,25 +124,28 @@ export async function upsertStandupNote(input: {
 export async function listStandupTodos(input: {
   folderPath: string;
 }): Promise<RpcOutput<typeof listOrchestrationStandupTodos>> {
-  const notePath = await resolveNotePath(input.folderPath);
-  try {
-    const markdown = await readFile(notePath, "utf8");
-    return { notePath, exists: true, items: parseTodoNotes(markdown) };
-  } catch (error) {
-    if (!isNodeError(error) || error.code !== "ENOENT") {
-      throw error;
-    }
-    return { notePath, exists: false, items: [] };
-  }
+  const folderPath = await resolveStandupFolder(input.folderPath);
+  const today = formatDate(new Date());
+  const notePath = notePathForDate(folderPath, today);
+  const notes = await listDailyNotes(folderPath);
+  return {
+    notePath,
+    exists: notes.some((note) => note.path === notePath),
+    today,
+    items: await readTodosAcrossNotes(notes),
+  };
 }
 
 export async function saveStandupTodos(input: {
   folderPath: string;
   templatePath: string | null;
+  date: string | null;
   items: { kind: "todo" | "blocker" | "note"; text: string; done: boolean }[];
 }): Promise<RpcOutput<typeof saveOrchestrationStandupTodos>> {
-  const folderPath = path.resolve(input.folderPath);
-  const notePath = await resolveNotePath(folderPath);
+  const folderPath = await resolveStandupFolder(input.folderPath);
+  const today = formatDate(new Date());
+  const date = input.date ?? today;
+  const notePath = notePathForDate(folderPath, date);
   await mkdir(path.dirname(notePath), { recursive: true });
 
   let created = false;
@@ -149,11 +156,15 @@ export async function saveStandupTodos(input: {
     if (!isNodeError(error) || error.code !== "ENOENT") {
       throw error;
     }
+    // Only today's note may be created from the template; past notes must already exist.
+    if (date !== today) {
+      throw new Error(`The ${date} standup note no longer exists.`);
+    }
     markdown = await readNoteTemplate(input.templatePath, new Date());
     created = true;
   }
 
-  const next = writeTodoNotes(markdown, input.items.map((item) => ({ ...item, id: "" })));
+  const next = writeTodoNotes(markdown, input.items);
   if (created || next.changed) {
     await writeAtomically(notePath, next.markdown);
   }
@@ -161,20 +172,55 @@ export async function saveStandupTodos(input: {
   return {
     notePath,
     created,
-    items: parseTodoNotes(next.markdown),
+    today,
+    items: await readTodosAcrossNotes(await listDailyNotes(folderPath)),
   };
 }
 
-async function resolveNotePath(folderPath: string): Promise<string> {
+async function resolveStandupFolder(folderPath: string): Promise<string> {
   const resolved = path.resolve(folderPath);
   assertAllowedPath(resolved);
   const info = await stat(resolved);
   if (!info.isDirectory()) {
     throw new Error("Select a folder, not a file.");
   }
-  const notePath = path.join(resolved, standupNoteRelativePath(path.basename(resolved), new Date()));
+  return resolved;
+}
+
+function notePathForDate(folderPath: string, date: string): string {
+  const notePath = path.join(folderPath, standupNoteRelativePathForDate(path.basename(folderPath), date));
   assertAllowedPath(notePath);
   return notePath;
+}
+
+type DailyNote = { date: string; path: string };
+
+/** Daily notes in the standup folder, newest first. Mirrors standupNoteRelativePathForDate. */
+async function listDailyNotes(folderPath: string): Promise<DailyNote[]> {
+  const directories = YEAR_FOLDER.test(path.basename(folderPath))
+    ? [folderPath]
+    : (await readdir(folderPath, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && YEAR_FOLDER.test(entry.name))
+        .map((entry) => path.join(folderPath, entry.name));
+
+  const listings = await Promise.all(
+    directories.map(async (directory) =>
+      (await readdir(directory, { withFileTypes: true }))
+        .filter((entry) => entry.isFile() && DAILY_NOTE_FILE.test(entry.name))
+        .map((entry) => ({
+          date: entry.name.slice(0, -".md".length),
+          path: path.join(directory, entry.name),
+        })),
+    ),
+  );
+  return listings.flat().sort((left, right) => right.date.localeCompare(left.date));
+}
+
+async function readTodosAcrossNotes(notes: DailyNote[]): Promise<StandupTodo[]> {
+  const perNote = await Promise.all(
+    notes.map(async (note) => parseTodoNotes(await readFile(note.path, "utf8"), note.date)),
+  );
+  return perNote.flat();
 }
 
 async function readNoteTemplate(templatePath: string | null, now: Date): Promise<string> {
