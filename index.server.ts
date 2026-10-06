@@ -1,4 +1,5 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { loadDailyVerse } from "./server/bible-verse";
 import { listMergedPrs } from "./server/github-prs";
 import { readHostMcpServers } from "./server/host-mcp";
 import {
@@ -18,6 +19,7 @@ import { listParents, listSchedules } from "./server/orchestration";
 import { listFolders, listStandupTodos, saveStandupTodos, upsertStandupNote } from "./server/standup";
 import {
   detectOrchestrationObsidian,
+  getDailyVerse,
   getEpicBoard,
   getJiraBoard,
   getProdPulse,
@@ -59,6 +61,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(getJiraBoard, loadJiraBoard);
   server.handle(listJiraPullRequests, loadJiraPullRequests);
   server.handle(moveJiraIssue, moveIssueToColumn);
+  server.handle(getDailyVerse, () => loadDailyVerse());
   server.handle(getProdPulse, () => loadProdPulse());
   server.handle(getProdPulseAutomation, () => loadProdPulseAutomation());
   // Off by default: schedules spend Claude credits, so they only appear once the drawer's

@@ -27,6 +27,7 @@ import {
   groupJiraColumns,
   groupJiraEpics,
 } from "./board-model";
+import { DailyVerseCard } from "./daily-verse";
 import { useEpicBoard } from "./epic-board";
 import { ProdPulseButton, ProdPulseDrawer, useProdPulse } from "./prod-pulse-drawer";
 import { startJiraSession } from "./start-jira-session";
@@ -366,6 +367,8 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
             Updated {board.updatedAt}
           </Text>
         </View>
+
+        <DailyVerseCard theme={theme} />
 
         {loading ? <Text style={styles.muted}>Loading live catalog…</Text> : null}
         {error ? <Text style={styles.danger}>{error}</Text> : null}

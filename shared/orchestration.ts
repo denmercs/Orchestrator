@@ -462,3 +462,17 @@ export const runEpicAction = defineRpc({
 export type EpicStory = z.infer<typeof epicStory>;
 export type EpicBoardState = NonNullable<RpcOutput<typeof getEpicBoard>["state"]>;
 export type EpicAction = z.infer<typeof epicAction>;
+
+export const getDailyVerse = defineRpc({
+  name: "orchestration.daily-verse",
+  input: z.object({}),
+  output: z.object({
+    reference: z.string(),
+    text: z.string().nullable(),
+    translation: z.string(),
+    // Copyright line the translation's terms require next to the text, if any.
+    copyright: z.string().nullable(),
+  }),
+});
+
+export type DailyVerse = RpcOutput<typeof getDailyVerse>;
