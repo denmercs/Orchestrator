@@ -1,5 +1,6 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { OrchestrationDashboard } from "./client/orchestration-dashboard";
+import { contributeSessionRolePills } from "./client/session-role-pills";
 import { INSTALL_LABEL } from "./shared/install";
 
 const TITLE = INSTALL_LABEL ? `Orchestration (${INSTALL_LABEL})` : "Orchestration";
@@ -24,5 +25,5 @@ export default function contribute(client: PluginClientContext) {
     },
   });
 
-  return () => {};
+  return contributeSessionRolePills(client);
 }

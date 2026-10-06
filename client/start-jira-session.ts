@@ -4,6 +4,12 @@ import type { BoardItem } from "./board-model";
 type PaseoApi = ReturnType<typeof usePaseo>;
 type PaseoProject = Awaited<ReturnType<PaseoApi["projects"]["list"]>>["projects"][number];
 
+// Workspace names are plain text, so the role mark is a text glyph. Monochrome on purpose: it takes
+// the row's text color instead of competing with Paseo's colored status dot beside it.
+// Agent titles stay unmarked because the board parses the Jira key from the start of them.
+export const HARNESS_MARK = "★";
+export const WORKER_MARK = "↳";
+
 const PROJECT_HINTS: Record<string, string[]> = {
   QUICK: ["quickpress", "wiscodes-quickpress"],
   GIH: ["gihimo"],
@@ -29,7 +35,7 @@ export async function startJiraSession(paseo: PaseoApi, item: BoardItem) {
       worktreeSlug: slug,
     },
   });
-  await workspace.setTitle(title);
+  await workspace.setTitle(workspaceTitle(item, title));
   const agent = await workspace.agents.create({
     title,
     config: {
@@ -78,6 +84,13 @@ function sessionTitle(item: BoardItem) {
   return label.length > 60 ? `${label.slice(0, 57)}...` : label;
 }
 
+function workspaceTitle(item: BoardItem, title: string) {
+  if (item.role === "epic") {
+    return `${HARNESS_MARK} ${title}`;
+  }
+  return item.role === "child" ? `${WORKER_MARK} ${title}` : title;
+}
+
 function worktreeSlug(item: BoardItem) {
   const title = item.title
     .toLowerCase()
@@ -96,7 +109,7 @@ function epicLoopPrompt(item: BoardItem) {
     "",
     "1. Read the epic and its child issues with the attached MCP tools (Jira/Atlassian, plus GitHub, Sentry, and any other servers from Cursor, Claude, or Kiro). Do not open a browser and do not ask anyone to log in.",
     "2. Plan remaining open children in dependency order.",
-    "3. For each ready child, create a Paseo subagent titled \"<KEY> — <summary>\" in its own worktree off this repo's main branch.",
+    `3. For each ready child, create a Paseo subagent titled "<KEY> — <summary>" in its own worktree off this repo's main branch, and name that worktree's workspace "${WORKER_MARK} <KEY> — <summary>" so it reads as a worker in the sidebar.`,
     "4. Keep this session as the epic parent. Do not implement child tickets yourself unless a child is blocked on a decision only you can make.",
     "5. Loop: check child sessions, unblock, spawn the next ready ticket, and stop when the epic's open work is done or waiting on a human.",
     "6. The Orchestrator plugin will poke this session when a child pull request merges (immediately after the child turn ends, and every 2 minutes as a fallback). Treat that as the signal to start the next ready ticket.",
