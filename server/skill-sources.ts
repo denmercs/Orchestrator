@@ -190,6 +190,8 @@ async function scanMachine(): Promise<Found[]> {
 export async function loadCatalog(sources: SkillSource[]) {
   const skills: CatalogSkill[] = (await scanMachine()).map((s) => ({
     name: s.name,
+    folder: s.name,
+    description: "",
     source: MACHINE_SOURCE,
     kind: s.kind,
   }));
@@ -199,7 +201,9 @@ export async function loadCatalog(sources: SkillSource[]) {
       const dir = await materialise(source);
       const found = await scan(dir);
       if (source.enabled) {
-        skills.push(...found.map((s) => ({ name: s.name, source: source.id, kind: s.kind })));
+        skills.push(
+          ...found.map((s) => ({ name: s.name, folder: s.name, description: "", source: source.id, kind: s.kind })),
+        );
       }
       statuses.push({ id: source.id, ok: true, error: null, commit: source.pin, skillCount: found.length });
     } catch (error) {
@@ -281,6 +285,17 @@ export async function checkSource(source: SkillSource) {
 export async function removeSourceCheckout(id: string) {
   await withLock(id, () => rm(checkoutDir(id), { recursive: true, force: true }));
   return { ok: true };
+}
+
+// What an attachment carries: SKILL.md's body plus absolute paths to the skill's other files
+// in the pinned checkout or folder. `commit` is the source's pin (null for folder sources).
+export type SkillContent =
+  | { name: string; description: string; body: string; files: string[]; commit: string | null }
+  | { error: string };
+
+// Stub until S2.
+export async function readSkill(_ref: SkillRef, _sources: SkillSource[]): Promise<SkillContent> {
+  return { error: "Not implemented." };
 }
 
 // Copy the phase's skills from connected sources into the story worktree, where the agent

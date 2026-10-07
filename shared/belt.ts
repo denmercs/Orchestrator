@@ -1,4 +1,4 @@
-import { defineRpc, defineSettings } from "@getpaseo/plugin";
+import { defineRpc, defineSettings, PluginAttachmentSearchPayloadSchema } from "@getpaseo/plugin";
 import { z } from "zod";
 
 // Story belt: each phase runs in a fresh agent. A phase ends by writing a marker under
@@ -108,6 +108,9 @@ export type BeltConfig = z.infer<typeof beltValues>;
 
 const catalogSkill = z.object({
   name: z.string(),
+  // The skill's folder (or command file) name; `name` comes from SKILL.md frontmatter when set.
+  folder: z.string(),
+  description: z.string(),
   source: z.string(),
   kind: z.enum(["skill", "command"]),
 });
@@ -161,6 +164,31 @@ export const removeSkillSource = defineRpc({
   name: "orchestration.belt.source.remove",
   input: z.object({ id: z.string() }),
   output: z.object({ ok: z.boolean() }),
+});
+
+// skills.sh search. `connected` is true when the hit's repo is already a skill source.
+// Failures come back as `error` with no results.
+const registryHit = z.object({
+  source: z.string(),
+  skillId: z.string(),
+  name: z.string(),
+  installs: z.number(),
+  connected: z.boolean(),
+});
+export type RegistryHit = z.infer<typeof registryHit>;
+
+export const searchSkillRegistry = defineRpc({
+  name: "orchestration.belt.registry.search",
+  input: z.object({ query: z.string() }),
+  output: z.object({ results: z.array(registryHit), error: z.string().nullable() }),
+});
+export type RegistrySearch = z.infer<typeof searchSkillRegistry.output>;
+
+// The composer's Skills attachment source: searches the catalog and returns attachable skills.
+export const attachSkill = defineRpc({
+  name: "orchestration.skills.attach",
+  input: z.object({ query: z.string() }),
+  output: PluginAttachmentSearchPayloadSchema,
 });
 
 export const startBeltStory = defineRpc({
