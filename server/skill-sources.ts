@@ -370,37 +370,57 @@ export async function removeSourceCheckout(id: string) {
 
 // What an attachment carries: SKILL.md's body plus absolute paths to the skill's other files
 // in the pinned checkout or folder. `commit` is the source's pin (null for folder sources).
+// `path` is the skill folder, or the command file.
 export type SkillContent =
-  | { name: string; description: string; body: string; files: string[]; commit: string | null }
+  | { name: string; description: string; body: string; files: string[]; commit: string | null; path: string }
   | { error: string };
 
 // Reads in place from the checkout or folder. A source that isn't connected, or is off, is never
 // fetched or cloned.
 export async function readSkill(ref: SkillRef, sources: SkillSource[]): Promise<SkillContent> {
-  try {
-    let found: Found[];
-    let commit: string | null = null;
-    if (ref.source === MACHINE_SOURCE) {
-      found = await scanMachine();
-    } else {
-      const source = sources.find((s) => s.id === ref.source);
-      if (!source || !source.enabled) {
-        return { error: `${ref.name}: source "${ref.source}" is not connected or is off.` };
-      }
-      found = await scan(await materialise(source));
-      commit = source.pin;
+  const [content] = await readSkills([ref], sources);
+  return content ?? { error: `${ref.name}: not found in ${ref.source}.` };
+}
+
+// Like `readSkill` for many refs, in the same order, materialising and scanning each source once.
+export async function readSkills(refs: SkillRef[], sources: SkillSource[]): Promise<SkillContent[]> {
+  const scans = new Map<string, Promise<{ found: Found[]; commit: string | null }>>();
+  function scanSource(id: string) {
+    let pending = scans.get(id);
+    if (!pending) {
+      pending = scanFor(id, sources);
+      scans.set(id, pending);
     }
-    const entry = findSkill(found, ref.name);
-    if (!entry) {
-      return { error: `${ref.name}: not found in ${ref.source}.` };
-    }
-    const file = entry.kind === "skill" ? join(entry.path, "SKILL.md") : entry.path;
-    const { body } = readFrontmatter(await readFile(file, "utf8"));
-    const files = entry.kind === "skill" ? (await listFiles(entry.path)).filter((f) => f !== file) : [];
-    return { name: entry.name, description: entry.description, body, files, commit };
-  } catch (error) {
-    return { error: `${ref.name}: ${message(error)}` };
+    return pending;
   }
+  return Promise.all(
+    refs.map(async (ref): Promise<SkillContent> => {
+      try {
+        const { found, commit } = await scanSource(ref.source);
+        const entry = findSkill(found, ref.name);
+        if (!entry) {
+          return { error: `${ref.name}: not found in ${ref.source}.` };
+        }
+        const file = entry.kind === "skill" ? join(entry.path, "SKILL.md") : entry.path;
+        const { body } = readFrontmatter(await readFile(file, "utf8"));
+        const files = entry.kind === "skill" ? (await listFiles(entry.path)).filter((f) => f !== file) : [];
+        return { name: entry.name, description: entry.description, body, files, commit, path: entry.path };
+      } catch (error) {
+        return { error: `${ref.name}: ${message(error)}` };
+      }
+    }),
+  );
+}
+
+async function scanFor(id: string, sources: SkillSource[]) {
+  if (id === MACHINE_SOURCE) {
+    return { found: await scanMachine(), commit: null };
+  }
+  const source = sources.find((s) => s.id === id);
+  if (!source || !source.enabled) {
+    throw new Error(`source "${id}" is not connected or is off.`);
+  }
+  return { found: await scan(await materialise(source)), commit: source.pin };
 }
 
 // Every file under a skill folder. Symlinks are followed only when they resolve inside the

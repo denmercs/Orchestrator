@@ -1,6 +1,7 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { OrchestrationDashboard } from "./client/orchestration-dashboard";
 import { contributeSessionRolePills } from "./client/session-role-pills";
+import { attachSkill } from "./shared/belt";
 import { INSTALL_LABEL } from "./shared/install";
 
 const TITLE = INSTALL_LABEL ? `Orchestration (${INSTALL_LABEL})` : "Orchestration";
@@ -25,5 +26,17 @@ export default function contribute(client: PluginClientContext) {
     },
   });
 
-  return contributeSessionRolePills(client);
+  // Composer "Skills": attach a skill from a connected source to a running agent.
+  const offAttach = client.addAttachmentSource({
+    id: "skills",
+    title: "Skills",
+    icon: "FileText",
+    pickerTitle: "Attach a skill",
+    searchPlaceholder: "Search skills",
+    search: attachSkill,
+  });
+  const offPills = contributeSessionRolePills(client);
+  return async () => {
+    await Promise.all([offAttach(), offPills()]);
+  };
 }
