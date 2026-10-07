@@ -1,6 +1,6 @@
-# Orchestrator: skill vocabulary
+# Orchestrator: vocabulary
 
-This file defines the words the skill code uses: the Skills drawer, the Story belt and the skill sources behind them. Later work should reuse these names instead of making up new ones. When code adds or renames one of these concepts, update this file in the same change.
+This file defines the words the plugin code uses: the Skills drawer, the Story belt and the skill sources behind them, and the context meter that watches each session's size. Later work should reuse these names instead of making up new ones. When code adds or renames one of these concepts, update this file in the same change.
 
 ## Phase 1 rule
 
@@ -69,3 +69,21 @@ _Avoid_: marketplace, store, skills.sh source.
 A skill handed to an agent that is already running, through that agent's composer, instead of through a belt phase. The skill is read from a connected Skill source. Nothing is copied into the worktree or installed globally. Belt phase extras serve new story agents. Attachments serve running agents. `readSkill` returns what an attachment carries: the `SKILL.md` body after the frontmatter, absolute paths to the skill's other files in the pinned checkout, folder or machine path, and the source's pin as `commit`. It reads only connected, enabled sources (and `installed`) and never clones anything else. Every composer offers them through the **Skills** attachment source (`skills.attach`): the attached text is a header naming the skill, its source and short pin, then the body, then a `## Files in this skill` list.
 
 _Avoid_: skill injection, skill upload.
+
+## Context meter
+
+The pure function that turns what a session reports into a context reading. It reads the agent's `lastUsage`, its command list and its timeline, and never its provider name. There are no `provider === …` branches. Planned as `readContext(snapshot, thresholds)`.
+
+- **Context reading**: one measurement of a session at the end of a turn: `used` (`lastUsage.contextWindowUsedTokens`), `max` (`lastUsage.contextWindowMaxTokens`), plus its level, capability and compact strategy. `lastUsage` is read from `paseo.agents.ref(id)` after `refresh()`. A fresh handle reads `null` until then. List entries carry it too, at `entry.agent.lastUsage`.
+- **Level**: how full the session is: `ok`, `amber` (past the first threshold, 100k), `red` (past the second, 150k), or `unknown` when the agent reports no usage.
+- **Capability**: how much the agent reports, which decides what the meter can do:
+  - **Full**: usage and max, a `compact` entry in `commands()` (match `name === "compact"` exactly; `autocompact` is a different entry), and `compaction` timeline items with `preTokens`. Claude is Full.
+  - **Partial**: usage and max but no `compact` command. Compacting uses the fresh strategy.
+  - **Basic**: no usage. The level is `unknown` and only the fresh strategy is offered.
+- **Compact strategy**: what Compact does for this session. **native** sends `/compact Keep: <keep-list>` to the running agent, which summarises in place. **fresh** writes a handoff and starts a new agent in the same workspace. Full capability gets native. Partial and Basic get fresh.
+- **Compactor**: the module that carries out a compact strategy, with one adapter per strategy (`Compactor.compact(agent, keepList)`). A native compact shows up in the timeline as a `compaction` item with `status: "completed"` and `preTokens`, then a smaller next reading. Paseo still echoes the `/compact …` text as a `user_message`, but no assistant reply follows it.
+- **Context watch**: the server side that runs the meter. On `agent.turn_ended` it takes a context reading, records a telemetry row, decides on a warning, and serves the pill's actions over RPC. `turn_ended.timeline` is the whole timeline so far, so the watch only looks at items it has not seen yet.
+- **Warning**: the notice raised when a session's level rises to `amber` or `red`. At most one per session per level. It honours **Remind me at 150k** (wait for red) and **Ignore**. Planned as `nextWarning(memory, reading)`.
+- **Telemetry row**: one line in `~/.orchestrator/context-telemetry.jsonl`: `{ at, agentId, provider, step, used, max, event }`, where `event` is `turn`, `warning`, `compact.native` or `compact.fresh`. `provider` is recorded for analysis only and never branched on.
+
+_Avoid_: token meter, context gauge (for the meter); threshold state (for level); summarise, reset (for compact); alert, nag (for warning).
