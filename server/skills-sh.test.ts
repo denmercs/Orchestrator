@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SkillSource } from "../shared/belt";
+import { sourceId } from "./skill-sources";
 import { searchSkillsSh } from "./skills-sh";
 
 const connected: SkillSource = {
@@ -76,4 +77,92 @@ test("search gives an error and no results on a non-200 response", async () => {
 
   assert.deepEqual(result.results, []);
   assert.ok(result.error, "expected an error message");
+});
+
+test("search gives an error and no results when the body is not JSON", async () => {
+  const fetch = stubFetch(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => {
+      throw new SyntaxError("Unexpected token < in JSON at position 0");
+    },
+  }));
+
+  const result = await searchSkillsSh("react", { fetch, sources: [connected] });
+
+  assert.deepEqual(result.results, []);
+  assert.ok(result.error, "expected an error message");
+});
+
+test("search gives an error and no results when the body has the wrong shape", async () => {
+  const fetch = stubFetch(async () => ({ ok: true, status: 200, json: async () => ({ skills: "nope" }) }));
+
+  const result = await searchSkillsSh("react", { fetch, sources: [connected] });
+
+  assert.deepEqual(result, { results: [], error: "skills.sh sent an unexpected response." });
+});
+
+test("search says skills.sh did not answer when the request times out", async () => {
+  const fetch = stubFetch(async () => {
+    throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+  });
+
+  const result = await searchSkillsSh("react", { fetch, sources: [connected] });
+
+  assert.deepEqual(result, { results: [], error: "skills.sh did not answer in time." });
+});
+
+test("a blank query returns no results without calling skills.sh", async () => {
+  let calls = 0;
+  const fetch = stubFetch(async () => {
+    calls += 1;
+    return { ok: true, status: 200, json: async () => response };
+  });
+
+  assert.deepEqual(await searchSkillsSh("", { fetch, sources: [connected] }), { results: [], error: null });
+  assert.deepEqual(await searchSkillsSh("   ", { fetch, sources: [connected] }), { results: [], error: null });
+  assert.equal(calls, 0);
+});
+
+test("search encodes the trimmed query and sets a timeout signal", async () => {
+  const requests: { url: string; signal: unknown }[] = [];
+  const fetch = (async (url: string, init?: RequestInit) => {
+    requests.push({ url, signal: init?.signal });
+    return { ok: true, status: 200, json: async () => ({ skills: [] }) };
+  }) as unknown as typeof globalThis.fetch;
+
+  await searchSkillsSh("  react hooks&x ", { fetch, sources: [] });
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://skills.sh/api/search?q=react%20hooks%26x");
+  assert.ok(requests[0].signal instanceof AbortSignal, "expected a timeout signal");
+});
+
+test("a source added by its GitHub URL counts as connected", async () => {
+  const byUrl: SkillSource = {
+    ...connected,
+    id: sourceId("https://github.com/vercel-labs/agent-skills"),
+    location: "https://github.com/vercel-labs/agent-skills",
+  };
+  const fetch = stubFetch(async () => ({ ok: true, status: 200, json: async () => response }));
+
+  const result = await searchSkillsSh("react", { fetch, sources: [byUrl] });
+
+  assert.deepEqual(
+    result.results.map((hit) => hit.connected),
+    [true, false],
+  );
+});
+
+test("a repo whose owner is a hyphen-suffix of a connected owner is not connected", async () => {
+  const myOrg: SkillSource = { ...connected, id: sourceId("my-org/skills"), location: "my-org/skills" };
+  const hits = { skills: ["org/skills", "labs/agent-skills"].map((source) => ({ source, skillId: "s", name: "s", installs: 1 })) };
+  const fetch = stubFetch(async () => ({ ok: true, status: 200, json: async () => hits }));
+
+  const result = await searchSkillsSh("skills", { fetch, sources: [myOrg, connected] });
+
+  assert.deepEqual(
+    result.results.map((hit) => hit.connected),
+    [false, false],
+  );
 });
