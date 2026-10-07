@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { appendFile, cp, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
+import { appendFile, cp, mkdir, readdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -12,7 +12,8 @@ const SCAN_DEPTH = 5;
 // Checkouts of git sources. Folder sources are read in place.
 export const SOURCES_ROOT = join(homedir(), ".orchestrator", "skill-sources");
 
-type Found = { name: string; kind: "skill" | "command"; path: string };
+// `name` is the SKILL.md frontmatter name when set; `folder` is the skill folder or command file name.
+type Found = { name: string; folder: string; description: string; kind: "skill" | "command"; path: string };
 type Location = { type: "git"; url: string } | { type: "folder"; path: string };
 
 const locks = new Map<string, Promise<unknown>>();
@@ -127,14 +128,80 @@ async function materialise(source: SkillSource) {
   });
 }
 
+// Reads the top-level `name` and `description` of a SKILL.md or command file. Values may be
+// plain, quoted, or a `>` / `|` block scalar; they come back trimmed. `body` is everything after
+// the closing `---`, or the whole text when there is no frontmatter.
+export function readFrontmatter(text: string): { name?: string; description?: string; body: string } {
+  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/);
+  if (!match) {
+    return { body: text };
+  }
+  const fields: { name?: string; description?: string } = {};
+  const lines = (match[1] ?? "").split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const key = lines[i]?.match(/^(name|description):[ \t]*(.*)$/);
+    if (!key) {
+      continue;
+    }
+    const raw = (key[2] ?? "").trim();
+    const more: string[] = [];
+    while (i + 1 < lines.length && /^([ \t]|$)/.test(lines[i + 1] ?? "")) {
+      more.push(lines[++i] ?? "");
+    }
+    fields[key[1] as "name" | "description"] = scalar(raw, more);
+  }
+  return { ...fields, body: text.slice(match[0].length) };
+}
+
+function scalar(raw: string, more: string[]) {
+  if (/^\|[+-]?$/.test(raw)) {
+    const indent = Math.min(...more.filter((l) => l.trim()).map((l) => l.length - l.trimStart().length));
+    return more.map((l) => l.slice(indent)).join("\n").trim();
+  }
+  if (/^>[+-]?$/.test(raw) || !/^["']/.test(raw)) {
+    // Folded: lines join with spaces, blank lines become newlines. A plain value ends at " #".
+    const plain = raw.replace(/[ \t]+#.*$/, "");
+    const parts = (/^>/.test(raw) ? more : [plain, ...more]).map((l) => l.trim());
+    return parts
+      .join("\n")
+      .replace(/([^\n])\n(?=[^\n])/g, "$1 ")
+      .replace(/\n\n/g, "\n")
+      .trim();
+  }
+  const quoted = [raw, ...more.map((l) => l.trim())].join(" ");
+  if (quoted.startsWith('"')) {
+    try {
+      return String(JSON.parse(quoted));
+    } catch {
+      return quoted.slice(1, -1);
+    }
+  }
+  return quoted.slice(1, -1).replace(/''/g, "'");
+}
+
+async function describe(file: string) {
+  return readFrontmatter(await readFile(file, "utf8").catch(() => ""));
+}
+
+async function skillAt(dir: string): Promise<Found> {
+  const meta = await describe(join(dir, "SKILL.md"));
+  const folder = basename(dir);
+  return { name: meta.name || folder, folder, description: meta.description ?? "", kind: "skill", path: dir };
+}
+
+async function commandAt(path: string): Promise<Found> {
+  const folder = basename(path, ".md");
+  return { name: folder, folder, description: (await describe(path)).description ?? "", kind: "command", path };
+}
+
 async function scan(root: string): Promise<Found[]> {
   const found = new Map<string, Found>();
 
   async function walk(dir: string, depth: number) {
     if (await exists(join(dir, "SKILL.md"))) {
-      const name = basename(dir);
-      if (!found.has(name)) {
-        found.set(name, { name, kind: "skill", path: dir });
+      const skill = await skillAt(dir);
+      if (!found.has(skill.name)) {
+        found.set(skill.name, skill);
       }
       return;
     }
@@ -158,7 +225,7 @@ async function scan(root: string): Promise<Found[]> {
     for (const file of await readdir(commands).catch(() => [] as string[])) {
       const name = file.replace(/\.md$/, "");
       if (file.endsWith(".md") && !found.has(name)) {
-        found.set(name, { name, kind: "command", path: join(commands, file) });
+        found.set(name, await commandAt(join(commands, file)));
       }
     }
   }
@@ -169,10 +236,13 @@ async function scanMachine(): Promise<Found[]> {
   const home = homedir();
   const found = new Map<string, Found>();
   for (const root of [join(home, ".claude", "skills"), join(home, ".agents", "skills")]) {
-    for (const name of await readdir(root).catch(() => [] as string[])) {
-      const dir = join(root, name);
-      if (!found.has(name) && (await exists(join(dir, "SKILL.md")))) {
-        found.set(name, { name, kind: "skill", path: dir });
+    for (const folder of await readdir(root).catch(() => [] as string[])) {
+      const dir = join(root, folder);
+      if (await exists(join(dir, "SKILL.md"))) {
+        const skill = await skillAt(dir);
+        if (!found.has(skill.name)) {
+          found.set(skill.name, skill);
+        }
       }
     }
   }
@@ -181,17 +251,22 @@ async function scanMachine(): Promise<Found[]> {
   for (const file of await readdir(commands).catch(() => [] as string[])) {
     const name = file.replace(/\.md$/, "");
     if (file.endsWith(".md") && !found.has(name)) {
-      found.set(name, { name, kind: "command", path: join(commands, file) });
+      found.set(name, await commandAt(join(commands, file)));
     }
   }
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// A ref names a skill by its frontmatter name or its folder; an exact name wins.
+function findSkill(found: Found[], name: string) {
+  return found.find((s) => s.name === name) ?? found.find((s) => s.folder === name);
+}
+
 export async function loadCatalog(sources: SkillSource[]) {
   const skills: CatalogSkill[] = (await scanMachine()).map((s) => ({
     name: s.name,
-    folder: s.name,
-    description: "",
+    folder: s.folder,
+    description: s.description,
     source: MACHINE_SOURCE,
     kind: s.kind,
   }));
@@ -202,7 +277,13 @@ export async function loadCatalog(sources: SkillSource[]) {
       const found = await scan(dir);
       if (source.enabled) {
         skills.push(
-          ...found.map((s) => ({ name: s.name, folder: s.name, description: "", source: source.id, kind: s.kind })),
+          ...found.map((s) => ({
+            name: s.name,
+            folder: s.folder,
+            description: s.description,
+            source: source.id,
+            kind: s.kind,
+          })),
         );
       }
       statuses.push({ id: source.id, ok: true, error: null, commit: source.pin, skillCount: found.length });
@@ -293,9 +374,76 @@ export type SkillContent =
   | { name: string; description: string; body: string; files: string[]; commit: string | null }
   | { error: string };
 
-// Stub until S2.
-export async function readSkill(_ref: SkillRef, _sources: SkillSource[]): Promise<SkillContent> {
-  return { error: "Not implemented." };
+// Reads in place from the checkout or folder. A source that isn't connected, or is off, is never
+// fetched or cloned.
+export async function readSkill(ref: SkillRef, sources: SkillSource[]): Promise<SkillContent> {
+  try {
+    let found: Found[];
+    let commit: string | null = null;
+    if (ref.source === MACHINE_SOURCE) {
+      found = await scanMachine();
+    } else {
+      const source = sources.find((s) => s.id === ref.source);
+      if (!source || !source.enabled) {
+        return { error: `${ref.name}: source "${ref.source}" is not connected or is off.` };
+      }
+      found = await scan(await materialise(source));
+      commit = source.pin;
+    }
+    const entry = findSkill(found, ref.name);
+    if (!entry) {
+      return { error: `${ref.name}: not found in ${ref.source}.` };
+    }
+    const file = entry.kind === "skill" ? join(entry.path, "SKILL.md") : entry.path;
+    const { body } = readFrontmatter(await readFile(file, "utf8"));
+    const files = entry.kind === "skill" ? (await listFiles(entry.path)).filter((f) => f !== file) : [];
+    return { name: entry.name, description: entry.description, body, files, commit };
+  } catch (error) {
+    return { error: `${ref.name}: ${message(error)}` };
+  }
+}
+
+// Every file under a skill folder. Symlinks are followed only when they resolve inside the
+// folder, and each real folder is read once, so a link out of the checkout or a link loop is skipped.
+async function listFiles(root: string): Promise<string[]> {
+  const top = await realpath(root);
+  const inside = (real: string) => real === top || real.startsWith(top + sep);
+  const seen = new Set<string>([top]);
+  const files: string[] = [];
+
+  async function walk(dir: string) {
+    const entries = (await readdir(dir, { withFileTypes: true })).filter(
+      (e) => e.name !== ".git" && e.name !== "node_modules",
+    );
+    const links: string[] = [];
+    // Real folders first, so a folder reached through a link is listed under its own path.
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        links.push(path);
+      } else if (entry.isDirectory()) {
+        seen.add(await realpath(path));
+        await walk(path);
+      } else {
+        files.push(path);
+      }
+    }
+    for (const path of links) {
+      const real = await realpath(path).catch(() => null);
+      if (!real || !inside(real)) {
+        continue;
+      }
+      if (!(await isDirectory(real))) {
+        files.push(path);
+      } else if (!seen.has(real)) {
+        seen.add(real);
+        await walk(path);
+      }
+    }
+  }
+
+  await walk(root);
+  return files.sort();
 }
 
 // Copy the phase's skills from connected sources into the story worktree, where the agent
@@ -314,7 +462,7 @@ export async function installSkills(cwd: string, refs: SkillRef[], sources: Skil
     }
     let entry: Found | undefined;
     try {
-      entry = (await scan(await materialise(source))).find((s) => s.name === ref.name);
+      entry = findSkill(await scan(await materialise(source)), ref.name);
     } catch (error) {
       warnings.push(`${ref.name}: ${message(error)}`);
       continue;
@@ -325,8 +473,8 @@ export async function installSkills(cwd: string, refs: SkillRef[], sources: Skil
     }
     const targets =
       entry.kind === "skill"
-        ? [".claude/skills", ".cursor/skills", ".agents/skills"].map((d) => `${d}/${entry.name}`)
-        : [".claude/commands", ".cursor/commands"].map((d) => `${d}/${entry.name}.md`);
+        ? [".claude/skills", ".cursor/skills", ".agents/skills"].map((d) => `${d}/${entry.folder}`)
+        : [".claude/commands", ".cursor/commands"].map((d) => `${d}/${entry.folder}.md`);
     for (const target of targets) {
       if (await isTracked(cwd, target)) {
         warnings.push(`${target} is committed in this repo; left it alone.`);
