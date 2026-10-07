@@ -79,11 +79,11 @@ The pure function that turns what a session reports into a context reading. It r
 - **Capability**: how much the agent reports, which decides what the meter can do:
   - **Full**: usage and max, a `compact` entry in `commands()` (match `name === "compact"` exactly; `autocompact` is a different entry), and `compaction` timeline items with `preTokens`. Claude is Full.
   - **Partial**: usage and max but no `compact` command. Compacting uses the fresh strategy.
-  - **Basic**: no usage. The level is `unknown` and only the fresh strategy is offered.
-- **Compact strategy**: what Compact does for this session. **native** sends `/compact Keep: <keep-list>` to the running agent, which summarises in place. **fresh** writes a handoff and starts a new agent in the same workspace. Full capability gets native. Partial and Basic get fresh.
+  - **Basic**: no usage. The level is `unknown`; the strategy still follows the command list.
+- **Compact strategy**: what Compact does for this session. **native** sends `/compact Keep: <keep-list>` to the running agent, which summarises in place. **fresh** writes a handoff and starts a new agent in the same workspace. A `compact` entry in the command list gets native; anything else gets fresh.
 - **Compactor**: the module that carries out a compact strategy, with one adapter per strategy (`Compactor.compact(agent, keepList)`). A native compact shows up in the timeline as a `compaction` item with `status: "completed"` and `preTokens`, then a smaller next reading. Paseo still echoes the `/compact …` text as a `user_message`, but no assistant reply follows it.
 - **Context watch**: the server side that runs the meter. On `agent.turn_ended` it takes a context reading, records a telemetry row, decides on a warning, and serves the pill's actions over RPC. `turn_ended.timeline` is the whole timeline so far, so the watch only looks at items it has not seen yet.
 - **Warning**: the notice raised when a session's level rises to `amber` or `red`. At most one per session per level. It honours **Remind me at 150k** (wait for red) and **Ignore**. Planned as `nextWarning(memory, reading)`.
-- **Telemetry row**: one line in `~/.orchestrator/context-telemetry.jsonl`: `{ at, agentId, provider, step, used, max, event }`, where `event` is `turn`, `warning`, `compact.native` or `compact.fresh`. `provider` is recorded for analysis only and never branched on.
+- **Telemetry row**: one line in `~/.orchestrator/context-telemetry.jsonl`: `{ at, agentId, provider, step, used, max, event }`, where `event` is `turn`, `warning`, `compact.native`, `compact.fresh`, `compact.inferred`, `ignore` or `remind`. `warning` rows add `level`; `compact.*` rows add `preTokens`, so the summary can count tokens avoided. `provider` is recorded for analysis only and never branched on.
 
 _Avoid_: token meter, context gauge (for the meter); threshold state (for level); summarise, reset (for compact); alert, nag (for warning).
