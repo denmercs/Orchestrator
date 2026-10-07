@@ -450,6 +450,23 @@ async function fetchBoardIssues(
   return [...byKey.values()];
 }
 
+// Status, title and link for each key. Fetched one by one so a key Jira doesn't know (deleted,
+// typo, no access) is just left out instead of failing the rest.
+export async function readIssueStatuses(keys: string[]) {
+  const wanted = [...new Set(keys.filter((key) => /^[A-Z][A-Z0-9_]+-\d+$/.test(key)))];
+  const found = new Map<string, SearchedIssue>();
+  if (wanted.length === 0) return found;
+  const credentials = await resolveCredentials();
+  const results = await Promise.allSettled(
+    wanted.map((key) => jiraGet(credentials, `/rest/api/3/issue/${encodeURIComponent(key)}?fields=${ISSUE_FIELDS.join(",")}`)),
+  );
+  for (const result of results) {
+    const issue = result.status === "fulfilled" ? normalizeIssue(result.value, credentials.url) : null;
+    if (issue) found.set(issue.key, issue);
+  }
+  return found;
+}
+
 async function searchIssues(
   credentials: JiraCredentials,
   jql: string,

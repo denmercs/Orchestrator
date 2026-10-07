@@ -9,7 +9,10 @@ import {
   loadJiraPullRequests,
   moveIssueToColumn,
 } from "./server/jira";
-import { deleteInitiative, loadHarnessBoard, runHarnessAction, stopHarnessRunner } from "./server/harness-board";
+import { deleteInitiative, loadHarnessBoard } from "./server/harness-board";
+import { startPhaseArchitect } from "./server/harness-architect";
+import { openPhasePlan, refreshPhasePlan } from "./server/phase-plan";
+import { stopPlanServer } from "./server/plan-server";
 import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { advanceBelt, closeMergedStories, startStory } from "./server/belt-advance";
 import { createLoopAdvance } from "./server/loop-advance";
@@ -31,6 +34,9 @@ import {
   getProdPulseAutomation,
   listJiraBoards,
   listHarnessInitiatives,
+  planHarnessPhaseRpc,
+  openPhasePlanRpc,
+  refreshPhasePlanRpc,
   listJiraPullRequests,
   listOrchestrationFolders,
   moveJiraIssue,
@@ -40,7 +46,6 @@ import {
   listOrchestrationStandupTodos,
   listOrchestrationStandupWork,
   listOrchestrationTemplates,
-  runEpicAction,
   saveOrchestrationStandupTodos,
   upsertOrchestrationStandupNote,
 } from "./shared/orchestration";
@@ -61,13 +66,20 @@ export default function contribute(server: PluginServerContext) {
   const harness = server.registerSettings(harnessSettings);
   const readHarness = async () => {
     const state = await harness.read();
-    return state.status === "ready" ? state.values : { repo: "", epic: "", runner: "" };
+    return state.status === "ready" ? state.values : { repo: "", epic: "" };
   };
   server.handle(getEpicBoard, async () => loadHarnessBoard(await readHarness()));
-  server.handle(runEpicAction, async (input) => runHarnessAction(await readHarness(), input));
   server.handle(deleteEpicInitiative, async () => deleteInitiative(await readHarness()));
   server.handle(listHarnessInitiatives, ({ repos }) => listHarness(repos));
-  server.handle(createHarnessEpicRpc, createHarnessEpic);
+  server.handle(createHarnessEpicRpc, async (input, { paseo }) => {
+    const created = await createHarnessEpic(input);
+    if (!created.ok || !created.epic) return { ...created, agentId: null, warning: null };
+    const started = await startPhaseArchitect(paseo, { repo: input.repo, epic: created.epic });
+    return { ...created, agentId: started.agentId, warning: started.error };
+  });
+  server.handle(planHarnessPhaseRpc, (input, { paseo }) => startPhaseArchitect(paseo, input));
+  server.handle(openPhasePlanRpc, openPhasePlan);
+  server.handle(refreshPhasePlanRpc, refreshPhasePlan);
   const belt = server.registerSettings(beltSettings);
   const readBeltValues = async () => {
     const state = await belt.read();
@@ -165,7 +177,7 @@ export default function contribute(server: PluginServerContext) {
   timer.unref?.();
   return () => {
     offPulseSettings();
-    stopHarnessRunner();
+    stopPlanServer();
     offBeforeCreate();
     offTurnEnded();
     clearInterval(timer);

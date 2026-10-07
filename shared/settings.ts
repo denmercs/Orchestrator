@@ -58,10 +58,8 @@ export const harnessSettings = defineSettings({
   scope: "host",
   version: 1,
   schema: z.object({
-    // Repo and repo-relative epic folder the Harness plan board shows; empty folds the board.
+    // Repo and repo-relative phase folder the initiative board shows; empty folds the board.
     repo: z.string().default(""),
     epic: z.string().default(""),
-    // Module exporting createHarnessRunner (see server/harness-board.ts); empty shows the plan only.
-    runner: z.string().default(""),
   }),
 });

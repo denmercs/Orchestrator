@@ -8,18 +8,19 @@ import {
   deleteEpicInitiative,
   getEpicBoard,
   listHarnessInitiatives,
-  runEpicAction,
-  type EpicAction,
+  phaseLabel,
+  planHarnessPhaseRpc,
+  openPhasePlanRpc,
+  refreshPhasePlanRpc,
   type EpicBoardState,
   type EpicStory,
   type HarnessRepo,
 } from "../shared/orchestration";
 import { harnessSettings } from "../shared/settings";
 
-// The active harness epic (see server/harness-layout.ts) as its dependency graph: one card per story,
-// arrows from a dependency to the stories that need it. Harness epics are occasional work (a
-// hackathon, an initiative); day-to-day epics come from Jira, so the graph stays folded to one
-// line unless its loop is running or you open it.
+// The active phase of an initiative (see server/harness-layout.ts) as its dependency graph: one
+// card per story, arrows from a dependency to the stories that need it. Initiatives are occasional
+// work; day-to-day epics come from Jira, so the graph stays folded to one line until you open it.
 
 type Theme = PluginSurfaceProps["theme"];
 type Navigation = PluginSurfaceProps["navigation"];
@@ -55,17 +56,11 @@ function toneOf(status: string, theme: Theme) {
 
 // What a story needs from you, as a short badge on its card.
 function badgeOf(story: EpicStory, theme: Theme): [string, string] | null {
-  if (story.session?.held) return ["Your turn", theme.colors.statusWarning];
-  if (story.status === "awaiting-approval") return ["Approve story plan", theme.colors.statusWarning];
   if (story.status === "pr-open") return ["Merge", theme.colors.statusSuccess];
   if (story.status === "blocked") return ["Blocked", theme.colors.statusDanger];
-  if (story.ready && !story.loopPid) return ["Ready", theme.colors.accent];
+  if (story.ready) return ["Ready", theme.colors.accent];
   return null;
 }
-
-const working = (story: EpicStory) =>
-  ["planning", "implementing", "reviewing"].includes(story.status) &&
-  Boolean(story.loopPid || story.session?.live);
 
 function subline(story: EpicStory) {
   if (story.status === "todo" && story.blockedBy) return `blocked by ${story.blockedBy}`;
@@ -74,7 +69,6 @@ function subline(story: EpicStory) {
   }
   return [
     labelOf(story.status),
-    story.cycles ? `${story.cycles.done}/${story.cycles.total}` : "",
     story.pr ? `#${story.pr}` : "",
   ]
     .filter(Boolean)
@@ -193,17 +187,6 @@ function edgesFor(stories: EpicStory[], selected: string | null, theme: Theme) {
   return { cols, pos, segments, arrows, width, height };
 }
 
-// Milestones only: what moved the epic forward or needs a person.
-const MILESTONE =
-  /: (PR #\d+ merged|PR opened|plan ready for review|plan approved|blocked —|filed|started on|started \(dashboard\)|started \(parallel|stopped \(dashboard\)|retried)/;
-const TOAST = /merged|plan ready|blocked —|filed/;
-const milestoneText = (text: string) =>
-  text
-    .replace(/ — [^ ]+\.md\. Approve with --approve \S+$/, "")
-    .replace(/^(\S+): PR opened (\S+\/pull\/(\d+))$/, "$1: PR #$3 opened")
-    // Each story has its own plan; keep it apart from the harness plan this panel shows.
-    .replace(/\bplan (ready|approved)/, "story plan $1");
-
 // Returns the board's panels (for the dashboard's scroll view) and the story drawer (for the
 // screen root, so it covers the whole surface like the prod pulse drawer).
 export function useEpicBoard({
@@ -217,8 +200,10 @@ export function useEpicBoard({
 }): { panels: ReactNode; drawer: ReactNode } {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   const loadBoard = useRpc(getEpicBoard);
-  const act = useRpc(runEpicAction);
   const removeInitiative = useRpc(deleteEpicInitiative);
+  const openPlan = useRpc(openPhasePlanRpc);
+  const paseo = usePaseo();
+  const refreshPlan = useRpc(refreshPhasePlanRpc);
   const settings = useSettings(harnessSettings);
   const toast = useToast();
   const [state, setState] = useState<EpicBoardState | null>(null);
@@ -226,11 +211,66 @@ export function useEpicBoard({
   const [repo, setRepo] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [confirmStop, setConfirmStop] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
   const [shown, setShown] = useState(false);
-  const seenProgress = useRef<string | null>(null);
+
+  // Opens the plan in Paseo's browser (desktop app), in the repo's workspace; elsewhere in the
+  // system browser. The page reloads itself as architecture.md changes.
+  async function showPlan(ref: { repo: string; epic: string }) {
+    try {
+      const result = await openPlan(ref);
+      if (!result.ok || !result.url) {
+        toast.error(result.error ?? "Could not open the plan.");
+        return;
+      }
+      const openBrowser = navigation?.openBrowser;
+      if (openBrowser) {
+        const workspace = await paseo.workspaces.open({ cwd: ref.repo });
+        openBrowser({ url: result.url, workspaceId: workspace.id });
+      } else {
+        await openExternalUrl(result.url);
+      }
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : "Could not open the plan.");
+    }
+  }
+
+  // The first time a phase's plan appears while the board is open (the architecture session just
+  // wrote it), open it once.
+  const planShown = useRef(new Map<string, boolean>());
+  // Keyed by the loaded state's own phase, so a stale state during a switch can't open the wrong plan.
+  const planPhase = repo && state ? state.epic.dir : "";
+  const hasPlan = Boolean(state?.plan);
+  useEffect(() => {
+    if (!repo || !planPhase) return;
+    const key = `${repo}\n${planPhase}`;
+    const before = planShown.current.get(key);
+    planShown.current.set(key, hasPlan);
+    if (before === false && hasPlan) void showPlan({ repo, epic: planPhase });
+  }, [repo, planPhase, hasPlan]);
+
+  // The phase's architecture plan: open its HTML view, or pull Jira status into it (one way).
+  async function planAction(kind: "open" | "jira") {
+    if (settings.status !== "ready" || busy !== null) return;
+    const ref = { repo: settings.values.repo, epic: settings.values.epic };
+    setBusy(`plan-${kind}:`);
+    try {
+      if (kind === "open") {
+        await showPlan(ref);
+        return;
+      }
+      const result = await refreshPlan(ref);
+      if (!result.ok) toast.error(result.error ?? "Could not refresh from Jira.");
+      else if (result.keys === 0) toast.show("No Jira keys in this plan yet.");
+      else {
+        const missing = result.missing.length ? ` Not found: ${result.missing.join(", ")}.` : "";
+        toast.show(`Refreshed ${result.keys} keys from Jira, ${result.changed} changed.${missing}`, { variant: "success" });
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
 
   const refresh = useCallback(async () => {
     try {
@@ -238,22 +278,10 @@ export function useEpicBoard({
       setRepo(result.repo);
       setError(result.error);
       setState(result.state);
-      if (result.state) {
-        const progress = result.state.progress;
-        if (seenProgress.current !== null) {
-          for (const item of progress) {
-            if (item.at > seenProgress.current && MILESTONE.test(item.text) && TOAST.test(item.text)) {
-              const text = milestoneText(item.text);
-              toast.show(text, { variant: /merged/.test(text) ? "success" : /blocked/.test(text) ? "warning" : "info" });
-            }
-          }
-        }
-        seenProgress.current = progress.length ? progress[progress.length - 1].at : "";
-      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to read the harness plan");
+      setError(cause instanceof Error ? cause.message : "Unable to read the initiative");
     }
-  }, [loadBoard, toast]);
+  }, [loadBoard]);
 
   useEffect(() => {
     void refresh();
@@ -261,41 +289,18 @@ export function useEpicBoard({
     return () => clearInterval(timer);
   }, [refresh]);
 
-  // Settings changes (a new repo) reset what was already toasted.
-  const settingsKey = settings.status === "ready" ? `${settings.values.repo}\n${settings.values.epic}\n${settings.values.runner}` : "";
+  // A different phase starts with nothing selected.
+  const settingsKey = settings.status === "ready" ? `${settings.values.repo}\n${settings.values.epic}` : "";
   useEffect(() => {
-    seenProgress.current = null;
     setSelected(null);
     void refresh();
   }, [settingsKey, refresh]);
 
   useEffect(() => {
-    if (!confirmStop && !confirmDelete) return;
-    const timer = setTimeout(() => {
-      setConfirmStop(false);
-      setConfirmDelete(false);
-    }, 4000);
+    if (!confirmDelete) return;
+    const timer = setTimeout(() => setConfirmDelete(false), 4000);
     return () => clearTimeout(timer);
-  }, [confirmStop, confirmDelete]);
-
-  async function run(action: EpicAction, id?: string, path?: string) {
-    const key = `${action}:${id ?? ""}`;
-    if (busy) return;
-    setBusy(key);
-    try {
-      const result = await act({ action, id });
-      if (!result.ok) {
-        toast.error(`${id ? `${id}: ` : ""}${result.error ?? "failed"}`);
-      } else if (action === "preview" && result.url) {
-        void openExternalUrl(result.url + (path ?? "/"));
-      }
-    } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : "Action failed");
-    } finally {
-      setBusy(null);
-      void refresh();
-    }
-  }
+  }, [confirmDelete]);
 
   // Deleting removes the initiative's files for good (.harness is not in git), then clears the
   // repo so the panel folds back to "not set up".
@@ -311,7 +316,7 @@ export function useEpicBoard({
       toast.show(`Deleted ${result.deleted}`, { variant: "success" });
       setShown(false);
       if (!(await settings.save({ ...settings.values, repo: "", epic: "" }, settings.revision))) {
-        toast.error(settings.saveError ?? "Deleted, but could not clear the harness plan repo.");
+        toast.error(settings.saveError ?? "Deleted, but could not clear the initiative repo.");
       }
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : "Could not delete the initiative.");
@@ -321,17 +326,13 @@ export function useEpicBoard({
     }
   }
 
-  // Picking or creating an epic (or setting the runner) points the board at it.
-  async function pointAt(next: Partial<{ repo: string; epic: string; runner: string }>) {
+  // Picking or creating a phase points the board at it.
+  async function pointAt(next: Partial<{ repo: string; epic: string }>) {
     if (settings.status !== "ready") return;
     const saved = await settings.save({ ...settings.values, ...next }, settings.revision);
     if (saved) setEditing(false);
-    else toast.error(settings.saveError ?? "Could not save the harness plan repo.");
+    else toast.error(settings.saveError ?? "Could not save the initiative repo.");
     void refresh();
-  }
-
-  function openSession(story: EpicStory) {
-    if (story.session && navigation) navigation.openAgent({ agentId: story.session.id });
   }
 
   const repoForm = (
@@ -340,6 +341,7 @@ export function useEpicBoard({
       theme={theme}
       active={settings.status === "ready" ? settings.values : null}
       onPicked={(next) => void pointAt(next)}
+      onOpenAgent={navigation ? (agentId) => navigation.openAgent({ agentId }) : null}
       onCancel={() => setEditing(false)}
     />
   );
@@ -349,7 +351,7 @@ export function useEpicBoard({
       drawer: null,
       panels: (
         <View style={[styles.panel, styles.folded]}>
-          <Text style={styles.foldedTitle}>Harness plan</Text>
+          <Text style={styles.foldedTitle}>Initiative</Text>
           <Text style={[styles.muted, styles.flex]}>not set up</Text>
           <Button label="Initiatives" styles={styles} onPress={() => setEditing(true)} />
         </View>
@@ -362,7 +364,7 @@ export function useEpicBoard({
       drawer: null,
       panels: (
         <View style={styles.panel}>
-          <Text style={styles.panelTitle}>Harness plan</Text>
+          <Text style={styles.panelTitle}>Initiative</Text>
           {repoForm}
         </View>
       ),
@@ -375,14 +377,14 @@ export function useEpicBoard({
       panels: (
       <View style={styles.panel}>
         <View style={styles.head}>
-          <Text style={styles.panelTitle}>Harness plan</Text>
+          <Text style={styles.panelTitle}>Initiative</Text>
           <Button
             label="Initiatives"
             styles={styles}
             onPress={() => setEditing(true)}
           />
         </View>
-        <Text style={error ? styles.danger : styles.muted}>{error ?? "Loading the harness plan…"}</Text>
+        <Text style={error ? styles.danger : styles.muted}>{error ?? "Loading the initiative…"}</Text>
       </View>
       ),
     };
@@ -393,20 +395,17 @@ export function useEpicBoard({
   const left = stories.length - merged;
   const graph = edgesFor(stories, selected, theme);
   const story = selected ? stories.find((item) => item.id === selected) ?? null : null;
-  const updates = state.progress.filter((item) => MILESTONE.test(item.text)).slice(-8).reverse();
-  const running = state.loop.pid !== null;
-  const active =
-    running || stories.some((item) => item.loopPid !== null || item.session?.live || item.session?.held);
-  const epicLabel = `${state.epic.id ? `${state.epic.id} · ` : ""}${state.epic.title || "Epic"}`;
+  const phase = [state.epic.id ? phaseLabel(state.epic.id) : "", state.epic.title].filter(Boolean).join(": ");
+  const initiative = state.initiative || "Initiative";
 
-  if (!active && !shown) {
+  if (!shown) {
     return {
       drawer: null,
       panels: (
         <View style={[styles.panel, styles.folded]}>
-          <Text style={styles.foldedTitle}>Harness plan</Text>
+          <Text style={styles.foldedTitle}>Initiative</Text>
           <Text style={[styles.muted, styles.flex]} numberOfLines={1}>
-            {epicLabel}  ·  ○ stopped  ·  {merged}/{stories.length} merged
+            {initiative}  ·  {phase}  ·  {merged}/{stories.length} merged
           </Text>
           <Button label="Show" styles={styles} onPress={() => setShown(true)} />
         </View>
@@ -437,7 +436,6 @@ export function useEpicBoard({
       >
         <View style={styles.nodeTop}>
           <Text style={styles.nodeId}>{item.id}</Text>
-          {working(item) ? <View style={[styles.liveDot, { backgroundColor: tone }]} /> : null}
           {badge ? (
             <Text style={[styles.badge, { color: badge[1], borderColor: badge[1] }]}>{badge[0]}</Text>
           ) : null}
@@ -458,58 +456,40 @@ export function useEpicBoard({
         <View style={styles.head}>
           <View style={styles.headText}>
             <Text style={styles.panelTitle} numberOfLines={1}>
-              {epicLabel}
+              {initiative}
             </Text>
             <Text style={styles.muted} numberOfLines={2}>
-              <Text style={{ color: running ? theme.colors.statusSuccess : theme.colors.foregroundMuted }}>
-                {running ? `● Plan running · pid ${state.loop.pid}` : "○ Plan stopped"}
-              </Text>
-              {"  ·  "}
+              {phase ? `${phase}  ·  ` : ""}
               {merged}/{stories.length} merged{"  ·  "}Next: {state.next.reason}
             </Text>
           </View>
           <View style={styles.headActions}>
-            {running ? (
+            {state.plan ? (
+              <Button label={busy === "plan-open:" ? "Opening…" : "View plan"} disabled={busy !== null} styles={styles} onPress={() => void planAction("open")} />
+            ) : null}
+            {state.plan ? (
               <Button
-                label={confirmStop ? "Tap again to stop" : "Stop plan"}
-                danger={confirmStop}
+                label={busy === "plan-jira:" ? "Refreshing…" : "Refresh from Jira"}
                 disabled={busy !== null}
                 styles={styles}
-                onPress={() => {
-                  if (!confirmStop) {
-                    setConfirmStop(true);
-                    return;
-                  }
-                  setConfirmStop(false);
-                  void run("loop-stop");
-                }}
-              />
-            ) : state.runner && left > 0 ? (
-              <Button
-                label={busy === "loop-start:" ? "Starting…" : "Run plan"}
-                primary
-                disabled={busy !== null}
-                styles={styles}
-                onPress={() => void run("loop-start")}
+                onPress={() => void planAction("jira")}
               />
             ) : null}
-            {!active ? <Button label="Hide" styles={styles} onPress={() => setShown(false)} /> : null}
-            {!active ? (
-              <Button
-                label={busy === "delete:" ? "Deleting…" : confirmDelete ? "Tap again to delete" : "Delete initiative"}
-                danger={confirmDelete}
-                disabled={busy !== null}
-                styles={styles}
-                onPress={() => {
-                  if (!confirmDelete) {
-                    setConfirmDelete(true);
-                    return;
-                  }
-                  setConfirmDelete(false);
-                  void deleteInitiative();
-                }}
-              />
-            ) : null}
+            <Button label="Hide" styles={styles} onPress={() => setShown(false)} />
+            <Button
+              label={busy === "delete:" ? "Deleting…" : confirmDelete ? "Tap again to delete" : "Delete initiative"}
+              danger={confirmDelete}
+              disabled={busy !== null}
+              styles={styles}
+              onPress={() => {
+                if (!confirmDelete) {
+                  setConfirmDelete(true);
+                  return;
+                }
+                setConfirmDelete(false);
+                void deleteInitiative();
+              }}
+            />
             <Button
               label="Initiatives"
               styles={styles}
@@ -522,6 +502,11 @@ export function useEpicBoard({
           <View style={{ flex: Math.max(0, left) }} />
         </View>
         {error ? <Text style={styles.danger}>{error}</Text> : null}
+        {state.plan?.warnings.length ? (
+          <Text style={styles.hint} numberOfLines={2}>
+            Plan gaps: {state.plan.warnings.join(" · ")}
+          </Text>
+        ) : null}
 
         {compact ? (
           <View style={styles.steps}>
@@ -564,39 +549,8 @@ export function useEpicBoard({
           </ScrollView>
         )}
         <Text style={styles.hint}>
-          Arrows go from a dependency to the stories that need it. Tap a story for its actions.
+          Arrows go from a dependency to the stories that need it. Tap a story for its details.
         </Text>
-      </View>
-
-      <View style={styles.panel}>
-        <Text style={styles.sectionLabel}>PLAN UPDATES</Text>
-        {updates.length === 0 ? (
-          <Text style={styles.muted}>No milestones yet. Run the plan to begin.</Text>
-        ) : (
-          updates.map((item) => {
-            const [who, ...rest] = milestoneText(item.text).split(": ");
-            const when = new Date(item.at);
-            const today = when.toDateString() === new Date().toDateString();
-            const tone = /merged/.test(item.text)
-              ? theme.colors.statusSuccess
-              : /blocked/.test(item.text)
-                ? theme.colors.statusDanger
-                : /plan ready|filed/.test(item.text)
-                  ? theme.colors.statusWarning
-                  : theme.colors.foregroundMuted;
-            return (
-              <View key={item.at + item.text} style={styles.update}>
-                <Text style={styles.updateTime}>
-                  {today
-                    ? when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                    : when.toLocaleDateString([], { month: "short", day: "numeric" })}
-                </Text>
-                <Text style={[styles.updateWho, { color: tone }]}>{who}</Text>
-                <Text style={styles.updateText}>{rest.join(": ")}</Text>
-              </View>
-            );
-          })
-        )}
       </View>
     </View>
   );
@@ -607,12 +561,8 @@ export function useEpicBoard({
           state={state}
           theme={theme}
           styles={styles}
-          busy={busy}
-          canOpenSession={Boolean(navigation)}
           onClose={() => setSelected(null)}
           onSelect={setSelected}
-          onRun={(action, path) => void run(action, story.id, path)}
-          onOpenSession={() => openSession(story)}
         />
   ) : null;
 
@@ -624,38 +574,18 @@ function StoryDrawer({
   state,
   theme,
   styles,
-  busy,
-  canOpenSession,
   onClose,
   onSelect,
-  onRun,
-  onOpenSession,
 }: {
   story: EpicStory;
   state: EpicBoardState;
   theme: Theme;
   styles: Styles;
-  busy: string | null;
-  canOpenSession: boolean;
   onClose(): void;
   onSelect(id: string): void;
-  onRun(action: EpicAction, path?: string): void;
-  onOpenSession(): void;
 }) {
   const tone = toneOf(story.status, theme);
   const neededBy = state.stories.filter((item) => item.dependsOn.includes(story.id));
-  const history = state.progress
-    .filter((item) => item.text.startsWith(`${story.id}:`))
-    .slice(-12)
-    .reverse();
-  const pending = (action: EpicAction) => busy === `${action}:${story.id}`;
-  const meta = [
-    story.cycles ? `cycle ${story.cycles.done}/${story.cycles.total}` : "",
-    story.attempts ? `attempt ${story.attempts + 1}` : "",
-    story.session?.held ? `${story.session.phase} held for you` : story.session?.live ? `${story.session.phase} session live` : "",
-  ].filter(Boolean);
-  const showPreview = state.previewEnabled && (story.status === "reviewing" || story.status === "pr-open");
-  const routes = story.preview.routes.length ? story.preview.routes : [{ path: "/", check: story.preview.note }];
   const prUrl = story.pr && state.repoUrl ? `${state.repoUrl}/pull/${story.pr}` : "";
 
   return (
@@ -670,70 +600,12 @@ function StoryDrawer({
         </View>
         <ScrollView contentContainerStyle={styles.drawerBody}>
           <Text style={styles.drawerTitle}>{story.title}</Text>
-          {meta.length ? <Text style={styles.muted}>{meta.join(" · ")}</Text> : null}
-          {story.cycles ? (
-            <View style={styles.track}>
-              <View style={[styles.trackFill, { flex: story.cycles.done, backgroundColor: tone }]} />
-              <View style={{ flex: Math.max(0, story.cycles.total - story.cycles.done) }} />
-            </View>
-          ) : null}
           {story.status === "blocked" && story.blockedReason ? (
             <Text style={styles.reason}>{story.blockedReason}</Text>
           ) : null}
-          {story.status === "awaiting-approval" && story.planFile ? (
-            <Text style={styles.muted}>Plan: {story.planFile}</Text>
-          ) : null}
-
-          <View style={styles.actions}>
-            {story.session && canOpenSession ? (
-              <Button
-                label={story.status === "awaiting-approval" ? "Ask the planner" : "Open session"}
-                styles={styles}
-                onPress={onOpenSession}
-              />
-            ) : null}
-            {story.session?.held ? (
-              <Button label={pending("release") ? "Releasing…" : "Release"} primary styles={styles} onPress={() => onRun("release")} />
-            ) : null}
-            {story.status === "awaiting-approval" && story.planFile ? (
-              <Button label={pending("approve") ? "Approving…" : "Approve story plan"} primary styles={styles} onPress={() => onRun("approve")} />
-            ) : null}
-            {state.runner && story.ready && !story.loopPid ? (
-              <Button label={pending("start") ? "Starting…" : "Start planning"} primary styles={styles} onPress={() => onRun("start")} />
-            ) : null}
-            {story.retryAt && !story.loopPid ? (
-              <Button
-                label={pending("retry") ? "Retrying…" : `Retry → ${labelOf(story.retryAt).toLowerCase()}`}
-                danger
-                styles={styles}
-                onPress={() => onRun("retry")}
-              />
-            ) : null}
-            {prUrl ? <Button label={`Open PR #${story.pr}`} styles={styles} onPress={() => void openExternalUrl(prUrl)} /> : null}
-          </View>
-
-          {showPreview ? (
-            <View style={styles.previewBox}>
-              <Text style={styles.sectionLabel}>WHAT TO CHECK</Text>
-              {routes.map((route) => (
-                <Pressable
-                  key={route.path}
-                  disabled={!story.preview.url}
-                  onPress={() => story.preview.url && void openExternalUrl(story.preview.url + route.path)}
-                >
-                  <Text style={story.preview.url ? styles.link : styles.mono}>{route.path}</Text>
-                  {route.check ? <Text style={styles.muted}>{route.check}</Text> : null}
-                </Pressable>
-              ))}
-              <View style={styles.actions}>
-                <Button
-                  label={pending("preview") ? "Starting dev server…" : story.preview.url ? "Open preview" : "Preview"}
-                  primary
-                  styles={styles}
-                  onPress={() => onRun("preview", routes[0]?.path)}
-                />
-                {story.preview.url ? <Button label="Stop" styles={styles} onPress={() => onRun("preview-stop")} /> : null}
-              </View>
+          {prUrl ? (
+            <View style={styles.actions}>
+              <Button label={`Open PR #${story.pr}`} styles={styles} onPress={() => void openExternalUrl(prUrl)} />
             </View>
           ) : null}
 
@@ -774,18 +646,6 @@ function StoryDrawer({
             </View>
           ) : null}
 
-          <View style={styles.related}>
-            <Text style={styles.sectionLabel}>HISTORY</Text>
-            {history.length === 0 ? <Text style={styles.muted}>Nothing yet.</Text> : null}
-            {history.map((item) => (
-              <View key={item.at + item.text} style={styles.update}>
-                <Text style={styles.updateTime}>
-                  {new Date(item.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                </Text>
-                <Text style={styles.updateText}>{item.text.slice(story.id.length + 2)}</Text>
-              </View>
-            ))}
-          </View>
         </ScrollView>
       </View>
     </View>
@@ -793,8 +653,8 @@ function StoryDrawer({
 }
 
 // Every initiative in the repos Paseo knows, in the layout the plugin creates (see
-// server/harness-layout.ts). Opening an epic shows it on the board; "New initiative" and
-// "New phase" scaffold the folders (a phase is an epic folder) so every repo's .harness looks the same.
+// server/harness-layout.ts). Opening a phase shows it on the board; "New initiative" and
+// "New phase" scaffold the folders so every repo's .harness looks the same.
 type Draft = { repo: string; initiative: string; initiativeTitle: string; epicTitle: string };
 
 function HarnessPicker({
@@ -802,23 +662,25 @@ function HarnessPicker({
   theme,
   active,
   onPicked,
+  onOpenAgent,
   onCancel,
 }: {
   styles: Styles;
   theme: Theme;
-  active: { repo: string; epic: string; runner: string } | null;
-  onPicked(next: { repo?: string; epic?: string; runner?: string }): void;
+  active: { repo: string; epic: string } | null;
+  onPicked(next: { repo?: string; epic?: string }): void;
+  onOpenAgent: ((agentId: string) => void) | null;
   onCancel(): void;
 }) {
   const paseo = usePaseo();
   const list = useRpc(listHarnessInitiatives);
   const create = useRpc(createHarnessEpicRpc);
+  const plan = useRpc(planHarnessPhaseRpc);
   const toast = useToast();
   const [repos, setRepos] = useState<HarnessRepo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
-  const [runner, setRunner] = useState(active?.runner ?? "");
 
   useEffect(() => {
     let cancelled = false;
@@ -845,8 +707,27 @@ function HarnessPicker({
         toast.error(result.error ?? "Could not create the phase.");
         return;
       }
-      toast.show(`Created ${result.epic}`, { variant: "success" });
+      if (result.warning) toast.error(`Created ${result.epic}, but the architecture session didn't start: ${result.warning}`);
+      else toast.show(`Created ${result.epic}. Architecture session started.`, { variant: "success" });
       if (result.epic) onPicked({ repo: draft.repo, epic: result.epic });
+      if (result.agentId) onOpenAgent?.(result.agentId);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Re-runs (or resumes) a phase's architecture session; the agent picks up the existing files.
+  async function planPhase(repo: string, epic: string) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await plan({ repo, epic });
+      if (!result.ok) {
+        toast.error(result.error ?? "Could not start the architecture session.");
+        return;
+      }
+      toast.show("Architecture session started.", { variant: "success" });
+      if (result.agentId) onOpenAgent?.(result.agentId);
     } finally {
       setBusy(false);
     }
@@ -878,22 +759,9 @@ function HarnessPicker({
     <View style={styles.repoForm}>
       <View style={styles.head}>
         <Text style={[styles.muted, styles.flex]}>
-          Initiatives live in each repo at .harness/initiatives/&lt;slug&gt;/epics/&lt;E#-name&gt;. Open an epic to run it here.
+          Initiatives live in each repo at .harness/initiatives/&lt;slug&gt;/phases/&lt;n-name&gt;. Open a phase to see it here.
         </Text>
         <Button label="Close" styles={styles} onPress={onCancel} />
-      </View>
-      <View style={styles.repoRow}>
-        <TextInput
-          value={runner}
-          onChangeText={setRunner}
-          placeholder="Runner module (optional) — exports createHarnessRunner"
-          placeholderTextColor={theme.colors.foregroundMuted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          style={styles.input}
-          onSubmitEditing={() => onPicked({ runner: runner.trim() })}
-        />
-        <Button label="Save runner" styles={styles} onPress={() => onPicked({ runner: runner.trim() })} />
       </View>
       {error ? <Text style={styles.danger}>{error}</Text> : null}
       {!repos && !error ? <Text style={styles.muted}>Looking through your repos…</Text> : null}
@@ -934,10 +802,11 @@ function HarnessPicker({
                 return (
                   <View key={epic.path} style={styles.repoRow}>
                     <Text style={[styles.muted, styles.flex]} numberOfLines={1}>
-                      <Text style={styles.nodeId}>{epic.id}</Text>
+                      <Text style={styles.nodeId}>{phaseLabel(epic.id)}</Text>
                       {`  ${epic.title}  ·  ${epic.merged}/${epic.stories} merged`}
                     </Text>
                     {current ? <Text style={styles.hint}>on the board</Text> : null}
+                    <Button label="Plan architecture" disabled={busy} styles={styles} onPress={() => void planPhase(repo.repo, epic.path)} />
                     <Button label="Open" primary={current} disabled={busy} styles={styles} onPress={() => onPicked({ repo: repo.repo, epic: epic.path })} />
                   </View>
                 );
@@ -1003,8 +872,6 @@ function createStyles(theme: Theme, compact: boolean) {
     danger: { color: c.statusDanger, fontSize: 12.5 },
     hint: { color: c.foregroundMuted, fontSize: 11.5 },
     sectionLabel: { color: c.foregroundMuted, fontSize: 11, letterSpacing: 0.8, fontWeight: "600" as const },
-    mono: { color: c.foreground, fontFamily: "monospace", fontSize: 12 },
-    link: { color: c.accent, fontFamily: "monospace", fontSize: 12, textDecorationLine: "underline" as const },
     flex: { flex: 1 },
     track: { flexDirection: "row" as const, height: 4, borderRadius: 2, overflow: "hidden" as const, backgroundColor: c.surface2 },
     trackFill: { height: 4 },
@@ -1026,7 +893,6 @@ function createStyles(theme: Theme, compact: boolean) {
     nodeId: { color: c.foregroundMuted, fontFamily: "monospace", fontSize: 12, fontWeight: "500" as const },
     nodeTitle: { color: c.foreground, fontSize: 13, fontWeight: "600" as const },
     nodeSub: { fontSize: 11.5 },
-    liveDot: { width: 7, height: 7, borderRadius: 4 },
     badge: {
       marginLeft: "auto" as const,
       fontSize: 10.5,
@@ -1050,17 +916,6 @@ function createStyles(theme: Theme, compact: boolean) {
     steps: { gap: 14 },
     step: { gap: 6 },
     stepLabel: { color: c.foregroundMuted, fontSize: 10.5, letterSpacing: 0.7, fontWeight: "600" as const },
-    update: {
-      flexDirection: "row" as const,
-      gap: 10,
-      alignItems: "baseline" as const,
-      paddingVertical: 5,
-      borderBottomWidth: 1,
-      borderBottomColor: c.border,
-    },
-    updateTime: { color: c.foregroundMuted, fontFamily: "monospace", fontSize: 11.5, width: 64 },
-    updateWho: { fontFamily: "monospace", fontSize: 12, fontWeight: "600" as const },
-    updateText: { color: c.foreground, fontSize: 12.5, flex: 1 },
     repoForm: { gap: 8 },
     repoRow: { flexDirection: "row" as const, gap: 8, alignItems: "center" as const, flexWrap: "wrap" as const },
     input: {

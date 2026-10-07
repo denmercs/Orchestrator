@@ -1,21 +1,23 @@
 import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { HarnessRepo } from "../shared/orchestration";
+import { phaseLabel, type HarnessRepo } from "../shared/orchestration";
 
 // The plugin owns the initiative layout; every repo stores it in its own .harness:
 //
 //   .harness/initiatives/<slug>/
-//     initiative.md                 title + outcome; epics table between the harness markers
-//     epics/E<n>-<epic-slug>/
-//       epic.md                     frontmatter id + title
+//     initiative.md                 title + outcome; phases table between the harness markers
+//     phases/<n>-<phase-slug>/
+//       phase.md                    frontmatter phase (its number) + title
+//       architecture.md             written by the architecture session (server/harness-architect.ts)
 //       stories/                    one .md per story; frontmatter id, title, status, depends_on
-//       state/                      per-story working notes, written by whatever runs the story
 //
-// Planning tools and runners read this layout and add stories to it; they don't create it.
+// The architecture session (server/harness-architect.ts) adds the plan and stories to it.
 
-const EPICS_START = "<!-- harness:epics:start -->";
-const EPICS_END = "<!-- harness:epics:end -->";
+const PHASES_START = "<!-- harness:phases:start -->";
+const PHASES_END = "<!-- harness:phases:end -->";
+export const PHASES_DIR = "phases";
+export const PHASE_FILE = "phase.md";
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 
 export const slugOf = (title: string) =>
@@ -47,12 +49,15 @@ const dirsIn = (dir: string) =>
 
 export const initiativesDir = (root: string) => join(root, ".harness", "initiatives");
 
+export const initiativeTitle = (dir: string) =>
+  /^# (?:Initiative: )?(.+)$/m.exec(readText(join(dir, "initiative.md")))?.[1] ?? dir.split(sep).pop() ?? "";
+
 // The absolute epic folder for a repo-relative path, or null unless it is an epic
-// (has epic.md) inside .harness/initiatives.
+// (has phase.md) inside .harness/initiatives.
 export function epicDirFor(root: string, epic: string) {
   const target = resolve(root, epic);
   const rel = relative(initiativesDir(root), target);
-  if (!rel || isAbsolute(rel) || rel.split(sep)[0] === ".." || !existsSync(join(target, "epic.md"))) return null;
+  if (!rel || isAbsolute(rel) || rel.split(sep)[0] === ".." || !existsSync(join(target, PHASE_FILE))) return null;
   return target;
 }
 
@@ -68,13 +73,12 @@ export function listHarness(repos: string[]): { repos: HarnessRepo[] } {
           name: root.split(sep).pop() ?? root,
           initiatives: dirsIn(base).map((slug) => {
             const dir = join(base, slug);
-            const title = /^# (?:Initiative: )?(.+)$/m.exec(readText(join(dir, "initiative.md")))?.[1] ?? slug;
             return {
               slug,
-              title,
-              epics: dirsIn(join(dir, "epics")).map((name) => {
-                const epicDir = join(dir, "epics", name);
-                const meta = frontmatter(readText(join(epicDir, "epic.md")));
+              title: initiativeTitle(dir),
+              epics: dirsIn(join(dir, PHASES_DIR)).map((name) => {
+                const epicDir = join(dir, PHASES_DIR, name);
+                const meta = frontmatter(readText(join(epicDir, PHASE_FILE)));
                 const stories = existsSync(join(epicDir, "stories"))
                   ? readdirSync(join(epicDir, "stories")).filter((file) => file.endsWith(".md"))
                   : [];
@@ -82,7 +86,7 @@ export function listHarness(repos: string[]): { repos: HarnessRepo[] } {
                   (file) => frontmatter(readText(join(epicDir, "stories", file))).status === "merged",
                 ).length;
                 return {
-                  id: meta.id || name.split("-")[0],
+                  id: meta.phase || name.split("-")[0],
                   title: meta.title || name,
                   path: relative(root, epicDir).split(sep).join("/"),
                   stories: stories.length,
@@ -97,23 +101,24 @@ export function listHarness(repos: string[]): { repos: HarnessRepo[] } {
 }
 
 function epicsTable(dir: string) {
-  const rows = dirsIn(join(dir, "epics")).map((name) => {
-    const meta = frontmatter(readText(join(dir, "epics", name, "epic.md")));
-    return `| ${meta.id || name} — ${meta.title || name} | [\`epics/${name}/epic.md\`](epics/${name}/epic.md) |`;
+  const rows = dirsIn(join(dir, PHASES_DIR)).map((name) => {
+    const meta = frontmatter(readText(join(dir, PHASES_DIR, name, PHASE_FILE)));
+    const file = `${PHASES_DIR}/${name}/${PHASE_FILE}`;
+    return `| ${phaseLabel(meta.phase || name)} — ${meta.title || name} | [\`${file}\`](${file}) |`;
   });
-  return [EPICS_START, "| Epic | Path |", "|------|------|", ...rows, EPICS_END].join("\n");
+  return [PHASES_START, "| Phase | Path |", "|------|------|", ...rows, PHASES_END].join("\n");
 }
 
 function refreshEpicsTable(dir: string) {
   const file = join(dir, "initiative.md");
   const text = readText(file);
   const table = epicsTable(dir);
-  const start = text.indexOf(EPICS_START);
-  const end = text.indexOf(EPICS_END);
+  const start = text.indexOf(PHASES_START);
+  const end = text.indexOf(PHASES_END);
   const next =
     start >= 0 && end > start
-      ? text.slice(0, start) + table + text.slice(end + EPICS_END.length)
-      : `${text.trimEnd()}\n\n## Epics\n\n${table}\n`;
+      ? text.slice(0, start) + table + text.slice(end + PHASES_END.length)
+      : `${text.trimEnd()}\n\n## Phases\n\n${table}\n`;
   writeFileSync(file, next, "utf8");
 }
 
@@ -162,14 +167,13 @@ export async function createHarnessEpic(input: {
       );
     }
 
-    const taken = dirsIn(join(dir, "epics")).map((name) => Number(/^E(\d+)-/.exec(name)?.[1] ?? 0));
-    const id = `E${Math.max(0, ...taken) + 1}`;
-    const epicDir = join(dir, "epics", `${id}-${epicSlug}`);
+    const taken = dirsIn(join(dir, PHASES_DIR)).map((name) => Number(/^(\d+)-/.exec(name)?.[1] ?? 0));
+    const id = String(Math.max(0, ...taken) + 1);
+    const epicDir = join(dir, PHASES_DIR, `${id}-${epicSlug}`);
     mkdirSync(join(epicDir, "stories"), { recursive: true });
-    mkdirSync(join(epicDir, "state"), { recursive: true });
     writeFileSync(
-      join(epicDir, "epic.md"),
-      `---\nid: ${id}\ntitle: ${epicTitle}\n---\n\n# ${id} — ${epicTitle}\n\n## Goal\n\n_One file per story in stories/, in priority order._\n`,
+      join(epicDir, PHASE_FILE),
+      `---\nphase: ${id}\ntitle: ${epicTitle}\n---\n\n# ${phaseLabel(id)} — ${epicTitle}\n\n## Goal\n\n_One file per story in stories/, in priority order._\n`,
       "utf8",
     );
     refreshEpicsTable(dir);

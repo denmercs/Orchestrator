@@ -401,33 +401,22 @@ export const epicStory = z.object({
   // Set when an agent filed this story while working on another.
   discoveredFrom: z.string(),
   pr: z.number().nullable(),
-  attempts: z.number(),
-  cycles: z.object({ done: z.number(), total: z.number() }).nullable(),
-  planFile: z.string(),
-  preview: z.object({
-    routes: z.array(z.object({ path: z.string(), check: z.string() })),
-    note: z.string(),
-    url: z.string().nullable(),
-  }),
+  // todo, every dependency merged, and not blocked.
   ready: z.boolean(),
-  retryAt: z.string().nullable(),
-  loopPid: z.number().nullable(),
-  session: z
-    .object({ id: z.string(), phase: z.string(), live: z.boolean(), held: z.boolean() })
-    .nullable(),
 });
+
+// A phase is stored by number (phases/<n>-<name>); people read it as "Phase <n>".
+export const phaseLabel = (id: string) => (/^\d+$/.test(id) ? `Phase ${id}` : id);
 
 export const epicBoardState = z.object({
   epic: z.object({ id: z.string(), title: z.string(), dir: z.string() }),
-  loop: z.object({ pid: z.number().nullable() }),
+  // Title of the initiative the epic (phase) belongs to.
+  initiative: z.string(),
+  // The phase's architecture plan, once architecture.md exists; warnings are gaps a person would notice.
+  plan: z.object({ warnings: z.array(z.string()) }).nullable(),
   next: z.object({ story: z.string().nullable(), reason: z.string() }),
-  previewEnabled: z.boolean(),
   repoUrl: z.string(),
-  // True when a runner is set; without one the board is the plan only.
-  runner: z.boolean(),
   stories: z.array(epicStory),
-  progress: z.array(z.object({ at: z.string(), text: z.string() })),
-  now: z.number(),
 });
 
 export const getEpicBoard = defineRpc({
@@ -440,28 +429,7 @@ export const getEpicBoard = defineRpc({
   }),
 });
 
-export const epicAction = z.enum([
-  "start",
-  "retry",
-  "release",
-  "approve",
-  "preview",
-  "preview-stop",
-  "loop-start",
-  "loop-stop",
-]);
-
-export const runEpicAction = defineRpc({
-  name: "orchestration.epic-action",
-  input: z.object({ action: epicAction, id: z.string().optional() }),
-  output: z.object({
-    ok: z.boolean(),
-    error: z.string().nullable(),
-    url: z.string().nullable(),
-  }),
-});
-
-// Removes the initiative holding the active epic. Refused while the runner has anything going.
+// Removes the initiative holding the active phase.
 export const deleteEpicInitiative = defineRpc({
   name: "orchestration.epic-delete-initiative",
   input: z.object({}),
@@ -490,7 +458,8 @@ export const listHarnessInitiatives = defineRpc({
   output: z.object({ repos: z.array(harnessRepo) }),
 });
 
-// Creates the initiative when `initiative` is empty (from initiativeTitle), then its next epic.
+// Creates the initiative when `initiative` is empty (from initiativeTitle), then its next epic,
+// then starts that phase's architecture session. `warning` says why the session didn't start.
 export const createHarnessEpicRpc = defineRpc({
   name: "orchestration.harness-create-epic",
   input: z.object({
@@ -499,13 +468,53 @@ export const createHarnessEpicRpc = defineRpc({
     initiativeTitle: z.string(),
     epicTitle: z.string(),
   }),
-  output: z.object({ ok: z.boolean(), error: z.string().nullable(), epic: z.string().nullable() }),
+  output: z.object({
+    ok: z.boolean(),
+    error: z.string().nullable(),
+    epic: z.string().nullable(),
+    agentId: z.string().nullable(),
+    warning: z.string().nullable(),
+  }),
+});
+
+// Starts the architecture session for an existing phase (repo-relative epic folder).
+export const planHarnessPhaseRpc = defineRpc({
+  name: "orchestration.harness-plan-phase",
+  input: z.object({ repo: z.string(), epic: z.string() }),
+  output: z.object({ ok: z.boolean(), error: z.string().nullable(), agentId: z.string().nullable() }),
+});
+
+const phaseRef = z.object({ repo: z.string(), epic: z.string() });
+
+// Renders the phase's architecture.html and returns a loopback http URL serving it (Paseo's
+// in-app browser only opens http). The page reloads itself when architecture.md changes.
+export const openPhasePlanRpc = defineRpc({
+  name: "orchestration.harness-open-plan",
+  input: phaseRef,
+  output: z.object({
+    ok: z.boolean(),
+    error: z.string().nullable(),
+    warnings: z.array(z.string()),
+    url: z.string().nullable(),
+  }),
+});
+
+// Jira → architecture.md, one way: sets each keyed card's status (and "Jira" table cells).
+export const refreshPhasePlanRpc = defineRpc({
+  name: "orchestration.harness-refresh-plan",
+  input: phaseRef,
+  output: z.object({
+    ok: z.boolean(),
+    error: z.string().nullable(),
+    keys: z.number(),
+    changed: z.number(),
+    missing: z.array(z.string()),
+  }),
 });
 
 export type HarnessRepo = z.infer<typeof harnessRepo>;
 export type EpicStory = z.infer<typeof epicStory>;
 export type EpicBoardState = NonNullable<RpcOutput<typeof getEpicBoard>["state"]>;
-export type EpicAction = z.infer<typeof epicAction>;
 
 export const getDailyVerse = defineRpc({
   name: "orchestration.daily-verse",

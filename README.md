@@ -38,16 +38,19 @@ The plugin owns the initiative layout; each repo stores it in its own `.harness`
 
 ```
 .harness/initiatives/<slug>/
-  initiative.md            # title + outcome; epics table between harness:epics markers
-  epics/E<n>-<name>/
-    epic.md                # frontmatter id + title
+  initiative.md            # title + outcome; phases table between harness:phases markers
+  phases/<n>-<name>/
+    phase.md               # frontmatter phase (its number) + title
+    architecture.md        # the plan: shapes, decisions, stages, Jira keys; written by the architecture session
+    architecture.html      # generated from architecture.md for reading; never edit
     stories/               # one .md per story: id, title, status, depends_on, blocked_by, pr
-    state/                 # per-story working notes, written by the runner
 ```
 
-**Harness plan → Initiatives** lists every Paseo project's initiatives. **New initiative** and **New phase** create the folders above (each phase is an `epics/E<n>-<name>` folder); **Open** puts a phase on the board. The board reads the plan straight from these files.
+**Initiative → Initiatives** lists every Paseo project's initiatives. **New initiative** and **New phase** create the folders above (each phase is a `phases/<n>-<name>` folder); **Open** puts a phase on the board. The board reads the plan straight from these files.
 
-Running stories is optional. Set **Runner** to a module that exports `createHarnessRunner({ root, epicDir })` returning `{ state(), act(action, id), stop(), reset?() }` (contract in `server/harness-board.ts`). With a runner the board shows **Run plan**, **Start planning**, approvals and previews; without one it's the plan only.
+Creating a phase also starts its **architecture session**: a Claude agent in that repo that reads the code and the initiative, writes the phase's `architecture.md` and one story file per stage, then asks the open decisions one at a time, rewriting both after each answer. Say "lock" to mark it agreed. **Plan architecture** on a phase row starts it again; the agent resumes from the existing files. How phases are planned (vocabulary, plan sections, stages, decision loop) lives in `server/architecture-method.ts`; edit it to change every future architecture session.
+
+**View plan** on the board opens the plan in Paseo's browser, in the repo's workspace (in the system browser where Paseo has no browser). It also opens by itself the first time a phase's plan appears while the board is open, and the page reloads as `architecture.md` changes, so it follows the architecture session. Paseo's browser only opens http, so the plugin serves the page from `127.0.0.1` behind a random per-phase token (`server/plan-server.ts`). The page is `architecture.html`, which the plugin regenerates whenever `architecture.md` changes: current and target diagrams side by side, decision and stage cards, the start → finish path, and an optional second track (a second epic's stories). Gaps such as a missing diagram show under the board header. **Refresh from Jira** reads the `epic:` / `story:` keys on stage and track-B cards and writes each issue's Jira status into the Markdown (card `status:` lines and "Jira" table cells). It's one way and never changes Jira. Each architecture session also refreshes before it starts. Jira access uses the same credentials as the board (`JIRA_URL` / `JIRA_USERNAME` / `JIRA_API_TOKEN`, or the Atlassian MCP config). Rendering lives in `server/plan-render.ts`, the refresh in `server/plan-jira.ts`.
 
 ## Skills and the Story belt
 

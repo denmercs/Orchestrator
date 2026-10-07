@@ -465,7 +465,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
             {expanded.browse ? (
               <>
                 <Text style={styles.sectionHint}>
-                  Parent/child view for spawned work. Jira epics group on the board above; the harness plan has its own graph.
+                  Parent/child view for spawned work. Jira epics group on the board above; the initiative panel has its own graph.
                 </Text>
                 {trees.map((family) => {
                   const open = Boolean(expanded[family.epic.id]);
