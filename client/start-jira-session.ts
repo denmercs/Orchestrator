@@ -1,4 +1,5 @@
 import { usePaseo } from "@getpaseo/plugin/client";
+import { BELT_AGENT_CONFIG } from "../shared/belt";
 import type { BoardItem } from "./board-model";
 
 type PaseoApi = ReturnType<typeof usePaseo>;
@@ -16,7 +17,15 @@ const PROJECT_HINTS: Record<string, string[]> = {
   QBUILD: ["qbuild", "quick builder", "quickbuilder"],
 };
 
-export async function startJiraSession(paseo: PaseoApi, item: BoardItem) {
+type StartBelt = (input: {
+  workspaceId: string;
+  key: string;
+  title: string;
+  url: string | null;
+}) => Promise<{ agentId: string; warnings: string[] }>;
+
+// With `startBelt`, stories run the Story belt (Plan first); epics always run the epic loop.
+export async function startJiraSession(paseo: PaseoApi, item: BoardItem, startBelt?: StartBelt) {
   if (!item.key) {
     throw new Error("This card has no Jira key.");
   }
@@ -36,21 +45,25 @@ export async function startJiraSession(paseo: PaseoApi, item: BoardItem) {
     },
   });
   await workspace.setTitle(workspaceTitle(item, title));
+  if (startBelt && item.role !== "epic") {
+    const started = await startBelt({
+      workspaceId: workspace.id,
+      key: item.key,
+      title: item.title,
+      url: item.url,
+    });
+    return { agentId: started.agentId, workspaceId: workspace.id, warnings: started.warnings };
+  }
   const agent = await workspace.agents.create({
     title,
-    config: {
-      provider: "cursor/grok-4.6",
-      modeId: "agent",
-      thinkingOptionId: "medium",
-      featureValues: { auto_accept: true },
-    },
+    config: BELT_AGENT_CONFIG,
     prompt: item.role === "epic" ? epicLoopPrompt(item) : storyPrompt(item),
     labels: {
       jira: item.key,
       kind: item.role === "epic" ? "epic-loop" : "session",
     },
   });
-  return { agentId: agent.id, workspaceId: workspace.id };
+  return { agentId: agent.id, workspaceId: workspace.id, warnings: [] as string[] };
 }
 
 async function resolveProject(paseo: PaseoApi, issueKey: string) {

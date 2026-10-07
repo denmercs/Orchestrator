@@ -18,7 +18,9 @@ type LoopAdvance = {
   pollMergedPrs: () => Promise<void>;
 };
 
-export function createLoopAdvance(): LoopAdvance {
+export function createLoopAdvance(
+  onMerged?: (paseo: PaseoApi, fresh: MergedPr[]) => Promise<void>,
+): LoopAdvance {
   const seen = new Set<string>();
   const lastPromptAt = new Map<string, number>();
   let seeded = false;
@@ -41,6 +43,11 @@ export function createLoopAdvance(): LoopAdvance {
     }
     if (fresh.length === 0 || !paseo) {
       return;
+    }
+    if (onMerged) {
+      await onMerged(paseo, fresh).catch((error) => {
+        console.warn("orchestrator: merge follow-up failed", error);
+      });
     }
     await promptParents(paseo, fresh, reason, lastPromptAt);
   }

@@ -49,6 +49,29 @@ The plugin owns the initiative layout; each repo stores it in its own `.harness`
 
 Running stories is optional. Set **Runner** to a module that exports `createHarnessRunner({ root, epicDir })` returning `{ state(), act(action, id), stop(), reset?() }` (contract in `server/harness-board.ts`). With a runner the board shows **Run plan**, **Start planning**, approvals and previews; without one it's the plan only.
 
+## Skills and the Story belt
+
+The **Skills** button next to the board picker opens a drawer with two tabs.
+
+**Phases** sets up the Story belt: Plan → Implement → Review → Done. Each phase picks the skill it runs, extra skills it loads, and what happens when it ends. The security audit is always loaded in Review.
+
+The belt is off by default. Turn it on with **Belt on** in the drawer header. Then **Start** on a story card opens a Plan agent instead of a single session. Epics still use the epic loop.
+
+Each phase runs in a fresh agent in the story's worktree and ends by writing a marker under `## Status` in `.harness/state.md`:
+
+| Marker | What happens next |
+|---|---|
+| `plan-done` | Implement starts. Plan writes it only after you approve the plan. |
+| `implement-done` | Review starts. |
+| `implement-blocked` | Nothing; waits for you. |
+| `review-done` | Done starts (opens the PR). |
+| `review-failed` | A fresh Implement agent fixes the findings, then Review runs again, up to the round limit. |
+| `done-done` | Nothing until the PR merges; then `/ss-close-story` runs if **After merge** is on. |
+
+**Sources** connects skill repos: `owner/repo`, a git URL, or an absolute folder path. Git repos are cloned to `~/.orchestrator/skill-sources/` and pinned to a commit. **Check for updates** lists new commits and changed skills before you move the pin. Folders are read live. Skills already in `~/.claude` and `~/.agents` show as **This machine**.
+
+When a phase uses a skill from a connected repo, it is copied into the story worktree (`.claude/`, `.cursor/`, `.agents/`) and hidden from git through `.git/info/exclude`. Files the repo already commits are never overwritten.
+
 ## Reload after edits
 
 ```bash

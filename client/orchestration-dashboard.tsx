@@ -16,6 +16,7 @@ import {
   type JiraPullRequest,
   type JiraSprint,
 } from "../shared/orchestration";
+import { beltSettings, startBeltStory } from "../shared/belt";
 import { jiraBoardSettings } from "../shared/settings";
 import { PR_POLL_MS } from "../shared/timing";
 import {
@@ -30,6 +31,7 @@ import {
 import { DailyVerseCard } from "./daily-verse";
 import { useEpicBoard } from "./epic-board";
 import { ProdPulseButton, ProdPulseDrawer, useProdPulse } from "./prod-pulse-drawer";
+import { SkillsButton, SkillsDrawer } from "./skills-drawer";
 import { startJiraSession } from "./start-jira-session";
 import { StandupSection } from "./standup-section";
 import { useOrchestrationCatalog } from "./use-orchestration-catalog";
@@ -44,6 +46,8 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const loadJiraPrs = useRpc(listJiraPullRequests);
   const moveIssue = useRpc(moveJiraIssue);
   const boardSettings = useSettings(jiraBoardSettings);
+  const belt = useSettings(beltSettings);
+  const startBelt = useRpc(startBeltStory);
   const defaultBoardId = boardSettings.status === "ready" ? boardSettings.values.defaultBoardId : "";
   const boardFilter = boardSettings.status === "ready" ? boardSettings.values.boardFilter : null;
   const [schedules, setSchedules] = useState<
@@ -65,6 +69,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const { pulse, refresh: refreshPulse } = useProdPulse();
   const [pulseOpen, setPulseOpen] = useState(false);
   const epic = useEpicBoard({ theme, compact: layout.compact, navigation });
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const agentIds = useMemo(
     () =>
       agents
@@ -318,7 +323,11 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     setStartingId(item.id);
     setSessionError(null);
     try {
-      const started = await startJiraSession(paseo, item);
+      const beltOn = belt.status === "ready" && belt.values.enabled;
+      const started = await startJiraSession(paseo, item, beltOn ? startBelt : undefined);
+      if (started.warnings.length > 0) {
+        setSessionError(`Started, with warnings: ${started.warnings.join(" ")}`);
+      }
       if (navigation) {
         navigation.openAgent({ agentId: started.agentId });
       }
@@ -335,6 +344,11 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         <View style={styles.titleRow}>
           <Text style={styles.title}>Orchestration</Text>
           <View style={styles.titleActions}>
+            <SkillsButton
+              theme={theme}
+              beltOn={belt.status === "ready" && belt.values.enabled}
+              onPress={() => setSkillsOpen(true)}
+            />
             {pulse?.available ? (
               <ProdPulseButton pulse={pulse} theme={theme} onPress={() => setPulseOpen(true)} />
             ) : null}
@@ -550,6 +564,12 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         />
       ) : null}
       {epic.drawer}
+      <SkillsDrawer
+        theme={theme}
+        compact={layout.compact}
+        open={skillsOpen}
+        onClose={() => setSkillsOpen(false)}
+      />
     </View>
   );
 }
