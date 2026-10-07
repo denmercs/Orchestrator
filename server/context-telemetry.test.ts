@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { recordTelemetry, summariseTelemetry, type TelemetryRow } from "./context-telemetry";
-
-// Seam tests pinned in S1 against stubs. S2 implements telemetry and removes `todo`.
-const S2 = { todo: "S2" };
 
 let root: string;
 
@@ -33,7 +30,7 @@ const ROWS: TelemetryRow[] = [
   row("2026-10-01T13:01:00.000Z", "a2", 110_000, "ignore"),
 ];
 
-test("summariseTelemetry counts recorded rows", S2, async () => {
+test("summariseTelemetry counts recorded rows", async () => {
   const file = join(root, "all.jsonl");
   for (const r of ROWS) await recordTelemetry(r, file);
 
@@ -49,11 +46,51 @@ test("summariseTelemetry counts recorded rows", S2, async () => {
   });
 });
 
-test("summariseTelemetry drops rows before since", S2, async () => {
+test("summariseTelemetry drops rows before since", async () => {
   const file = join(root, "since.jsonl");
   for (const r of ROWS) await recordTelemetry(r, file);
 
   const summary = await summariseTelemetry("2026-10-01T10:30:00.000Z", file);
   assert.equal(summary.turns, 2);
   assert.equal(summary.sessions, 2);
+});
+
+test("recordTelemetry rotates to .1.jsonl once the file would pass maxBytes", async () => {
+  const file = join(root, "rotate.jsonl");
+  const rotated = join(root, "rotate.1.jsonl");
+  const first = row("2026-10-01T10:00:00.000Z", "a1", 40_000, "turn");
+  const lineBytes = Buffer.byteLength(`${JSON.stringify(first)}\n`);
+
+  await recordTelemetry(first, file, lineBytes * 2);
+  await recordTelemetry(row("2026-10-01T10:00:01.000Z", "a1", 40_000, "turn"), file, lineBytes * 2);
+  await recordTelemetry(row("2026-10-01T10:00:02.000Z", "a1", 40_000, "turn"), file, lineBytes * 2);
+
+  assert.equal((await readFile(rotated, "utf8")).trim().split("\n").length, 2);
+  assert.equal((await readFile(file, "utf8")).trim().split("\n").length, 1);
+});
+
+test("recordTelemetry replaces an older .1.jsonl on the next rotation", async () => {
+  const file = join(root, "replace.jsonl");
+  const rotated = join(root, "replace.1.jsonl");
+  await writeFile(rotated, "stale\n");
+  const r = row("2026-10-01T10:00:00.000Z", "a1", 40_000, "turn");
+  const lineBytes = Buffer.byteLength(`${JSON.stringify(r)}\n`);
+
+  await recordTelemetry(r, file, lineBytes);
+  await recordTelemetry(row("2026-10-01T10:00:01.000Z", "a2", 40_000, "turn"), file, lineBytes);
+
+  const old = await readFile(rotated, "utf8");
+  assert.ok(!old.includes("stale"));
+  assert.ok(old.includes('"a1"'));
+});
+
+test("summariseTelemetry counts rows from the rotated file and the current one", async () => {
+  const file = join(root, "both.jsonl");
+  await writeFile(join(root, "both.1.jsonl"), ROWS.slice(0, 5).map((r) => JSON.stringify(r)).join("\n") + "\n");
+  for (const r of ROWS.slice(5)) await recordTelemetry(r, file);
+
+  const summary = await summariseTelemetry(null, file);
+  assert.equal(summary.turns, 3);
+  assert.equal(summary.sessions, 2);
+  assert.equal(summary.tokensAvoided, 120_000);
 });

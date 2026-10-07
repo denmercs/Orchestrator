@@ -13,3 +13,22 @@ export type CompactResult = {
 export interface Compactor {
   compact(agentId: string, keepList: string[]): Promise<CompactResult>;
 }
+
+// What a compact keeps (see CONTEXT.md, "Keep-list"). A loop agent also keeps its step and story
+// so it carries on where it was after the summary.
+export function keepList(labels: Record<string, string | undefined>): string[] {
+  const list = [".harness/state.md", "files changed this session", "failing tests and their output"];
+  if (labels["loop-step"]) list.push(`step ${labels["loop-step"]}`);
+  if (labels["loop-story"]) list.push(`story ${labels["loop-story"]}`);
+  return list;
+}
+
+// The native adapter: the running agent summarises itself in place.
+export function nativeCompactor(send: (agentId: string, text: string) => Promise<void>): Compactor {
+  return {
+    async compact(agentId, list) {
+      await send(agentId, `/compact Keep: ${list.join(", ")}.`);
+      return { kind: "native", agentId };
+    },
+  };
+}
