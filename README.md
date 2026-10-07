@@ -73,7 +73,7 @@ When you say "lock", the plan is marked agreed and the board shows **Planning do
 
 The story files are the state. The loop writes `status`, `branch`, `base`, `workspace`, `worktree`, `step`, `round`, `agent`, `pr`, `ci`, `fix_attempts` and `blocked_reason` into their frontmatter, and `loop: on | off | done` into `initiative.md`. To retry a blocked story, set its `status` back (`todo` to start over) and remove `blocked_reason`. Repos with a started initiative are listed in `~/.orchestrator/initiative-loops.json` so the timer knows where to look.
 
-**Runner**: the loop runs on Claude, Cursor or Kiro (**Loop runs on …** in Initiatives cycles them). The step prompts are the same for each and name no skills or slash commands. Claude uses Opus 5.5 for Plan and Review and Sonnet 5.5 for the rest, in auto mode; Cursor uses `grok-4.6` with auto-accept; Kiro uses its default model and mode. Per-step models, `parallel`, `reviewRounds` and `maxFixes` live in the plugin's `initiative-loop` settings. How each step works lives in `server/story-method.ts`; the engine is `server/initiative-loop.ts`.
+**Agent**: every step runs on your Paseo agent profile named **default** (provider, model, mode, thinking). Without one, Claude runs on its own default model in auto mode. The step prompts name no skills or slash commands, so any provider works. `parallel`, `reviewRounds` and `maxFixes` live in the plugin's `initiative-loop` settings. How each step works lives in `server/story-method.ts`; the engine is `server/initiative-loop.ts`.
 
 ## Skills and the Story belt
 

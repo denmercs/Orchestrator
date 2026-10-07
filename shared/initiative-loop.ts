@@ -5,19 +5,7 @@ import { z } from "zod";
 // Paseo worktree workspace, through Plan → Implement → Review → Open PR, and watches CI until you
 // merge. The engine is server/initiative-loop.ts; the step prompts are server/story-method.ts.
 
-export const LOOP_RUNNERS = ["claude", "cursor", "kiro"] as const;
-export type LoopRunner = (typeof LOOP_RUNNERS)[number];
-export const RUNNER_LABELS: Record<LoopRunner, string> = { claude: "Claude", cursor: "Cursor", kiro: "Kiro" };
-
-const model = z.string().default("");
-
 const loopValues = z.object({
-  // Which agent CLI runs every step.
-  runner: z.enum(LOOP_RUNNERS).default("claude"),
-  // Per-step model ids for that runner; empty uses the runner's default for the step.
-  models: z
-    .object({ plan: model, implement: model, review: model, pr: model, fix: model })
-    .default({ plan: "", implement: "", review: "", pr: "", fix: "" }),
   // Stories in flight at once (each in its own worktree).
   parallel: z.number().int().min(1).max(4).default(1),
   // Review → Implement rounds before the story blocks for you.

@@ -18,13 +18,7 @@ import {
   type HarnessTracker,
 } from "../shared/orchestration";
 import { harnessSettings } from "../shared/settings";
-import {
-  LOOP_RUNNERS,
-  RUNNER_LABELS,
-  initiativeLoopSettings,
-  startInitiativeLoop,
-  stopInitiativeLoop,
-} from "../shared/initiative-loop";
+import { startInitiativeLoop, stopInitiativeLoop } from "../shared/initiative-loop";
 
 // The active phase of an initiative (see server/harness-layout.ts) as its dependency graph: one
 // card per story, arrows from a dependency to the stories that need it. Initiatives are occasional
@@ -778,7 +772,6 @@ function HarnessPicker({
   const plan = useRpc(planHarnessPhaseRpc);
   const startLoop = useRpc(startInitiativeLoop);
   const stopLoop = useRpc(stopInitiativeLoop);
-  const loopSettings = useSettings(initiativeLoopSettings);
   const toast = useToast();
   const [repos, setRepos] = useState<HarnessRepo[] | null>(null);
   const [reload, setReload] = useState(0);
@@ -824,16 +817,6 @@ function HarnessPicker({
     } finally {
       setBusy(false);
       setReload((n) => n + 1);
-    }
-  }
-
-  // Which agent CLI the loop runs every step with. The step prompts are the same for each.
-  async function cycleRunner() {
-    if (loopSettings.status !== "ready") return;
-    const at = LOOP_RUNNERS.indexOf(loopSettings.values.runner);
-    const runner = LOOP_RUNNERS[(at + 1) % LOOP_RUNNERS.length];
-    if (!(await loopSettings.save({ ...loopSettings.values, runner }, loopSettings.revision))) {
-      toast.error(loopSettings.saveError ?? "Could not save the runner.");
     }
   }
 
@@ -908,9 +891,6 @@ function HarnessPicker({
         <Text style={[styles.muted, styles.flex]}>
           Initiatives live in each repo at .harness/initiatives/&lt;slug&gt;/phases/&lt;n-name&gt;. Open a phase to see it here.
         </Text>
-        {loopSettings.status === "ready" ? (
-          <Button label={`Loop runs on ${RUNNER_LABELS[loopSettings.values.runner]}`} styles={styles} onPress={() => void cycleRunner()} />
-        ) : null}
         <Button label="Close" styles={styles} onPress={onCancel} />
       </View>
       {error ? <Text style={styles.danger}>{error}</Text> : null}

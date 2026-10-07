@@ -42,6 +42,7 @@ import {
 // their frontmatter, so it resumes from them after a restart. Paseo owns the worktrees and agents.
 
 type PaseoApi = PluginHandlerContext["paseo"];
+const DEFAULT_PROFILE = "default";
 type StoryFile = ReturnType<typeof readStoryFiles>[number];
 type Initiative = { root: string; slug: string; dir: string };
 
@@ -62,20 +63,23 @@ const STATUS_FOR: Record<LoopStep, string> = {
 
 const execFileAsync = promisify(execFile);
 
-// Every runner gets the same prompts; only the agent config differs. Kiro's mode stays its default.
-function agentConfig(config: LoopConfig, step: LoopStep) {
-  const chosen = config.models[step].trim();
-  if (config.runner === "cursor") {
-    return {
-      provider: `cursor/${chosen || "grok-4.6"}`,
-      modeId: "agent",
-      thinkingOptionId: "medium",
-      featureValues: { auto_accept: true },
-    };
+// Every step runs on Paseo's agent profile named "default", read on each start so edits to it apply
+// to the next step. Without one, Claude runs on its own default model.
+async function stepAgentConfig(api: PaseoApi) {
+  try {
+    const profile = (await api.config.get()).config.agentProfiles?.find((item) => item.name === DEFAULT_PROFILE);
+    if (profile) {
+      return {
+        provider: profile.model ? `${profile.provider}/${profile.model}` : profile.provider,
+        ...(profile.modeId ? { modeId: profile.modeId } : {}),
+        ...(profile.thinkingOptionId ? { thinkingOptionId: profile.thinkingOptionId } : {}),
+        ...(profile.featureValues ? { featureValues: profile.featureValues } : {}),
+      };
+    }
+  } catch (error) {
+    console.warn("orchestrator: unable to read Paseo agent profiles", error);
   }
-  if (config.runner === "kiro") return { provider: chosen ? `kiro/${chosen}` : "kiro" };
-  const strong = step === "plan" || step === "review";
-  return { provider: `claude/${chosen || (strong ? "claude-opus-5-5" : "claude-sonnet-5-5")}`, modeId: "auto" };
+  return { provider: "claude", modeId: "auto" };
 }
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
@@ -216,7 +220,7 @@ export function createInitiativeLoop(readConfig: () => Promise<LoopConfig>) {
       const label = round > 1 ? `${STEP_LABELS[step]} ${round}` : STEP_LABELS[step];
       const agent = await api.workspaces.ref(workspace).agents.create({
         title: `${MARK} ${story.id} · ${label} — ${ctx.title}`.slice(0, 60),
-        config: agentConfig(config, step),
+        config: await stepAgentConfig(api),
         prompt: stepPrompt(step, ctx, { round, failing }),
         labels,
       });
