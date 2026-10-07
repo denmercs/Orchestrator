@@ -24,6 +24,7 @@ import {
   stopInitiativeLoop,
 } from "./shared/initiative-loop";
 import { addSource, checkSource, loadCatalog, removeSourceCheckout } from "./server/skill-sources";
+import { searchSkillsSh } from "./server/skills-sh";
 import { loadProdPulse } from "./server/prod-pulse";
 import { applyProdPulseAutomation, loadProdPulseAutomation } from "./server/prod-pulse-schedule";
 import { PR_POLL_MS } from "./shared/timing";
@@ -63,6 +64,7 @@ import {
   checkSkillSource,
   getSkillCatalog,
   removeSkillSource,
+  searchSkillRegistry,
   startBeltStory,
 } from "./shared/belt";
 
@@ -118,6 +120,9 @@ export default function contribute(server: PluginServerContext) {
     return checkSource(source);
   });
   server.handle(removeSkillSource, ({ id }) => removeSourceCheckout(id));
+  server.handle(searchSkillRegistry, async ({ query }) =>
+    searchSkillsSh(query, { fetch, sources: (await readBeltValues())?.sources ?? [] }),
+  );
   server.handle(startBeltStory, async (input, { paseo }) => {
     const config = await readBelt();
     if (!config) {
