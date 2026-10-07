@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { openExternalUrl, usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client";
-import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
+import { Icon, Modal, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import {
   createHarnessEpicRpc,
   deleteEpicInitiative,
@@ -78,6 +78,47 @@ function subline(story: EpicStory) {
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+// A story waits on you when its plan needs approval, it is blocked, or its PR is green and ready to merge.
+const needsYou = (story: EpicStory) =>
+  story.status === "blocked" || story.status === "awaiting-approval" || (story.status === "pr-open" && story.ci === "green");
+
+function iconOf(story: EpicStory) {
+  if (needsYou(story)) return "AlertCircle";
+  if (story.status === "merged") return "CheckCircle";
+  if (story.status === "todo") return "Circle";
+  return "Loader";
+}
+
+// One line under a story's title in the phone list: what it is doing, or what it is waiting on.
+function contextOf(story: EpicStory) {
+  if (story.status === "awaiting-approval") return "Plan ready for your approval";
+  if (story.status === "blocked") return story.blockedReason || "Blocked";
+  if (story.status === "pr-open" && story.ci === "green") return `PR #${story.pr} ready to merge`;
+  if (story.status === "todo" && story.ready) return "Ready to start";
+  return subline(story);
+}
+
+type StoryGroup = { key: string; label: string; stories: EpicStory[] };
+
+// The phone list: what needs you first, then what is running, what is next, and merged work last.
+function statusGroups(stories: EpicStory[]): StoryGroup[] {
+  const groups: StoryGroup[] = [
+    { key: "you", label: "Needs you", stories: stories.filter(needsYou) },
+    {
+      key: "progress",
+      label: "In progress",
+      stories: stories.filter((item) => !needsYou(item) && item.status !== "todo" && item.status !== "merged"),
+    },
+    {
+      key: "next",
+      label: "Up next",
+      stories: stories.filter((item) => item.status === "todo").sort((a, b) => Number(b.ready) - Number(a.ready)),
+    },
+    { key: "merged", label: "Merged", stories: stories.filter((item) => item.status === "merged") },
+  ];
+  return groups.filter((group) => group.stories.length > 0);
 }
 
 // Columns are dependency depth. Within a column, stories sit near the stories they depend on
@@ -221,6 +262,9 @@ export function useEpicBoard({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
   const [shown, setShown] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [listView, setListView] = useState<"status" | "step">("status");
+  const [mergedOpen, setMergedOpen] = useState(false);
 
   // Opens the plan in Paseo's browser (desktop app), in the repo's workspace; elsewhere in the
   // system browser. The page reloads itself as architecture.md changes.
@@ -332,12 +376,6 @@ export function useEpicBoard({
     void refresh();
   }, [settingsKey, refresh]);
 
-  useEffect(() => {
-    if (!confirmDelete) return;
-    const timer = setTimeout(() => setConfirmDelete(false), 4000);
-    return () => clearTimeout(timer);
-  }, [confirmDelete]);
-
   // Deleting removes the initiative's files for good (.harness is not in git), then clears the
   // repo so the panel folds back to "not set up".
   async function deleteInitiative() {
@@ -398,12 +436,7 @@ export function useEpicBoard({
   if (!repo || editing) {
     return {
       drawer: null,
-      panels: (
-        <View style={styles.panel}>
-          <Text style={styles.panelTitle}>Initiative</Text>
-          {repoForm}
-        </View>
-      ),
+      panels: <View style={styles.panel}>{repoForm}</View>,
     };
   }
 
@@ -487,62 +520,122 @@ export function useEpicBoard({
     );
   };
 
+  const planning = Boolean(state.plan && state.plan.status !== "agreed");
+  const chip: [string, string] | null =
+    state.loop === "on"
+      ? ["Running", theme.colors.accent]
+      : state.loop === "done"
+        ? ["Done", theme.colors.statusSuccess]
+        : planning
+          ? ["Planning", theme.colors.statusWarning]
+          : state.plan?.status === "agreed" && left > 0
+            ? ["Ready", theme.colors.accent]
+            : null;
+  const canStart = state.loop === "off" && left > 0;
+  // One obvious next step; everything else lives in the ⋯ menu.
+  const primary =
+    state.loop === "on"
+      ? { label: busy === "loop-stop:" ? "Stopping…" : "Stop", primary: false, onPress: () => void loopAction("stop") }
+      : canStart && !planning
+        ? { label: busy === "loop-start:" ? "Starting…" : "Start", primary: true, onPress: () => void loopAction("start") }
+        : state.plan
+          ? { label: busy === "plan-open:" ? "Opening…" : "View plan", primary: true, plan: true, onPress: () => void planAction("open") }
+          : null;
+  const menu: MenuEntry[] = [
+    ...(canStart && planning ? [{ label: "Start before planning is done", icon: "Play", onPress: () => void loopAction("start") }] : []),
+    ...(state.plan && !(primary && "plan" in primary) ? [{ label: "View plan", icon: "FileText", onPress: () => void planAction("open") }] : []),
+    ...(state.plan?.jira ? [{ label: "Refresh from Jira", icon: "RefreshCw", onPress: () => void planAction("jira") }] : []),
+    { label: "Switch initiative", icon: "FolderOpen", onPress: () => setEditing(true) },
+    { label: "Hide", icon: "EyeOff", onPress: () => setShown(false) },
+    "separator",
+    { label: "Delete initiative", icon: "Trash2", danger: true, onPress: () => setConfirmDelete(true) },
+  ];
+
+  const row = (item: EpicStory, index: number) => {
+    const tone = toneOf(item.status, theme);
+    return (
+      <Pressable
+        key={item.id}
+        accessibilityRole="button"
+        accessibilityLabel={`${item.id}, ${item.title}, ${contextOf(item)}`}
+        onPress={() => setSelected(item.id)}
+        style={[styles.listRow, index > 0 ? styles.listRowDivider : null, item.status === "todo" && !item.ready ? styles.nodeWaiting : null]}
+      >
+        <Icon name={iconOf(item)} size={16} color={tone} />
+        <View style={styles.listRowText}>
+          <View style={styles.listRowTop}>
+            <Text style={styles.nodeId}>{item.id}</Text>
+            <Text style={[styles.nodeTitle, styles.shrink]} numberOfLines={1}>
+              {item.title}
+            </Text>
+          </View>
+          <Text style={[styles.hint, needsYou(item) ? { color: tone } : null]} numberOfLines={1}>
+            {contextOf(item)}
+          </Text>
+        </View>
+        <Icon name="ChevronRight" size={16} color={theme.colors.foregroundMuted} />
+      </Pressable>
+    );
+  };
+
+  const list =
+    listView === "status" ? (
+      <View style={styles.steps}>
+        {statusGroups(stories).map((group) => {
+          const folded = group.key === "merged" && !mergedOpen;
+          const label = `${group.label.toUpperCase()} · ${group.stories.length}`;
+          return (
+            <View key={group.key} style={styles.step}>
+              {group.key === "merged" ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: !folded }}
+                  onPress={() => setMergedOpen(!mergedOpen)}
+                  style={styles.groupToggle}
+                >
+                  <Icon name={folded ? "ChevronRight" : "ChevronDown"} size={14} color={theme.colors.foregroundMuted} />
+                  <Text style={styles.stepLabel}>{label}</Text>
+                </Pressable>
+              ) : (
+                <Text style={styles.stepLabel}>{label}</Text>
+              )}
+              {folded ? null : <View style={styles.listGroup}>{group.stories.map(row)}</View>}
+            </View>
+          );
+        })}
+      </View>
+    ) : (
+      <View style={styles.steps}>
+        {graph.cols.map((col, ci) => (
+          <View key={ci} style={styles.step}>
+            <Text style={styles.stepLabel}>{ci === 0 ? "STEP 1 · NO DEPENDENCIES" : `STEP ${ci + 1} · AFTER STEP ${ci}`}</Text>
+            <View style={styles.listGroup}>{col.map(row)}</View>
+          </View>
+        ))}
+      </View>
+    );
+
   const panels = (
     <View style={styles.screenFill}>
       <View style={styles.panel}>
-        <View style={styles.head}>
+        <View style={styles.headRow}>
           <View style={styles.headText}>
-            <Text style={styles.panelTitle} numberOfLines={1}>
-              {initiative}
-            </Text>
+            <View style={styles.titleRow}>
+              <Text style={[styles.panelTitle, styles.shrink]} numberOfLines={1}>
+                {initiative}
+              </Text>
+              {chip ? <Text style={[styles.chip, { color: chip[1], borderColor: chip[1] }]}>{chip[0]}</Text> : null}
+            </View>
             <Text style={styles.muted} numberOfLines={2}>
               {phase ? `${phase}  ·  ` : ""}
-              {state.tracker === "jira" ? "Jira" : "local"}  ·  {merged}/{stories.length} merged{"  ·  "}
-              {state.loop === "on" ? "Loop running" : state.loop === "done" ? "Loop done" : `Next: ${state.next.reason}`}
+              {state.tracker === "jira" ? "Jira" : "local"}  ·  {merged}/{stories.length} merged
+              {state.loop === "off" ? `  ·  Next: ${state.next.reason}` : ""}
             </Text>
           </View>
-          <View style={styles.headActions}>
-            {state.loop === "off" && !(state.plan?.status === "agreed" && left > 0) ? (
-              <Button
-                label={busy === "loop-start:" ? "Starting…" : "Start"}
-                primary
-                disabled={busy !== null}
-                styles={styles}
-                onPress={() => void loopAction("start")}
-              />
-            ) : null}
-            {state.plan ? (
-              <Button label={busy === "plan-open:" ? "Opening…" : "View plan"} disabled={busy !== null} styles={styles} onPress={() => void planAction("open")} />
-            ) : null}
-            {state.plan?.jira ? (
-              <Button
-                label={busy === "plan-jira:" ? "Refreshing…" : "Refresh from Jira"}
-                disabled={busy !== null}
-                styles={styles}
-                onPress={() => void planAction("jira")}
-              />
-            ) : null}
-            <Button label="Hide" styles={styles} onPress={() => setShown(false)} />
-            <Button
-              label={busy === "delete:" ? "Deleting…" : confirmDelete ? "Tap again to delete" : "Delete initiative"}
-              danger={confirmDelete}
-              disabled={busy !== null}
-              styles={styles}
-              onPress={() => {
-                if (!confirmDelete) {
-                  setConfirmDelete(true);
-                  return;
-                }
-                setConfirmDelete(false);
-                void deleteInitiative();
-              }}
-            />
-            <Button
-              label="Initiatives"
-              styles={styles}
-              onPress={() => setEditing(true)}
-            />
-          </View>
+          {primary ? (
+            <Button label={primary.label} primary={primary.primary} disabled={busy !== null} styles={styles} onPress={primary.onPress} />
+          ) : null}
+          <IconButton icon="MoreHorizontal" label="More actions" theme={theme} styles={styles} onPress={() => setMenuOpen(true)} />
         </View>
         <View style={styles.track}>
           <View style={[styles.trackFill, { flex: merged, backgroundColor: theme.colors.statusSuccess }]} />
@@ -550,32 +643,20 @@ export function useEpicBoard({
         </View>
         {error ? <Text style={styles.danger}>{error}</Text> : null}
         {state.loop === "on" ? (
-          <View style={[styles.previewBox, styles.banner]}>
-            <Text style={[styles.flex, styles.bannerText]}>
-              ▶ Running {initiative}, now {phase || "this phase"}: {working} in progress · {merged} merged · {left - working} waiting
+          <View style={styles.previewBox}>
+            <Text style={styles.bannerText}>
+              Running {phase || "this phase"}: {working} in progress · {merged} merged · {left - working} waiting. Stop only keeps
+              new work from starting.
             </Text>
-            <Button
-              label={busy === "loop-stop:" ? "Stopping…" : "Stop"}
-              disabled={busy !== null}
-              styles={styles}
-              onPress={() => void loopAction("stop")}
-            />
           </View>
         ) : state.loop === "off" && state.plan?.status === "agreed" && left > 0 ? (
-          <View style={[styles.previewBox, styles.banner]}>
-            <Text style={[styles.flex, styles.bannerText]}>
-              ✓ Planning done. Press Start to run {initiative} phase by phase: each ready story gets its own
-              worktree, and the rest follow as their dependencies merge.
+          <View style={styles.previewBox}>
+            <Text style={styles.bannerText}>
+              Planning done. Start runs {initiative} phase by phase: each ready story gets its own worktree, and the rest follow
+              as their dependencies merge.
             </Text>
-            <Button
-              label={busy === "loop-start:" ? "Starting…" : "Start"}
-              primary
-              disabled={busy !== null}
-              styles={styles}
-              onPress={() => void loopAction("start")}
-            />
           </View>
-        ) : state.plan && state.plan.status !== "agreed" ? (
+        ) : planning ? (
           <Text style={styles.hint}>Planning in progress. Say "lock" in the architecture session when the plan is ready.</Text>
         ) : null}
         {state.plan?.warnings.length ? (
@@ -585,49 +666,77 @@ export function useEpicBoard({
         ) : null}
 
         {compact ? (
-          <View style={styles.steps}>
-            {graph.cols.map((col, ci) => (
-              <View key={ci} style={styles.step}>
-                <Text style={styles.stepLabel}>
-                  {ci === 0 ? "STEP 1 · NO DEPENDENCIES" : `STEP ${ci + 1} · AFTER STEP ${ci}`}
-                </Text>
-                {col.map((item) => card(item))}
-              </View>
-            ))}
-          </View>
+          <>
+            <Segmented<"status" | "step">
+              value={listView}
+              options={[
+                ["status", "By status"],
+                ["step", "By step"],
+              ]}
+              styles={styles}
+              onChange={setListView}
+            />
+            {list}
+          </>
         ) : (
-          <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.graphScroll}>
-            <View style={{ width: graph.width, height: graph.height }}>
-              {graph.segments.map((s, i) => (
-                <View
-                  key={`s${i}`}
-                  pointerEvents="none"
-                  style={{
-                    position: "absolute",
-                    left: s.x,
-                    top: s.y,
-                    width: s.w,
-                    height: s.h,
-                    backgroundColor: s.color,
-                    opacity: s.hot || s.failed ? 1 : 0.75,
-                  }}
-                />
-              ))}
-              {graph.arrows.map((a, i) => (
-                <View
-                  key={`a${i}`}
-                  pointerEvents="none"
-                  style={[styles.arrowHead, { left: a.x, top: a.y - 5, borderLeftColor: a.color }]}
-                />
-              ))}
-              {stories.map((item) => card(item, graph.pos.get(item.id)))}
-            </View>
-          </ScrollView>
+          <>
+            <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.graphScroll}>
+              <View style={{ width: graph.width, height: graph.height }}>
+                {graph.segments.map((s, i) => (
+                  <View
+                    key={`s${i}`}
+                    pointerEvents="none"
+                    style={{
+                      position: "absolute",
+                      left: s.x,
+                      top: s.y,
+                      width: s.w,
+                      height: s.h,
+                      backgroundColor: s.color,
+                      opacity: s.hot || s.failed ? 1 : 0.75,
+                    }}
+                  />
+                ))}
+                {graph.arrows.map((a, i) => (
+                  <View
+                    key={`a${i}`}
+                    pointerEvents="none"
+                    style={[styles.arrowHead, { left: a.x, top: a.y - 5, borderLeftColor: a.color }]}
+                  />
+                ))}
+                {stories.map((item) => card(item, graph.pos.get(item.id)))}
+              </View>
+            </ScrollView>
+            <Text style={styles.hint}>Arrows go from a dependency to the stories that need it. Tap a story for its details.</Text>
+          </>
         )}
-        <Text style={styles.hint}>
-          Arrows go from a dependency to the stories that need it. Tap a story for its details.
-        </Text>
       </View>
+      <ActionMenu title={initiative} open={menuOpen} onOpenChange={setMenuOpen} items={menu} theme={theme} styles={styles} />
+      <Modal
+        title="Delete initiative?"
+        icon={<Icon name="Trash2" size={18} color={theme.colors.statusDanger} />}
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+      >
+        <Modal.Content>
+          <Text style={styles.bannerText}>
+            This deletes {initiative} and every phase and story in it from .harness. .harness is not in git, so it can't be undone.
+          </Text>
+          <View style={styles.modalActions}>
+            <Button label="Cancel" styles={styles} onPress={() => setConfirmDelete(false)} />
+            <Button
+              label={busy === "delete:" ? "Deleting…" : "Delete initiative"}
+              danger
+              disabled={busy !== null}
+              styles={styles}
+              onPress={() => {
+                setConfirmDelete(false);
+                void deleteInitiative();
+              }}
+            />
+          </View>
+        </Modal.Content>
+      </Modal>
     </View>
   );
 
@@ -778,6 +887,7 @@ function HarnessPicker({
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
+  const [menu, setMenu] = useState<{ title: string; items: MenuEntry[] } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -822,6 +932,10 @@ function HarnessPicker({
 
   async function submit() {
     if (!draft || busy) return;
+    if (!draft.repo) {
+      toast.error("Pick a repo for the initiative.");
+      return;
+    }
     setBusy(true);
     try {
       const result = await create(draft);
@@ -870,89 +984,268 @@ function HarnessPicker({
   const form = (repo: string, initiative: string) =>
     draft && draft.repo === repo && draft.initiative === initiative ? (
       <View style={styles.repoRow}>
-        {initiative ? null : input(draft.initiativeTitle, "Initiative name", (text) => setDraft({ ...draft, initiativeTitle: text }))}
-        {input(draft.epicTitle, initiative ? "Phase name" : "First phase name", (text) => setDraft({ ...draft, epicTitle: text }))}
-        {initiative ? null : (
-          // Work initiatives stay local (stories in .harness); personal ones can publish to Jira.
-          <Button
-            label={draft.tracker === "jira" ? "✓ Publish to Jira" : "Publish to Jira"}
-            styles={styles}
-            onPress={() => setDraft({ ...draft, tracker: draft.tracker === "jira" ? "local" : "jira" })}
-          />
-        )}
+        {input(draft.epicTitle, "Phase name", (text) => setDraft({ ...draft, epicTitle: text }))}
         <Button label={busy ? "Creating…" : "Create"} primary disabled={busy} styles={styles} onPress={() => void submit()} />
         <Button label="Cancel" styles={styles} onPress={() => setDraft(null)} />
       </View>
     ) : null;
 
+  // New initiative: pick the repo here instead of from a button on every repo.
+  const newInitiative =
+    draft && !draft.initiative ? (
+      <View style={[styles.previewBox, styles.repoForm]}>
+        <Text style={styles.sectionLabel}>NEW INITIATIVE</Text>
+        <View style={styles.actions}>
+          {(repos ?? []).map((repo) => (
+            <Button
+              key={repo.repo}
+              label={draft.repo === repo.repo ? `✓ ${repo.name}` : repo.name}
+              primary={draft.repo === repo.repo}
+              styles={styles}
+              onPress={() => setDraft({ ...draft, repo: repo.repo })}
+            />
+          ))}
+        </View>
+        {input(draft.initiativeTitle, "Initiative name", (text) => setDraft({ ...draft, initiativeTitle: text }))}
+        {input(draft.epicTitle, "First phase name", (text) => setDraft({ ...draft, epicTitle: text }))}
+        <View style={styles.actions}>
+          {/* Work initiatives stay local (stories in .harness); personal ones can publish to Jira. */}
+          <Button
+            label={draft.tracker === "jira" ? "✓ Publish to Jira" : "Publish to Jira"}
+            styles={styles}
+            onPress={() => setDraft({ ...draft, tracker: draft.tracker === "jira" ? "local" : "jira" })}
+          />
+          <View style={styles.flex} />
+          <Button label="Cancel" styles={styles} onPress={() => setDraft(null)} />
+          <Button label={busy ? "Creating…" : "Create"} primary disabled={busy} styles={styles} onPress={() => void submit()} />
+        </View>
+      </View>
+    ) : null;
+
   return (
     <View style={styles.repoForm}>
-      <View style={styles.head}>
-        <Text style={[styles.muted, styles.flex]}>
-          Initiatives live in each repo at .harness/initiatives/&lt;slug&gt;/phases/&lt;n-name&gt;. Open a phase to see it here.
+      <View style={styles.headRow}>
+        <Text style={[styles.panelTitle, styles.flex]} numberOfLines={1}>
+          Initiatives
         </Text>
-        <Button label="Close" styles={styles} onPress={onCancel} />
+        <Button
+          label="New initiative"
+          primary
+          disabled={!repos?.length}
+          styles={styles}
+          onPress={() =>
+            setDraft({
+              repo: repos?.length === 1 ? repos[0].repo : "",
+              initiative: "",
+              initiativeTitle: "",
+              epicTitle: "",
+              tracker: "local",
+            })
+          }
+        />
+        <IconButton icon="X" label="Close" theme={theme} styles={styles} onPress={onCancel} />
       </View>
+      <Text style={styles.hint}>Each repo keeps them in .harness/initiatives. Open a phase to see it on the board.</Text>
+      {newInitiative}
       {error ? <Text style={styles.danger}>{error}</Text> : null}
       {!repos && !error ? <Text style={styles.muted}>Looking through your repos…</Text> : null}
       {repos?.length === 0 ? <Text style={styles.muted}>No git repos in Paseo yet. Add one as a project first.</Text> : null}
       {repos?.map((repo) => (
-        <View key={repo.repo} style={styles.related}>
-          <View style={styles.head}>
-            <Text style={[styles.foldedTitle, styles.flex]} numberOfLines={1}>
-              {repo.name}
-              {repo.initiatives.length === 0 ? <Text style={styles.hint}>{"  ·  no initiatives"}</Text> : null}
-            </Text>
-            <Button
-              label="New initiative"
-              styles={styles}
-              onPress={() => setDraft({ repo: repo.repo, initiative: "", initiativeTitle: "", epicTitle: "", tracker: "local" })}
-            />
-          </View>
-          {form(repo.repo, "")}
-          {repo.initiatives.map((initiative) => (
-            <View key={initiative.slug} style={[styles.previewBox, styles.related]}>
-              <View style={styles.head}>
-                <Text style={[styles.nodeTitle, styles.flex]} numberOfLines={1}>
-                  {initiative.title}
-                  <Text style={styles.hint}>{`  ·  ${initiative.slug}  ·  ${initiative.tracker === "jira" ? "Jira" : "local"}${initiative.loop === "on" ? "  ·  loop running" : initiative.loop === "done" ? "  ·  loop done" : ""}`}</Text>
-                </Text>
-                {initiative.loop !== "done" ? (
-                  <Button
-                    label={initiative.loop === "on" ? "Stop" : "Start"}
-                    primary={initiative.loop !== "on"}
-                    disabled={busy || initiative.epics.length === 0}
-                    styles={styles}
-                    onPress={() => void toggleLoop(repo.repo, initiative.slug, initiative.loop === "on")}
-                  />
-                ) : null}
-                <Button
-                  label="New phase"
-                  styles={styles}
-                  onPress={() =>
-                    setDraft({ repo: repo.repo, initiative: initiative.slug, initiativeTitle: "", epicTitle: "", tracker: initiative.tracker })
-                  }
-                />
-              </View>
-              {form(repo.repo, initiative.slug)}
-              {initiative.epics.length === 0 ? <Text style={styles.hint}>No phases yet.</Text> : null}
-              {initiative.epics.map((epic) => {
-                const current = active?.repo === repo.repo && active.epic === epic.path;
-                return (
-                  <View key={epic.path} style={styles.repoRow}>
-                    <Text style={[styles.muted, styles.flex]} numberOfLines={1}>
-                      <Text style={styles.nodeId}>{phaseLabel(epic.id)}</Text>
-                      {`  ${epic.title}  ·  ${epic.merged}/${epic.stories} merged`}
+        <View key={repo.repo} style={styles.step}>
+          <Text style={styles.stepLabel}>{repo.name.toUpperCase()}</Text>
+          {repo.initiatives.length === 0 ? <Text style={styles.hint}>No initiatives yet.</Text> : null}
+          {repo.initiatives.map((initiative) => {
+            const on = initiative.loop === "on";
+            const items: MenuEntry[] = [
+              ...(initiative.loop !== "done" && initiative.epics.length > 0
+                ? [
+                    {
+                      label: on ? "Stop loop" : "Start loop",
+                      icon: on ? "Square" : "Play",
+                      onPress: () => void toggleLoop(repo.repo, initiative.slug, on),
+                    },
+                  ]
+                : []),
+              {
+                label: "New phase",
+                icon: "Plus",
+                onPress: () =>
+                  setDraft({ repo: repo.repo, initiative: initiative.slug, initiativeTitle: "", epicTitle: "", tracker: initiative.tracker }),
+              },
+            ];
+            return (
+              <View key={initiative.slug} style={styles.listGroup}>
+                <View style={styles.listRow}>
+                  <View style={styles.listRowText}>
+                    <View style={styles.listRowTop}>
+                      <Text style={[styles.nodeTitle, styles.shrink]} numberOfLines={1}>
+                        {initiative.title}
+                      </Text>
+                      {on ? <Text style={[styles.chip, { color: theme.colors.accent, borderColor: theme.colors.accent }]}>Running</Text> : null}
+                      {initiative.loop === "done" ? (
+                        <Text style={[styles.chip, { color: theme.colors.statusSuccess, borderColor: theme.colors.statusSuccess }]}>Done</Text>
+                      ) : null}
+                    </View>
+                    <Text style={styles.hint} numberOfLines={1}>
+                      {initiative.slug}  ·  {initiative.tracker === "jira" ? "Jira" : "local"}
                     </Text>
-                    {current ? <Text style={styles.hint}>on the board</Text> : null}
-                    <Button label="Plan architecture" disabled={busy} styles={styles} onPress={() => void planPhase(repo.repo, epic.path)} />
-                    <Button label="Open" primary={current} disabled={busy} styles={styles} onPress={() => onPicked({ repo: repo.repo, epic: epic.path })} />
                   </View>
-                );
-              })}
-            </View>
-          ))}
+                  <IconButton
+                    icon="MoreHorizontal"
+                    label={`${initiative.title} actions`}
+                    theme={theme}
+                    styles={styles}
+                    onPress={() => setMenu({ title: initiative.title, items })}
+                  />
+                </View>
+                {form(repo.repo, initiative.slug) ? (
+                  <View style={[styles.listRowDivider, styles.listRowPad]}>{form(repo.repo, initiative.slug)}</View>
+                ) : null}
+                {initiative.epics.length === 0 ? (
+                  <Text style={[styles.hint, styles.listRowDivider, styles.listRowPad]}>No phases yet.</Text>
+                ) : null}
+                {initiative.epics.map((epic) => {
+                  const current = active?.repo === repo.repo && active.epic === epic.path;
+                  return (
+                    <Pressable
+                      key={epic.path}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open ${phaseLabel(epic.id)}, ${epic.title}`}
+                      disabled={busy}
+                      onPress={() => onPicked({ repo: repo.repo, epic: epic.path })}
+                      style={[styles.listRow, styles.listRowDivider]}
+                    >
+                      <View style={styles.listRowText}>
+                        <View style={styles.listRowTop}>
+                          <Text style={styles.nodeId}>{phaseLabel(epic.id)}</Text>
+                          <Text style={[styles.nodeTitle, styles.shrink]} numberOfLines={1}>
+                            {epic.title}
+                          </Text>
+                        </View>
+                        <Text style={styles.hint} numberOfLines={1}>
+                          {epic.merged}/{epic.stories} merged{current ? "  ·  on the board" : ""}
+                        </Text>
+                      </View>
+                      <IconButton
+                        icon="MoreHorizontal"
+                        label={`${phaseLabel(epic.id)} actions`}
+                        theme={theme}
+                        styles={styles}
+                        onPress={() =>
+                          setMenu({
+                            title: `${phaseLabel(epic.id)}: ${epic.title}`,
+                            items: [{ label: "Plan architecture", icon: "Network", onPress: () => void planPhase(repo.repo, epic.path) }],
+                          })
+                        }
+                      />
+                      <Icon name="ChevronRight" size={16} color={theme.colors.foregroundMuted} />
+                    </Pressable>
+                  );
+                })}
+              </View>
+            );
+          })}
         </View>
+      ))}
+      <ActionMenu
+        title={menu?.title ?? ""}
+        open={menu !== null}
+        onOpenChange={(open) => !open && setMenu(null)}
+        items={menu?.items ?? []}
+        theme={theme}
+        styles={styles}
+      />
+    </View>
+  );
+}
+
+type MenuEntry = { label: string; icon: string; danger?: boolean; onPress(): void } | "separator";
+
+// The ⋯ menu: Paseo's modal, which is a sheet on a phone. Picking an item closes it first.
+function ActionMenu({
+  title,
+  open,
+  onOpenChange,
+  items,
+  theme,
+  styles,
+}: {
+  title: string;
+  open: boolean;
+  onOpenChange(open: boolean): void;
+  items: MenuEntry[];
+  theme: Theme;
+  styles: Styles;
+}) {
+  return (
+    <Modal title={title} open={open} onOpenChange={onOpenChange}>
+      <Modal.Content scrollable={false} contentContainerStyle={{ padding: 0, gap: 0 }}>
+        {items.map((item, index) =>
+          item === "separator" ? (
+            <View key={`sep${index}`} style={styles.menuSeparator} />
+          ) : (
+            <Pressable
+              key={item.label}
+              accessibilityRole="menuitem"
+              onPress={() => {
+                onOpenChange(false);
+                item.onPress();
+              }}
+              style={styles.menuItem}
+            >
+              <Icon name={item.icon} size={16} color={item.danger ? theme.colors.statusDanger : theme.colors.foreground} />
+              <Text style={[styles.menuText, item.danger ? styles.buttonDangerText : null]}>{item.label}</Text>
+            </Pressable>
+          ),
+        )}
+      </Modal.Content>
+    </Modal>
+  );
+}
+
+function IconButton({
+  icon,
+  label,
+  theme,
+  styles,
+  onPress,
+}: {
+  icon: string;
+  label: string;
+  theme: Theme;
+  styles: Styles;
+  onPress(): void;
+}) {
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={styles.iconButton}>
+      <Icon name={icon} size={18} color={theme.colors.foreground} />
+    </Pressable>
+  );
+}
+
+function Segmented<Value extends string>({
+  value,
+  options,
+  styles,
+  onChange,
+}: {
+  value: Value;
+  options: [Value, string][];
+  styles: Styles;
+  onChange(value: Value): void;
+}) {
+  return (
+    <View style={styles.segmented} accessibilityRole="tablist">
+      {options.map(([id, label]) => (
+        <Pressable
+          key={id}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: value === id }}
+          onPress={() => onChange(id)}
+          style={[styles.segment, value === id ? styles.segmentOn : null]}
+        >
+          <Text style={[styles.segmentText, value === id ? styles.segmentTextOn : null]}>{label}</Text>
+        </Pressable>
       ))}
     </View>
   );
@@ -1005,12 +1298,23 @@ function createStyles(theme: Theme, compact: boolean) {
     folded: { flexDirection: "row" as const, alignItems: "center" as const, gap: 10, paddingVertical: 10 },
     foldedTitle: { color: c.foreground, fontSize: 13, fontWeight: "600" as const },
     head: { flexDirection: "row" as const, alignItems: "center" as const, gap: 12, flexWrap: "wrap" as const },
-    headText: { flex: 1, minWidth: 220, gap: 4 },
-    headActions: { flexDirection: "row" as const, gap: 8 },
+    // Title on the left, one primary action and ⋯ on the right; never wraps.
+    headRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8 },
+    headText: { flex: 1, minWidth: 0, gap: 4 },
+    titleRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8 },
+    shrink: { flexShrink: 1 },
+    chip: {
+      fontSize: 11,
+      fontWeight: "600" as const,
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+      borderRadius: 999,
+      borderWidth: 1,
+      overflow: "hidden" as const,
+    },
     muted: { color: c.foregroundMuted, fontSize: 12.5 },
     danger: { color: c.statusDanger, fontSize: 12.5 },
     hint: { color: c.foregroundMuted, fontSize: 11.5 },
-    banner: { flexDirection: "row" as const, alignItems: "center" as const, gap: 10 },
     bannerText: { color: c.foreground, fontSize: 12.5 },
     sectionLabel: { color: c.foregroundMuted, fontSize: 11, letterSpacing: 0.8, fontWeight: "600" as const },
     flex: { flex: 1 },
@@ -1071,7 +1375,10 @@ function createStyles(theme: Theme, compact: boolean) {
       backgroundColor: c.surface0,
     },
     button: {
-      paddingHorizontal: 11,
+      // 44pt touch targets on a phone.
+      minHeight: compact ? 44 : 32,
+      justifyContent: "center" as const,
+      paddingHorizontal: compact ? 14 : 11,
       paddingVertical: 6,
       borderRadius: 8,
       borderWidth: 1,
@@ -1131,6 +1438,49 @@ function createStyles(theme: Theme, compact: boolean) {
     },
     actions: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8 },
     previewBox: { gap: 8, padding: 12, borderRadius: 10, backgroundColor: c.surface1 },
+    iconButton: {
+      width: compact ? 44 : 32,
+      height: compact ? 44 : 32,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      borderRadius: 8,
+    },
+    // Inset grouped list: one bordered block per group, hairline dividers between rows.
+    listGroup: { borderRadius: 10, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface0, overflow: "hidden" as const },
+    listRow: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 10,
+      minHeight: compact ? 56 : 48,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+    },
+    listRowDivider: { borderTopWidth: 1, borderTopColor: c.border },
+    listRowPad: { padding: 12 },
+    listRowText: { flex: 1, minWidth: 0, gap: 2 },
+    listRowTop: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8 },
+    groupToggle: { flexDirection: "row" as const, alignItems: "center" as const, gap: 4, minHeight: 32 },
+    segmented: {
+      flexDirection: "row" as const,
+      padding: 3,
+      gap: 3,
+      borderRadius: 10,
+      backgroundColor: c.surface2,
+    },
+    segment: { flex: 1, minHeight: compact ? 36 : 30, alignItems: "center" as const, justifyContent: "center" as const, borderRadius: 8 },
+    segmentOn: { backgroundColor: c.surface0 },
+    segmentText: { color: c.foregroundMuted, fontSize: 12.5, fontWeight: "500" as const },
+    segmentTextOn: { color: c.foreground },
+    menuItem: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 12,
+      minHeight: 48,
+      paddingHorizontal: 20,
+    },
+    menuText: { color: c.foreground, fontSize: 14 },
+    menuSeparator: { height: 1, backgroundColor: c.border, marginVertical: 4 },
+    modalActions: { flexDirection: "row" as const, justifyContent: "flex-end" as const, gap: 8 },
     related: { gap: 6 },
   };
 }
