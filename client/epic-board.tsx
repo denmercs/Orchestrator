@@ -23,7 +23,7 @@ import { SessionLog } from "./session-log";
 
 // The active phase of an initiative (see server/harness-layout.ts) as its dependency graph: one
 // card per story, arrows from a dependency to the stories that need it. Initiatives are occasional
-// work; day-to-day epics come from Jira, so the graph stays folded to one line until you open it.
+// work; day-to-day epics come from Jira. The graph starts open and folds to one line with Hide.
 
 type Theme = PluginSurfaceProps["theme"];
 type Navigation = PluginSurfaceProps["navigation"];
@@ -262,7 +262,7 @@ export function useEpicBoard({
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [shown, setShown] = useState(false);
+  const [shown, setShown] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [listView, setListView] = useState<"status" | "step">("status");
   const [mergedOpen, setMergedOpen] = useState(false);
@@ -389,7 +389,7 @@ export function useEpicBoard({
         return;
       }
       toast.show(`Deleted ${result.deleted}`, { variant: "success" });
-      setShown(false);
+      setShown(true);
       if (!(await settings.save({ ...settings.values, repo: "", epic: "" }, settings.revision))) {
         toast.error(settings.saveError ?? "Deleted, but could not clear the initiative repo.");
       }
