@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
-import type { LoopConfig } from "../shared/initiative-loop";
+import { LOOP_AGENT_KIND, type LoopConfig } from "../shared/initiative-loop";
 import { phaseLabel } from "../shared/orchestration";
 import {
   PHASES_DIR,
@@ -46,7 +46,7 @@ const DEFAULT_PROFILE = "default";
 type StoryFile = ReturnType<typeof readStoryFiles>[number];
 type Initiative = { root: string; slug: string; dir: string };
 
-const KIND = "initiative-loop";
+const KIND = LOOP_AGENT_KIND;
 // Marks loop workspaces and sessions, like 📐 marks architecture sessions.
 const MARK = "🔁";
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;

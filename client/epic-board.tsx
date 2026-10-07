@@ -19,6 +19,7 @@ import {
 } from "../shared/orchestration";
 import { harnessSettings } from "../shared/settings";
 import { startInitiativeLoop, stopInitiativeLoop } from "../shared/initiative-loop";
+import { SessionLog } from "./session-log";
 
 // The active phase of an initiative (see server/harness-layout.ts) as its dependency graph: one
 // card per story, arrows from a dependency to the stories that need it. Initiatives are occasional
@@ -799,7 +800,8 @@ function StoryDrawer({
               {navigation && story.agent && story.status !== "merged" ? (
                 <Button label="Open session" primary styles={styles} onPress={() => navigation.openAgent({ agentId: story.agent })} />
               ) : null}
-              {navigation && story.workspace && story.status !== "merged" ? (
+              {/* Opening the session already opens its workspace, so this only shows before a session exists. */}
+              {navigation && !story.agent && story.workspace && story.status !== "merged" ? (
                 <Button label="Open workspace" styles={styles} onPress={() => navigation.openWorkspace({ workspaceId: story.workspace })} />
               ) : null}
               {prUrl ? (
@@ -849,6 +851,14 @@ function StoryDrawer({
             </View>
           ) : null}
 
+          <SessionLog
+            storyId={story.id}
+            initiative={state.initiativeSlug}
+            workspace={story.workspace}
+            currentAgent={story.status === "merged" ? "" : story.agent}
+            theme={theme}
+            navigation={navigation}
+          />
         </ScrollView>
       </View>
     </View>

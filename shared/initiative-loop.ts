@@ -5,6 +5,20 @@ import { z } from "zod";
 // Paseo worktree workspace, through Plan → Implement → Review → Open PR, and watches CI until you
 // merge. The engine is server/initiative-loop.ts; the step prompts are server/story-method.ts.
 
+export const LOOP_STEPS = ["plan", "implement", "review", "pr", "fix"] as const;
+export type LoopStep = (typeof LOOP_STEPS)[number];
+
+export const STEP_LABELS: Record<LoopStep, string> = {
+  plan: "Plan",
+  implement: "Implement",
+  review: "Review",
+  pr: "Open PR",
+  fix: "Fix CI",
+};
+
+// The `kind` label on every loop session; the story drawer lists a story's sessions by it.
+export const LOOP_AGENT_KIND = "initiative-loop";
+
 const loopValues = z.object({
   // Stories in flight at once (each in its own worktree).
   parallel: z.number().int().min(1).max(4).default(1),
