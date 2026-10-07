@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useRpc, useSettings } from "@getpaseo/plugin/client";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
@@ -16,15 +16,18 @@ import {
   phasePrompt,
   phaseSkills,
   removeSkillSource,
+  searchSkillRegistry,
   type BeltConfig,
   type CatalogSkill,
   type Phase,
   type PhaseId,
+  type RegistryHit,
   type SkillRef,
   type SkillSource,
   type SourceStatus,
   type Then,
 } from "../shared/belt";
+import { installsLabel, rowState } from "./registry-search-model";
 
 type Theme = PluginSurfaceProps["theme"];
 type Styles = ReturnType<typeof createStyles>;
@@ -459,6 +462,7 @@ function SkillPicker({
 
 function SourcesTab({ belt, values, styles }: { belt: Belt; values: BeltConfig; styles: Styles }) {
   const machineCount = belt.catalog.filter((s) => s.source === MACHINE_SOURCE).length;
+  const connector = useConnectSource(belt, values);
 
   function updateSource(id: string, change: (source: SkillSource) => SkillSource) {
     return belt.save({ sources: values.sources.map((s) => (s.id === id ? change(s) : s)) });
@@ -486,7 +490,8 @@ function SourcesTab({ belt, values, styles }: { belt: Belt; values: BeltConfig; 
           onChange={(change) => updateSource(source.id, change)}
         />
       ))}
-      <ConnectSource belt={belt} values={values} styles={styles} />
+      <RegistrySearch connector={connector} sources={values.sources} styles={styles} />
+      <ConnectSource connector={connector} styles={styles} />
     </>
   );
 }
@@ -624,25 +629,31 @@ function SourceCard({
   );
 }
 
-function ConnectSource({ belt, values, styles }: { belt: Belt; values: BeltConfig; styles: Styles }) {
-  const add = useRpc(addSkillSource);
-  const [draft, setDraft] = useState("");
-  const [kind, setKind] = useState<SourceKind>("personal");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+// Which card started a connect, so each card shows its own progress and error.
+type ConnectFrom = "search" | "field";
+type Connector = ReturnType<typeof useConnectSource>;
 
-  async function connect() {
-    const location = draft.trim();
-    if (!location || busy) {
-      return;
+// Clones (or checks) a location and saves it as a pinned source. One per Sources tab, shared by the
+// search card and the connect field: each connect saves the whole sources list, so only one runs
+// at a time.
+function useConnectSource(belt: Belt, values: BeltConfig) {
+  const add = useRpc(addSkillSource);
+  const running = useRef(false);
+  const [connecting, setConnecting] = useState<{ location: string; from: ConnectFrom } | null>(null);
+  const [error, setError] = useState<{ message: string; from: ConnectFrom } | null>(null);
+
+  async function connect(location: string, kind: SourceKind, from: ConnectFrom) {
+    if (!location || running.current) {
+      return false;
     }
-    setBusy(true);
+    running.current = true;
+    setConnecting({ location, from });
     setError(null);
     try {
       const result = await add({ location });
       if (!result.ok) {
-        setError(result.error ?? "Could not connect that source.");
-        return;
+        setError({ message: result.error ?? "Could not connect that source.", from });
+        return false;
       }
       const next: SkillSource = {
         id: result.id,
@@ -652,16 +663,127 @@ function ConnectSource({ belt, values, styles }: { belt: Belt; values: BeltConfi
         enabled: true,
         pin: result.pin,
       };
-      const saved = await belt.save({
+      return await belt.save({
         sources: [...values.sources.filter((s) => s.id !== next.id), next],
       });
-      if (saved) {
-        setDraft("");
-      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not connect that source.");
+      setError({ message: cause instanceof Error ? cause.message : "Could not connect that source.", from });
+      return false;
     } finally {
-      setBusy(false);
+      running.current = false;
+      setConnecting(null);
+    }
+  }
+
+  return { connect, connecting, error };
+}
+
+const SEARCH_DEBOUNCE_MS = 300;
+
+// skills.sh search. Connect adds the hit's repo as an imported source; whether a row shows as
+// connected comes from the server, so the search re-runs when the sources change.
+function RegistrySearch({
+  connector,
+  sources,
+  styles,
+}: {
+  connector: Connector;
+  sources: SkillSource[];
+  styles: Styles;
+}) {
+  const search = useRpc(searchSkillRegistry);
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<RegistryHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const sourcesKey = JSON.stringify(sources);
+  // Any connect in progress, from either card, holds every row back.
+  const connecting = connector.connecting ? connector.connecting.location : null;
+  const connectError = connector.error?.from === "search" ? connector.error.message : null;
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      setHits([]);
+      setError(null);
+      setSearching(false);
+      return;
+    }
+    let stale = false;
+    const timer = setTimeout(() => {
+      setSearching(true);
+      search({ query: trimmed })
+        .then((result) => {
+          if (!stale) {
+            setHits(result.results);
+            setError(result.error);
+          }
+        })
+        .catch((cause: unknown) => {
+          if (!stale) {
+            setError(cause instanceof Error ? cause.message : "Could not search skills.sh.");
+          }
+        })
+        .finally(() => {
+          if (!stale) {
+            setSearching(false);
+          }
+        });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [query, search, sourcesKey]);
+
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>Search skills.sh</Text>
+      <Text style={styles.muted}>Find a skill, then connect the repo that holds it. Nothing is installed.</Text>
+      <TextInput
+        accessibilityLabel="Search skills.sh"
+        placeholder="Search skills.sh"
+        value={query}
+        onChangeText={setQuery}
+        autoCapitalize="none"
+        autoCorrect={false}
+        style={styles.input}
+      />
+      {searching ? <Text style={styles.muted}>Searching…</Text> : null}
+      {error ? <Text style={[styles.muted, styles.danger]}>{error}</Text> : null}
+      {connectError ? <Text style={[styles.muted, styles.danger]}>{connectError}</Text> : null}
+      {hits.map((hit) => {
+        const row = rowState(hit, connecting);
+        return (
+          <View key={`${hit.source}/${hit.skillId}`} style={styles.rowWrap}>
+            <View style={styles.flex1}>
+              <Text style={styles.body}>{hit.name}</Text>
+              <Text style={styles.muted}>
+                {hit.source} · {installsLabel(hit.installs)}
+              </Text>
+            </View>
+            <Chip
+              label={row.label}
+              active={hit.connected}
+              styles={styles}
+              onPress={row.canConnect ? () => void connector.connect(hit.source, "imported", "search") : undefined}
+            />
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function ConnectSource({ connector, styles }: { connector: Connector; styles: Styles }) {
+  const busy = connector.connecting !== null;
+  const error = connector.error?.from === "field" ? connector.error.message : null;
+  const [draft, setDraft] = useState("");
+  const [kind, setKind] = useState<SourceKind>("personal");
+
+  async function connect() {
+    if (await connector.connect(draft.trim(), kind, "field")) {
+      setDraft("");
     }
   }
 
@@ -688,7 +810,11 @@ function ConnectSource({ belt, values, styles }: { belt: Belt; values: BeltConfi
           autoCorrect={false}
           style={[styles.input, styles.flex1]}
         />
-        <Chip label={busy ? "Connecting…" : "Connect"} styles={styles} onPress={busy ? undefined : () => void connect()} />
+        <Chip
+          label={connector.connecting?.from === "field" ? "Connecting…" : "Connect"}
+          styles={styles}
+          onPress={busy ? undefined : () => void connect()}
+        />
       </View>
       {error ? <Text style={[styles.muted, styles.danger]}>{error}</Text> : null}
     </View>

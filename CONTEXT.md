@@ -60,12 +60,12 @@ _Avoid_: install (on its own, which reads as global), sync, deploy.
 
 ## skills.sh registry
 
-The public skills.sh index, used to *find* skills. Searching it gives a GitHub `owner/repo` that holds the skill. That repo is then connected as a git Skill source, pinned like any other. The registry never installs anything and is not a Skill source itself. No code for it exists yet.
+The public skills.sh index, used to *find* skills. Searching it gives a GitHub `owner/repo` that holds the skill. That repo is then connected as a git Skill source, pinned like any other. The registry never installs anything and is not a Skill source itself. The Skills drawer's Sources tab searches it (**Search skills.sh**); **Connect** on a result adds its repo as an imported source.
 
 _Avoid_: marketplace, store, skills.sh source.
 
 ## Skill attachment
 
-A skill handed to an agent that is already running, through that agent's composer, instead of through a belt phase. The skill is read from a connected Skill source. Nothing is copied into the worktree or installed globally. Belt phase extras serve new story agents. Attachments serve running agents. `readSkill` returns what an attachment carries: the `SKILL.md` body after the frontmatter, absolute paths to the skill's other files in the pinned checkout, folder or machine path, and the source's pin as `commit`. It reads only connected, enabled sources (and `installed`) and never clones anything else. The composer wiring does not exist yet.
+A skill handed to an agent that is already running, through that agent's composer, instead of through a belt phase. The skill is read from a connected Skill source. Nothing is copied into the worktree or installed globally. Belt phase extras serve new story agents. Attachments serve running agents. `readSkill` returns what an attachment carries: the `SKILL.md` body after the frontmatter, absolute paths to the skill's other files in the pinned checkout, folder or machine path, and the source's pin as `commit`. It reads only connected, enabled sources (and `installed`) and never clones anything else. Every composer offers them through the **Skills** attachment source (`skills.attach`): the attached text is a header naming the skill, its source and short pin, then the body, then a `## Files in this skill` list.
 
 _Avoid_: skill injection, skill upload.

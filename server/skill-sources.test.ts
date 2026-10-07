@@ -11,6 +11,7 @@ import {
   loadCatalog,
   readFrontmatter,
   readSkill,
+  readSkills,
   SOURCES_ROOT,
   sourceId,
 } from "./skill-sources";
@@ -184,6 +185,7 @@ test("readSkill returns the body after the frontmatter and a manifest of the oth
     body: BODY,
     files: [join(fixture.location, "skills", FOLDER, "references", "rules.md")],
     commit: null,
+    path: join(fixture.location, "skills", FOLDER),
   });
 });
 
@@ -202,7 +204,14 @@ test("readSkill returns a command's body with no other files", async () => {
 
   const content = await readSkill({ name: "ss-ship", source: source.id }, [source]);
 
-  assert.deepEqual(content, { name: "ss-ship", description: "Ship it.", body: "Open the PR.\n", files: [], commit: null });
+  assert.deepEqual(content, {
+    name: "ss-ship",
+    description: "Ship it.",
+    body: "Open the PR.\n",
+    files: [],
+    commit: null,
+    path: join(source.location, "commands", "ss-ship.md"),
+  });
 });
 
 test("readSkill reads an installed skill from this machine", async () => {
@@ -219,6 +228,7 @@ test("readSkill reads an installed skill from this machine", async () => {
       body: "Ask hard questions.\n",
       files: [join(home.location, ".claude", "skills", "grill", "notes", "one.md")],
       commit: null,
+      path: join(home.location, ".claude", "skills", "grill"),
     });
   });
 });
@@ -233,6 +243,35 @@ test("readSkill never clones a source that is not connected or is off", async ()
     assert.ok("error" in content, "expected an error");
   }
   assert.equal(await stat(join(SOURCES_ROOT, id)).catch(() => null), null, "no checkout directory");
+});
+
+test("readSkills reads many refs in order, with an error for each one that can't be read", async () => {
+  const other = await folderSource("read-many", {
+    "skills/one/SKILL.md": "---\nname: one\n---\nOne\n",
+    "skills/two/SKILL.md": "---\nname: two\n---\nTwo\n",
+  });
+
+  const contents = await readSkills(
+    [
+      { name: "two", source: other.id },
+      { name: NAME, source: fixture.id },
+      { name: "missing", source: other.id },
+      { name: "one", source: other.id },
+      { name: "anything", source: "not-connected" },
+    ],
+    [fixture, other],
+  );
+
+  assert.deepEqual(
+    contents.map((c) => ("error" in c ? c.error : c.body)),
+    [
+      "Two\n",
+      BODY,
+      `missing: not found in ${other.id}.`,
+      "One\n",
+      'anything: source "not-connected" is not connected or is off.',
+    ],
+  );
 });
 
 test("a plain frontmatter value drops a trailing # comment", () => {

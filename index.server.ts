@@ -24,6 +24,7 @@ import {
   stopInitiativeLoop,
 } from "./shared/initiative-loop";
 import { addSource, checkSource, loadCatalog, removeSourceCheckout } from "./server/skill-sources";
+import { attachSkills } from "./server/skill-attach";
 import { searchSkillsSh } from "./server/skills-sh";
 import { loadProdPulse } from "./server/prod-pulse";
 import { applyProdPulseAutomation, loadProdPulseAutomation } from "./server/prod-pulse-schedule";
@@ -60,6 +61,7 @@ import {
 import { harnessSettings, jiraBoardSettings, prodPulseSettings, standupSettings } from "./shared/settings";
 import {
   addSkillSource,
+  attachSkill,
   beltSettings,
   checkSkillSource,
   getSkillCatalog,
@@ -123,6 +125,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(searchSkillRegistry, async ({ query }) =>
     searchSkillsSh(query, { fetch, sources: (await readBeltValues())?.sources ?? [] }),
   );
+  server.handle(attachSkill, async ({ query }) => attachSkills(query, (await readBeltValues())?.sources ?? []));
   server.handle(startBeltStory, async (input, { paseo }) => {
     const config = await readBelt();
     if (!config) {
