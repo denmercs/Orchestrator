@@ -9,7 +9,8 @@ import {
   loadJiraPullRequests,
   moveIssueToColumn,
 } from "./server/jira";
-import { deleteInitiative, loadEpicBoard, runEpicLoopAction, stopEpicPreviews } from "./server/epic-loop";
+import { deleteInitiative, loadHarnessBoard, runHarnessAction, stopHarnessRunner } from "./server/harness-board";
+import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { createLoopAdvance } from "./server/loop-advance";
 import { loadProdPulse } from "./server/prod-pulse";
 import { applyProdPulseAutomation, loadProdPulseAutomation } from "./server/prod-pulse-schedule";
@@ -18,6 +19,7 @@ import { detectObsidian, listTemplates } from "./server/obsidian";
 import { listParents, listSchedules } from "./server/orchestration";
 import { listFolders, listStandupTodos, saveStandupTodos, upsertStandupNote } from "./server/standup";
 import {
+  createHarnessEpicRpc,
   deleteEpicInitiative,
   detectOrchestrationObsidian,
   getDailyVerse,
@@ -26,6 +28,7 @@ import {
   getProdPulse,
   getProdPulseAutomation,
   listJiraBoards,
+  listHarnessInitiatives,
   listJiraPullRequests,
   listOrchestrationFolders,
   moveJiraIssue,
@@ -39,21 +42,23 @@ import {
   saveOrchestrationStandupTodos,
   upsertOrchestrationStandupNote,
 } from "./shared/orchestration";
-import { epicLoopSettings, jiraBoardSettings, prodPulseSettings, standupSettings } from "./shared/settings";
+import { harnessSettings, jiraBoardSettings, prodPulseSettings, standupSettings } from "./shared/settings";
 
 export default function contribute(server: PluginServerContext) {
   const loop = createLoopAdvance();
   server.registerSettings(standupSettings);
   const boardSettings = server.registerSettings(jiraBoardSettings);
   const pulseSettings = server.registerSettings(prodPulseSettings);
-  const epicSettings = server.registerSettings(epicLoopSettings);
-  const readEpicSettings = async () => {
-    const state = await epicSettings.read();
-    return state.status === "ready" ? state.values : { repo: "", skillsyncDir: "" };
+  const harness = server.registerSettings(harnessSettings);
+  const readHarness = async () => {
+    const state = await harness.read();
+    return state.status === "ready" ? state.values : { repo: "", epic: "", runner: "" };
   };
-  server.handle(getEpicBoard, async () => loadEpicBoard(await readEpicSettings()));
-  server.handle(runEpicAction, async (input) => runEpicLoopAction(await readEpicSettings(), input));
-  server.handle(deleteEpicInitiative, async () => deleteInitiative(await readEpicSettings()));
+  server.handle(getEpicBoard, async () => loadHarnessBoard(await readHarness()));
+  server.handle(runEpicAction, async (input) => runHarnessAction(await readHarness(), input));
+  server.handle(deleteEpicInitiative, async () => deleteInitiative(await readHarness()));
+  server.handle(listHarnessInitiatives, ({ repos }) => listHarness(repos));
+  server.handle(createHarnessEpicRpc, createHarnessEpic);
   server.handle(listOrchestrationSchedules, listSchedules);
   server.handle(listOrchestrationParents, listParents);
   server.handle(listJiraBoards, async () => {
@@ -121,7 +126,7 @@ export default function contribute(server: PluginServerContext) {
   timer.unref?.();
   return () => {
     offPulseSettings();
-    stopEpicPreviews();
+    stopHarnessRunner();
     offBeforeCreate();
     offTurnEnded();
     clearInterval(timer);

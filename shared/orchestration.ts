@@ -398,7 +398,7 @@ export const epicStory = z.object({
   dependsOn: z.array(z.string()),
   blockedBy: z.string(),
   blockedReason: z.string(),
-  // Set when an agent filed this story while working on another (epic-loop --file).
+  // Set when an agent filed this story while working on another.
   discoveredFrom: z.string(),
   pr: z.number().nullable(),
   attempts: z.number(),
@@ -423,6 +423,8 @@ export const epicBoardState = z.object({
   next: z.object({ story: z.string().nullable(), reason: z.string() }),
   previewEnabled: z.boolean(),
   repoUrl: z.string(),
+  // True when a runner is set; without one the board is the plan only.
+  runner: z.boolean(),
   stories: z.array(epicStory),
   progress: z.array(z.object({ at: z.string(), text: z.string() })),
   now: z.number(),
@@ -459,14 +461,48 @@ export const runEpicAction = defineRpc({
   }),
 });
 
-// Removes the harness initiative holding the configured epic, the loop's state, and
-// epicLoop.epic from the repo's skillsync.config.json. Refused while anything is running.
+// Removes the initiative holding the active epic. Refused while the runner has anything going.
 export const deleteEpicInitiative = defineRpc({
   name: "orchestration.epic-delete-initiative",
   input: z.object({}),
   output: z.object({ ok: z.boolean(), error: z.string().nullable(), deleted: z.string().nullable() }),
 });
 
+// Every initiative in each repo's .harness/initiatives, in the layout the plugin creates
+// (server/harness-layout.ts).
+const harnessRepo = z.object({
+  repo: z.string(),
+  name: z.string(),
+  initiatives: z.array(
+    z.object({
+      slug: z.string(),
+      title: z.string(),
+      epics: z.array(
+        z.object({ id: z.string(), title: z.string(), path: z.string(), stories: z.number(), merged: z.number() }),
+      ),
+    }),
+  ),
+});
+
+export const listHarnessInitiatives = defineRpc({
+  name: "orchestration.harness-initiatives",
+  input: z.object({ repos: z.array(z.string()) }),
+  output: z.object({ repos: z.array(harnessRepo) }),
+});
+
+// Creates the initiative when `initiative` is empty (from initiativeTitle), then its next epic.
+export const createHarnessEpicRpc = defineRpc({
+  name: "orchestration.harness-create-epic",
+  input: z.object({
+    repo: z.string(),
+    initiative: z.string(),
+    initiativeTitle: z.string(),
+    epicTitle: z.string(),
+  }),
+  output: z.object({ ok: z.boolean(), error: z.string().nullable(), epic: z.string().nullable() }),
+});
+
+export type HarnessRepo = z.infer<typeof harnessRepo>;
 export type EpicStory = z.infer<typeof epicStory>;
 export type EpicBoardState = NonNullable<RpcOutput<typeof getEpicBoard>["state"]>;
 export type EpicAction = z.infer<typeof epicAction>;

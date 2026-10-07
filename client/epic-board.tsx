@@ -1,19 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { openExternalUrl, useRpc, useSettings } from "@getpaseo/plugin/client";
+import { openExternalUrl, usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import {
+  createHarnessEpicRpc,
   deleteEpicInitiative,
   getEpicBoard,
+  listHarnessInitiatives,
   runEpicAction,
   type EpicAction,
   type EpicBoardState,
   type EpicStory,
+  type HarnessRepo,
 } from "../shared/orchestration";
-import { epicLoopSettings } from "../shared/settings";
+import { harnessSettings } from "../shared/settings";
 
-// A skillsync harness epic (one repo's epicLoop.epic) as its dependency graph: one card per story,
+// The active harness epic (see server/harness-layout.ts) as its dependency graph: one card per story,
 // arrows from a dependency to the stories that need it. Harness epics are occasional work (a
 // hackathon, an initiative); day-to-day epics come from Jira, so the graph stays folded to one
 // line unless its loop is running or you open it.
@@ -216,7 +219,7 @@ export function useEpicBoard({
   const loadBoard = useRpc(getEpicBoard);
   const act = useRpc(runEpicAction);
   const removeInitiative = useRpc(deleteEpicInitiative);
-  const settings = useSettings(epicLoopSettings);
+  const settings = useSettings(harnessSettings);
   const toast = useToast();
   const [state, setState] = useState<EpicBoardState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -226,7 +229,6 @@ export function useEpicBoard({
   const [confirmStop, setConfirmStop] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
   const [shown, setShown] = useState(false);
   const seenProgress = useRef<string | null>(null);
 
@@ -260,7 +262,7 @@ export function useEpicBoard({
   }, [refresh]);
 
   // Settings changes (a new repo) reset what was already toasted.
-  const settingsKey = settings.status === "ready" ? `${settings.values.repo}\n${settings.values.skillsyncDir}` : "";
+  const settingsKey = settings.status === "ready" ? `${settings.values.repo}\n${settings.values.epic}\n${settings.values.runner}` : "";
   useEffect(() => {
     seenProgress.current = null;
     setSelected(null);
@@ -308,7 +310,7 @@ export function useEpicBoard({
       }
       toast.show(`Deleted ${result.deleted}`, { variant: "success" });
       setShown(false);
-      if (!(await settings.save({ ...settings.values, repo: "" }, settings.revision))) {
+      if (!(await settings.save({ ...settings.values, repo: "", epic: "" }, settings.revision))) {
         toast.error(settings.saveError ?? "Deleted, but could not clear the harness plan repo.");
       }
     } catch (cause) {
@@ -319,11 +321,13 @@ export function useEpicBoard({
     }
   }
 
-  async function saveRepo() {
+  // Picking or creating an epic (or setting the runner) points the board at it.
+  async function pointAt(next: Partial<{ repo: string; epic: string; runner: string }>) {
     if (settings.status !== "ready") return;
-    const saved = await settings.save({ ...settings.values, repo: draft.trim() }, settings.revision);
+    const saved = await settings.save({ ...settings.values, ...next }, settings.revision);
     if (saved) setEditing(false);
     else toast.error(settings.saveError ?? "Could not save the harness plan repo.");
+    void refresh();
   }
 
   function openSession(story: EpicStory) {
@@ -331,25 +335,13 @@ export function useEpicBoard({
   }
 
   const repoForm = (
-    <View style={styles.repoForm}>
-      <Text style={styles.muted}>
-        Repo whose skillsync.config.json sets epicLoop.epic (an absolute path).
-      </Text>
-      <View style={styles.repoRow}>
-        <TextInput
-          value={draft}
-          onChangeText={setDraft}
-          placeholder="/Users/you/code/your-repo"
-          placeholderTextColor={theme.colors.foregroundMuted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          style={styles.input}
-          onSubmitEditing={() => void saveRepo()}
-        />
-        <Button label="Save" primary styles={styles} onPress={() => void saveRepo()} />
-        {repo ? <Button label="Cancel" styles={styles} onPress={() => setEditing(false)} /> : null}
-      </View>
-    </View>
+    <HarnessPicker
+      styles={styles}
+      theme={theme}
+      active={settings.status === "ready" ? settings.values : null}
+      onPicked={(next) => void pointAt(next)}
+      onCancel={() => setEditing(false)}
+    />
   );
 
   if (!repo && !editing) {
@@ -359,14 +351,7 @@ export function useEpicBoard({
         <View style={[styles.panel, styles.folded]}>
           <Text style={styles.foldedTitle}>Harness plan</Text>
           <Text style={[styles.muted, styles.flex]}>not set up</Text>
-          <Button
-            label="Set up"
-            styles={styles}
-            onPress={() => {
-              setDraft("");
-              setEditing(true);
-            }}
-          />
+          <Button label="Initiatives" styles={styles} onPress={() => setEditing(true)} />
         </View>
       ),
     };
@@ -379,7 +364,6 @@ export function useEpicBoard({
         <View style={styles.panel}>
           <Text style={styles.panelTitle}>Harness plan</Text>
           {repoForm}
-          {!repo ? <Button label="Cancel" styles={styles} onPress={() => setEditing(false)} /> : null}
         </View>
       ),
     };
@@ -393,12 +377,9 @@ export function useEpicBoard({
         <View style={styles.head}>
           <Text style={styles.panelTitle}>Harness plan</Text>
           <Button
-            label="Change repo"
+            label="Initiatives"
             styles={styles}
-            onPress={() => {
-              setDraft(repo);
-              setEditing(true);
-            }}
+            onPress={() => setEditing(true)}
           />
         </View>
         <Text style={error ? styles.danger : styles.muted}>{error ?? "Loading the harness plan…"}</Text>
@@ -503,7 +484,7 @@ export function useEpicBoard({
                   void run("loop-stop");
                 }}
               />
-            ) : left > 0 ? (
+            ) : state.runner && left > 0 ? (
               <Button
                 label={busy === "loop-start:" ? "Starting…" : "Run plan"}
                 primary
@@ -530,12 +511,9 @@ export function useEpicBoard({
               />
             ) : null}
             <Button
-              label="Repo"
+              label="Initiatives"
               styles={styles}
-              onPress={() => {
-                setDraft(repo);
-                setEditing(true);
-              }}
+              onPress={() => setEditing(true)}
             />
           </View>
         </View>
@@ -720,7 +698,7 @@ function StoryDrawer({
             {story.status === "awaiting-approval" && story.planFile ? (
               <Button label={pending("approve") ? "Approving…" : "Approve story plan"} primary styles={styles} onPress={() => onRun("approve")} />
             ) : null}
-            {story.ready && !story.loopPid ? (
+            {state.runner && story.ready && !story.loopPid ? (
               <Button label={pending("start") ? "Starting…" : "Start planning"} primary styles={styles} onPress={() => onRun("start")} />
             ) : null}
             {story.retryAt && !story.loopPid ? (
@@ -810,6 +788,164 @@ function StoryDrawer({
           </View>
         </ScrollView>
       </View>
+    </View>
+  );
+}
+
+// Every initiative in the repos Paseo knows, in the layout the plugin creates (see
+// server/harness-layout.ts). Opening an epic shows it on the board; "New initiative" and
+// "Add epic" scaffold the folders so every repo's .harness looks the same.
+type Draft = { repo: string; initiative: string; initiativeTitle: string; epicTitle: string };
+
+function HarnessPicker({
+  styles,
+  theme,
+  active,
+  onPicked,
+  onCancel,
+}: {
+  styles: Styles;
+  theme: Theme;
+  active: { repo: string; epic: string; runner: string } | null;
+  onPicked(next: { repo?: string; epic?: string; runner?: string }): void;
+  onCancel(): void;
+}) {
+  const paseo = usePaseo();
+  const list = useRpc(listHarnessInitiatives);
+  const create = useRpc(createHarnessEpicRpc);
+  const toast = useToast();
+  const [repos, setRepos] = useState<HarnessRepo[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [runner, setRunner] = useState(active?.runner ?? "");
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { projects } = await paseo.projects.list();
+        const result = await list({ repos: projects.map((project) => project.projectRootPath) });
+        if (!cancelled) setRepos(result.repos);
+      } catch (cause) {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : "Could not list initiatives");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [paseo, list]);
+
+  async function submit() {
+    if (!draft || busy) return;
+    setBusy(true);
+    try {
+      const result = await create(draft);
+      if (!result.ok) {
+        toast.error(result.error ?? "Could not create the epic.");
+        return;
+      }
+      toast.show(`Created ${result.epic}`, { variant: "success" });
+      if (result.epic) onPicked({ repo: draft.repo, epic: result.epic });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const input = (value: string, placeholder: string, onChange: (text: string) => void) => (
+    <TextInput
+      value={value}
+      onChangeText={onChange}
+      placeholder={placeholder}
+      placeholderTextColor={theme.colors.foregroundMuted}
+      autoCorrect={false}
+      style={styles.input}
+      onSubmitEditing={() => void submit()}
+    />
+  );
+
+  const form = (repo: string, initiative: string) =>
+    draft && draft.repo === repo && draft.initiative === initiative ? (
+      <View style={styles.repoRow}>
+        {initiative ? null : input(draft.initiativeTitle, "Initiative name", (text) => setDraft({ ...draft, initiativeTitle: text }))}
+        {input(draft.epicTitle, initiative ? "Epic name" : "First epic name", (text) => setDraft({ ...draft, epicTitle: text }))}
+        <Button label={busy ? "Creating…" : "Create"} primary disabled={busy} styles={styles} onPress={() => void submit()} />
+        <Button label="Cancel" styles={styles} onPress={() => setDraft(null)} />
+      </View>
+    ) : null;
+
+  return (
+    <View style={styles.repoForm}>
+      <View style={styles.head}>
+        <Text style={[styles.muted, styles.flex]}>
+          Initiatives live in each repo at .harness/initiatives/&lt;slug&gt;/epics/&lt;E#-name&gt;. Open an epic to run it here.
+        </Text>
+        <Button label="Close" styles={styles} onPress={onCancel} />
+      </View>
+      <View style={styles.repoRow}>
+        <TextInput
+          value={runner}
+          onChangeText={setRunner}
+          placeholder="Runner module (optional) — exports createHarnessRunner"
+          placeholderTextColor={theme.colors.foregroundMuted}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={styles.input}
+          onSubmitEditing={() => onPicked({ runner: runner.trim() })}
+        />
+        <Button label="Save runner" styles={styles} onPress={() => onPicked({ runner: runner.trim() })} />
+      </View>
+      {error ? <Text style={styles.danger}>{error}</Text> : null}
+      {!repos && !error ? <Text style={styles.muted}>Looking through your repos…</Text> : null}
+      {repos?.length === 0 ? <Text style={styles.muted}>No git repos in Paseo yet. Add one as a project first.</Text> : null}
+      {repos?.map((repo) => (
+        <View key={repo.repo} style={styles.related}>
+          <View style={styles.head}>
+            <Text style={[styles.foldedTitle, styles.flex]} numberOfLines={1}>
+              {repo.name}
+              {repo.initiatives.length === 0 ? <Text style={styles.hint}>{"  ·  no initiatives"}</Text> : null}
+            </Text>
+            <Button
+              label="New initiative"
+              styles={styles}
+              onPress={() => setDraft({ repo: repo.repo, initiative: "", initiativeTitle: "", epicTitle: "" })}
+            />
+          </View>
+          {form(repo.repo, "")}
+          {repo.initiatives.map((initiative) => (
+            <View key={initiative.slug} style={[styles.previewBox, styles.related]}>
+              <View style={styles.head}>
+                <Text style={[styles.nodeTitle, styles.flex]} numberOfLines={1}>
+                  {initiative.title}
+                  <Text style={styles.hint}>{`  ·  ${initiative.slug}`}</Text>
+                </Text>
+                <Button
+                  label="Add epic"
+                  styles={styles}
+                  onPress={() =>
+                    setDraft({ repo: repo.repo, initiative: initiative.slug, initiativeTitle: "", epicTitle: "" })
+                  }
+                />
+              </View>
+              {form(repo.repo, initiative.slug)}
+              {initiative.epics.length === 0 ? <Text style={styles.hint}>No epics yet.</Text> : null}
+              {initiative.epics.map((epic) => {
+                const current = active?.repo === repo.repo && active.epic === epic.path;
+                return (
+                  <View key={epic.path} style={styles.repoRow}>
+                    <Text style={[styles.muted, styles.flex]} numberOfLines={1}>
+                      <Text style={styles.nodeId}>{epic.id}</Text>
+                      {`  ${epic.title}  ·  ${epic.merged}/${epic.stories} merged`}
+                    </Text>
+                    {current ? <Text style={styles.hint}>on the board</Text> : null}
+                    <Button label="Open" primary={current} disabled={busy} styles={styles} onPress={() => onPicked({ repo: repo.repo, epic: epic.path })} />
+                  </View>
+                );
+              })}
+            </View>
+          ))}
+        </View>
+      ))}
     </View>
   );
 }

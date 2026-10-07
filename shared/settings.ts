@@ -53,14 +53,15 @@ export const prodPulseSettings = defineSettings({
   }),
 });
 
-export const epicLoopSettings = defineSettings({
-  id: "epic-loop",
+export const harnessSettings = defineSettings({
+  id: "harness",
   scope: "host",
   version: 1,
   schema: z.object({
-    // Repo whose skillsync.config.json sets epicLoop.epic; empty hides the epic board's graph.
+    // Repo and repo-relative epic folder the Harness plan board shows; empty folds the board.
     repo: z.string().default(""),
-    // skillsync checkout holding tools/lib/epic-dashboard.cjs; empty tries the repo's vendor copy.
-    skillsyncDir: z.string().default(""),
+    epic: z.string().default(""),
+    // Module exporting createHarnessRunner (see server/harness-board.ts); empty shows the plan only.
+    runner: z.string().default(""),
   }),
 });
