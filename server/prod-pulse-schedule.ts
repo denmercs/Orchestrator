@@ -13,12 +13,9 @@ const RUN_SCRIPT = path.join(PULSE_DIR, "run.sh");
 const TIMEZONE = "America/Chicago";
 const PROVIDER = "claude/claude-haiku-4-5";
 
-// Same cadence the BB automations used. Names are the match key, so renaming one in Paseo
-// makes the plugin treat it as missing and create a fresh one.
-const SCHEDULES = [
-  { name: "Prod pulse (weekdays)", label: "Weekdays 8:00, 12:00, 16:00", cron: "0 8,12,16 * * 1-5" },
-  { name: "Prod pulse (weekends)", label: "Weekends 9:00", cron: "0 9 * * 0,6" },
-] as const;
+// Names are the match key, so renaming one in Paseo makes the plugin treat it as missing
+// and create a fresh one.
+const SCHEDULES = [{ name: "Prod pulse (Mon & Fri)", label: "Mondays and Fridays 13:00", cron: "0 13 * * 1,5" }] as const;
 
 // A Paseo schedule runs an agent, not a script, so a small agent runs the job and reports.
 // Successful runs take up to ~11 minutes, past the agent's 10-minute foreground limit.
@@ -27,7 +24,7 @@ const PROMPT = `Run the scheduled prod pulse job and report the result. Do nothi
 1. With the Bash tool, run this command in the background (run_in_background: true) and wait for it to finish:
    cd ${PULSE_DIR} && perl -e "alarm 1200; exec @ARGV" /bin/bash ${RUN_SCRIPT}; echo "exit=$?"
    (perl alarm kills it after 20 minutes if it hangs.)
-2. When it finishes, run: tail -n 1 ${path.join(PULSE_DIR, "state", "runs.json")} | cut -c1-300
+2. When it finishes, run: jq -c '.runs[-1]' ${path.join(PULSE_DIR, "page", "data.json")} | cut -c1-300
 3. Reply in one or two lines: the exit code and the outcome/summary of the latest run entry. If exit was 142 say it timed out.`;
 
 // Setting changes and status reads go through one queue so a fast toggle can't create twice.

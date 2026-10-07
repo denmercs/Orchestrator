@@ -30,7 +30,7 @@ The **Orchestration** item appears in the sidebar. Drag it after Schedule in **S
 
 When `~/.prod-pulse/page/data.json` exists (written by the scheduled `/ss-prod-pulse` job), a **Sentry** button appears next to the board picker. It opens a drawer with release health, new bugs on the current prod release (repro, FullStory/Sentry links), older bugs still hitting, and suggested next steps. Set `PROD_PULSE_DIR` on the daemon to read a different folder. No Sentry token is needed; the drawer only reads the job's output.
 
-The drawer's **Automation** switch (off by default) keeps two Paseo schedules for the job: "Prod pulse (weekdays)" at 8:00, 12:00, 16:00 and "Prod pulse (weekends)" at 9:00, Central. On creates any that are missing and resumes paused ones; off pauses them. Nothing is deleted. Each run starts a Haiku agent that runs `~/.prod-pulse/run.sh`. The switch only turns on when that script exists.
+The drawer's **Automation** switch (off by default) keeps one Paseo schedule for the job: "Prod pulse (Mon & Fri)" at 13:00 Central on Mondays and Fridays. On creates it if missing and resumes it if paused; off pauses them. Nothing is deleted. Each run starts a Haiku agent that runs `~/.prod-pulse/run.sh`. The switch only turns on when that script exists.
 
 ## Harness initiatives
 
