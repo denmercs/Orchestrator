@@ -794,7 +794,7 @@ function StoryDrawer({
 
 // Every initiative in the repos Paseo knows, in the layout the plugin creates (see
 // server/harness-layout.ts). Opening an epic shows it on the board; "New initiative" and
-// "Add epic" scaffold the folders so every repo's .harness looks the same.
+// "New phase" scaffold the folders (a phase is an epic folder) so every repo's .harness looks the same.
 type Draft = { repo: string; initiative: string; initiativeTitle: string; epicTitle: string };
 
 function HarnessPicker({
@@ -842,7 +842,7 @@ function HarnessPicker({
     try {
       const result = await create(draft);
       if (!result.ok) {
-        toast.error(result.error ?? "Could not create the epic.");
+        toast.error(result.error ?? "Could not create the phase.");
         return;
       }
       toast.show(`Created ${result.epic}`, { variant: "success" });
@@ -868,7 +868,7 @@ function HarnessPicker({
     draft && draft.repo === repo && draft.initiative === initiative ? (
       <View style={styles.repoRow}>
         {initiative ? null : input(draft.initiativeTitle, "Initiative name", (text) => setDraft({ ...draft, initiativeTitle: text }))}
-        {input(draft.epicTitle, initiative ? "Epic name" : "First epic name", (text) => setDraft({ ...draft, epicTitle: text }))}
+        {input(draft.epicTitle, initiative ? "Phase name" : "First phase name", (text) => setDraft({ ...draft, epicTitle: text }))}
         <Button label={busy ? "Creating…" : "Create"} primary disabled={busy} styles={styles} onPress={() => void submit()} />
         <Button label="Cancel" styles={styles} onPress={() => setDraft(null)} />
       </View>
@@ -920,7 +920,7 @@ function HarnessPicker({
                   <Text style={styles.hint}>{`  ·  ${initiative.slug}`}</Text>
                 </Text>
                 <Button
-                  label="Add epic"
+                  label="New phase"
                   styles={styles}
                   onPress={() =>
                     setDraft({ repo: repo.repo, initiative: initiative.slug, initiativeTitle: "", epicTitle: "" })
@@ -928,7 +928,7 @@ function HarnessPicker({
                 />
               </View>
               {form(repo.repo, initiative.slug)}
-              {initiative.epics.length === 0 ? <Text style={styles.hint}>No epics yet.</Text> : null}
+              {initiative.epics.length === 0 ? <Text style={styles.hint}>No phases yet.</Text> : null}
               {initiative.epics.map((epic) => {
                 const current = active?.repo === repo.repo && active.epic === epic.path;
                 return (

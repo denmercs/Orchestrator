@@ -45,7 +45,7 @@ The plugin owns the initiative layout; each repo stores it in its own `.harness`
     state/                 # per-story working notes, written by the runner
 ```
 
-**Harness plan → Initiatives** lists every Paseo project's initiatives. **New initiative** and **Add epic** create the folders above; **Open** puts an epic on the board. The board reads the plan straight from these files.
+**Harness plan → Initiatives** lists every Paseo project's initiatives. **New initiative** and **New phase** create the folders above (each phase is an `epics/E<n>-<name>` folder); **Open** puts a phase on the board. The board reads the plan straight from these files.
 
 Running stories is optional. Set **Runner** to a module that exports `createHarnessRunner({ root, epicDir })` returning `{ state(), act(action, id), stop(), reset?() }` (contract in `server/harness-board.ts`). With a runner the board shows **Run plan**, **Start planning**, approvals and previews; without one it's the plan only.
 
