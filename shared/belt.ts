@@ -116,6 +116,20 @@ const catalogSkill = z.object({
 });
 export type CatalogSkill = z.infer<typeof catalogSkill>;
 
+// A ref points at a catalog skill on the same source by its name or its folder, so refs saved
+// with folder names keep working when the frontmatter name differs.
+export function matchesRef(skill: CatalogSkill, ref: SkillRef) {
+  return skill.source === ref.source && (skill.name === ref.name || skill.folder === ref.name);
+}
+
+// The one catalog skill a ref points at: an exact name match wins over a folder match.
+export function findRef(catalog: CatalogSkill[], ref: SkillRef) {
+  return (
+    catalog.find((s) => s.source === ref.source && s.name === ref.name) ??
+    catalog.find((s) => matchesRef(s, ref))
+  );
+}
+
 const sourceStatus = z.object({
   id: z.string(),
   ok: z.boolean(),

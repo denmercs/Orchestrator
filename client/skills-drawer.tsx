@@ -10,7 +10,9 @@ import {
   addSkillSource,
   beltSettings,
   checkSkillSource,
+  findRef,
   getSkillCatalog,
+  matchesRef,
   phasePrompt,
   phaseSkills,
   removeSkillSource,
@@ -251,7 +253,7 @@ function PhaseCard({
   const [picking, setPicking] = useState<"runs" | "extra" | null>(null);
   const [preview, setPreview] = useState(false);
   const skills = phaseSkills(phase);
-  const known = (ref: SkillRef) => belt.loading || belt.catalog.some((s) => sameRef(s, ref));
+  const known = (ref: SkillRef) => belt.loading || belt.catalog.some((s) => matchesRef(s, ref));
 
   return (
     <View style={styles.card}>
@@ -416,6 +418,7 @@ function SkillPicker({
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
   const list = belt.catalog.filter((skill) => skill.name.toLowerCase().includes(needle)).slice(0, 60);
+  const selected = current ? findRef(belt.catalog, current) : undefined;
   return (
     <View style={styles.picker}>
       <TextInput
@@ -435,7 +438,7 @@ function SkillPicker({
           style={styles.pickerRow}
         >
           <Text style={styles.body}>
-            {current && sameRef(current, skill) ? "● " : "○ "}
+            {skill === selected ? "● " : "○ "}
             {skill.name}
           </Text>
           <Text style={styles.muted}>

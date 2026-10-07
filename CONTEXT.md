@@ -23,9 +23,11 @@ _Avoid_: repo, registry, library, provider (for a source); version, ref (for the
 
 ## Catalog skill
 
-One skill that can be picked, as listed by `loadCatalog`. Code: `CatalogSkill` (`name`, `source`, `kind`). The catalog is every `installed` skill plus the skills of each enabled source.
+One skill that can be picked, as listed by `loadCatalog`. Code: `CatalogSkill` (`name`, `folder`, `description`, `source`, `kind`). The catalog is every `installed` skill plus the skills of each enabled source.
 
-- `name` is the folder name of the skill (the folder holding `SKILL.md`) or the file name of a command, without `.md`.
+- `name` is the `name` in the skill's `SKILL.md` frontmatter, falling back to `folder` when there is none. This is the name skills.sh uses. For a command it is the file name without `.md`.
+- `folder` is the folder holding `SKILL.md`, or the command's file name without `.md`.
+- `description` is the frontmatter `description` (one line, trimmed), or `""`. `readFrontmatter` parses both keys.
 - `source` is the `id` of the Skill source it came from, or `installed`.
 - `kind` is `skill` (a folder with `SKILL.md`, found up to five folders deep) or `command` (a `.md` file in `commands/` or `.claude/commands/`).
 
@@ -33,7 +35,7 @@ _Avoid_: plugin, tool, package.
 
 ## Skill ref
 
-A pointer from the belt settings to a catalog skill. Code: `SkillRef` (`name`, `source`). It is matched to a catalog skill by the same `name` and `source`. A ref whose source is gone, turned off, or has no skill by that name is not an error when saved. `installSkills` reports it as a warning when the phase starts.
+A pointer from the belt settings to a catalog skill. Code: `SkillRef` (`name`, `source`). It matches a catalog skill on the same `source` whose `name` or `folder` equals the ref's `name` (`matchesRef` in `shared/belt.ts`; `findSkill` on the server prefers a `name` match). Refs saved with folder names keep working. A ref whose source is gone, turned off, or has no skill by that name is not an error when saved. `installSkills` reports it as a warning when the phase starts.
 
 _Avoid_: skill id, skill key.
 
@@ -49,8 +51,8 @@ _Avoid_: add-ons, plugins, secondary skills.
 
 How a phase's skills reach a new story agent. When a phase starts, `installSkills` copies each non-`installed` Skill ref (the `runs` skill and the extras) from its source into the story worktree:
 
-- a skill folder goes to `.claude/skills/<name>`, `.cursor/skills/<name>` and `.agents/skills/<name>`;
-- a command goes to `.claude/commands/<name>.md` and `.cursor/commands/<name>.md`.
+- a skill folder goes to `.claude/skills/<folder>`, `.cursor/skills/<folder>` and `.agents/skills/<folder>`, named after its folder, not its frontmatter `name`;
+- a command goes to `.claude/commands/<folder>.md` and `.cursor/commands/<folder>.md`.
 
 The copied paths are added to the worktree's `info/exclude` so they never show up in git. A path the repo already commits is left alone. `installed` refs are skipped because those skills are already global. This copy is the only way skills are "installed", and it happens per worktree.
 
@@ -64,6 +66,6 @@ _Avoid_: marketplace, store, skills.sh source.
 
 ## Skill attachment
 
-A skill handed to an agent that is already running, through that agent's composer, instead of through a belt phase. The skill is read from a connected Skill source. Nothing is copied into the worktree or installed globally. Belt phase extras serve new story agents. Attachments serve running agents. No code for it exists yet.
+A skill handed to an agent that is already running, through that agent's composer, instead of through a belt phase. The skill is read from a connected Skill source. Nothing is copied into the worktree or installed globally. Belt phase extras serve new story agents. Attachments serve running agents. `readSkill` returns what an attachment carries: the `SKILL.md` body after the frontmatter, absolute paths to the skill's other files in the pinned checkout, folder or machine path, and the source's pin as `commit`. It reads only connected, enabled sources (and `installed`) and never clones anything else. The composer wiring does not exist yet.
 
 _Avoid_: skill injection, skill upload.
