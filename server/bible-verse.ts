@@ -46,9 +46,10 @@ const REFERENCES = [
 // verse of the day, which rolls over at midnight US Central.
 const LIFEWAY_MCP = "https://developers.hackathon.dev.lifeway.com/mcp";
 const LIFEWAY_KEYCHAIN = "orchestrator.lifeway-scripture";
-// bolls.life is free and keyless and carries the ESV; personal-dashboard use only.
+// bolls.life is free and keyless and carries the CSB (as CSB17); personal-dashboard use only.
 const BOLLS_ENDPOINT = "https://bolls.life/get-text/";
-const BOLLS_TRANSLATION = "ESV";
+const BOLLS_TRANSLATION = "CSB17";
+const CSB_COPYRIGHT = "Christian Standard Bible® © Holman Bible Publishers. Used by permission.";
 // bible.helloao.org is free and keyless; the BSB is a modern public-domain translation.
 const BSB_ENDPOINT = "https://bible.helloao.org/api/BSB/";
 // bible-api.com is free and keyless; WEB is public domain, so it is the last fallback.
@@ -203,7 +204,7 @@ async function fetchLifeway(apiKey: string): Promise<DailyVerse> {
     reference: passage.reference,
     text: passage.text,
     translation: passage.translation.toUpperCase().includes("CSB") ? "CSB" : passage.translation,
-    copyright: "Christian Standard Bible® © Holman Bible Publishers. Used by permission.",
+    copyright: CSB_COPYRIGHT,
   };
 }
 
@@ -235,8 +236,8 @@ async function fetchBolls(reference: string): Promise<DailyVerse> {
   return {
     reference,
     text: clean(text) || null,
-    translation: BOLLS_TRANSLATION,
-    copyright: BOLLS_TRANSLATION === "ESV" ? "ESV® Bible © Crossway." : null,
+    translation: "CSB",
+    copyright: CSB_COPYRIGHT,
   };
 }
 
