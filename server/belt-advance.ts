@@ -12,16 +12,27 @@ import {
   phaseSkills,
   phaseTitle,
   readStatus,
+  STORY_FILE_LABEL,
+  STORY_TRACKER_LABEL,
   type BeltConfig,
   type Phase,
   type Ticket,
 } from "../shared/belt";
 import type { MergedPr } from "./github-prs";
+import { writeFrontmatter } from "./harness-layout";
 import { installSkills } from "./skill-sources";
 
 type PaseoApi = PluginHandlerContext["paseo"];
 type Labels = Record<string, string>;
 type ReadConfig = () => Promise<BeltConfig | null>;
+
+// An initiative story's status while each belt phase runs; merged is set when its PR merges.
+const STORY_STATUS: Record<string, string> = {
+  plan: "planning",
+  implement: "implementing",
+  review: "reviewing",
+  done: "pr-open",
+};
 
 // Phases already started by this process, so a repeated event can't start one twice.
 const started = new Set<string>();
@@ -29,7 +40,14 @@ const started = new Set<string>();
 export async function startStory(
   paseo: PaseoApi,
   config: BeltConfig,
-  input: { workspaceId: string; key: string; title: string; url: string | null },
+  input: {
+    workspaceId: string;
+    key: string;
+    title: string;
+    url: string | null;
+    // An initiative story: its file, and whether its initiative publishes to Jira.
+    story?: { file: string; tracker: "local" | "jira" };
+  },
 ) {
   const plan = config.phases[0];
   if (!plan) {
@@ -37,13 +55,14 @@ export async function startStory(
   }
   const workspace = paseo.workspaces.ref(input.workspaceId);
   const cwd = workspace.directory ?? (await workspace.refresh())?.workspaceDirectory ?? null;
-  const ticket: Ticket = { key: input.key, title: input.title, url: input.url };
+  const ticket: Ticket = { key: input.key, title: input.title, url: input.url, story: input.story?.file };
   const labels: Labels = {
     jira: input.key,
     kind: "session",
     belt: BELT_LABEL,
     "jira-title": input.title.slice(0, 200),
     "jira-url": input.url ?? "",
+    ...(input.story ? { [STORY_FILE_LABEL]: input.story.file, [STORY_TRACKER_LABEL]: input.story.tracker } : {}),
   };
   const result = await startPhase(paseo, config, plan, ticket, labels, {
     workspaceId: input.workspaceId,
@@ -104,7 +123,12 @@ export async function advanceBelt(
     nextRound = 1;
   }
 
-  const ticket: Ticket = { key: labels.jira, title: labels["jira-title"] ?? "", url: labels["jira-url"] || null };
+  const ticket: Ticket = {
+    key: labels.jira,
+    title: labels["jira-title"] ?? "",
+    url: labels["jira-url"] || null,
+    story: labels[STORY_FILE_LABEL] || undefined,
+  };
   const target = { workspaceId: event.agent.workspaceId, cwd: event.agent.cwd };
   await startPhase(paseo, config, next, ticket, { ...labels, round: String(nextRound) }, target).catch(
     (error) => {
@@ -128,6 +152,11 @@ export async function closeMergedStories(paseo: PaseoApi, fresh: MergedPr[], rea
     const story = agents.filter((agent) => agent.labels?.jira === key);
     const anchor = story.find((agent) => agent.labels?.phase === "done") ?? story[0];
     if (!anchor || story.some((agent) => agent.labels?.phase === "close")) {
+      continue;
+    }
+    // Locally tracked initiative stories have no Jira issue to close; server/phase-loop.ts
+    // marks their file merged instead.
+    if (anchor.labels?.[STORY_FILE_LABEL] && anchor.labels?.[STORY_TRACKER_LABEL] !== "jira") {
       continue;
     }
     const labels: Labels = { ...(anchor.labels ?? {}), phase: "close", round: "1" };
@@ -185,6 +214,9 @@ async function startPhase(
       prompt: phasePrompt(config, phase, ticket, Number(round)),
       labels,
     };
+    if (ticket.story && STORY_STATUS[phase.id]) {
+      writeFrontmatter(ticket.story, { status: STORY_STATUS[phase.id] });
+    }
     const agent = target.workspaceId
       ? await paseo.workspaces.ref(target.workspaceId).agents.create(options)
       : target.cwd

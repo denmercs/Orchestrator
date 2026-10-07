@@ -106,7 +106,10 @@ transition, comment on, or edit Jira issues beyond creating them.
 After the draft, ask the highest-impact open decision: one question, your recommended answer, and
 what changes either way. Batch small defaults as "assumption → answer" lines so they can be
 pushed back on quickly. After each answer, rewrite the plan and the affected stories, then ask the
-next. On "lock": set status: agreed, update the date, and stop.
+next. On "lock": set status: agreed, update the date, make sure every stage's story file exists
+with status todo and its depends_on, then end with exactly this line and stop:
+"Planning done for <phase>. Press Start on the Orchestration board to run its stories; ready ones
+start in parallel, each in its own worktree."
 
 ## Tone
 Plain English. Diagrams carry structure; cards carry decisions; the finish line carries pickup

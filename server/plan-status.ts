@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { readStories } from "./harness-layout";
+import { readStories, setFrontmatter } from "./harness-layout";
 import { readIssueStatuses } from "./jira";
 import { PLAN_MD } from "./plan-render";
 
@@ -100,17 +100,6 @@ function refreshTables(lines: string[], issues: Map<string, Issue>) {
   return { lines: out, changed };
 }
 
-function setFrontmatter(md: string, values: Record<string, string>) {
-  const end = md.startsWith("---") ? md.indexOf("\n---", 3) : -1;
-  if (end === -1) return md;
-  let head = md.slice(0, end);
-  for (const [key, value] of Object.entries(values)) {
-    const line = `${key}: ${value}`;
-    const pattern = new RegExp(`^${key}:.*$`, "m");
-    head = pattern.test(head) ? head.replace(pattern, line) : `${head}\n${line}`;
-  }
-  return head + md.slice(end);
-}
 
 // Refreshes a phase's architecture.md from Jira. No keys means nothing to do (and no Jira call).
 const hasKey = (text: string) => new RegExp(KEY.source).test(text);

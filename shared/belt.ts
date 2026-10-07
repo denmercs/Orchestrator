@@ -183,7 +183,13 @@ export const BELT_AGENT_CONFIG = {
 
 export const BELT_LABEL = "story";
 
-export type Ticket = { key: string; title: string; url: string | null };
+// `story` is the absolute path of an initiative story file (.harness/initiatives/…/stories/*.md)
+// when the story is tracked locally instead of (or as well as) in Jira.
+export type Ticket = { key: string; title: string; url: string | null; story?: string };
+
+// Labels that tie a belt agent to an initiative story file.
+export const STORY_FILE_LABEL = "harness-story";
+export const STORY_TRACKER_LABEL = "harness-tracker";
 
 export function doneMarker(id: PhaseId) {
   return `${id}-done`;
@@ -220,7 +226,15 @@ export function phasePrompt(config: BeltConfig, phase: Phase, ticket: Ticket, ro
     `Story belt, phase ${PHASE_IDS.indexOf(phase.id) + 1}/${PHASE_IDS.length}: ${phase.label}${round > 1 ? ` (round ${round})` : ""}. You are a fresh agent for this phase only.`,
     ticket.url ? `Jira: ${ticket.url}` : "",
     extras.length > 0 ? `Also use these skills: ${extras.join(", ")}.` : "",
-    "Read the ticket and .harness/state.md with the attached MCP tools and files. Host MCP servers are already authenticated; do not open a browser or ask anyone to log in.",
+    ...(ticket.story
+      ? [
+          `The story lives in a file, not a Jira ticket: ${ticket.story}. Read it, and its phase's plan at ${ticket.story.replace(/[\\/]stories[\\/][^\\/]+$/, "")}/architecture.md, instead of looking ${ticket.key} up in Jira. Don't edit either file; the plugin keeps the story's status.`,
+          `Start the pull request title with "${ticket.key} — " so the plugin sees it merge.`,
+          "Read .harness/state.md in this worktree. Host MCP servers are already authenticated; do not open a browser or ask anyone to log in.",
+        ]
+      : [
+          "Read the ticket and .harness/state.md with the attached MCP tools and files. Host MCP servers are already authenticated; do not open a browser or ask anyone to log in.",
+        ]),
     "",
     "Phase contract:",
     ...phaseContract(config, phase, fixing),

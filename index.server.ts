@@ -13,6 +13,7 @@ import { deleteInitiative, loadHarnessBoard } from "./server/harness-board";
 import { startPhaseArchitect } from "./server/harness-architect";
 import { openPhasePlan, refreshPhasePlan } from "./server/phase-plan";
 import { stopPlanServer } from "./server/plan-server";
+import { advancePhaseLoops, runPhaseLoop } from "./server/phase-loop";
 import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { advanceBelt, closeMergedStories, startStory } from "./server/belt-advance";
 import { createLoopAdvance } from "./server/loop-advance";
@@ -37,6 +38,7 @@ import {
   planHarnessPhaseRpc,
   openPhasePlanRpc,
   refreshPhasePlanRpc,
+  phaseLoopRpc,
   listJiraPullRequests,
   listOrchestrationFolders,
   moveJiraIssue,
@@ -89,7 +91,15 @@ export default function contribute(server: PluginServerContext) {
     const values = await readBeltValues();
     return values?.enabled ? values : null;
   };
-  const loop = createLoopAdvance((paseo, fresh) => closeMergedStories(paseo, fresh, readBelt));
+  const loop = createLoopAdvance(async (paseo, fresh) => {
+    await closeMergedStories(paseo, fresh, readBelt);
+    // Initiative loops run on the belt's phases even while the belt is off for Jira stories.
+    await advancePhaseLoops(paseo, fresh, readBeltValues);
+  });
+  server.handle(phaseLoopRpc, (input, { paseo }) => {
+    loop.rememberPaseo(paseo);
+    return runPhaseLoop(paseo, readBeltValues, input);
+  });
   server.handle(getSkillCatalog, async () => loadCatalog((await readBeltValues())?.sources ?? []));
   server.handle(addSkillSource, ({ location }) => addSource(location));
   server.handle(checkSkillSource, async ({ id }) => {

@@ -12,6 +12,7 @@ import {
   planHarnessPhaseRpc,
   openPhasePlanRpc,
   refreshPhasePlanRpc,
+  phaseLoopRpc,
   type EpicBoardState,
   type EpicStory,
   type HarnessRepo,
@@ -205,6 +206,7 @@ export function useEpicBoard({
   const openPlan = useRpc(openPhasePlanRpc);
   const paseo = usePaseo();
   const refreshPlan = useRpc(refreshPhasePlanRpc);
+  const phaseLoop = useRpc(phaseLoopRpc);
   const settings = useSettings(harnessSettings);
   const toast = useToast();
   const [state, setState] = useState<EpicBoardState | null>(null);
@@ -250,6 +252,25 @@ export function useEpicBoard({
     planShown.current.set(key, hasPlan);
     if (before === false && hasPlan) void showPlan({ repo, epic: planPhase });
   }, [repo, planPhase, hasPlan]);
+
+  // Start runs the phase's ready stories through the Story belt (in parallel, one worktree each)
+  // and keeps starting stories as their dependencies merge; Stop lets running stories finish.
+  async function loopAction(action: "start" | "stop") {
+    if (settings.status !== "ready" || busy !== null) return;
+    setBusy(`loop-${action}:`);
+    try {
+      const result = await phaseLoop({ repo: settings.values.repo, epic: settings.values.epic, action });
+      if (!result.ok) toast.error(result.error ?? "Could not change the loop.");
+      else if (action === "stop") toast.show("Loop stopped. Stories already running will finish.");
+      else if (result.started.length) {
+        toast.show(`Started ${result.started.join(", ")}.`, { variant: "success" });
+      } else if (!result.errors.length) toast.show("Loop on. Nothing is ready yet; stories start as their dependencies merge.");
+      for (const error of result.errors) toast.error(error);
+    } finally {
+      setBusy(null);
+      void refresh();
+    }
+  }
 
   // The phase's architecture plan: open its HTML view, or pull Jira status into it (one way).
   async function planAction(kind: "open" | "jira") {
@@ -397,6 +418,7 @@ export function useEpicBoard({
   const graph = edgesFor(stories, selected, theme);
   const story = selected ? stories.find((item) => item.id === selected) ?? null : null;
   const phase = [state.epic.id ? phaseLabel(state.epic.id) : "", state.epic.title].filter(Boolean).join(": ");
+  const working = stories.filter((item) => ["planning", "implementing", "reviewing", "pr-open"].includes(item.status)).length;
   const initiative = state.initiative || "Initiative";
 
   if (!shown) {
@@ -406,7 +428,7 @@ export function useEpicBoard({
         <View style={[styles.panel, styles.folded]}>
           <Text style={styles.foldedTitle}>Initiative</Text>
           <Text style={[styles.muted, styles.flex]} numberOfLines={1}>
-            {initiative}  ·  {phase}  ·  {merged}/{stories.length} merged
+            {initiative}  ·  {phase}  ·  {merged}/{stories.length} merged{state.loop ? "  ·  ▶ running" : ""}
           </Text>
           <Button label="Show" styles={styles} onPress={() => setShown(true)} />
         </View>
@@ -503,6 +525,35 @@ export function useEpicBoard({
           <View style={{ flex: Math.max(0, left) }} />
         </View>
         {error ? <Text style={styles.danger}>{error}</Text> : null}
+        {state.loop ? (
+          <View style={[styles.previewBox, styles.banner]}>
+            <Text style={[styles.flex, styles.bannerText]}>
+              ▶ Running {phase || "this phase"}: {working} in progress · {merged} merged · {left - working} waiting
+            </Text>
+            <Button
+              label={busy === "loop-stop:" ? "Stopping…" : "Stop"}
+              disabled={busy !== null}
+              styles={styles}
+              onPress={() => void loopAction("stop")}
+            />
+          </View>
+        ) : state.plan?.status === "agreed" && left > 0 ? (
+          <View style={[styles.previewBox, styles.banner]}>
+            <Text style={[styles.flex, styles.bannerText]}>
+              ✓ Planning done. Press Start to run {phase || "this phase"}: every ready story starts in its own
+              worktree, and the rest follow as their dependencies merge.
+            </Text>
+            <Button
+              label={busy === "loop-start:" ? "Starting…" : "Start"}
+              primary
+              disabled={busy !== null}
+              styles={styles}
+              onPress={() => void loopAction("start")}
+            />
+          </View>
+        ) : state.plan && state.plan.status !== "agreed" ? (
+          <Text style={styles.hint}>Planning in progress. Say "lock" in the architecture session when the plan is ready.</Text>
+        ) : null}
         {state.plan?.warnings.length ? (
           <Text style={styles.hint} numberOfLines={2}>
             Plan gaps: {state.plan.warnings.join(" · ")}
@@ -880,6 +931,8 @@ function createStyles(theme: Theme, compact: boolean) {
     muted: { color: c.foregroundMuted, fontSize: 12.5 },
     danger: { color: c.statusDanger, fontSize: 12.5 },
     hint: { color: c.foregroundMuted, fontSize: 11.5 },
+    banner: { flexDirection: "row" as const, alignItems: "center" as const, gap: 10 },
+    bannerText: { color: c.foreground, fontSize: 12.5 },
     sectionLabel: { color: c.foregroundMuted, fontSize: 11, letterSpacing: 0.8, fontWeight: "600" as const },
     flex: { flex: 1 },
     track: { flexDirection: "row" as const, height: 4, borderRadius: 2, overflow: "hidden" as const, backgroundColor: c.surface2 },

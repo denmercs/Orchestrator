@@ -58,15 +58,40 @@ export const initiativeTracker = (dir: string): HarnessTracker =>
 
 const list = (value: string | undefined) => (value ? value.split(",").map((part) => part.trim()).filter(Boolean) : []);
 
-// A phase's stories from stories/*.md, in file order (which is priority).
-export function readStories(epicDir: string): EpicStory[] {
+// Sets frontmatter fields in place (adding any that are missing); returns the text unchanged
+// when it has no frontmatter.
+export function setFrontmatter(md: string, values: Record<string, string>) {
+  const end = md.startsWith("---") ? md.indexOf("\n---", 3) : -1;
+  if (end === -1) return md;
+  let head = md.slice(0, end);
+  for (const [key, value] of Object.entries(values)) {
+    const line = `${key}: ${value}`;
+    const pattern = new RegExp(`^${key}:.*$`, "m");
+    head = pattern.test(head) ? head.replace(pattern, line) : `${head}\n${line}`;
+  }
+  return head + md.slice(end);
+}
+
+export function writeFrontmatter(file: string, values: Record<string, string>) {
+  const text = readText(file);
+  const next = setFrontmatter(text, values);
+  if (next !== text) writeFileSync(file, next, "utf8");
+}
+
+// A phase's story files with their frontmatter, in file order (which is priority).
+export function storyFiles(epicDir: string) {
   const storiesDir = join(epicDir, "stories");
   const files = existsSync(storiesDir)
     ? readdirSync(storiesDir)
         .filter((file) => file.endsWith(".md"))
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
     : [];
-  const raw = files.map((file) => ({ file, meta: frontmatter(readText(join(storiesDir, file))) }));
+  return files.map((file) => ({ file: join(storiesDir, file), name: file, meta: frontmatter(readText(join(storiesDir, file))) }));
+}
+
+// A phase's stories, in priority order.
+export function readStories(epicDir: string): EpicStory[] {
+  const raw = storyFiles(epicDir).map(({ name, meta }) => ({ file: name, meta }));
   const merged = new Set(raw.filter((story) => story.meta.status === "merged").map((story) => story.meta.id));
   return raw.map(({ file, meta: story }) => {
     const dependsOn = list(story.depends_on);

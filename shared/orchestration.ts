@@ -417,8 +417,11 @@ export const epicBoardState = z.object({
   // Title of the initiative the epic (phase) belongs to.
   initiative: z.string(),
   // The phase's architecture plan, once architecture.md exists; warnings are gaps a person would notice.
-  // jira: some card names a Jira key, so a Jira refresh has something to read.
-  plan: z.object({ warnings: z.array(z.string()), jira: z.boolean() }).nullable(),
+  // jira: some card names a Jira key, so a Jira refresh has something to read. status is the
+  // plan's frontmatter status: "agreed" once the architecture session is locked.
+  plan: z.object({ warnings: z.array(z.string()), jira: z.boolean(), status: z.string() }).nullable(),
+  // The phase's story loop is on: ready stories start on their own as PRs merge.
+  loop: z.boolean(),
   tracker: harnessTracker,
   next: z.object({ story: z.string().nullable(), reason: z.string() }),
   repoUrl: z.string(),
@@ -518,6 +521,19 @@ export const refreshPhasePlanRpc = defineRpc({
     keys: z.number(),
     changed: z.number(),
     missing: z.array(z.string()),
+  }),
+});
+
+// Start runs every ready story of a phase through the Story belt (each in its own worktree) and
+// keeps starting stories as their dependencies merge; stop lets running stories finish.
+export const phaseLoopRpc = defineRpc({
+  name: "orchestration.harness-phase-loop",
+  input: z.object({ repo: z.string(), epic: z.string(), action: z.enum(["start", "stop"]) }),
+  output: z.object({
+    ok: z.boolean(),
+    error: z.string().nullable(),
+    started: z.array(z.string()),
+    errors: z.array(z.string()),
   }),
 });
 

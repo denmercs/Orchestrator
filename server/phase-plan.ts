@@ -3,7 +3,7 @@ import { join, relative, resolve, sep } from "node:path";
 import { epicDirFor, initiativeTitle, initiativesDir } from "./harness-layout";
 import { planNamesJira, refreshPlanFromJira, syncPlanFromStories } from "./plan-status";
 import { planUrl } from "./plan-server";
-import { PLAN_MD, renderPhasePlan } from "./plan-render";
+import { PLAN_MD, parseFrontmatter, renderPhasePlan } from "./plan-render";
 
 // A phase's architecture plan as files: render its HTML view, serve it, refresh it from Jira.
 
@@ -30,7 +30,8 @@ export function renderPlanFor(input: { repo: string; epic: string }) {
     syncPlanFromStories(phase.epicDir);
     const rendered = renderPhasePlan(phase.epicDir, phase);
     if (!rendered) return null;
-    return { warnings: rendered.warnings, jira: planNamesJira(readFileSync(join(phase.epicDir, PLAN_MD), "utf8")) };
+    const md = readFileSync(join(phase.epicDir, PLAN_MD), "utf8");
+    return { warnings: rendered.warnings, jira: planNamesJira(md), status: parseFrontmatter(md).meta.status || "draft" };
   } catch {
     return null;
   }
