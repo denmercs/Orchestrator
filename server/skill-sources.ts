@@ -471,6 +471,9 @@ async function listFiles(root: string): Promise<string[]> {
 export async function installSkills(cwd: string, refs: SkillRef[], sources: SkillSource[]) {
   const warnings: string[] = [];
   const excludes: string[] = [];
+  // Which skill took each copy target in this phase, so a second skill with the same folder
+  // name is skipped instead of overwriting the first. The same skill listed twice is just copied once.
+  const claimed = new Map<string, { label: string; path: string }>();
   for (const ref of refs) {
     if (ref.source === MACHINE_SOURCE) {
       continue;
@@ -495,6 +498,18 @@ export async function installSkills(cwd: string, refs: SkillRef[], sources: Skil
       entry.kind === "skill"
         ? [".claude/skills", ".cursor/skills", ".agents/skills"].map((d) => `${d}/${entry.folder}`)
         : [".claude/commands", ".cursor/commands"].map((d) => `${d}/${entry.folder}.md`);
+    const key = `${entry.kind}:${entry.folder}`;
+    const first = claimed.get(key);
+    if (first?.path === entry.path) {
+      continue;
+    }
+    if (first) {
+      warnings.push(
+        `${ref.name} (${source.label}): ${targets[0]} is already taken by ${first.label} in this phase; skipped.`,
+      );
+      continue;
+    }
+    claimed.set(key, { label: `${ref.name} (${source.label})`, path: entry.path });
     for (const target of targets) {
       if (await isTracked(cwd, target)) {
         warnings.push(`${target} is committed in this repo; left it alone.`);

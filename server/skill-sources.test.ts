@@ -176,6 +176,68 @@ test("a ref matching neither the name nor the folder warns not found", async () 
   assert.deepEqual(warnings, ["missing-skill: not found in source."]);
 });
 
+test("two sources with a `review/` skill keep the first copy and warn naming both", async () => {
+  const a = await folderSource("review-a", { "review/SKILL.md": "---\nname: review\n---\nReview A.\n" });
+  const b = await folderSource("review-b", { "review/SKILL.md": "---\nname: review\n---\nReview B.\n" });
+  const cwd = await storyWorktree();
+
+  const warnings = await installSkills(
+    cwd,
+    [
+      { name: "review", source: a.id },
+      { name: "review", source: b.id },
+    ],
+    [a, b],
+  );
+
+  assert.deepEqual(warnings, [
+    "review (review-b): .claude/skills/review is already taken by review (review-a) in this phase; skipped.",
+  ]);
+  assert.equal(await readFile(join(cwd, ".claude", "skills", "review", "SKILL.md"), "utf8"), "---\nname: review\n---\nReview A.\n");
+});
+
+test("the same skill referenced twice in a phase is copied once with no warning", async () => {
+  const cwd = await storyWorktree();
+
+  const warnings = await installSkills(
+    cwd,
+    [
+      { name: NAME, source: fixture.id },
+      { name: FOLDER, source: fixture.id },
+    ],
+    [fixture],
+  );
+
+  assert.deepEqual(warnings, []);
+  const copied = await readFile(join(cwd, ".claude", "skills", FOLDER, "SKILL.md"), "utf8").catch(() => null);
+  assert.ok(copied?.includes(BODY), `expected .claude/skills/${FOLDER}/SKILL.md in the worktree`);
+});
+
+test("two nested `review/` folders in one source keep the first copy and warn naming both", async () => {
+  const source = await folderSource("nested-reviews", {
+    "engineering/review/SKILL.md": "---\nname: eng-review\n---\nEngineering review.\n",
+    "personal/review/SKILL.md": "---\nname: personal-review\n---\nPersonal review.\n",
+  });
+  const cwd = await storyWorktree();
+
+  const warnings = await installSkills(
+    cwd,
+    [
+      { name: "eng-review", source: source.id },
+      { name: "personal-review", source: source.id },
+    ],
+    [source],
+  );
+
+  assert.deepEqual(warnings, [
+    "personal-review (nested-reviews): .claude/skills/review is already taken by eng-review (nested-reviews) in this phase; skipped.",
+  ]);
+  assert.equal(
+    await readFile(join(cwd, ".claude", "skills", "review", "SKILL.md"), "utf8"),
+    "---\nname: eng-review\n---\nEngineering review.\n",
+  );
+});
+
 test("readSkill returns the body after the frontmatter and a manifest of the other files", async () => {
   const content = await readSkill({ name: NAME, source: fixture.id }, [fixture]);
 

@@ -54,7 +54,7 @@ How a phase's skills reach a new story agent. When a phase starts, `installSkill
 - a skill folder goes to `.claude/skills/<folder>`, `.cursor/skills/<folder>` and `.agents/skills/<folder>`, named after its folder, not its frontmatter `name`;
 - a command goes to `.claude/commands/<folder>.md` and `.cursor/commands/<folder>.md`.
 
-The copied paths are added to the worktree's `info/exclude` so they never show up in git. A path the repo already commits is left alone. `installed` refs are skipped because those skills are already global. This copy is the only way skills are "installed", and it happens per worktree.
+The copied paths are added to the worktree's `info/exclude` so they never show up in git. A path the repo already commits is left alone. `installed` refs are skipped because those skills are already global. When two refs in one phase resolve to different skills with the same folder (two sources that both have `review/`, or `engineering/review` and `personal/review` in one source), the first one in ref order keeps the folder and the second is skipped with a warning naming both; the same skill listed twice is copied once, quietly. This copy is the only way skills are "installed", and it happens per worktree.
 
 _Avoid_: install (on its own, which reads as global), sync, deploy.
 
