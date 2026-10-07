@@ -6,12 +6,13 @@ import { Icon, Modal, TextInput, useToast } from "@getpaseo/plugin/client/react-
 import {
   createHarnessEpicRpc,
   deleteEpicInitiative,
-  getEpicBoard,
+  getEpicBoards,
   listHarnessInitiatives,
   phaseLabel,
   planHarnessPhaseRpc,
   openPhasePlanRpc,
   refreshPhasePlanRpc,
+  type EpicBoard,
   type EpicBoardState,
   type EpicStory,
   type HarnessRepo,
@@ -21,15 +22,20 @@ import { harnessSettings } from "../shared/settings";
 import { startInitiativeLoop, stopInitiativeLoop } from "../shared/initiative-loop";
 import { SessionLog } from "./session-log";
 
-// The active phase of an initiative (see server/harness-layout.ts) as its dependency graph: one
+// Every initiative's current phase (see server/harness-layout.ts) as its dependency graph: one
 // card per story, arrows from a dependency to the stories that need it. Initiatives are occasional
-// work; day-to-day epics come from Jira. The graph starts open and folds to one line with Hide.
+// work; day-to-day epics come from Jira. Each graph starts open and folds to one line with Hide.
 
 type Theme = PluginSurfaceProps["theme"];
 type Navigation = PluginSurfaceProps["navigation"];
 type Styles = ReturnType<typeof createStyles>;
 
+// Fast while something is moving (a loop runs or a phase is still being planned), slow otherwise:
+// every poll reads every initiative in every repo.
 const POLL_MS = 3000;
+const IDLE_POLL_MS = 10_000;
+const lively = (board: EpicBoard) =>
+  board.state !== null && (board.state.loop === "on" || board.state.plan?.status !== "agreed");
 const W = 230;
 const H = 66;
 const GX = 72;
@@ -234,7 +240,7 @@ function edgesFor(stories: EpicStory[], selected: string | null, theme: Theme) {
   return { cols, pos, segments, arrows, width, height };
 }
 
-// Returns the board's panels (for the dashboard's scroll view) and the story drawer (for the
+// Returns one panel per initiative (for the dashboard's scroll view) and the story drawer (for the
 // screen root, so it covers the whole surface like the prod pulse drawer).
 export function useEpicBoard({
   theme,
@@ -246,22 +252,185 @@ export function useEpicBoard({
   navigation: Navigation;
 }): { panels: ReactNode; drawer: ReactNode } {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
-  const loadBoard = useRpc(getEpicBoard);
+  const paseo = usePaseo();
+  const loadBoards = useRpc(getEpicBoards);
+  const settings = useSettings(harnessSettings);
+  const toast = useToast();
+  const [boards, setBoards] = useState<EpicBoard[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<{ board: string; story: string } | null>(null);
+  const [editing, setEditing] = useState(false);
+
+  // Actions refresh on their own, so a slow older read can land after a newer one; only the
+  // newest result is kept (a deleted initiative must not come back).
+  const reads = useRef({ started: 0, applied: 0 });
+  const refresh = useCallback(async () => {
+    const id = ++reads.current.started;
+    try {
+      const { projects } = await paseo.projects.list();
+      const result = await loadBoards({ repos: projects.map((project) => project.projectRootPath) });
+      if (id < reads.current.applied) return;
+      reads.current.applied = id;
+      setBoards(result.boards);
+      setError(null);
+    } catch (cause) {
+      if (id < reads.current.applied) return;
+      setError(cause instanceof Error ? cause.message : "Unable to read the initiatives");
+    }
+  }, [paseo, loadBoards]);
+
+  // The next poll waits for the last one, so a slow read (the first `gh` lookup per repo) can't
+  // stack up requests.
+  const fast = useRef(true);
+  useEffect(() => {
+    fast.current = boards?.some(lively) ?? true;
+  }, [boards]);
+  useEffect(() => {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      await refresh();
+      if (!stopped) timer = setTimeout(() => void tick(), fast.current ? POLL_MS : IDLE_POLL_MS);
+    };
+    void tick();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [refresh]);
+
+  // Picking a different phase starts with nothing selected.
+  const settingsKey = settings.status === "ready" ? `${settings.values.repo}\n${settings.values.epic}` : "";
+  useEffect(() => {
+    setSelected(null);
+    void refresh();
+  }, [settingsKey, refresh]);
+
+  // Picking or creating a phase shows it on its initiative's board.
+  async function pointAt(next: Partial<{ repo: string; epic: string }>) {
+    if (settings.status !== "ready") return;
+    const saved = await settings.save({ ...settings.values, ...next }, settings.revision);
+    if (saved) setEditing(false);
+    else toast.error(settings.saveError ?? "Could not save the initiative repo.");
+    void refresh();
+  }
+
+  if (editing) {
+    return {
+      drawer: null,
+      panels: (
+        <View style={styles.panel}>
+          <HarnessPicker
+            styles={styles}
+            theme={theme}
+            active={settings.status === "ready" ? settings.values : null}
+            onPicked={(next) => void pointAt(next)}
+            onOpenAgent={navigation ? (agentId) => navigation.openAgent({ agentId }) : null}
+            onCancel={() => {
+              setEditing(false);
+              void refresh();
+            }}
+          />
+        </View>
+      ),
+    };
+  }
+
+  if (!boards?.length) {
+    return {
+      drawer: null,
+      panels: (
+        <View style={[styles.panel, styles.folded]}>
+          <Text style={styles.foldedTitle}>Initiatives</Text>
+          <Text style={[error ? styles.danger : styles.muted, styles.flex]} numberOfLines={1}>
+            {error ?? (boards ? "not set up" : "Loading…")}
+          </Text>
+          <Button label="Initiatives" styles={styles} onPress={() => setEditing(true)} />
+        </View>
+      ),
+    };
+  }
+
+  const keyOf = (board: EpicBoard) => `${board.repo}\n${board.initiative}`;
+  const open = selected ? boards.find((board) => keyOf(board) === selected.board) : undefined;
+  const story = open?.state?.stories.find((item) => item.id === selected?.story) ?? null;
+
+  const panels = (
+    <View style={styles.screenFill}>
+      {error ? (
+        <Text style={styles.danger} numberOfLines={2}>
+          Couldn't refresh the initiatives, showing the last read: {error}
+        </Text>
+      ) : null}
+      {boards.map((board) => {
+        const key = keyOf(board);
+        return (
+          <InitiativePanel
+            key={key}
+            board={board}
+            theme={theme}
+            styles={styles}
+            compact={compact}
+            navigation={navigation}
+            selected={selected?.board === key ? selected.story : null}
+            onSelect={(id) => setSelected(id ? { board: key, story: id } : null)}
+            onPicker={() => setEditing(true)}
+            onChanged={() => void refresh()}
+          />
+        );
+      })}
+    </View>
+  );
+
+  const drawer =
+    story && open?.state ? (
+      <StoryDrawer
+        story={story}
+        state={open.state}
+        theme={theme}
+        styles={styles}
+        onClose={() => setSelected(null)}
+        onSelect={(id) => setSelected({ board: keyOf(open), story: id })}
+        navigation={navigation}
+      />
+    ) : null;
+
+  return { panels, drawer };
+}
+
+// One initiative's current phase as its dependency graph (or grouped list when compact), with its
+// loop and plan actions. Each panel folds on its own with Hide.
+function InitiativePanel({
+  board,
+  theme,
+  styles,
+  compact,
+  navigation,
+  selected,
+  onSelect,
+  onPicker,
+  onChanged,
+}: {
+  board: EpicBoard;
+  theme: Theme;
+  styles: Styles;
+  compact: boolean;
+  navigation: Navigation;
+  selected: string | null;
+  onSelect(id: string | null): void;
+  onPicker(): void;
+  onChanged(): void;
+}) {
   const removeInitiative = useRpc(deleteEpicInitiative);
   const openPlan = useRpc(openPhasePlanRpc);
   const paseo = usePaseo();
   const refreshPlan = useRpc(refreshPhasePlanRpc);
   const startLoop = useRpc(startInitiativeLoop);
   const stopLoop = useRpc(stopInitiativeLoop);
-  const settings = useSettings(harnessSettings);
   const toast = useToast();
-  const [state, setState] = useState<EpicBoardState | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [repo, setRepo] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const { repo, state, error } = board;
   const [busy, setBusy] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [editing, setEditing] = useState(false);
   const [shown, setShown] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [listView, setListView] = useState<"status" | "step">("status");
@@ -291,21 +460,19 @@ export function useEpicBoard({
   // The first time a phase's plan appears while the board is open (the architecture session just
   // wrote it), open it once.
   const planShown = useRef(new Map<string, boolean>());
-  // Keyed by the loaded state's own phase, so a stale state during a switch can't open the wrong plan.
-  const planPhase = repo && state ? state.epic.dir : "";
+  const planPhase = state ? state.epic.dir : "";
   const hasPlan = Boolean(state?.plan);
   useEffect(() => {
-    if (!repo || !planPhase) return;
-    const key = `${repo}\n${planPhase}`;
-    const before = planShown.current.get(key);
-    planShown.current.set(key, hasPlan);
+    if (!planPhase) return;
+    const before = planShown.current.get(planPhase);
+    planShown.current.set(planPhase, hasPlan);
     if (before === false && hasPlan) void showPlan({ repo, epic: planPhase });
   }, [repo, planPhase, hasPlan]);
 
   // The phase's architecture plan: open its HTML view, or pull Jira status into it (one way).
   async function planAction(kind: "open" | "jira") {
-    if (settings.status !== "ready" || busy !== null) return;
-    const ref = { repo: settings.values.repo, epic: settings.values.epic };
+    if (!planPhase || busy !== null) return;
+    const ref = { repo, epic: planPhase };
     setBusy(`plan-${kind}:`);
     try {
       if (kind === "open") {
@@ -326,7 +493,7 @@ export function useEpicBoard({
 
   // Start runs the initiative's stories phase by phase; Stop only stops new work from starting.
   async function loopAction(kind: "start" | "stop") {
-    if (!repo || !state || busy !== null) return;
+    if (!state || busy !== null) return;
     const ref = { repo, initiative: state.initiativeSlug };
     setBusy(`loop-${kind}:`);
     try {
@@ -349,139 +516,60 @@ export function useEpicBoard({
       toast.error(cause instanceof Error ? cause.message : "Could not change the loop.");
     } finally {
       setBusy(null);
-      void refresh();
+      onChanged();
     }
   }
 
-  const refresh = useCallback(async () => {
-    try {
-      const result = await loadBoard({});
-      setRepo(result.repo);
-      setError(result.error);
-      setState(result.state);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to read the initiative");
-    }
-  }, [loadBoard]);
-
-  useEffect(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), POLL_MS);
-    return () => clearInterval(timer);
-  }, [refresh]);
-
-  // A different phase starts with nothing selected.
-  const settingsKey = settings.status === "ready" ? `${settings.values.repo}\n${settings.values.epic}` : "";
-  useEffect(() => {
-    setSelected(null);
-    void refresh();
-  }, [settingsKey, refresh]);
-
-  // Deleting removes the initiative's files for good (.harness is not in git), then clears the
-  // repo so the panel folds back to "not set up".
+  // Deleting removes the initiative's files for good (.harness is not in git); its panel goes away
+  // on the next refresh.
   async function deleteInitiative() {
-    if (busy || settings.status !== "ready") return;
+    if (busy || !planPhase) return;
     setBusy("delete:");
     try {
-      const result = await removeInitiative({});
+      const result = await removeInitiative({ repo, epic: planPhase });
       if (!result.ok) {
         toast.error(result.error ?? "Could not delete the initiative.");
         return;
       }
       toast.show(`Deleted ${result.deleted}`, { variant: "success" });
-      setShown(true);
-      if (!(await settings.save({ ...settings.values, repo: "", epic: "" }, settings.revision))) {
-        toast.error(settings.saveError ?? "Deleted, but could not clear the initiative repo.");
-      }
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : "Could not delete the initiative.");
     } finally {
       setBusy(null);
-      void refresh();
+      onChanged();
     }
   }
 
-  // Picking or creating a phase points the board at it.
-  async function pointAt(next: Partial<{ repo: string; epic: string }>) {
-    if (settings.status !== "ready") return;
-    const saved = await settings.save({ ...settings.values, ...next }, settings.revision);
-    if (saved) setEditing(false);
-    else toast.error(settings.saveError ?? "Could not save the initiative repo.");
-    void refresh();
-  }
-
-  const repoForm = (
-    <HarnessPicker
-      styles={styles}
-      theme={theme}
-      active={settings.status === "ready" ? settings.values : null}
-      onPicked={(next) => void pointAt(next)}
-      onOpenAgent={navigation ? (agentId) => navigation.openAgent({ agentId }) : null}
-      onCancel={() => setEditing(false)}
-    />
-  );
-
-  if (!repo && !editing) {
-    return {
-      drawer: null,
-      panels: (
-        <View style={[styles.panel, styles.folded]}>
-          <Text style={styles.foldedTitle}>Initiative</Text>
-          <Text style={[styles.muted, styles.flex]}>not set up</Text>
-          <Button label="Initiatives" styles={styles} onPress={() => setEditing(true)} />
-        </View>
-      ),
-    };
-  }
-
-  if (!repo || editing) {
-    return {
-      drawer: null,
-      panels: <View style={styles.panel}>{repoForm}</View>,
-    };
-  }
-
   if (!state) {
-    return {
-      drawer: null,
-      panels: (
+    return (
       <View style={styles.panel}>
         <View style={styles.head}>
-          <Text style={styles.panelTitle}>Initiative</Text>
-          <Button
-            label="Initiatives"
-            styles={styles}
-            onPress={() => setEditing(true)}
-          />
+          <Text style={[styles.panelTitle, styles.flex]}>{board.initiative}</Text>
+          <Button label="Initiatives" styles={styles} onPress={onPicker} />
         </View>
         <Text style={error ? styles.danger : styles.muted}>{error ?? "Loading the initiative…"}</Text>
       </View>
-      ),
-    };
+    );
   }
 
   const stories = state.stories;
   const merged = stories.filter((story) => story.status === "merged").length;
   const left = stories.length - merged;
   const graph = edgesFor(stories, selected, theme);
-  const story = selected ? stories.find((item) => item.id === selected) ?? null : null;
   const phase = [state.epic.id ? phaseLabel(state.epic.id) : "", state.epic.title].filter(Boolean).join(": ");
   const working = stories.filter((item) => ["planning", "awaiting-approval", "implementing", "reviewing", "pr-open"].includes(item.status)).length;
   const initiative = state.initiative || "Initiative";
 
   if (!shown) {
-    return {
-      drawer: null,
-      panels: (
-        <View style={[styles.panel, styles.folded]}>
-          <Text style={styles.foldedTitle}>Initiative</Text>
-          <Text style={[styles.muted, styles.flex]} numberOfLines={1}>
-            {initiative}  ·  {phase}  ·  {merged}/{stories.length} merged{state.loop === "on" ? "  ·  ▶ running" : ""}
-          </Text>
-          <Button label="Show" styles={styles} onPress={() => setShown(true)} />
-        </View>
-      ),
-    };
+    return (
+      <View style={[styles.panel, styles.folded]}>
+        <Text style={styles.foldedTitle}>Initiative</Text>
+        <Text style={[styles.muted, styles.flex]} numberOfLines={1}>
+          {initiative}  ·  {phase}  ·  {merged}/{stories.length} merged{state.loop === "on" ? "  ·  ▶ running" : ""}
+        </Text>
+        <Button label="Show" styles={styles} onPress={() => setShown(true)} />
+      </View>
+    );
   }
 
   const card = (item: EpicStory, absolute?: { x: number; y: number }) => {
@@ -495,7 +583,7 @@ export function useEpicBoard({
         accessibilityRole="button"
         accessibilityState={{ selected: isSelected }}
         accessibilityLabel={`${item.id}, ${item.title}, ${subline(item)}${badge ? `, ${badge[0]}` : ""}`}
-        onPress={() => setSelected(isSelected ? null : item.id)}
+        onPress={() => onSelect(isSelected ? null : item.id)}
         style={[
           styles.node,
           { borderLeftColor: tone },
@@ -546,7 +634,7 @@ export function useEpicBoard({
     ...(canStart && planning ? [{ label: "Start before planning is done", icon: "Play", onPress: () => void loopAction("start") }] : []),
     ...(state.plan && !(primary && "plan" in primary) ? [{ label: "View plan", icon: "FileText", onPress: () => void planAction("open") }] : []),
     ...(state.plan?.jira ? [{ label: "Refresh from Jira", icon: "RefreshCw", onPress: () => void planAction("jira") }] : []),
-    { label: "Switch initiative", icon: "FolderOpen", onPress: () => setEditing(true) },
+    { label: "Initiatives and phases", icon: "FolderOpen", onPress: onPicker },
     { label: "Hide", icon: "EyeOff", onPress: () => setShown(false) },
     "separator",
     { label: "Delete initiative", icon: "Trash2", danger: true, onPress: () => setConfirmDelete(true) },
@@ -559,7 +647,7 @@ export function useEpicBoard({
         key={item.id}
         accessibilityRole="button"
         accessibilityLabel={`${item.id}, ${item.title}, ${contextOf(item)}`}
-        onPress={() => setSelected(item.id)}
+        onPress={() => onSelect(item.id)}
         style={[styles.listRow, index > 0 ? styles.listRowDivider : null, item.status === "todo" && !item.ready ? styles.nodeWaiting : null]}
       >
         <Icon name={iconOf(item)} size={16} color={tone} />
@@ -616,7 +704,7 @@ export function useEpicBoard({
       </View>
     );
 
-  const panels = (
+  return (
     <View style={styles.screenFill}>
       <View style={styles.panel}>
         <View style={styles.headRow}>
@@ -740,20 +828,6 @@ export function useEpicBoard({
       </Modal>
     </View>
   );
-
-  const drawer = story ? (
-        <StoryDrawer
-          story={story}
-          state={state}
-          theme={theme}
-          styles={styles}
-          onClose={() => setSelected(null)}
-          onSelect={setSelected}
-          navigation={navigation}
-        />
-  ) : null;
-
-  return { panels, drawer };
 }
 
 function StoryDrawer({

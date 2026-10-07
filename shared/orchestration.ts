@@ -437,20 +437,28 @@ export const epicBoardState = z.object({
   stories: z.array(epicStory),
 });
 
-export const getEpicBoard = defineRpc({
-  name: "orchestration.epic-board",
-  input: z.object({}),
+// One board per initiative in the given repos, each on its current phase: the one picked in the
+// harness settings when it belongs to that initiative, else its first unfinished phase.
+export const getEpicBoards = defineRpc({
+  name: "orchestration.epic-boards",
+  input: z.object({ repos: z.array(z.string()) }),
   output: z.object({
-    repo: z.string(),
-    state: epicBoardState.nullable(),
-    error: z.string().nullable(),
+    boards: z.array(
+      z.object({
+        repo: z.string(),
+        // The initiative's folder name; with repo, the board's identity even when state is null.
+        initiative: z.string(),
+        state: epicBoardState.nullable(),
+        error: z.string().nullable(),
+      }),
+    ),
   }),
 });
 
-// Removes the initiative holding the active phase.
+// Removes the initiative holding the given phase.
 export const deleteEpicInitiative = defineRpc({
   name: "orchestration.epic-delete-initiative",
-  input: z.object({}),
+  input: z.object({ repo: z.string(), epic: z.string() }),
   output: z.object({ ok: z.boolean(), error: z.string().nullable(), deleted: z.string().nullable() }),
 });
 
@@ -538,7 +546,8 @@ export type HarnessRepo = z.infer<typeof harnessRepo>;
 export type HarnessTracker = z.infer<typeof harnessTracker>;
 export type HarnessLoopState = z.infer<typeof harnessLoopState>;
 export type EpicStory = z.infer<typeof epicStory>;
-export type EpicBoardState = NonNullable<RpcOutput<typeof getEpicBoard>["state"]>;
+export type EpicBoardState = z.infer<typeof epicBoardState>;
+export type EpicBoard = RpcOutput<typeof getEpicBoards>["boards"][number];
 
 export const getDailyVerse = defineRpc({
   name: "orchestration.daily-verse",

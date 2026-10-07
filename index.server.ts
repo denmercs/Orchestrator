@@ -9,7 +9,7 @@ import {
   loadJiraPullRequests,
   moveIssueToColumn,
 } from "./server/jira";
-import { deleteInitiative, loadHarnessBoard } from "./server/harness-board";
+import { deleteInitiative, loadHarnessBoards } from "./server/harness-board";
 import { loadRunnerConfig } from "./server/agent-runner";
 import { startPhaseArchitect } from "./server/harness-architect";
 import { openPhasePlan, refreshPhasePlan } from "./server/phase-plan";
@@ -38,7 +38,7 @@ import {
   deleteEpicInitiative,
   detectOrchestrationObsidian,
   getDailyVerse,
-  getEpicBoard,
+  getEpicBoards,
   getJiraBoard,
   getProdPulse,
   getProdPulseAutomation,
@@ -86,12 +86,12 @@ export default function contribute(server: PluginServerContext) {
     const state = await harness.read();
     return state.status === "ready" ? state.values : { repo: "", epic: "" };
   };
-  server.handle(getEpicBoard, async (_input, { paseo }) => {
+  server.handle(getEpicBoards, async ({ repos }, { paseo }) => {
     // The board polls every few seconds, so this keeps the loop's Paseo handle fresh for its timer.
     initiativeLoop.rememberPaseo(paseo);
-    return loadHarnessBoard(await readHarness());
+    return loadHarnessBoards(repos, await readHarness());
   });
-  server.handle(deleteEpicInitiative, async () => deleteInitiative(await readHarness()));
+  server.handle(deleteEpicInitiative, deleteInitiative);
   server.handle(listHarnessInitiatives, ({ repos }) => listHarness(repos));
   server.handle(createHarnessEpicRpc, async (input, { paseo }) => {
     const created = await createHarnessEpic(input);
