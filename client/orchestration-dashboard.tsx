@@ -21,7 +21,6 @@ import { jiraBoardSettings } from "../shared/settings";
 import { PR_POLL_MS } from "../shared/timing";
 import {
   type BoardItem,
-  type BoardModel,
   type JiraColumnGroup,
   type ParentLink,
   createBoardModel,
@@ -291,7 +290,6 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   );
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
 
-  const trees = board.families.filter((family) => family.children.length > 0);
   function toggleExpanded(id: string) {
     setExpanded((current) => ({ ...current, [id]: !current[id] }));
   }
@@ -338,6 +336,23 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     }
   }
 
+  const boardPicker =
+    jiraBoards.length > 0 || boardFilter !== null ? (
+      <BoardPicker
+        boards={jiraBoards}
+        selectedId={selectedBoardId}
+        open={boardMenuOpen}
+        filter={boardFilter ?? ""}
+        theme={theme}
+        styles={styles}
+        onFilterChange={(next) => void saveBoardFilter(next)}
+        onOpenChange={setBoardMenuOpen}
+        onSelect={(boardId) => {
+          void chooseBoard(boardId);
+        }}
+      />
+    ) : null;
+
   return (
     <View style={styles.screen}>
       <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -352,34 +367,9 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
             {pulse?.available ? (
               <ProdPulseButton pulse={pulse} theme={theme} onPress={() => setPulseOpen(true)} />
             ) : null}
-            {jiraBoards.length > 0 || boardFilter !== null ? (
-              <BoardPicker
-                boards={jiraBoards}
-                selectedId={selectedBoardId}
-                open={boardMenuOpen}
-                filter={boardFilter ?? ""}
-                theme={theme}
-                styles={styles}
-                onFilterChange={(next) => void saveBoardFilter(next)}
-                onOpenChange={setBoardMenuOpen}
-                onSelect={(boardId) => {
-                  void chooseBoard(boardId);
-                }}
-              />
-            ) : null}
+            {/* Lives in the Jira panel once a board loads; here so a board can still be chosen before then. */}
+            {jiraColumns.length === 0 ? boardPicker : null}
           </View>
-        </View>
-        <View style={styles.metaRow}>
-          <View style={[styles.dot, { backgroundColor: loopColor(board.loopStatus, theme) }]} />
-          <Text style={styles.meta}>
-            Loop {board.loopStatus}
-            {"  ·  "}
-            Next: {board.nextLabel}
-            {"  ·  "}
-            {board.blockedSummary}
-            {"  ·  "}
-            Updated {board.updatedAt}
-          </Text>
         </View>
 
         <DailyVerseCard theme={theme} />
@@ -414,11 +404,14 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
           />
         </View>
 
+        {epic.panels}
+
         <StandupSection theme={theme} layout={layout} />
 
         {jiraColumns.length > 0 ? (
           <JiraBoard
             title={selectedJiraBoard?.name ?? "Jira board"}
+            boardPicker={boardPicker}
             sprint={jiraSprint}
             issues={jiraIssues}
             columns={jiraColumns}
@@ -442,115 +435,6 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
             onOpenJira={openInJira}
             onStart={startItem}
           />
-        ) : null}
-
-        {epic.panels}
-
-        {trees.length > 0 || board.stories.length > 0 ? (
-          <View style={styles.browse}>
-            <View style={styles.sectionHead}>
-              <Text style={styles.sectionLabel}>
-                BROWSE · {trees.length} {trees.length === 1 ? "epic with children" : "epics with children"}
-                {board.stories.length > 0 ? ` · ${board.stories.length} stories` : ""}
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ expanded: Boolean(expanded.browse) }}
-                accessibilityLabel={expanded.browse ? "Hide epic browse" : "Show epic browse"}
-                onPress={() => toggleExpanded("browse")}
-              >
-                <Text style={styles.sectionToggle}>{expanded.browse ? "Hide" : "Show"}</Text>
-              </Pressable>
-            </View>
-            {expanded.browse ? (
-              <>
-                <Text style={styles.sectionHint}>
-                  Parent/child view for spawned work. Jira epics group on the board above; the initiative panel has its own graph.
-                </Text>
-                {trees.map((family) => {
-                  const open = Boolean(expanded[family.epic.id]);
-                  const childCount = family.children.length;
-                  return (
-                    <View key={family.epic.id} style={styles.familyCard}>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityState={{ expanded: open }}
-                        accessibilityLabel={`${family.epic.key || family.epic.title}, ${childCount} children. ${open ? "Collapse" : "Expand"}`}
-                        onPress={() => toggleExpanded(family.epic.id)}
-                        style={styles.familySummary}
-                      >
-                        <Text style={styles.familyToggleText}>
-                          {open ? "▾" : "▸"} {childCount}
-                        </Text>
-                        {family.epic.key ? (
-                          <Text style={styles.waitKey}>{family.epic.key}</Text>
-                        ) : null}
-                        <Text style={styles.familySummaryTitle} numberOfLines={1}>
-                          {family.epic.title}
-                        </Text>
-                        <Text style={styles.phaseChip}>{family.epic.phaseLabel}</Text>
-                      </Pressable>
-                      {open ? (
-                        <>
-                          <SessionCard
-                            item={family.epic}
-                            styles={styles}
-                            starting={startingId === family.epic.id}
-                            onOpen={openItem}
-                            onStart={startItem}
-                          />
-                          {family.children.map((child) => (
-                            <SessionCard
-                              key={child.id}
-                              item={child}
-                              nested
-                              styles={styles}
-                              starting={startingId === child.id}
-                              onOpen={openItem}
-                              onStart={startItem}
-                            />
-                          ))}
-                        </>
-                      ) : null}
-                    </View>
-                  );
-                })}
-                {board.stories.length > 0 ? (
-                  <>
-                    <View style={styles.sectionHead}>
-                      <Text style={styles.sectionLabel}>STORIES · {board.stories.length}</Text>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityState={{ expanded: Boolean(expanded.stories) }}
-                        accessibilityLabel={expanded.stories ? "Hide stories" : "Show stories"}
-                        onPress={() => toggleExpanded("stories")}
-                      >
-                        <Text style={styles.sectionToggle}>
-                          {expanded.stories ? "Hide" : "Show"}
-                        </Text>
-                      </Pressable>
-                    </View>
-                    {expanded.stories
-                      ? board.stories.map((item) => (
-                          <SessionCard
-                            key={item.id}
-                            item={item}
-                            styles={styles}
-                            starting={startingId === item.id}
-                            onOpen={openItem}
-                            onStart={startItem}
-                          />
-                        ))
-                      : null}
-                  </>
-                ) : null}
-              </>
-            ) : (
-              <Text style={styles.sectionHint}>
-                Optional parent/child list. Open it only when you need the tree.
-              </Text>
-            )}
-          </View>
         ) : null}
       </ScrollView>
       {pulse?.available ? (
@@ -578,6 +462,7 @@ const ALL_DEVELOPERS = "__all__";
 
 function JiraBoard({
   title,
+  boardPicker,
   sprint,
   issues,
   columns,
@@ -602,6 +487,7 @@ function JiraBoard({
   onStart,
 }: {
   title: string;
+  boardPicker: ReactNode;
   sprint: JiraSprint | null;
   issues: JiraIssue[];
   columns: JiraBoardColumn[];
@@ -822,6 +708,7 @@ function JiraBoard({
               By epic
             </Text>
           </Pressable>
+          {boardPicker}
           {developers.length > 1 ? (
             <DeveloperPicker
               options={[[ALL_DEVELOPERS, issues.length] as const, ...developers]}
@@ -1258,94 +1145,6 @@ function PreviewList<T>({
   );
 }
 
-function SessionCard({
-  item,
-  nested,
-  styles,
-  starting,
-  onOpen,
-  onStart,
-}: {
-  item: BoardItem;
-  nested?: boolean;
-  styles: ReturnType<typeof createStyles>;
-  starting?: boolean;
-  onOpen: (item: BoardItem) => void;
-  onStart: (item: BoardItem) => void;
-}) {
-  return (
-    <View style={[styles.phaseItem, nested ? styles.childItem : null]}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${item.role} ${item.title}`}
-        onPress={() => onOpen(item)}
-        style={styles.cardBody}
-      >
-        <View style={styles.cardChips}>
-          <RoleTag role={item.role} styles={styles} />
-          {item.source !== "session" ? <Text style={styles.phaseChip}>Jira</Text> : null}
-          <Text style={styles.phaseChip}>{item.phaseLabel}</Text>
-        </View>
-        {item.key ? <Text style={styles.cardKey}>{item.key}</Text> : null}
-        <Text style={styles.cardTitle} numberOfLines={2}>
-          {item.title}
-        </Text>
-        {item.underTitle ? <Text style={styles.cardMeta}>Under {item.underTitle}</Text> : null}
-        {item.detail ? (
-          <Text style={styles.cardMeta} numberOfLines={2}>
-            {item.detail}
-          </Text>
-        ) : null}
-      </Pressable>
-      {item.retryLabel || item.startLabel ? (
-        <View style={styles.blockedActions}>
-          {item.retryLabel ? (
-            <Pill label={item.retryLabel} styles={styles} onPress={() => onOpen(item)} />
-          ) : null}
-          {item.startLabel ? (
-            <Pill
-              label={starting ? "Starting…" : item.startLabel}
-              styles={styles}
-              onPress={() => onStart(item)}
-            />
-          ) : null}
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-function RoleTag({
-  role,
-  styles,
-}: {
-  role: BoardItem["role"];
-  styles: ReturnType<typeof createStyles>;
-}) {
-  const look =
-    role === "epic" ? "epic" : role === "story" ? "story" : "child";
-  const label = role === "epic" ? "Epic" : role === "story" ? "Story" : "Child";
-  return (
-    <View
-      style={
-        look === "epic" ? styles.tagEpic : look === "story" ? styles.tagStory : styles.tagChild
-      }
-    >
-      <Text
-        style={
-          look === "epic"
-            ? styles.tagEpicText
-            : look === "story"
-              ? styles.tagStoryText
-              : styles.tagChildText
-        }
-      >
-        {label}
-      </Text>
-    </View>
-  );
-}
-
 function BoardPicker({
   boards,
   selectedId,
@@ -1480,10 +1279,6 @@ function Pill({
   );
 }
 
-function loopColor(status: BoardModel["loopStatus"], theme: PluginSurfaceProps["theme"]) {
-  return status === "running" ? theme.colors.statusSuccess : theme.colors.foregroundMuted;
-}
-
 function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
   const pad = compact ? 16 : 28;
   return {
@@ -1579,20 +1374,6 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
     pickerOptionMeta: {
       color: theme.colors.foregroundMuted,
       fontSize: 12,
-    },
-    metaRow: {
-      flexDirection: "row" as const,
-      alignItems: "center" as const,
-      gap: 8,
-    },
-    meta: {
-      color: theme.colors.foregroundMuted,
-      flex: 1,
-    },
-    dot: {
-      width: 8,
-      height: 8,
-      borderRadius: 4,
     },
     stats: {
       flexDirection: "row" as const,
@@ -1843,10 +1624,6 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       fontSize: 12,
       paddingVertical: 4,
     },
-    browse: {
-      gap: 10,
-      paddingTop: 4,
-    },
     familySummary: {
       flexDirection: "row" as const,
       alignItems: "center" as const,
@@ -1862,16 +1639,6 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       alignItems: "center" as const,
       justifyContent: "space-between" as const,
     },
-    sectionLabel: {
-      color: theme.colors.foregroundMuted,
-      fontSize: 11,
-      letterSpacing: 0.8,
-      marginTop: 8,
-    },
-    sectionToggle: {
-      color: theme.colors.accent,
-      fontSize: 12,
-    },
     familyHead: {
       flexDirection: "row" as const,
       alignItems: "center" as const,
@@ -1879,10 +1646,6 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
     familyToggle: {
       alignSelf: "flex-start" as const,
       paddingVertical: 2,
-    },
-    familyToggleText: {
-      color: theme.colors.foregroundMuted,
-      fontSize: 12,
     },
     sectionHint: {
       color: theme.colors.foregroundMuted,
@@ -2023,12 +1786,6 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       alignSelf: "stretch" as const,
       gap: 6,
     },
-    cardChips: {
-      flexDirection: "row" as const,
-      flexWrap: "wrap" as const,
-      alignItems: "center" as const,
-      gap: 6,
-    },
     cardKey: {
       color: theme.colors.foregroundMuted,
       fontSize: 12,
@@ -2084,18 +1841,6 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       color: theme.colors.foregroundMuted,
       fontSize: 12,
     },
-    phaseItem: {
-      flexDirection: "column" as const,
-      alignItems: "flex-start" as const,
-      alignSelf: "stretch" as const,
-      gap: 6,
-      paddingVertical: 10,
-      paddingHorizontal: 10,
-      borderRadius: 12,
-      backgroundColor: theme.colors.surface1,
-      borderColor: theme.colors.border,
-      borderWidth: 1,
-    },
     epicGroups: { gap: 10 },
     epicTrack: {
       flexDirection: "row" as const,
@@ -2113,10 +1858,6 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       borderWidth: 1,
       borderColor: theme.colors.border,
       backgroundColor: theme.colors.surface0,
-    },
-    childItem: {
-      marginLeft: compact ? 12 : 20,
-      borderStyle: "dashed" as const,
     },
     phaseChip: {
       color: theme.colors.foregroundMuted,
@@ -2219,44 +1960,6 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       flexWrap: "wrap" as const,
       gap: 8,
       flexShrink: 1,
-    },
-    tagStory: {
-      paddingHorizontal: 7,
-      paddingVertical: 2,
-      borderRadius: 999,
-      backgroundColor: theme.colors.surface2,
-    },
-    tagStoryText: {
-      color: theme.colors.foreground,
-      fontSize: 10,
-      fontWeight: "600" as const,
-      letterSpacing: 0.3,
-    },
-    tagEpic: {
-      paddingHorizontal: 7,
-      paddingVertical: 2,
-      borderRadius: 999,
-      backgroundColor: theme.colors.accent,
-    },
-    tagEpicText: {
-      color: theme.colors.accentForeground,
-      fontSize: 10,
-      fontWeight: "600" as const,
-      letterSpacing: 0.3,
-    },
-    tagChild: {
-      paddingHorizontal: 7,
-      paddingVertical: 2,
-      borderRadius: 999,
-      borderWidth: 1,
-      borderColor: theme.colors.border,
-      backgroundColor: theme.colors.surface0,
-    },
-    tagChildText: {
-      color: theme.colors.foregroundMuted,
-      fontSize: 10,
-      fontWeight: "600" as const,
-      letterSpacing: 0.3,
     },
     blockedKey: {
       color: theme.colors.foregroundMuted,
