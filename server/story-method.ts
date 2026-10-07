@@ -3,16 +3,9 @@
 // from the marker the step writes. The prompts name no skills or slash commands, so they work the
 // same for every provider (Claude, Cursor, Kiro). Edit here to change how every story is delivered.
 
-export const LOOP_STEPS = ["plan", "implement", "review", "pr", "fix"] as const;
-export type LoopStep = (typeof LOOP_STEPS)[number];
+import { LOOP_STEPS, STEP_LABELS, type LoopStep } from "../shared/initiative-loop";
 
-export const STEP_LABELS: Record<LoopStep, string> = {
-  plan: "Plan",
-  implement: "Implement",
-  review: "Review",
-  pr: "Open PR",
-  fix: "Fix CI",
-};
+export { LOOP_STEPS, STEP_LABELS, type LoopStep };
 
 // The marker each step writes as the first line under `## Status` in .harness/state.md.
 export const MARKERS = {
