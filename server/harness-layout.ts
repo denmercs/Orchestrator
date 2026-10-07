@@ -1,7 +1,13 @@
 import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { phaseLabel, type EpicStory, type HarnessRepo, type HarnessTracker } from "../shared/orchestration";
+import {
+  phaseLabel,
+  type EpicStory,
+  type HarnessLoopState,
+  type HarnessRepo,
+  type HarnessTracker,
+} from "../shared/orchestration";
 
 // The plugin owns the initiative layout; every repo stores it in its own .harness:
 //
@@ -11,7 +17,8 @@ import { phaseLabel, type EpicStory, type HarnessRepo, type HarnessTracker } fro
 //     phases/<n>-<phase-slug>/
 //       phase.md                    frontmatter phase (its number) + title
 //       architecture.md             written by the architecture session (server/harness-architect.ts)
-//       stories/                    one .md per story; frontmatter id, title, status, depends_on
+//       stories/                    one .md per story; frontmatter id, title, status, depends_on;
+//                                   the initiative loop adds branch, workspace, agent, pr, ci, …
 //
 // The architecture session (server/harness-architect.ts) adds the plan and stories to it.
 
@@ -40,7 +47,7 @@ export const frontmatter = (text: string) => {
 };
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
-const dirsIn = (dir: string) =>
+export const dirsIn = (dir: string) =>
   existsSync(dir)
     ? readdirSync(dir, { withFileTypes: true })
         .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
@@ -55,6 +62,32 @@ export const initiativeTitle = (dir: string) =>
 
 export const initiativeTracker = (dir: string): HarnessTracker =>
   frontmatter(readText(join(dir, "initiative.md"))).tracker === "jira" ? "jira" : "local";
+
+// The initiative loop (server/initiative-loop.ts) runs while this is "on"; "done" once every phase merged.
+export const initiativeLoopState = (dir: string): HarnessLoopState => {
+  const value = frontmatter(readText(join(dir, "initiative.md"))).loop;
+  return value === "on" || value === "done" ? value : "off";
+};
+
+// Sets (or, with null, removes) a file's frontmatter keys in place, keeping every other line as it was.
+export function writeFrontmatter(file: string, patch: Record<string, string | number | null>) {
+  const text = readText(file);
+  const match = /^---\n([\s\S]*?)\n---/.exec(text);
+  const lines = match ? match[1].split("\n") : [];
+  for (const [key, raw] of Object.entries(patch)) {
+    const at = lines.findIndex((line) => line.slice(0, line.indexOf(":")).trim() === key);
+    if (raw === null) {
+      if (at >= 0) lines.splice(at, 1);
+      continue;
+    }
+    const line = `${key}: ${String(raw).replace(/\n/g, " ")}`;
+    if (at >= 0) lines[at] = line;
+    else lines.push(line);
+  }
+  const block = `---\n${lines.join("\n")}\n---`;
+  const next = match ? text.replace(match[0], block) : `${block}\n\n${text}`;
+  if (next !== text) writeFileSync(file, next, "utf8");
+}
 
 const list = (value: string | undefined) => (value ? value.split(",").map((part) => part.trim()).filter(Boolean) : []);
 
@@ -72,26 +105,25 @@ export function setFrontmatter(md: string, values: Record<string, string>) {
   return head + md.slice(end);
 }
 
-export function writeFrontmatter(file: string, values: Record<string, string>) {
-  const text = readText(file);
-  const next = setFrontmatter(text, values);
-  if (next !== text) writeFileSync(file, next, "utf8");
-}
-
-// A phase's story files with their frontmatter, in file order (which is priority).
-export function storyFiles(epicDir: string) {
+// A phase's story files in file order (which is priority), with their raw frontmatter.
+export function readStoryFiles(epicDir: string) {
   const storiesDir = join(epicDir, "stories");
   const files = existsSync(storiesDir)
     ? readdirSync(storiesDir)
         .filter((file) => file.endsWith(".md"))
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
     : [];
-  return files.map((file) => ({ file: join(storiesDir, file), name: file, meta: frontmatter(readText(join(storiesDir, file))) }));
+  return files.map((file) => {
+    const path = join(storiesDir, file);
+    const text = readText(path);
+    const meta = frontmatter(text);
+    return { path, id: meta.id || file.replace(/\.md$/, ""), meta, body: text.replace(/^---\n[\s\S]*?\n---\n?/, "") };
+  });
 }
 
-// A phase's stories, in priority order.
+// A phase's stories from stories/*.md, in file order (which is priority).
 export function readStories(epicDir: string): EpicStory[] {
-  const raw = storyFiles(epicDir).map(({ name, meta }) => ({ file: name, meta }));
+  const raw = readStoryFiles(epicDir).map(({ path, meta }) => ({ file: path.split(sep).pop() ?? path, meta }));
   const merged = new Set(raw.filter((story) => story.meta.status === "merged").map((story) => story.meta.id));
   return raw.map(({ file, meta: story }) => {
     const dependsOn = list(story.depends_on);
@@ -106,6 +138,9 @@ export function readStories(epicDir: string): EpicStory[] {
       blockedReason: story.blocked_reason ?? "",
       discoveredFrom: story.discovered_from ?? "",
       pr: Number(story.pr) || null,
+      ci: story.ci ?? "",
+      workspace: story.workspace ?? "",
+      agent: story.agent ?? "",
       ready: status === "todo" && !blockedBy && dependsOn.every((id) => merged.has(id)),
     };
   });
@@ -136,6 +171,7 @@ export function listHarness(repos: string[]): { repos: HarnessRepo[] } {
               slug,
               title: initiativeTitle(dir),
               tracker: initiativeTracker(dir),
+              loop: initiativeLoopState(dir),
               epics: dirsIn(join(dir, PHASES_DIR)).map((name) => {
                 const epicDir = join(dir, PHASES_DIR, name);
                 const meta = frontmatter(readText(join(epicDir, PHASE_FILE)));
@@ -204,8 +240,9 @@ export function refreshInitiativeIndex(dir: string) {
   if (next !== text) writeFileSync(file, next, "utf8");
 }
 
-// .harness is local planning; keep it out of every commit.
-function excludeHarness(root: string) {
+// .harness is local planning; keep it out of every commit. info/exclude lives in the common git
+// dir, so this covers every worktree of the repo too.
+export function excludeHarness(root: string) {
   return new Promise<void>((done) => {
     execFile("git", ["rev-parse", "--git-common-dir"], { cwd: root, timeout: 10_000 }, (error, stdout) => {
       if (!error) {

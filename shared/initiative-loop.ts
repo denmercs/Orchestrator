@@ -1,0 +1,59 @@
+import { defineRpc, defineSettings } from "@getpaseo/plugin";
+import { z } from "zod";
+
+// The initiative loop: Start on an initiative runs its stories phase by phase, each in its own
+// Paseo worktree workspace, through Plan → Implement → Review → Open PR, and watches CI until you
+// merge. The engine is server/initiative-loop.ts; the step prompts are server/story-method.ts.
+
+export const LOOP_RUNNERS = ["claude", "cursor", "kiro"] as const;
+export type LoopRunner = (typeof LOOP_RUNNERS)[number];
+export const RUNNER_LABELS: Record<LoopRunner, string> = { claude: "Claude", cursor: "Cursor", kiro: "Kiro" };
+
+const model = z.string().default("");
+
+const loopValues = z.object({
+  // Which agent CLI runs every step.
+  runner: z.enum(LOOP_RUNNERS).default("claude"),
+  // Per-step model ids for that runner; empty uses the runner's default for the step.
+  models: z
+    .object({ plan: model, implement: model, review: model, pr: model, fix: model })
+    .default({ plan: "", implement: "", review: "", pr: "", fix: "" }),
+  // Stories in flight at once (each in its own worktree).
+  parallel: z.number().int().min(1).max(4).default(1),
+  // Review → Implement rounds before the story blocks for you.
+  reviewRounds: z.number().int().min(1).max(10).default(3),
+  // Fix CI attempts per story before it blocks for you.
+  maxFixes: z.number().int().min(0).max(10).default(3),
+});
+
+export type LoopConfig = z.infer<typeof loopValues>;
+
+export const initiativeLoopSettings = defineSettings({
+  id: "initiative-loop",
+  scope: "host",
+  version: 1,
+  schema: loopValues,
+});
+
+export const DEFAULT_LOOP_CONFIG: LoopConfig = loopValues.parse({});
+
+const loopRef = z.object({ repo: z.string(), initiative: z.string() });
+
+export const startInitiativeLoop = defineRpc({
+  name: "orchestration.initiative-loop.start",
+  input: loopRef,
+  output: z.object({
+    ok: z.boolean(),
+    error: z.string().nullable(),
+    // Stories that started a Plan agent just now, and what the loop is waiting on otherwise.
+    started: z.array(z.object({ story: z.string(), agentId: z.string() })),
+    reason: z.string(),
+  }),
+});
+
+// Stops starting new work. Agents already running keep going; Start again picks up where it left off.
+export const stopInitiativeLoop = defineRpc({
+  name: "orchestration.initiative-loop.stop",
+  input: loopRef,
+  output: z.object({ ok: z.boolean(), error: z.string().nullable() }),
+});

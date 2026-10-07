@@ -401,6 +401,11 @@ export const epicStory = z.object({
   // Set when an agent filed this story while working on another.
   discoveredFrom: z.string(),
   pr: z.number().nullable(),
+  // Written by the initiative loop: the PR's CI (pending | green | failing), the story's Paseo
+  // workspace, and the agent running its current step. Empty when unset.
+  ci: z.string(),
+  workspace: z.string(),
+  agent: z.string(),
   // todo, every dependency merged, and not blocked.
   ready: z.boolean(),
 });
@@ -412,16 +417,20 @@ export const phaseLabel = (id: string) => (/^\d+$/.test(id) ? `Phase ${id}` : id
 // the tracker and no Jira issues are created. "jira": publishing creates the epic and stories.
 export const harnessTracker = z.enum(["local", "jira"]);
 
+// Whether the initiative loop (server/initiative-loop.ts) is running the initiative's stories.
+export const harnessLoopState = z.enum(["off", "on", "done"]);
+
 export const epicBoardState = z.object({
   epic: z.object({ id: z.string(), title: z.string(), dir: z.string() }),
   // Title of the initiative the epic (phase) belongs to.
   initiative: z.string(),
+  // The initiative's folder name, and whether its loop is running.
+  initiativeSlug: z.string(),
+  loop: harnessLoopState,
   // The phase's architecture plan, once architecture.md exists; warnings are gaps a person would notice.
   // jira: some card names a Jira key, so a Jira refresh has something to read. status is the
   // plan's frontmatter status: "agreed" once the architecture session is locked.
   plan: z.object({ warnings: z.array(z.string()), jira: z.boolean(), status: z.string() }).nullable(),
-  // The phase's story loop is on: ready stories start on their own as PRs merge.
-  loop: z.boolean(),
   tracker: harnessTracker,
   next: z.object({ story: z.string().nullable(), reason: z.string() }),
   repoUrl: z.string(),
@@ -455,6 +464,7 @@ const harnessRepo = z.object({
       slug: z.string(),
       title: z.string(),
       tracker: harnessTracker,
+      loop: harnessLoopState,
       epics: z.array(
         z.object({ id: z.string(), title: z.string(), path: z.string(), stories: z.number(), merged: z.number() }),
       ),
@@ -524,21 +534,9 @@ export const refreshPhasePlanRpc = defineRpc({
   }),
 });
 
-// Start runs every ready story of a phase through the Story belt (each in its own worktree) and
-// keeps starting stories as their dependencies merge; stop lets running stories finish.
-export const phaseLoopRpc = defineRpc({
-  name: "orchestration.harness-phase-loop",
-  input: z.object({ repo: z.string(), epic: z.string(), action: z.enum(["start", "stop"]) }),
-  output: z.object({
-    ok: z.boolean(),
-    error: z.string().nullable(),
-    started: z.array(z.string()),
-    errors: z.array(z.string()),
-  }),
-});
-
 export type HarnessRepo = z.infer<typeof harnessRepo>;
 export type HarnessTracker = z.infer<typeof harnessTracker>;
+export type HarnessLoopState = z.infer<typeof harnessLoopState>;
 export type EpicStory = z.infer<typeof epicStory>;
 export type EpicBoardState = NonNullable<RpcOutput<typeof getEpicBoard>["state"]>;
 

@@ -3,11 +3,11 @@ import { readFileSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { EpicBoardState } from "../shared/orchestration";
 import { renderPlanFor } from "./phase-plan";
-import { loopOn } from "./phase-loop";
 import {
   PHASE_FILE,
   epicDirFor,
   frontmatter,
+  initiativeLoopState,
   initiativeTitle,
   initiativeTracker,
   initiativesDir,
@@ -60,8 +60,9 @@ export async function loadHarnessBoard(settings: HarnessSettings) {
     const state: EpicBoardState = {
       epic: { id: meta.phase ?? "", title: meta.title ?? "", dir: relative(root, epicDir).split(sep).join("/") },
       initiative: initiativeTitle(initiativeDir),
+      initiativeSlug: slug,
+      loop: initiativeLoopState(initiativeDir),
       tracker: initiativeTracker(initiativeDir),
-      loop: loopOn(epicDir),
       plan: renderPlanFor(settings),
       next: ready
         ? { story: ready.id, reason: `${ready.id} is ready` }

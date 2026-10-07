@@ -13,10 +13,16 @@ import { deleteInitiative, loadHarnessBoard } from "./server/harness-board";
 import { startPhaseArchitect } from "./server/harness-architect";
 import { openPhasePlan, refreshPhasePlan } from "./server/phase-plan";
 import { stopPlanServer } from "./server/plan-server";
-import { advancePhaseLoops, runPhaseLoop } from "./server/phase-loop";
 import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { advanceBelt, closeMergedStories, startStory } from "./server/belt-advance";
 import { createLoopAdvance } from "./server/loop-advance";
+import { createInitiativeLoop } from "./server/initiative-loop";
+import {
+  DEFAULT_LOOP_CONFIG,
+  initiativeLoopSettings,
+  startInitiativeLoop,
+  stopInitiativeLoop,
+} from "./shared/initiative-loop";
 import { addSource, checkSource, loadCatalog, removeSourceCheckout } from "./server/skill-sources";
 import { loadProdPulse } from "./server/prod-pulse";
 import { applyProdPulseAutomation, loadProdPulseAutomation } from "./server/prod-pulse-schedule";
@@ -38,7 +44,6 @@ import {
   planHarnessPhaseRpc,
   openPhasePlanRpc,
   refreshPhasePlanRpc,
-  phaseLoopRpc,
   listJiraPullRequests,
   listOrchestrationFolders,
   moveJiraIssue,
@@ -70,7 +75,11 @@ export default function contribute(server: PluginServerContext) {
     const state = await harness.read();
     return state.status === "ready" ? state.values : { repo: "", epic: "" };
   };
-  server.handle(getEpicBoard, async () => loadHarnessBoard(await readHarness()));
+  server.handle(getEpicBoard, async (_input, { paseo }) => {
+    // The board polls every few seconds, so this keeps the loop's Paseo handle fresh for its timer.
+    initiativeLoop.rememberPaseo(paseo);
+    return loadHarnessBoard(await readHarness());
+  });
   server.handle(deleteEpicInitiative, async () => deleteInitiative(await readHarness()));
   server.handle(listHarnessInitiatives, ({ repos }) => listHarness(repos));
   server.handle(createHarnessEpicRpc, async (input, { paseo }) => {
@@ -80,6 +89,13 @@ export default function contribute(server: PluginServerContext) {
     return { ...created, agentId: started.agentId, warning: started.error };
   });
   server.handle(planHarnessPhaseRpc, (input, { paseo }) => startPhaseArchitect(paseo, input));
+  const loopSettings = server.registerSettings(initiativeLoopSettings);
+  const initiativeLoop = createInitiativeLoop(async () => {
+    const state = await loopSettings.read();
+    return state.status === "ready" ? state.values : DEFAULT_LOOP_CONFIG;
+  });
+  server.handle(startInitiativeLoop, (input, { paseo }) => initiativeLoop.start(paseo, input));
+  server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
   server.handle(openPhasePlanRpc, openPhasePlan);
   server.handle(refreshPhasePlanRpc, refreshPhasePlan);
   const belt = server.registerSettings(beltSettings);
@@ -91,15 +107,7 @@ export default function contribute(server: PluginServerContext) {
     const values = await readBeltValues();
     return values?.enabled ? values : null;
   };
-  const loop = createLoopAdvance(async (paseo, fresh) => {
-    await closeMergedStories(paseo, fresh, readBelt);
-    // Initiative loops run on the belt's phases even while the belt is off for Jira stories.
-    await advancePhaseLoops(paseo, fresh, readBeltValues);
-  });
-  server.handle(phaseLoopRpc, (input, { paseo }) => {
-    loop.rememberPaseo(paseo);
-    return runPhaseLoop(paseo, readBeltValues, input);
-  });
+  const loop = createLoopAdvance((paseo, fresh) => closeMergedStories(paseo, fresh, readBelt));
   server.handle(getSkillCatalog, async () => loadCatalog((await readBeltValues())?.sources ?? []));
   server.handle(addSkillSource, ({ location }) => addSource(location));
   server.handle(checkSkillSource, async ({ id }) => {
@@ -179,10 +187,14 @@ export default function contribute(server: PluginServerContext) {
     void advanceBelt(paseo, event, readBelt).catch((error) => {
       console.warn("orchestrator: belt advance failed", error);
     });
+    void initiativeLoop.onTurnEnded(paseo, event).catch((error) => {
+      console.warn("orchestrator: initiative loop failed", error);
+    });
   });
   void loop.seedMergedPrs();
   const timer = setInterval(() => {
     void loop.pollMergedPrs();
+    void initiativeLoop.tick();
   }, PR_POLL_MS);
   timer.unref?.();
   return () => {

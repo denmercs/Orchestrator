@@ -12,13 +12,19 @@ import {
   planHarnessPhaseRpc,
   openPhasePlanRpc,
   refreshPhasePlanRpc,
-  phaseLoopRpc,
   type EpicBoardState,
   type EpicStory,
   type HarnessRepo,
   type HarnessTracker,
 } from "../shared/orchestration";
 import { harnessSettings } from "../shared/settings";
+import {
+  LOOP_RUNNERS,
+  RUNNER_LABELS,
+  initiativeLoopSettings,
+  startInitiativeLoop,
+  stopInitiativeLoop,
+} from "../shared/initiative-loop";
 
 // The active phase of an initiative (see server/harness-layout.ts) as its dependency graph: one
 // card per story, arrows from a dependency to the stories that need it. Initiatives are occasional
@@ -58,6 +64,8 @@ function toneOf(status: string, theme: Theme) {
 
 // What a story needs from you, as a short badge on its card.
 function badgeOf(story: EpicStory, theme: Theme): [string, string] | null {
+  if (story.status === "awaiting-approval") return ["Your turn", theme.colors.statusWarning];
+  if (story.status === "pr-open" && story.ci === "failing") return ["CI failing", theme.colors.statusDanger];
   if (story.status === "pr-open") return ["Merge", theme.colors.statusSuccess];
   if (story.status === "blocked") return ["Blocked", theme.colors.statusDanger];
   if (story.ready) return ["Ready", theme.colors.accent];
@@ -72,6 +80,7 @@ function subline(story: EpicStory) {
   return [
     labelOf(story.status),
     story.pr ? `#${story.pr}` : "",
+    story.status === "pr-open" && story.ci ? `CI ${story.ci}` : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -206,7 +215,8 @@ export function useEpicBoard({
   const openPlan = useRpc(openPhasePlanRpc);
   const paseo = usePaseo();
   const refreshPlan = useRpc(refreshPhasePlanRpc);
-  const phaseLoop = useRpc(phaseLoopRpc);
+  const startLoop = useRpc(startInitiativeLoop);
+  const stopLoop = useRpc(stopInitiativeLoop);
   const settings = useSettings(harnessSettings);
   const toast = useToast();
   const [state, setState] = useState<EpicBoardState | null>(null);
@@ -253,25 +263,6 @@ export function useEpicBoard({
     if (before === false && hasPlan) void showPlan({ repo, epic: planPhase });
   }, [repo, planPhase, hasPlan]);
 
-  // Start runs the phase's ready stories through the Story belt (in parallel, one worktree each)
-  // and keeps starting stories as their dependencies merge; Stop lets running stories finish.
-  async function loopAction(action: "start" | "stop") {
-    if (settings.status !== "ready" || busy !== null) return;
-    setBusy(`loop-${action}:`);
-    try {
-      const result = await phaseLoop({ repo: settings.values.repo, epic: settings.values.epic, action });
-      if (!result.ok) toast.error(result.error ?? "Could not change the loop.");
-      else if (action === "stop") toast.show("Loop stopped. Stories already running will finish.");
-      else if (result.started.length) {
-        toast.show(`Started ${result.started.join(", ")}.`, { variant: "success" });
-      } else if (!result.errors.length) toast.show("Loop on. Nothing is ready yet; stories start as their dependencies merge.");
-      for (const error of result.errors) toast.error(error);
-    } finally {
-      setBusy(null);
-      void refresh();
-    }
-  }
-
   // The phase's architecture plan: open its HTML view, or pull Jira status into it (one way).
   async function planAction(kind: "open" | "jira") {
     if (settings.status !== "ready" || busy !== null) return;
@@ -291,6 +282,35 @@ export function useEpicBoard({
       }
     } finally {
       setBusy(null);
+    }
+  }
+
+  // Start runs the initiative's stories phase by phase; Stop only stops new work from starting.
+  async function loopAction(kind: "start" | "stop") {
+    if (!repo || !state || busy !== null) return;
+    const ref = { repo, initiative: state.initiativeSlug };
+    setBusy(`loop-${kind}:`);
+    try {
+      if (kind === "stop") {
+        const result = await stopLoop(ref);
+        if (!result.ok) toast.error(result.error ?? "Could not stop the loop.");
+        else toast.show("Loop stopped. Running agents keep going; nothing new starts.");
+        return;
+      }
+      const result = await startLoop(ref);
+      if (!result.ok) {
+        toast.error(result.error ?? "Could not start the loop.");
+        return;
+      }
+      const ids = result.started.map((item) => item.story).join(", ");
+      toast.show(ids ? `Loop started: planning ${ids}.` : `Loop on. ${result.reason}.`, { variant: "success" });
+      const first = result.started[0];
+      if (first && navigation) navigation.openAgent({ agentId: first.agentId });
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : "Could not change the loop.");
+    } finally {
+      setBusy(null);
+      void refresh();
     }
   }
 
@@ -418,7 +438,7 @@ export function useEpicBoard({
   const graph = edgesFor(stories, selected, theme);
   const story = selected ? stories.find((item) => item.id === selected) ?? null : null;
   const phase = [state.epic.id ? phaseLabel(state.epic.id) : "", state.epic.title].filter(Boolean).join(": ");
-  const working = stories.filter((item) => ["planning", "implementing", "reviewing", "pr-open"].includes(item.status)).length;
+  const working = stories.filter((item) => ["planning", "awaiting-approval", "implementing", "reviewing", "pr-open"].includes(item.status)).length;
   const initiative = state.initiative || "Initiative";
 
   if (!shown) {
@@ -428,7 +448,7 @@ export function useEpicBoard({
         <View style={[styles.panel, styles.folded]}>
           <Text style={styles.foldedTitle}>Initiative</Text>
           <Text style={[styles.muted, styles.flex]} numberOfLines={1}>
-            {initiative}  ·  {phase}  ·  {merged}/{stories.length} merged{state.loop ? "  ·  ▶ running" : ""}
+            {initiative}  ·  {phase}  ·  {merged}/{stories.length} merged{state.loop === "on" ? "  ·  ▶ running" : ""}
           </Text>
           <Button label="Show" styles={styles} onPress={() => setShown(true)} />
         </View>
@@ -483,10 +503,20 @@ export function useEpicBoard({
             </Text>
             <Text style={styles.muted} numberOfLines={2}>
               {phase ? `${phase}  ·  ` : ""}
-              {state.tracker === "jira" ? "Jira" : "local"}  ·  {merged}/{stories.length} merged{"  ·  "}Next: {state.next.reason}
+              {state.tracker === "jira" ? "Jira" : "local"}  ·  {merged}/{stories.length} merged{"  ·  "}
+              {state.loop === "on" ? "Loop running" : state.loop === "done" ? "Loop done" : `Next: ${state.next.reason}`}
             </Text>
           </View>
           <View style={styles.headActions}>
+            {state.loop === "off" && !(state.plan?.status === "agreed" && left > 0) ? (
+              <Button
+                label={busy === "loop-start:" ? "Starting…" : "Start"}
+                primary
+                disabled={busy !== null}
+                styles={styles}
+                onPress={() => void loopAction("start")}
+              />
+            ) : null}
             {state.plan ? (
               <Button label={busy === "plan-open:" ? "Opening…" : "View plan"} disabled={busy !== null} styles={styles} onPress={() => void planAction("open")} />
             ) : null}
@@ -525,10 +555,10 @@ export function useEpicBoard({
           <View style={{ flex: Math.max(0, left) }} />
         </View>
         {error ? <Text style={styles.danger}>{error}</Text> : null}
-        {state.loop ? (
+        {state.loop === "on" ? (
           <View style={[styles.previewBox, styles.banner]}>
             <Text style={[styles.flex, styles.bannerText]}>
-              ▶ Running {phase || "this phase"}: {working} in progress · {merged} merged · {left - working} waiting
+              ▶ Running {initiative}, now {phase || "this phase"}: {working} in progress · {merged} merged · {left - working} waiting
             </Text>
             <Button
               label={busy === "loop-stop:" ? "Stopping…" : "Stop"}
@@ -537,10 +567,10 @@ export function useEpicBoard({
               onPress={() => void loopAction("stop")}
             />
           </View>
-        ) : state.plan?.status === "agreed" && left > 0 ? (
+        ) : state.loop === "off" && state.plan?.status === "agreed" && left > 0 ? (
           <View style={[styles.previewBox, styles.banner]}>
             <Text style={[styles.flex, styles.bannerText]}>
-              ✓ Planning done. Press Start to run {phase || "this phase"}: every ready story starts in its own
+              ✓ Planning done. Press Start to run {initiative} phase by phase: each ready story gets its own
               worktree, and the rest follow as their dependencies merge.
             </Text>
             <Button
@@ -615,6 +645,7 @@ export function useEpicBoard({
           styles={styles}
           onClose={() => setSelected(null)}
           onSelect={setSelected}
+          navigation={navigation}
         />
   ) : null;
 
@@ -628,6 +659,7 @@ function StoryDrawer({
   styles,
   onClose,
   onSelect,
+  navigation,
 }: {
   story: EpicStory;
   state: EpicBoardState;
@@ -635,6 +667,7 @@ function StoryDrawer({
   styles: Styles;
   onClose(): void;
   onSelect(id: string): void;
+  navigation: Navigation;
 }) {
   const tone = toneOf(story.status, theme);
   const neededBy = state.stories.filter((item) => item.dependsOn.includes(story.id));
@@ -655,9 +688,24 @@ function StoryDrawer({
           {story.status === "blocked" && story.blockedReason ? (
             <Text style={styles.reason}>{story.blockedReason}</Text>
           ) : null}
-          {prUrl ? (
+          {story.status === "awaiting-approval" ? (
+            <Text style={styles.muted}>The plan is ready. Open its session to ask questions, push back, or approve it.</Text>
+          ) : null}
+          {prUrl || (navigation && (story.agent || story.workspace)) ? (
             <View style={styles.actions}>
-              <Button label={`Open PR #${story.pr}`} styles={styles} onPress={() => void openExternalUrl(prUrl)} />
+              {navigation && story.agent && story.status !== "merged" ? (
+                <Button label="Open session" primary styles={styles} onPress={() => navigation.openAgent({ agentId: story.agent })} />
+              ) : null}
+              {navigation && story.workspace && story.status !== "merged" ? (
+                <Button label="Open workspace" styles={styles} onPress={() => navigation.openWorkspace({ workspaceId: story.workspace })} />
+              ) : null}
+              {prUrl ? (
+                <Button
+                  label={`Open PR #${story.pr}${story.ci ? ` · CI ${story.ci}` : ""}`}
+                  styles={styles}
+                  onPress={() => void openExternalUrl(prUrl)}
+                />
+              ) : null}
             </View>
           ) : null}
 
@@ -728,8 +776,12 @@ function HarnessPicker({
   const list = useRpc(listHarnessInitiatives);
   const create = useRpc(createHarnessEpicRpc);
   const plan = useRpc(planHarnessPhaseRpc);
+  const startLoop = useRpc(startInitiativeLoop);
+  const stopLoop = useRpc(stopInitiativeLoop);
+  const loopSettings = useSettings(initiativeLoopSettings);
   const toast = useToast();
   const [repos, setRepos] = useState<HarnessRepo[] | null>(null);
+  const [reload, setReload] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
@@ -748,7 +800,42 @@ function HarnessPicker({
     return () => {
       cancelled = true;
     };
-  }, [paseo, list]);
+  }, [paseo, list, reload]);
+
+  // Start runs the initiative's stories phase by phase in Paseo worktrees; Stop stops new work.
+  async function toggleLoop(repo: string, initiative: string, on: boolean) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      if (on) {
+        const result = await stopLoop({ repo, initiative });
+        if (!result.ok) toast.error(result.error ?? "Could not stop the loop.");
+        else toast.show("Loop stopped. Running agents keep going; nothing new starts.");
+        return;
+      }
+      const result = await startLoop({ repo, initiative });
+      if (!result.ok) {
+        toast.error(result.error ?? "Could not start the loop.");
+        return;
+      }
+      const ids = result.started.map((item) => item.story).join(", ");
+      toast.show(ids ? `Loop started: planning ${ids}.` : `Loop on. ${result.reason}.`, { variant: "success" });
+      if (result.started[0]) onOpenAgent?.(result.started[0].agentId);
+    } finally {
+      setBusy(false);
+      setReload((n) => n + 1);
+    }
+  }
+
+  // Which agent CLI the loop runs every step with. The step prompts are the same for each.
+  async function cycleRunner() {
+    if (loopSettings.status !== "ready") return;
+    const at = LOOP_RUNNERS.indexOf(loopSettings.values.runner);
+    const runner = LOOP_RUNNERS[(at + 1) % LOOP_RUNNERS.length];
+    if (!(await loopSettings.save({ ...loopSettings.values, runner }, loopSettings.revision))) {
+      toast.error(loopSettings.saveError ?? "Could not save the runner.");
+    }
+  }
 
   async function submit() {
     if (!draft || busy) return;
@@ -821,6 +908,9 @@ function HarnessPicker({
         <Text style={[styles.muted, styles.flex]}>
           Initiatives live in each repo at .harness/initiatives/&lt;slug&gt;/phases/&lt;n-name&gt;. Open a phase to see it here.
         </Text>
+        {loopSettings.status === "ready" ? (
+          <Button label={`Loop runs on ${RUNNER_LABELS[loopSettings.values.runner]}`} styles={styles} onPress={() => void cycleRunner()} />
+        ) : null}
         <Button label="Close" styles={styles} onPress={onCancel} />
       </View>
       {error ? <Text style={styles.danger}>{error}</Text> : null}
@@ -845,8 +935,17 @@ function HarnessPicker({
               <View style={styles.head}>
                 <Text style={[styles.nodeTitle, styles.flex]} numberOfLines={1}>
                   {initiative.title}
-                  <Text style={styles.hint}>{`  ·  ${initiative.slug}  ·  ${initiative.tracker === "jira" ? "Jira" : "local"}`}</Text>
+                  <Text style={styles.hint}>{`  ·  ${initiative.slug}  ·  ${initiative.tracker === "jira" ? "Jira" : "local"}${initiative.loop === "on" ? "  ·  loop running" : initiative.loop === "done" ? "  ·  loop done" : ""}`}</Text>
                 </Text>
+                {initiative.loop !== "done" ? (
+                  <Button
+                    label={initiative.loop === "on" ? "Stop" : "Start"}
+                    primary={initiative.loop !== "on"}
+                    disabled={busy || initiative.epics.length === 0}
+                    styles={styles}
+                    onPress={() => void toggleLoop(repo.repo, initiative.slug, initiative.loop === "on")}
+                  />
+                ) : null}
                 <Button
                   label="New phase"
                   styles={styles}

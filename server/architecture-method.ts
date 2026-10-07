@@ -108,8 +108,8 @@ what changes either way. Batch small defaults as "assumption → answer" lines s
 pushed back on quickly. After each answer, rewrite the plan and the affected stories, then ask the
 next. On "lock": set status: agreed, update the date, make sure every stage's story file exists
 with status todo and its depends_on, then end with exactly this line and stop:
-"Planning done for <phase>. Press Start on the Orchestration board to run its stories; ready ones
-start in parallel, each in its own worktree."
+"Planning done for <phase>. Press Start on the Orchestration board to run the initiative's stories;
+each ready story gets its own worktree."
 
 ## Tone
 Plain English. Diagrams carry structure; cards carry decisions; the finish line carries pickup
