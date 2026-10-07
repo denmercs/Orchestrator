@@ -18,6 +18,9 @@ import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { advanceBelt, closeMergedStories, startStory } from "./server/belt-advance";
 import { createLoopAdvance } from "./server/loop-advance";
 import { createInitiativeLoop } from "./server/initiative-loop";
+import { createContextWatch, paseoPort } from "./server/context-watch";
+import { summariseTelemetry } from "./server/context-telemetry";
+import { contextAct, contextSettings, contextSummaryRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
   initiativeLoopSettings,
@@ -115,6 +118,22 @@ export default function contribute(server: PluginServerContext) {
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
   server.handle(openPhasePlanRpc, openPhasePlan);
   server.handle(refreshPhasePlanRpc, refreshPhasePlan);
+  const context = server.registerSettings(contextSettings);
+  let contextPaseo: Parameters<typeof loadRunnerConfig>[0] | null = null;
+  const contextWatch = createContextWatch(
+    paseoPort(
+      () => contextPaseo,
+      async () => {
+        const state = await context.read();
+        return state.status === "ready" ? state.values : { amber: 100_000, red: 150_000 };
+      },
+    ),
+  );
+  server.handle(contextAct, (input, { paseo }) => {
+    contextPaseo = paseo;
+    return contextWatch.act(input);
+  });
+  server.handle(contextSummaryRpc, ({ since }) => summariseTelemetry(since));
   const belt = server.registerSettings(beltSettings);
   const readBeltValues = async () => {
     const state = await belt.read();
@@ -212,6 +231,10 @@ export default function contribute(server: PluginServerContext) {
     });
     void initiativeLoop.onTurnEnded(paseo, event).catch((error) => {
       console.warn("orchestrator: initiative loop failed", error);
+    });
+    contextPaseo = paseo;
+    void contextWatch.onTurnEnded(event).catch((error) => {
+      console.warn("orchestrator: context watch failed", error);
     });
   });
   void loop.seedMergedPrs();
