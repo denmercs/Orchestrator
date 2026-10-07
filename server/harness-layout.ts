@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { phaseLabel, type HarnessRepo } from "../shared/orchestration";
+import { phaseLabel, type EpicStory, type HarnessRepo, type HarnessTracker } from "../shared/orchestration";
 
 // The plugin owns the initiative layout; every repo stores it in its own .harness:
 //
 //   .harness/initiatives/<slug>/
-//     initiative.md                 title + outcome; phases table between the harness markers
+//     initiative.md                 frontmatter tracker (local | jira), title, outcome; the phases
+//                                   and their stories between the harness markers (generated)
 //     phases/<n>-<phase-slug>/
 //       phase.md                    frontmatter phase (its number) + title
 //       architecture.md             written by the architecture session (server/harness-architect.ts)
@@ -52,6 +53,39 @@ export const initiativesDir = (root: string) => join(root, ".harness", "initiati
 export const initiativeTitle = (dir: string) =>
   /^# (?:Initiative: )?(.+)$/m.exec(readText(join(dir, "initiative.md")))?.[1] ?? dir.split(sep).pop() ?? "";
 
+export const initiativeTracker = (dir: string): HarnessTracker =>
+  frontmatter(readText(join(dir, "initiative.md"))).tracker === "jira" ? "jira" : "local";
+
+const list = (value: string | undefined) => (value ? value.split(",").map((part) => part.trim()).filter(Boolean) : []);
+
+// A phase's stories from stories/*.md, in file order (which is priority).
+export function readStories(epicDir: string): EpicStory[] {
+  const storiesDir = join(epicDir, "stories");
+  const files = existsSync(storiesDir)
+    ? readdirSync(storiesDir)
+        .filter((file) => file.endsWith(".md"))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    : [];
+  const raw = files.map((file) => ({ file, meta: frontmatter(readText(join(storiesDir, file))) }));
+  const merged = new Set(raw.filter((story) => story.meta.status === "merged").map((story) => story.meta.id));
+  return raw.map(({ file, meta: story }) => {
+    const dependsOn = list(story.depends_on);
+    const status = story.status || "todo";
+    const blockedBy = story.blocked_by ?? "";
+    return {
+      id: story.id || file.replace(/\.md$/, ""),
+      title: story.title || file,
+      status,
+      dependsOn,
+      blockedBy,
+      blockedReason: story.blocked_reason ?? "",
+      discoveredFrom: story.discovered_from ?? "",
+      pr: Number(story.pr) || null,
+      ready: status === "todo" && !blockedBy && dependsOn.every((id) => merged.has(id)),
+    };
+  });
+}
+
 // The absolute epic folder for a repo-relative path, or null unless it is an epic
 // (has phase.md) inside .harness/initiatives.
 export function epicDirFor(root: string, epic: string) {
@@ -76,21 +110,17 @@ export function listHarness(repos: string[]): { repos: HarnessRepo[] } {
             return {
               slug,
               title: initiativeTitle(dir),
+              tracker: initiativeTracker(dir),
               epics: dirsIn(join(dir, PHASES_DIR)).map((name) => {
                 const epicDir = join(dir, PHASES_DIR, name);
                 const meta = frontmatter(readText(join(epicDir, PHASE_FILE)));
-                const stories = existsSync(join(epicDir, "stories"))
-                  ? readdirSync(join(epicDir, "stories")).filter((file) => file.endsWith(".md"))
-                  : [];
-                const merged = stories.filter(
-                  (file) => frontmatter(readText(join(epicDir, "stories", file))).status === "merged",
-                ).length;
+                const stories = readStories(epicDir);
                 return {
                   id: meta.phase || name.split("-")[0],
                   title: meta.title || name,
                   path: relative(root, epicDir).split(sep).join("/"),
                   stories: stories.length,
-                  merged,
+                  merged: stories.filter((story) => story.status === "merged").length,
                 };
               }),
             };
@@ -100,26 +130,53 @@ export function listHarness(repos: string[]): { repos: HarnessRepo[] } {
   };
 }
 
-function epicsTable(dir: string) {
-  const rows = dirsIn(join(dir, PHASES_DIR)).map((name) => {
-    const meta = frontmatter(readText(join(dir, PHASES_DIR, name, PHASE_FILE)));
-    const file = `${PHASES_DIR}/${name}/${PHASE_FILE}`;
-    return `| ${phaseLabel(meta.phase || name)} — ${meta.title || name} | [\`${file}\`](${file}) |`;
+const cell = (text: string) => text.replace(/\|/g, "\\|");
+
+// Every phase with its stories, between the markers in initiative.md. With a local tracker this
+// is the initiative's epic-and-stories list; the files under phases/ stay the source.
+function initiativeIndex(dir: string) {
+  const phases = dirsIn(join(dir, PHASES_DIR)).map((name) => {
+    const epicDir = join(dir, PHASES_DIR, name);
+    const meta = frontmatter(readText(join(epicDir, PHASE_FILE)));
+    return { name, label: `${phaseLabel(meta.phase || name)} — ${meta.title || name}`, stories: readStories(epicDir), epicDir };
   });
-  return [PHASES_START, "| Phase | Path |", "|------|------|", ...rows, PHASES_END].join("\n");
+  const lines = [PHASES_START, "| Phase | Stories | Merged | Path |", "|-------|---------|--------|------|"];
+  for (const phase of phases) {
+    const file = `${PHASES_DIR}/${phase.name}/${PHASE_FILE}`;
+    const merged = phase.stories.filter((story) => story.status === "merged").length;
+    lines.push(`| ${cell(phase.label)} | ${phase.stories.length} | ${merged} | [\`${file}\`](${file}) |`);
+  }
+  for (const phase of phases) {
+    lines.push("", `### ${phase.label}`, "");
+    if (existsSync(join(phase.epicDir, "architecture.md"))) {
+      lines.push(`Plan: [\`architecture.md\`](${PHASES_DIR}/${phase.name}/architecture.md)`, "");
+    }
+    if (phase.stories.length === 0) {
+      lines.push("_No stories yet._");
+      continue;
+    }
+    lines.push("| Story | Title | Status | Depends on |", "|-------|-------|--------|------------|");
+    for (const story of phase.stories) {
+      lines.push(`| ${cell(story.id)} | ${cell(story.title)} | ${story.status} | ${story.dependsOn.join(", ") || "—"} |`);
+    }
+  }
+  lines.push(PHASES_END);
+  return lines.join("\n");
 }
 
-function refreshEpicsTable(dir: string) {
+// Rewrites the index in initiative.md; writes only when it changed, so it is cheap to call often.
+export function refreshInitiativeIndex(dir: string) {
   const file = join(dir, "initiative.md");
+  if (!existsSync(file)) return;
   const text = readText(file);
-  const table = epicsTable(dir);
+  const index = initiativeIndex(dir);
   const start = text.indexOf(PHASES_START);
   const end = text.indexOf(PHASES_END);
   const next =
     start >= 0 && end > start
-      ? text.slice(0, start) + table + text.slice(end + PHASES_END.length)
-      : `${text.trimEnd()}\n\n## Phases\n\n${table}\n`;
-  writeFileSync(file, next, "utf8");
+      ? text.slice(0, start) + index + text.slice(end + PHASES_END.length)
+      : `${text.trimEnd()}\n\n## Phases\n\n${index}\n`;
+  if (next !== text) writeFileSync(file, next, "utf8");
 }
 
 // .harness is local planning; keep it out of every commit.
@@ -146,6 +203,7 @@ export async function createHarnessEpic(input: {
   initiative: string;
   initiativeTitle: string;
   epicTitle: string;
+  tracker?: HarnessTracker;
 }) {
   try {
     const root = resolve(input.repo);
@@ -162,7 +220,7 @@ export async function createHarnessEpic(input: {
       mkdirSync(dir, { recursive: true });
       writeFileSync(
         join(dir, "initiative.md"),
-        `# Initiative: ${title}\n\n> **Slug:** \`${slug}\`\n\n## Outcome\n\n_What is true when this initiative is done._\n`,
+        `---\ntracker: ${input.tracker === "jira" ? "jira" : "local"}\n---\n\n# Initiative: ${title}\n\n> **Slug:** \`${slug}\`\n\n## Outcome\n\n_What is true when this initiative is done._\n`,
         "utf8",
       );
     }
@@ -176,7 +234,7 @@ export async function createHarnessEpic(input: {
       `---\nphase: ${id}\ntitle: ${epicTitle}\n---\n\n# ${phaseLabel(id)} — ${epicTitle}\n\n## Goal\n\n_One file per story in stories/, in priority order._\n`,
       "utf8",
     );
-    refreshEpicsTable(dir);
+    refreshInitiativeIndex(dir);
 
     const epic = relative(root, epicDir).split(sep).join("/");
     await excludeHarness(root);

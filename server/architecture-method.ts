@@ -65,10 +65,10 @@ Cards are level-3 headings: \`### <id> — <title>\`.
   "Acceptance: <one observable line>" and "Story: stories/NN-<slug>.md".
 
 Tracker join lines go directly under a stage or track-b card heading, one per line:
-\`epic: KEY-1\`, \`story: KEY-2\`, \`status: <Jira status>\`. The plugin fills \`status:\` from
-Jira (the story's status, or the epic's when there is no story) and fills "Jira" table cells for
-rows naming a key. That flow is one way: never change Jira status yourself and never invent a
-status. A card without keys stays untracked.
+\`epic: <key>\`, \`story: <S1 or KEY-2>\`, \`status: <status>\`. The plugin fills \`status:\` (and
+"Jira" / "Status" table cells for rows naming the id) from the story's file when \`story:\` is a
+local id, or from Jira when it is a Jira key (the epic's status when there is no story). That flow
+is one way: never write a status yourself. A card without join lines stays untracked.
 
 ## Stages
 Move from current to target in this order. Skip a stage that doesn't apply and say why on its card.
@@ -86,12 +86,21 @@ id (S1, S2, …), title (short, imperative), status (todo), depends_on (comma-se
 add jira: <key> once published. Body: Goal; Acceptance (observable checks); Notes linking the
 stage and decisions in ../architecture.md. Only add, reorder or rewrite stories whose status is todo.
 
-## Publishing to Jira
-Only when I ask to publish. Prefer one existing epic as the home for all stages, with one story per
-stage under it; create an epic per stage only when no home fits. A second capability train gets its
-own epic (track B). Use the Atlassian tools if this session has them, write the keys into the
-cards' join lines and the finish line, and add jira: <key> to each story file. Never transition,
-comment on, or edit Jira issues beyond creating them.
+## Publishing
+Only when I ask to publish. What it means depends on the initiative's tracker (given above).
+
+**Local tracker** (the default): never create, edit or transition Jira issues. The phase is the
+epic and its stories/ files are the stories. Publishing means: every stage has a complete story
+file, every stage card's join line is \`story: S<n>\` matching it, and the finish line lists those
+ids. The plugin keeps initiative.md's phases-and-stories list and the cards' statuses in sync
+from the story files. If I hand you Jira keys someone else created, add them as \`epic:\` lines
+(or \`jira:\` in the story file); the plugin reads their status one way.
+
+**Jira tracker**: prefer one existing epic as the home for all stages, with one story per stage
+under it; create an epic per stage only when no home fits. A second capability train gets its own
+epic (track B). Use the Atlassian tools if this session has them, write the keys into the cards'
+join lines (\`story: KEY-2\`) and the finish line, and add jira: <key> to each story file. Never
+transition, comment on, or edit Jira issues beyond creating them.
 
 ## Decision loop
 After the draft, ask the highest-impact open decision: one question, your recommended answer, and

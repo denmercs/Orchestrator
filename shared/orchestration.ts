@@ -408,12 +408,18 @@ export const epicStory = z.object({
 // A phase is stored by number (phases/<n>-<name>); people read it as "Phase <n>".
 export const phaseLabel = (id: string) => (/^\d+$/.test(id) ? `Phase ${id}` : id);
 
+// Where an initiative's epic and stories live. "local": the phases and stories/ in .harness are
+// the tracker and no Jira issues are created. "jira": publishing creates the epic and stories.
+export const harnessTracker = z.enum(["local", "jira"]);
+
 export const epicBoardState = z.object({
   epic: z.object({ id: z.string(), title: z.string(), dir: z.string() }),
   // Title of the initiative the epic (phase) belongs to.
   initiative: z.string(),
   // The phase's architecture plan, once architecture.md exists; warnings are gaps a person would notice.
-  plan: z.object({ warnings: z.array(z.string()) }).nullable(),
+  // jira: some card names a Jira key, so a Jira refresh has something to read.
+  plan: z.object({ warnings: z.array(z.string()), jira: z.boolean() }).nullable(),
+  tracker: harnessTracker,
   next: z.object({ story: z.string().nullable(), reason: z.string() }),
   repoUrl: z.string(),
   stories: z.array(epicStory),
@@ -445,6 +451,7 @@ const harnessRepo = z.object({
     z.object({
       slug: z.string(),
       title: z.string(),
+      tracker: harnessTracker,
       epics: z.array(
         z.object({ id: z.string(), title: z.string(), path: z.string(), stories: z.number(), merged: z.number() }),
       ),
@@ -467,6 +474,8 @@ export const createHarnessEpicRpc = defineRpc({
     initiative: z.string(),
     initiativeTitle: z.string(),
     epicTitle: z.string(),
+    // Only used when the initiative is new.
+    tracker: harnessTracker.default("local"),
   }),
   output: z.object({
     ok: z.boolean(),
@@ -513,6 +522,7 @@ export const refreshPhasePlanRpc = defineRpc({
 });
 
 export type HarnessRepo = z.infer<typeof harnessRepo>;
+export type HarnessTracker = z.infer<typeof harnessTracker>;
 export type EpicStory = z.infer<typeof epicStory>;
 export type EpicBoardState = NonNullable<RpcOutput<typeof getEpicBoard>["state"]>;
 

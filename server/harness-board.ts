@@ -1,12 +1,21 @@
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { EpicBoardState, EpicStory } from "../shared/orchestration";
+import type { EpicBoardState } from "../shared/orchestration";
 import { renderPlanFor } from "./phase-plan";
-import { PHASE_FILE, epicDirFor, frontmatter, initiativeTitle, initiativesDir } from "./harness-layout";
+import {
+  PHASE_FILE,
+  epicDirFor,
+  frontmatter,
+  initiativeTitle,
+  initiativeTracker,
+  initiativesDir,
+  readStories,
+  refreshInitiativeIndex,
+} from "./harness-layout";
 
 // The board reads the active phase straight from the layout in server/harness-layout.ts: its
-// stories (file order is priority) and its architecture plan.
+// stories (file order is priority), its architecture plan, and its initiative's tracker.
 
 export type HarnessSettings = { repo: string; epic: string };
 
@@ -23,35 +32,6 @@ function githubUrl(repo: string) {
     repoUrls.set(repo, url);
   }
   return url;
-}
-
-const list = (value: string | undefined) => (value ? value.split(",").map((part) => part.trim()).filter(Boolean) : []);
-
-function readStories(epicDir: string): EpicStory[] {
-  const storiesDir = join(epicDir, "stories");
-  const files = existsSync(storiesDir)
-    ? readdirSync(storiesDir)
-        .filter((file) => file.endsWith(".md"))
-        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-    : [];
-  const raw = files.map((file) => ({ file, meta: frontmatter(readFileSync(join(storiesDir, file), "utf8")) }));
-  const merged = new Set(raw.filter((story) => story.meta.status === "merged").map((story) => story.meta.id));
-  return raw.map(({ file, meta: story }) => {
-    const dependsOn = list(story.depends_on);
-    const status = story.status || "todo";
-    const blockedBy = story.blocked_by ?? "";
-    return {
-      id: story.id || file.replace(/\.md$/, ""),
-      title: story.title || file,
-      status,
-      dependsOn,
-      blockedBy,
-      blockedReason: story.blocked_reason ?? "",
-      discoveredFrom: story.discovered_from ?? "",
-      pr: Number(story.pr) || null,
-      ready: status === "todo" && !blockedBy && dependsOn.every((id) => merged.has(id)),
-    };
-  });
 }
 
 // The phase must sit inside the repo's .harness/initiatives, so a bad setting can't reach other files.
@@ -73,9 +53,13 @@ export async function loadHarnessBoard(settings: HarnessSettings) {
     const stories = readStories(epicDir);
     const ready = stories.find((story) => story.ready);
     const slug = relative(initiativesDir(root), epicDir).split(sep)[0];
+    const initiativeDir = join(initiativesDir(root), slug);
+    // Keep initiative.md's phases-and-stories list current as sessions add and move stories.
+    refreshInitiativeIndex(initiativeDir);
     const state: EpicBoardState = {
       epic: { id: meta.phase ?? "", title: meta.title ?? "", dir: relative(root, epicDir).split(sep).join("/") },
-      initiative: initiativeTitle(join(initiativesDir(root), slug)),
+      initiative: initiativeTitle(initiativeDir),
+      tracker: initiativeTracker(initiativeDir),
       plan: renderPlanFor(settings),
       next: ready
         ? { story: ready.id, reason: `${ready.id} is ready` }

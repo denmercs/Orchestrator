@@ -7,7 +7,7 @@ import { join } from "node:path";
 //
 // The Markdown is split into `## <id>` sections (ids below). Inside decisions, stages and
 // track-b, `### <id> — <title>` starts a card; leading `epic:`, `story:`, `status:` lines on a
-// card are its tracker join, refreshed from Jira by server/plan-jira.ts.
+// card are its tracker join, kept current by server/plan-status.ts.
 
 export const PLAN_MD = "architecture.md";
 export const PLAN_HTML = "architecture.html";
@@ -117,8 +117,9 @@ function card(section: string, heading: string, lines: string[], site: string) {
   const status = meta.status ?? state?.[1] ?? "";
   const color = tone(status || (section === "track-b" ? "track" : ""), section);
   const key = meta.story || meta.epic || meta.jira || "";
+  // Only Jira keys link to Jira; a local story id (S1) is shown as is.
   const link = key
-    ? site
+    ? site && /^[A-Z][A-Z0-9_]+-\d+$/.test(key)
       ? `<a class="font-mono text-xs" href="${escapeHtml(`${site}/browse/${key}`)}">${escapeHtml(key)}</a>`
       : `<span class="font-mono text-xs">${escapeHtml(key)}</span>`
     : "";

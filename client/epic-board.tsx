@@ -15,6 +15,7 @@ import {
   type EpicBoardState,
   type EpicStory,
   type HarnessRepo,
+  type HarnessTracker,
 } from "../shared/orchestration";
 import { harnessSettings } from "../shared/settings";
 
@@ -460,14 +461,14 @@ export function useEpicBoard({
             </Text>
             <Text style={styles.muted} numberOfLines={2}>
               {phase ? `${phase}  ·  ` : ""}
-              {merged}/{stories.length} merged{"  ·  "}Next: {state.next.reason}
+              {state.tracker === "jira" ? "Jira" : "local"}  ·  {merged}/{stories.length} merged{"  ·  "}Next: {state.next.reason}
             </Text>
           </View>
           <View style={styles.headActions}>
             {state.plan ? (
               <Button label={busy === "plan-open:" ? "Opening…" : "View plan"} disabled={busy !== null} styles={styles} onPress={() => void planAction("open")} />
             ) : null}
-            {state.plan ? (
+            {state.plan?.jira ? (
               <Button
                 label={busy === "plan-jira:" ? "Refreshing…" : "Refresh from Jira"}
                 disabled={busy !== null}
@@ -655,7 +656,7 @@ function StoryDrawer({
 // Every initiative in the repos Paseo knows, in the layout the plugin creates (see
 // server/harness-layout.ts). Opening a phase shows it on the board; "New initiative" and
 // "New phase" scaffold the folders so every repo's .harness looks the same.
-type Draft = { repo: string; initiative: string; initiativeTitle: string; epicTitle: string };
+type Draft = { repo: string; initiative: string; initiativeTitle: string; epicTitle: string; tracker: HarnessTracker };
 
 function HarnessPicker({
   styles,
@@ -750,6 +751,14 @@ function HarnessPicker({
       <View style={styles.repoRow}>
         {initiative ? null : input(draft.initiativeTitle, "Initiative name", (text) => setDraft({ ...draft, initiativeTitle: text }))}
         {input(draft.epicTitle, initiative ? "Phase name" : "First phase name", (text) => setDraft({ ...draft, epicTitle: text }))}
+        {initiative ? null : (
+          // Work initiatives stay local (stories in .harness); personal ones can publish to Jira.
+          <Button
+            label={draft.tracker === "jira" ? "✓ Publish to Jira" : "Publish to Jira"}
+            styles={styles}
+            onPress={() => setDraft({ ...draft, tracker: draft.tracker === "jira" ? "local" : "jira" })}
+          />
+        )}
         <Button label={busy ? "Creating…" : "Create"} primary disabled={busy} styles={styles} onPress={() => void submit()} />
         <Button label="Cancel" styles={styles} onPress={() => setDraft(null)} />
       </View>
@@ -776,7 +785,7 @@ function HarnessPicker({
             <Button
               label="New initiative"
               styles={styles}
-              onPress={() => setDraft({ repo: repo.repo, initiative: "", initiativeTitle: "", epicTitle: "" })}
+              onPress={() => setDraft({ repo: repo.repo, initiative: "", initiativeTitle: "", epicTitle: "", tracker: "local" })}
             />
           </View>
           {form(repo.repo, "")}
@@ -785,13 +794,13 @@ function HarnessPicker({
               <View style={styles.head}>
                 <Text style={[styles.nodeTitle, styles.flex]} numberOfLines={1}>
                   {initiative.title}
-                  <Text style={styles.hint}>{`  ·  ${initiative.slug}`}</Text>
+                  <Text style={styles.hint}>{`  ·  ${initiative.slug}  ·  ${initiative.tracker === "jira" ? "Jira" : "local"}`}</Text>
                 </Text>
                 <Button
                   label="New phase"
                   styles={styles}
                   onPress={() =>
-                    setDraft({ repo: repo.repo, initiative: initiative.slug, initiativeTitle: "", epicTitle: "" })
+                    setDraft({ repo: repo.repo, initiative: initiative.slug, initiativeTitle: "", epicTitle: "", tracker: initiative.tracker })
                   }
                 />
               </View>

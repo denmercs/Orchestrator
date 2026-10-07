@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { epicDirFor, initiativeTitle, initiativesDir } from "./harness-layout";
-import { refreshPlanFromJira } from "./plan-jira";
+import { planNamesJira, refreshPlanFromJira, syncPlanFromStories } from "./plan-status";
 import { planUrl } from "./plan-server";
 import { PLAN_MD, renderPhasePlan } from "./plan-render";
 
@@ -21,11 +22,15 @@ function phaseOf(input: { repo: string; epic: string }) {
 
 const errorOf = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 
-// Re-renders when the Markdown changed; cheap enough to call on every board poll.
+// Syncs story statuses into the plan, then re-renders when the Markdown changed; cheap enough to
+// call on every board poll.
 export function renderPlanFor(input: { repo: string; epic: string }) {
   try {
     const phase = phaseOf(input);
-    return renderPhasePlan(phase.epicDir, phase);
+    syncPlanFromStories(phase.epicDir);
+    const rendered = renderPhasePlan(phase.epicDir, phase);
+    if (!rendered) return null;
+    return { warnings: rendered.warnings, jira: planNamesJira(readFileSync(join(phase.epicDir, PLAN_MD), "utf8")) };
   } catch {
     return null;
   }
@@ -51,6 +56,7 @@ export async function refreshPhasePlan(input: { repo: string; epic: string }) {
   try {
     const phase = phaseOf(input);
     const result = await refreshPlanFromJira(phase.epicDir);
+    syncPlanFromStories(phase.epicDir);
     renderPhasePlan(phase.epicDir, phase);
     return result;
   } catch (cause) {

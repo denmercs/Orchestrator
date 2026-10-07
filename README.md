@@ -38,7 +38,7 @@ The plugin owns the initiative layout; each repo stores it in its own `.harness`
 
 ```
 .harness/initiatives/<slug>/
-  initiative.md            # title + outcome; phases table between harness:phases markers
+  initiative.md            # tracker (local | jira), title, outcome; generated phases-and-stories list
   phases/<n>-<name>/
     phase.md               # frontmatter phase (its number) + title
     architecture.md        # the plan: shapes, decisions, stages, Jira keys; written by the architecture session
@@ -46,11 +46,13 @@ The plugin owns the initiative layout; each repo stores it in its own `.harness`
     stories/               # one .md per story: id, title, status, depends_on, blocked_by, pr
 ```
 
+Each initiative has a **tracker**, picked on **New initiative**. **Local** (the default, for work) keeps the epic and stories in `.harness`: the phase is the epic, `stories/` are the stories, and `initiative.md` carries a generated list of every phase with its stories and statuses. Nothing is created in Jira. **Publish to Jira** (for personal projects) lets the architecture session create the epic and stories in Jira when you ask it to publish.
+
 **Initiative → Initiatives** lists every Paseo project's initiatives. **New initiative** and **New phase** create the folders above (each phase is a `phases/<n>-<name>` folder); **Open** puts a phase on the board. The board reads the plan straight from these files.
 
 Creating a phase also starts its **architecture session**: a Claude agent in that repo that reads the code and the initiative, writes the phase's `architecture.md` and one story file per stage, then asks the open decisions one at a time, rewriting both after each answer. Say "lock" to mark it agreed. **Plan architecture** on a phase row starts it again; the agent resumes from the existing files. How phases are planned (vocabulary, plan sections, stages, decision loop) lives in `server/architecture-method.ts`; edit it to change every future architecture session.
 
-**View plan** on the board opens the plan in Paseo's browser, in the repo's workspace (in the system browser where Paseo has no browser). It also opens by itself the first time a phase's plan appears while the board is open, and the page reloads as `architecture.md` changes, so it follows the architecture session. Paseo's browser only opens http, so the plugin serves the page from `127.0.0.1` behind a random per-phase token (`server/plan-server.ts`). The page is `architecture.html`, which the plugin regenerates whenever `architecture.md` changes: current and target diagrams side by side, decision and stage cards, the start → finish path, and an optional second track (a second epic's stories). Gaps such as a missing diagram show under the board header. **Refresh from Jira** reads the `epic:` / `story:` keys on stage and track-B cards and writes each issue's Jira status into the Markdown (card `status:` lines and "Jira" table cells). It's one way and never changes Jira. Each architecture session also refreshes before it starts. Jira access uses the same credentials as the board (`JIRA_URL` / `JIRA_USERNAME` / `JIRA_API_TOKEN`, or the Atlassian MCP config). Rendering lives in `server/plan-render.ts`, the refresh in `server/plan-jira.ts`.
+**View plan** on the board opens the plan in Paseo's browser, in the repo's workspace (in the system browser where Paseo has no browser). It also opens by itself the first time a phase's plan appears while the board is open, and the page reloads as `architecture.md` changes, so it follows the architecture session. Paseo's browser only opens http, so the plugin serves the page from `127.0.0.1` behind a random per-phase token (`server/plan-server.ts`). The page is `architecture.html`, which the plugin regenerates whenever `architecture.md` changes: current and target diagrams side by side, decision and stage cards, the start → finish path, and an optional second track (a second epic's stories). Gaps such as a missing diagram show under the board header. Card statuses stay current on their own: a card whose `story:` is a local id (`S1`) takes the status in that story's file. **Refresh from Jira** (shown once a card names a Jira key) does the same for Jira keys, writing each issue's status into the Markdown (card `status:` lines and "Jira" / "Status" table cells). It's one way and never changes Jira. Each architecture session also refreshes before it starts. Jira access uses the same credentials as the board (`JIRA_URL` / `JIRA_USERNAME` / `JIRA_API_TOKEN`, or the Atlassian MCP config). Rendering lives in `server/plan-render.ts`, status sync in `server/plan-status.ts`.
 
 ## Skills and the Story belt
 

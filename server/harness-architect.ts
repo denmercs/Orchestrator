@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
-import { phaseLabel } from "../shared/orchestration";
+import { phaseLabel, type HarnessTracker } from "../shared/orchestration";
 import { ARCHITECTURE_METHOD } from "./architecture-method";
-import { refreshPlanFromJira } from "./plan-jira";
-import { PHASE_FILE, epicDirFor, frontmatter, initiativeTitle, initiativesDir } from "./harness-layout";
+import { refreshPlanFromJira, syncPlanFromStories } from "./plan-status";
+import { PHASE_FILE, epicDirFor, frontmatter, initiativeTitle, initiativeTracker, initiativesDir } from "./harness-layout";
 
 // The plugin's own architecture step. Creating a phase starts one agent in the repo that
 // explores the code, writes the phase's architecture.md and a story file per stage, then
@@ -22,14 +22,20 @@ function architectPrompt(input: {
   epicPath: string;
   initiativePath: string;
   initiative: string;
+  tracker: HarnessTracker;
   number: string;
   phase: string;
   title: string;
 }) {
-  const { epicPath, initiativePath, initiative, number, phase, title } = input;
+  const { epicPath, initiativePath, initiative, tracker, number, phase, title } = input;
   return `You are planning the architecture for ${phase} "${title}" of the initiative "${initiative}".
 Work only inside ${epicPath}/. Do not edit code, do not commit, do not touch other phases.
 Call it "${phase}" in everything you write and say.
+
+## Tracker
+${tracker === "jira"
+  ? "This initiative publishes to Jira (see Publishing below)."
+  : "This initiative is tracked locally: its phases and stories/ in .harness are the epic and stories. Never create Jira issues for it."}
 
 ## This phase
 - Plan file: ${epicPath}/architecture.md, frontmatter phase: ${number}, title: ${title},
@@ -71,6 +77,7 @@ export async function startPhaseArchitect(paseo: PaseoApi, input: { repo: string
     const initiativeDir = join(initiativesDir(root), slug);
     // Start from current tracker status; a failed refresh (no credentials, offline) is not fatal.
     await refreshPlanFromJira(epicDir);
+    syncPlanFromStories(epicDir);
     const meta = frontmatter(readFileSync(join(epicDir, PHASE_FILE), "utf8"));
     const phase = phaseLabel(meta.phase ?? "");
     const title = meta.title || epicPath.split("/").pop() || "";
@@ -82,6 +89,7 @@ export async function startPhaseArchitect(paseo: PaseoApi, input: { repo: string
         epicPath,
         initiativePath: relative(root, initiativeDir).split(sep).join("/"),
         initiative: initiativeTitle(initiativeDir),
+        tracker: initiativeTracker(initiativeDir),
         number: meta.phase ?? "",
         phase,
         title,
