@@ -10,6 +10,7 @@ import {
   moveIssueToColumn,
 } from "./server/jira";
 import { deleteInitiative, loadHarnessBoard } from "./server/harness-board";
+import { loadRunnerConfig } from "./server/agent-runner";
 import { startPhaseArchitect } from "./server/harness-architect";
 import { openPhasePlan, refreshPhasePlan } from "./server/phase-plan";
 import { stopPlanServer } from "./server/plan-server";
@@ -58,6 +59,7 @@ import {
   saveOrchestrationStandupTodos,
   upsertOrchestrationStandupNote,
 } from "./shared/orchestration";
+import { agentRunnerSettings } from "./shared/agent-runner";
 import { harnessSettings, jiraBoardSettings, prodPulseSettings, standupSettings } from "./shared/settings";
 import {
   addSkillSource,
@@ -72,6 +74,11 @@ import {
 
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(standupSettings);
+  const runnerSettings = server.registerSettings(agentRunnerSettings);
+  const readAgentConfig = async (paseo: Parameters<typeof loadRunnerConfig>[0]) => {
+    const state = await runnerSettings.read();
+    return loadRunnerConfig(paseo, state.status === "ready" ? state.values.profileId : "");
+  };
   const boardSettings = server.registerSettings(jiraBoardSettings);
   const pulseSettings = server.registerSettings(prodPulseSettings);
   const harness = server.registerSettings(harnessSettings);
@@ -89,15 +96,21 @@ export default function contribute(server: PluginServerContext) {
   server.handle(createHarnessEpicRpc, async (input, { paseo }) => {
     const created = await createHarnessEpic(input);
     if (!created.ok || !created.epic) return { ...created, agentId: null, warning: null };
-    const started = await startPhaseArchitect(paseo, { repo: input.repo, epic: created.epic });
+    const started = await startPhaseArchitect(
+      paseo,
+      { repo: input.repo, epic: created.epic },
+      await readAgentConfig(paseo),
+    );
     return { ...created, agentId: started.agentId, warning: started.error };
   });
-  server.handle(planHarnessPhaseRpc, (input, { paseo }) => startPhaseArchitect(paseo, input));
+  server.handle(planHarnessPhaseRpc, async (input, { paseo }) =>
+    startPhaseArchitect(paseo, input, await readAgentConfig(paseo)),
+  );
   const loopSettings = server.registerSettings(initiativeLoopSettings);
   const initiativeLoop = createInitiativeLoop(async () => {
     const state = await loopSettings.read();
     return state.status === "ready" ? state.values : DEFAULT_LOOP_CONFIG;
-  });
+  }, readAgentConfig);
   server.handle(startInitiativeLoop, (input, { paseo }) => initiativeLoop.start(paseo, input));
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
   server.handle(openPhasePlanRpc, openPhasePlan);
@@ -111,7 +124,9 @@ export default function contribute(server: PluginServerContext) {
     const values = await readBeltValues();
     return values?.enabled ? values : null;
   };
-  const loop = createLoopAdvance((paseo, fresh) => closeMergedStories(paseo, fresh, readBelt));
+  const loop = createLoopAdvance((paseo, fresh) =>
+    closeMergedStories(paseo, fresh, readBelt, readAgentConfig),
+  );
   server.handle(getSkillCatalog, async () => loadCatalog((await readBeltValues())?.sources ?? []));
   server.handle(addSkillSource, ({ location }) => addSource(location));
   server.handle(checkSkillSource, async ({ id }) => {
@@ -131,7 +146,7 @@ export default function contribute(server: PluginServerContext) {
     if (!config) {
       throw new Error("The Story belt is off. Turn it on in Skills first.");
     }
-    return startStory(paseo, config, input);
+    return startStory(paseo, config, input, await readAgentConfig(paseo));
   });
   server.handle(listOrchestrationSchedules, listSchedules);
   server.handle(listOrchestrationParents, listParents);
@@ -192,7 +207,7 @@ export default function contribute(server: PluginServerContext) {
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     loop.rememberPaseo(paseo);
     void loop.onTurnEnded(event);
-    void advanceBelt(paseo, event, readBelt).catch((error) => {
+    void advanceBelt(paseo, event, readBelt, readAgentConfig).catch((error) => {
       console.warn("orchestrator: belt advance failed", error);
     });
     void initiativeLoop.onTurnEnded(paseo, event).catch((error) => {

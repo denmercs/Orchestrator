@@ -1,5 +1,5 @@
 import { usePaseo } from "@getpaseo/plugin/client";
-import { BELT_AGENT_CONFIG } from "../shared/belt";
+import { FALLBACK_AGENT_CONFIG, type AgentCreateConfig } from "../shared/agent-runner";
 import type { BoardItem } from "./board-model";
 
 type PaseoApi = ReturnType<typeof usePaseo>;
@@ -25,7 +25,12 @@ type StartBelt = (input: {
 }) => Promise<{ agentId: string; warnings: string[] }>;
 
 // With `startBelt`, stories run the Story belt (Plan first); epics always run the epic loop.
-export async function startJiraSession(paseo: PaseoApi, item: BoardItem, startBelt?: StartBelt) {
+export async function startJiraSession(
+  paseo: PaseoApi,
+  item: BoardItem,
+  startBelt?: StartBelt,
+  agentConfig?: AgentCreateConfig,
+) {
   if (!item.key) {
     throw new Error("This card has no Jira key.");
   }
@@ -56,7 +61,7 @@ export async function startJiraSession(paseo: PaseoApi, item: BoardItem, startBe
   }
   const agent = await workspace.agents.create({
     title,
-    config: BELT_AGENT_CONFIG,
+    config: agentConfig ?? { ...FALLBACK_AGENT_CONFIG },
     prompt: item.role === "epic" ? epicLoopPrompt(item) : storyPrompt(item),
     labels: {
       jira: item.key,
