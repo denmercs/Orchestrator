@@ -387,9 +387,9 @@ function AutomationPanel({ open, theme, styles }: { open: boolean; theme: Theme;
         <Text style={styles.switchLabel}>{saving ? "Saving…" : enabled ? "On" : "Off"}</Text>
       </View>
       <Text style={styles.muted}>
-        Weekdays 8:00, 12:00, 16:00 · weekends 9:00 (Central). Each run starts a small Haiku agent;
-        runs that find changes also call Claude and publish the dashboard. Off pauses the
-        schedules, nothing is deleted.
+        Mondays and Fridays 13:00 (Central). Each run starts a small Haiku agent; runs that find
+        changes also call Claude and publish the dashboard. Off pauses the schedule, nothing is
+        deleted.
       </Text>
       {!installed ? (
         <Text style={styles.caveat}>Pulse job not found at {automation?.jobPath}. Install it to turn this on.</Text>
