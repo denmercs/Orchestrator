@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
+import type { AgentCreateConfig } from "../shared/agent-runner";
 import { LOOP_AGENT_KIND, type LoopConfig } from "../shared/initiative-loop";
 import { phaseLabel } from "../shared/orchestration";
 import {
@@ -42,7 +43,6 @@ import {
 // their frontmatter, so it resumes from them after a restart. Paseo owns the worktrees and agents.
 
 type PaseoApi = PluginHandlerContext["paseo"];
-const DEFAULT_PROFILE = "default";
 type StoryFile = ReturnType<typeof readStoryFiles>[number];
 type Initiative = { root: string; slug: string; dir: string };
 
@@ -62,25 +62,6 @@ const STATUS_FOR: Record<LoopStep, string> = {
 };
 
 const execFileAsync = promisify(execFile);
-
-// Every step runs on Paseo's agent profile named "default", read on each start so edits to it apply
-// to the next step. Without one, Claude runs on its own default model.
-async function stepAgentConfig(api: PaseoApi) {
-  try {
-    const profile = (await api.config.get()).config.agentProfiles?.find((item) => item.name === DEFAULT_PROFILE);
-    if (profile) {
-      return {
-        provider: profile.model ? `${profile.provider}/${profile.model}` : profile.provider,
-        ...(profile.modeId ? { modeId: profile.modeId } : {}),
-        ...(profile.thinkingOptionId ? { thinkingOptionId: profile.thinkingOptionId } : {}),
-        ...(profile.featureValues ? { featureValues: profile.featureValues } : {}),
-      };
-    }
-  } catch (error) {
-    console.warn("orchestrator: unable to read Paseo agent profiles", error);
-  }
-  return { provider: "claude", modeId: "auto" };
-}
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
 
@@ -168,7 +149,10 @@ function block(story: StoryFile, reason: string) {
   });
 }
 
-export function createInitiativeLoop(readConfig: () => Promise<LoopConfig>) {
+export function createInitiativeLoop(
+  readConfig: () => Promise<LoopConfig>,
+  readAgentConfig: (api: PaseoApi) => Promise<AgentCreateConfig>,
+) {
   let paseo: PaseoApi | null = null;
   // Steps started by this process, so a repeated event can't start one twice before its label shows.
   const started = new Set<string>();
@@ -220,7 +204,7 @@ export function createInitiativeLoop(readConfig: () => Promise<LoopConfig>) {
       const label = round > 1 ? `${STEP_LABELS[step]} ${round}` : STEP_LABELS[step];
       const agent = await api.workspaces.ref(workspace).agents.create({
         title: `${MARK} ${story.id} · ${label} — ${ctx.title}`.slice(0, 60),
-        config: await stepAgentConfig(api),
+        config: await readAgentConfig(api),
         prompt: stepPrompt(step, ctx, { round, failing }),
         labels,
       });

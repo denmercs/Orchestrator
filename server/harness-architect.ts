@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
+import type { AgentCreateConfig } from "../shared/agent-runner";
 import { phaseLabel, type HarnessTracker } from "../shared/orchestration";
 import { ARCHITECTURE_METHOD } from "./architecture-method";
 import { refreshPlanFromJira, syncPlanFromStories } from "./plan-status";
@@ -13,7 +14,6 @@ import { PHASE_FILE, epicDirFor, frontmatter, initiativeTitle, initiativeTracker
 
 type PaseoApi = PluginHandlerContext["paseo"];
 
-const ARCHITECT_CONFIG = { provider: "claude/claude-opus-5-5" };
 const ARCHITECT_KIND = "phase-architect";
 // Marks architecture sessions in the session list, like ★ marks harness sessions.
 const ARCHITECT_MARK = "📐";
@@ -64,7 +64,11 @@ async function architectRunning(paseo: PaseoApi, dir: string) {
 }
 
 // Starts the architecture agent for a phase (repo-relative epic folder). Refused while one is open.
-export async function startPhaseArchitect(paseo: PaseoApi, input: { repo: string; epic: string }) {
+export async function startPhaseArchitect(
+  paseo: PaseoApi,
+  input: { repo: string; epic: string },
+  agentConfig: AgentCreateConfig,
+) {
   try {
     const root = resolve(input.repo);
     const epicDir = epicDirFor(root, input.epic);
@@ -83,7 +87,7 @@ export async function startPhaseArchitect(paseo: PaseoApi, input: { repo: string
     const title = meta.title || epicPath.split("/").pop() || "";
     const agent = await paseo.agents.create({
       title: `${ARCHITECT_MARK} ${phase} architecture — ${title}`.slice(0, 60),
-      config: ARCHITECT_CONFIG,
+      config: agentConfig,
       cwd: root,
       prompt: architectPrompt({
         epicPath,

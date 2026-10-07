@@ -16,6 +16,11 @@ import {
   type JiraPullRequest,
   type JiraSprint,
 } from "../shared/orchestration";
+import {
+  agentRunnerSettings,
+  profilesFromConfigGet,
+  resolveRunnerConfig,
+} from "../shared/agent-runner";
 import { beltSettings, startBeltStory } from "../shared/belt";
 import { jiraBoardSettings } from "../shared/settings";
 import { PR_POLL_MS } from "../shared/timing";
@@ -30,6 +35,7 @@ import {
 import { DailyVerseCard } from "./daily-verse";
 import { useEpicBoard } from "./epic-board";
 import { ProdPulseButton, ProdPulseDrawer, useProdPulse } from "./prod-pulse-drawer";
+import { RunnerPicker } from "./runner-picker";
 import { SkillsButton, SkillsDrawer } from "./skills-drawer";
 import { startJiraSession } from "./start-jira-session";
 import { StandupSection } from "./standup-section";
@@ -45,6 +51,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const loadJiraPrs = useRpc(listJiraPullRequests);
   const moveIssue = useRpc(moveJiraIssue);
   const boardSettings = useSettings(jiraBoardSettings);
+  const runner = useSettings(agentRunnerSettings);
   const belt = useSettings(beltSettings);
   const startBelt = useRpc(startBeltStory);
   const defaultBoardId = boardSettings.status === "ready" ? boardSettings.values.defaultBoardId : "";
@@ -322,7 +329,12 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     setSessionError(null);
     try {
       const beltOn = belt.status === "ready" && belt.values.enabled;
-      const started = await startJiraSession(paseo, item, beltOn ? startBelt : undefined);
+      const profileId = runner.status === "ready" ? runner.values.profileId : "";
+      const { config: agentConfig } = resolveRunnerConfig(
+        profilesFromConfigGet(await paseo.config.get()),
+        profileId,
+      );
+      const started = await startJiraSession(paseo, item, beltOn ? startBelt : undefined, agentConfig);
       if (started.warnings.length > 0) {
         setSessionError(`Started, with warnings: ${started.warnings.join(" ")}`);
       }
@@ -359,6 +371,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         <View style={styles.titleRow}>
           <Text style={styles.title}>Orchestration</Text>
           <View style={styles.titleActions}>
+            <RunnerPicker theme={theme} compact={layout.compact} />
             <SkillsButton
               theme={theme}
               beltOn={belt.status === "ready" && belt.values.enabled}

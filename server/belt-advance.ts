@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
+import type { AgentCreateConfig } from "../shared/agent-runner";
 import {
-  BELT_AGENT_CONFIG,
   BELT_LABEL,
   PHASE_IDS,
   closePrompt,
@@ -22,6 +22,7 @@ import { installSkills } from "./skill-sources";
 type PaseoApi = PluginHandlerContext["paseo"];
 type Labels = Record<string, string>;
 type ReadConfig = () => Promise<BeltConfig | null>;
+type ReadAgentConfig = (paseo: PaseoApi) => Promise<AgentCreateConfig>;
 
 // Phases already started by this process, so a repeated event can't start one twice.
 const started = new Set<string>();
@@ -30,6 +31,7 @@ export async function startStory(
   paseo: PaseoApi,
   config: BeltConfig,
   input: { workspaceId: string; key: string; title: string; url: string | null },
+  agentConfig: AgentCreateConfig,
 ) {
   const plan = config.phases[0];
   if (!plan) {
@@ -48,6 +50,7 @@ export async function startStory(
   const result = await startPhase(paseo, config, plan, ticket, labels, {
     workspaceId: input.workspaceId,
     cwd,
+    agentConfig,
   });
   if (!result) {
     throw new Error(`${input.key} already has a ${plan.label} agent running.`);
@@ -59,6 +62,7 @@ export async function advanceBelt(
   paseo: PaseoApi,
   event: { agent: PluginHookAgent; outcome: PluginTurnOutcome },
   readConfig: ReadConfig,
+  readAgentConfig: ReadAgentConfig,
 ) {
   if (event.outcome.kind !== "completed") {
     return;
@@ -106,7 +110,10 @@ export async function advanceBelt(
 
   const ticket: Ticket = { key: labels.jira, title: labels["jira-title"] ?? "", url: labels["jira-url"] || null };
   const target = { workspaceId: event.agent.workspaceId, cwd: event.agent.cwd };
-  await startPhase(paseo, config, next, ticket, { ...labels, round: String(nextRound) }, target).catch(
+  await startPhase(paseo, config, next, ticket, { ...labels, round: String(nextRound) }, {
+    ...target,
+    agentConfig: await readAgentConfig(paseo),
+  }).catch(
     (error) => {
       console.warn("orchestrator: unable to start next phase", ticket.key, next?.id, error);
     },
@@ -114,7 +121,12 @@ export async function advanceBelt(
 }
 
 // A story PR merged: run the close step once, in the story's workspace.
-export async function closeMergedStories(paseo: PaseoApi, fresh: MergedPr[], readConfig: ReadConfig) {
+export async function closeMergedStories(
+  paseo: PaseoApi,
+  fresh: MergedPr[],
+  readConfig: ReadConfig,
+  readAgentConfig: ReadAgentConfig,
+) {
   const config = await readConfig();
   if (!config?.closeOnMerge) {
     return;
@@ -139,7 +151,7 @@ export async function closeMergedStories(paseo: PaseoApi, fresh: MergedPr[], rea
     started.add(dedupe);
     const options = {
       title: phaseTitle(key, ticket.title, "Close"),
-      config: BELT_AGENT_CONFIG,
+      config: await readAgentConfig(paseo),
       prompt: closePrompt(ticket),
       labels,
     };
@@ -162,7 +174,7 @@ async function startPhase(
   phase: Phase,
   ticket: Ticket,
   baseLabels: Labels,
-  target: { workspaceId: string | null; cwd: string | null },
+  target: { workspaceId: string | null; cwd: string | null; agentConfig: AgentCreateConfig },
 ) {
   const round = baseLabels.round ?? "1";
   const labels: Labels = { ...baseLabels, kind: "session", phase: phase.id, round };
@@ -181,7 +193,7 @@ async function startPhase(
     const label = Number(round) > 1 ? `${phase.label} ${round}` : phase.label;
     const options = {
       title: phaseTitle(ticket.key, ticket.title, label),
-      config: BELT_AGENT_CONFIG,
+      config: target.agentConfig,
       prompt: phasePrompt(config, phase, ticket, Number(round)),
       labels,
     };
