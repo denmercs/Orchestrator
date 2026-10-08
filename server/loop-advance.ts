@@ -88,24 +88,9 @@ async function promptParents(
   const agents = listed.entries
     .map((entry) => entry.agent)
     .filter((agent) => !agent.archivedAt && agent.status !== "closed");
-  const parentIds = new Set<string>();
-
-  for (const pr of fresh) {
-    const children = agents.filter((agent) => agent.labels?.jira === pr.key && pr.key);
-    for (const child of children) {
-      const parentId = agentParentId(child.labels);
-      if (parentId) {
-        parentIds.add(parentId);
-      }
-    }
-  }
-
+  const parentIds = parentsForMerges(agents, fresh);
   if (parentIds.size === 0) {
-    for (const agent of agents) {
-      if (agent.labels?.kind === "epic-loop") {
-        parentIds.add(agent.id);
-      }
-    }
+    return;
   }
 
   const now = Date.now();
@@ -119,6 +104,7 @@ async function promptParents(
     `Signal: ${reason}`,
     "",
     "Check remaining open children in dependency order. Spawn the next ready ticket if one is unblocked. Do not re-implement shipped work. Stop if the epic is done or waiting on a human.",
+    "Check children by status only; do not read their transcripts. End your turn when nothing is ready; the plugin wakes you on the next merge.",
   ].join("\n");
 
   for (const parentId of parentIds) {
@@ -139,7 +125,38 @@ async function promptParents(
   }
 }
 
-function agentParentId(labels: Record<string, string> | undefined) {
+type ListedAgent = {
+  id: string;
+  title?: string | null;
+  parentAgentId?: string | null;
+  labels?: Readonly<Record<string, string>>;
+};
+
+// The epic parents to wake: only the parent of a session working a merged PR's Jira key. A child is
+// matched by its jira label or by a title that starts with the key ("KEY — summary"). A merge no
+// child session is working wakes nobody; waking every epic parent on any merge replays each
+// parent's whole conversation for nothing.
+export function parentsForMerges(agents: readonly ListedAgent[], fresh: readonly Pick<MergedPr, "key">[]) {
+  const parentIds = new Set<string>();
+  for (const pr of fresh) {
+    const key = pr.key;
+    if (!key) continue;
+    for (const agent of agents) {
+      if (!worksOn(agent, key)) continue;
+      const parentId = agentParentId(agent.labels) ?? agent.parentAgentId ?? null;
+      if (parentId && parentId !== agent.id) parentIds.add(parentId);
+    }
+  }
+  return parentIds;
+}
+
+function worksOn(agent: ListedAgent, key: string) {
+  if (agent.labels?.jira === key) return true;
+  const title = (agent.title ?? "").trim();
+  return title === key || new RegExp(`^${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9-])`).test(title);
+}
+
+function agentParentId(labels: Readonly<Record<string, string>> | undefined) {
   const value = labels?.[PARENT_LABEL];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }

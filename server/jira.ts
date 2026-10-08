@@ -143,6 +143,46 @@ export async function moveIssueToColumn(
   }
 }
 
+// Moves an issue, and its subtasks first, to a status in Jira's "done" category. Issues already
+// done are left alone. Used when a Story belt PR merges, in place of an agent.
+export async function closeIssue(key: string): Promise<{ ok: boolean; error: string | null }> {
+  try {
+    const credentials = await resolveCredentials();
+    const issue = await jiraGet(credentials, `/rest/api/3/issue/${encodeURIComponent(key)}?fields=subtasks,status`);
+    const fields = asRecord(issue.fields);
+    const subtasks = (Array.isArray(fields?.subtasks) ? fields.subtasks : []).map((raw) => asRecord(raw));
+    for (const subtask of subtasks) {
+      const subKey = asString(subtask?.key);
+      if (subKey && !isDone(asRecord(subtask?.fields)?.status)) {
+        await transitionToDone(credentials, subKey);
+      }
+    }
+    if (!isDone(fields?.status)) {
+      await transitionToDone(credentials, key);
+    }
+    return { ok: true, error: null };
+  } catch (error) {
+    return { ok: false, error: publicError(error) };
+  }
+}
+
+function isDone(status: unknown) {
+  return asString(asRecord(asRecord(status)?.statusCategory)?.key) === "done";
+}
+
+async function transitionToDone(credentials: JiraCredentials, key: string) {
+  const path = `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`;
+  const body = await jiraGet(credentials, path);
+  const transition = (Array.isArray(body.transitions) ? body.transitions : [])
+    .map((raw) => asRecord(raw))
+    .find((raw) => isDone(asRecord(raw?.to)));
+  const id = transition?.id;
+  if (typeof id !== "string" && typeof id !== "number") {
+    throw new Error(`Jira has no transition to a done status for ${key}.`);
+  }
+  await jiraSend(credentials, path, { transition: { id: String(id) } });
+}
+
 const PR_CACHE_MS = 60_000;
 const PR_ISSUE_LIMIT = 60;
 const PR_CONCURRENCY = 6;

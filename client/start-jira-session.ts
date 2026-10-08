@@ -129,8 +129,10 @@ function epicLoopPrompt(item: BoardItem) {
     "2. Plan remaining open children in dependency order.",
     `3. For each ready child, create a Paseo subagent titled "<KEY> — <summary>" in its own worktree off this repo's main branch, and name that worktree's workspace "${WORKER_MARK} <KEY> — <summary>" so it reads as a worker in the sidebar.`,
     "4. Keep this session as the epic parent. Do not implement child tickets yourself unless a child is blocked on a decision only you can make.",
-    "5. Loop: check child sessions, unblock, spawn the next ready ticket, and stop when the epic's open work is done or waiting on a human.",
-    "6. The Orchestrator plugin will poke this session when a child pull request merges (immediately after the child turn ends, and every 2 minutes as a fallback). Treat that as the signal to start the next ready ticket.",
+    "5. Give each child session the label jira=<KEY> and start its title with the key. The Orchestrator plugin uses them to find which epic parent to wake.",
+    "6. Check child sessions by status only. Do not read their transcripts unless a child is blocked and you must unblock it.",
+    "7. When nothing more is ready, end your turn. Do not wait, sleep or poll inside a turn. The plugin wakes this session when one of its children's pull requests merges; treat that as the signal to start the next ready ticket.",
+    "8. Stop when the epic's open work is done or waiting on a human.",
     "",
     "Use Paseo tools or the Paseo CLI to create those child sessions. Host MCP servers are already authenticated.",
   ].join("\n");

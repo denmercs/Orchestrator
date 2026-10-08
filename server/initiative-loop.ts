@@ -25,18 +25,26 @@ import { failureReport, prForBranch, prStatus } from "./pr-checks";
 import {
   MARKERS,
   STEP_LABELS,
+  afterImplement,
+  implementCommitMessage,
+  readCycles,
   readMarker,
+  readSection,
   seedState,
   stepPrompt,
   writeMarker,
+  type Cycle,
   type LoopStep,
   type StoryContext,
-} from "./story-method";
+} from "../shared/story-method";
+import { withMcpScope } from "./mcp-scope";
+import { commitStory, openStoryPr, pushStoryFix } from "./story-git";
 
 // The initiative loop, driven by Paseo events rather than a long-running process:
 //   Start            marks the initiative loop: on and starts every ready story of its active phase.
 //   agent.turn_ended reads the step's marker in the story worktree's .harness/state.md and starts the
-//                    next step (Plan → Implement → Review → Open PR) in a fresh agent.
+//                    next step in a fresh agent: Plan → Implement (one agent per cycle, committed by the
+//                    plugin) → Review → the plugin pushes and opens the PR itself.
 //   the 2-minute tick watches each open PR: a failing check starts a Fix CI agent, a merge marks the
 //                    story merged, archives its workspace and starts the next ready story.
 // The story files are the state: the loop writes status, branch, workspace, agent, pr and ci into
@@ -130,6 +138,7 @@ function storyContext(init: Initiative, phaseDir: string, story: StoryFile): Sto
     id: story.id,
     title: story.meta.title || story.id,
     body: story.body,
+    ticketUrl: null,
     storyFile: story.path,
     storiesDir: join(phaseDir, "stories"),
     phaseLabel: phaseLabel(meta.phase ?? ""),
@@ -180,7 +189,7 @@ export function createInitiativeLoop(
     story: StoryFile,
     step: LoopStep,
     round: number,
-    failing?: string,
+    extra: { failing?: string; cycle?: Cycle } = {},
   ) {
     const { workspace, worktree } = story.meta;
     if (!workspace || !worktree) throw new Error(`${story.id} has no workspace.`);
@@ -192,6 +201,7 @@ export function createInitiativeLoop(
       "loop-story": story.id,
       "loop-step": step,
       "loop-round": String(round),
+      ...(extra.cycle ? { "loop-cycle": String(extra.cycle.number) } : {}),
     };
     const key = Object.values(labels).join("|");
     if (started.has(key)) return null;
@@ -201,19 +211,29 @@ export function createInitiativeLoop(
     if (existing) return null;
     started.add(key);
     try {
-      const state = readText(stateFile(worktree));
-      writeFileSync(stateFile(worktree), writeMarker(state || seedState(storyContext(init, phaseDir, story)), `${step}-running`), "utf8");
+      const state = readText(stateFile(worktree)) || seedState(storyContext(init, phaseDir, story));
+      writeFileSync(stateFile(worktree), writeMarker(state, `${step}-running`), "utf8");
       const ctx = storyContext(init, phaseDir, story);
-      const label = round > 1 ? `${STEP_LABELS[step]} ${round}` : STEP_LABELS[step];
-      const agent = await api.workspaces.ref(workspace).agents.create({
-        title: `${MARK} ${story.id} · ${label} — ${ctx.title}`.slice(0, 60),
-        config: await readAgentConfig(api),
-        prompt: stepPrompt(step, ctx, { round, failing }),
-        labels,
-      });
+      const base = extra.cycle ? `${STEP_LABELS[step]} ${extra.cycle.number}` : STEP_LABELS[step];
+      const label = round > 1 ? `${base} r${round}` : base;
+      const config = await readAgentConfig(api);
+      // Story steps work from the story file and the worktree; none of them needs an MCP server.
+      const agent = await withMcpScope(worktree, "none", () =>
+        api.workspaces.ref(workspace).agents.create({
+          title: `${MARK} ${story.id} · ${label} — ${ctx.title}`.slice(0, 60),
+          config,
+          prompt: stepPrompt(step, ctx, {
+            round,
+            failing: extra.failing,
+            cycle: extra.cycle,
+            plan: readSection(state, "Plan"),
+          }),
+          labels,
+        }),
+      );
       writeFrontmatter(story.path, {
         status: STATUS_FOR[step],
-        ...(step === "fix" ? {} : { step, round }),
+        ...(step === "fix" ? {} : { step, round, cycle: extra.cycle?.number ?? null }),
         agent: agent.id,
         blocked_reason: null,
         blocked_from: null,
@@ -268,21 +288,38 @@ export function createInitiativeLoop(
     if (!meta.worktree || !ACTIVE.has(meta.status ?? "") || meta.status === "pr-open") return;
     const state = readText(stateFile(meta.worktree));
     if (!state) return;
+    // The tick can see a marker an agent wrote mid-turn. Wait for its turn to end before committing
+    // its work and moving on; the turn-end event does that.
+    if (!turnEnded && meta.agent) {
+      const status = (await api.agents.ref(meta.agent).refresh().catch(() => null))?.agent.status;
+      if (status === "running" || status === "initializing") return;
+    }
     const { marker, detail } = readMarker(state);
     const step = meta.step as LoopStep;
     const round = Number(meta.round) || 1;
     const on = initiativeLoopState(init.dir) === "on";
-    const next = (to: LoopStep, nextRound: number) => (on ? startStep(api, config, init, phaseDir, story, to, nextRound) : null);
+    const next = (to: LoopStep, nextRound: number, cycle?: Cycle) =>
+      on ? startStep(api, config, init, phaseDir, story, to, nextRound, { cycle }) : null;
 
     if (step === "plan") {
-      if (marker === MARKERS.planDone) await next("implement", 1);
+      if (marker === MARKERS.planDone) await next("implement", 1, readCycles(state).find((cycle) => !cycle.done));
       // The planner ended its turn without approval: it is asking you.
       else if (turnEnded && meta.status === "planning") writeFrontmatter(story.path, { status: "awaiting-approval" });
     } else if (step === "implement") {
-      if (marker === MARKERS.implementDone) await next("review", round);
-      else if (marker === MARKERS.implementBlocked) block(story, detail || "Implement is blocked; open its session.");
+      if (marker === MARKERS.implementDone) {
+        const finished = meta.cycle ? Number(meta.cycle) : null;
+        const after = afterImplement(state, finished);
+        if (after.kind === "blocked") {
+          block(story, after.reason);
+          return;
+        }
+        const cycle = finished === null ? null : (readCycles(state).find((item) => item.number === finished) ?? null);
+        await commitStory(meta.worktree, implementCommitMessage(story.id, cycle, round));
+        if (after.kind === "cycle") await next("implement", round, after.cycle);
+        else await next("review", round);
+      } else if (marker === MARKERS.implementBlocked) block(story, detail || "Implement is blocked; open its session.");
     } else if (step === "review") {
-      if (marker === MARKERS.reviewDone) await next("pr", 1);
+      if (marker === MARKERS.reviewDone && on) await openPr(init, phaseDir, story);
       else if (marker === MARKERS.reviewFailed) {
         if (round >= config.reviewRounds) block(story, `Review failed ${round} times; see ## Review findings in the worktree.`);
         else await next("implement", round + 1);
@@ -291,6 +328,32 @@ export function createInitiativeLoop(
       const pr = await prForBranch(meta.worktree, meta.branch ?? "");
       if (pr) writeFrontmatter(story.path, { status: "pr-open", pr: pr.number, ci: "pending" });
       else if (turnEnded) block(story, `Open PR finished but there is no open PR for ${meta.branch}.`);
+    }
+  }
+
+  // Review passed: the plugin commits leftovers, pushes and opens the PR. No agent is needed for this.
+  async function openPr(init: Initiative, phaseDir: string, story: StoryFile) {
+    const { meta } = story;
+    if (!meta.worktree) return;
+    const ctx = storyContext(init, phaseDir, story);
+    try {
+      const pr = await openStoryPr(meta.worktree, { id: story.id, title: ctx.title, branch: meta.branch ?? "", base: ctx.base });
+      writeFileSync(stateFile(meta.worktree), writeMarker(readText(stateFile(meta.worktree)), `${MARKERS.prDone}\n${pr.url}`), "utf8");
+      writeFrontmatter(story.path, { status: "pr-open", step: "pr", round: 1, cycle: null, agent: null, pr: pr.number, ci: "pending" });
+    } catch (error) {
+      block(story, `Could not open the PR: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  // A Fix CI agent finished: commit and push its change so CI runs again.
+  async function finishFix(story: StoryFile) {
+    const { meta } = story;
+    if (!meta.worktree || meta.status !== "pr-open") return;
+    if (readMarker(readText(stateFile(meta.worktree))).marker !== MARKERS.fixDone) return;
+    try {
+      await pushStoryFix(meta.worktree, `${story.id}: Fix CI`);
+    } catch (error) {
+      block(story, `Could not push the CI fix: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -320,7 +383,7 @@ export function createInitiativeLoop(
     }
     writeFrontmatter(story.path, { fixed_sha: pr.headSha, fix_attempts: fixes + 1 });
     const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
-    await startStep(api, config, init, phaseDir, fresh, "fix", fixes + 1, await failureReport(cwd, pr.failing));
+    await startStep(api, config, init, phaseDir, fresh, "fix", fixes + 1, { failing: await failureReport(cwd, pr.failing) });
   }
 
   // Fills free slots in the active phase with ready stories.
@@ -420,13 +483,23 @@ export function createInitiativeLoop(
     },
 
     // A fresh compact's prompt for a loop agent: its step prompt rebuilt from the story files, plus
-    // the resume line. A Fix CI resume has no failure report; the prompt points at the PR's checks.
+    // the resume line. A cycle agent gets its cycle and the plan back, as startStep gave them.
+    // A Fix CI resume has no failure report; the prompt points at the PR's checks.
     async resumePrompt(labels: Record<string, string>): Promise<string | null> {
       const found = labelledStory(labels);
       const step = labels["loop-step"] as LoopStep | undefined;
       if (!found || !step || !(step in STEP_LABELS)) return null;
       const ctx = storyContext(found.init, found.phaseDir, found.story);
-      return `${stepPrompt(step, ctx, { round: Number(labels["loop-round"]) || 1 })}\n\n${RESUME_LINE}`;
+      const state = found.story.meta.worktree ? readText(stateFile(found.story.meta.worktree)) : "";
+      const cycle = labels["loop-cycle"]
+        ? readCycles(state).find((item) => String(item.number) === labels["loop-cycle"])
+        : undefined;
+      const prompt = stepPrompt(step, ctx, {
+        round: Number(labels["loop-round"]) || 1,
+        cycle,
+        plan: readSection(state, "Plan"),
+      });
+      return `${prompt}\n\n${RESUME_LINE}`;
     },
 
     // After a fresh compact, the story's `agent:` follows the new session. Only when it still
@@ -447,8 +520,14 @@ export function createInitiativeLoop(
         const init = initiativeAt(labels["loop-repo"], labels["loop-initiative"]);
         const phaseDir = join(init.dir, PHASES_DIR, labels["loop-phase"] ?? "");
         const story = readStoryFiles(phaseDir).find((item) => item.id === labels["loop-story"]);
-        // Only the story's current step moves it on; an older session talking doesn't.
-        if (!story || labels["loop-step"] !== story.meta.step) return;
+        if (!story) return;
+        if (labels["loop-step"] === "fix") {
+          await finishFix(story);
+          return;
+        }
+        // Only the story's current step (and cycle) moves it on; an older session talking doesn't.
+        if (labels["loop-step"] !== story.meta.step) return;
+        if ((labels["loop-cycle"] ?? "") !== (story.meta.cycle ?? "")) return;
         await reconcile(api, await readConfig(), init, phaseDir, story, true);
         await advance(api, await readConfig(), init);
       });

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,6 +25,8 @@ function fixture(agent = "a1") {
   const phase = join(init, "phases", "1-meter");
   mkdirSync(join(phase, "stories"), { recursive: true });
   mkdirSync(join(worktree, ".harness"), { recursive: true });
+  // The loop commits each finished step in the worktree, so it has to be a repo.
+  execFileSync("git", ["init", "-q"], { cwd: worktree });
   writeFileSync(join(init, "initiative.md"), "---\nloop: on\n---\n# Initiative: Demo\n", "utf8");
   writeFileSync(join(phase, "phase.md"), "---\nphase: 1\ntitle: Meter\n---\n", "utf8");
   const story = join(phase, "stories", "01-story.md");
@@ -96,9 +99,25 @@ test("resumePrompt is the step prompt plus the resume line", async () => {
 
   assert.ok(prompt);
   assert.match(prompt, /^Implement for story S1 — Demo story\.\n/);
-  assert.match(prompt, /Work the unticked cycles in `## Cycles`, in order\./);
+  assert.match(prompt, /## This step: implement the story/);
   assert.ok(prompt.endsWith(`\n\n${RESUME_LINE}`));
   assert.equal(await loop().resumePrompt({ ...labels, "loop-story": "S9" }), null);
+});
+
+test("resumePrompt gives a cycle agent back its cycle and the plan", async () => {
+  const { worktree, labels } = fixture();
+  writeFileSync(
+    join(worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nimplement-running\n\n## Plan\nChange server/meter.ts.\n\n## Cycles\n- [x] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once\n",
+    "utf8",
+  );
+  const prompt = await loop().resumePrompt({ ...labels, "loop-cycle": "2" });
+
+  assert.ok(prompt);
+  assert.match(prompt, /^Implement cycle 2 for story S1 — Demo story\.\n/);
+  assert.match(prompt, /## This step: Cycle 2 only\n- \[ \] Cycle 2 — Warns/);
+  assert.match(prompt, /Change server\/meter\.ts\./);
+  assert.ok(prompt.endsWith(`\n\n${RESUME_LINE}`));
 });
 
 test("after a hand-over, the new agent's implement-done starts exactly one Review agent; a repeat turn end and a tick start none", async () => {

@@ -1,9 +1,11 @@
 import { defineRpc, defineSettings, PluginAttachmentSearchPayloadSchema } from "@getpaseo/plugin";
 import { z } from "zod";
+import { stepPrompt, type Cycle, type StoryContext } from "./story-method";
 
-// Story belt: each phase runs in a fresh agent. A phase ends by writing a marker under
-// `## Status` in .harness/state.md; the server reads that line when the agent's turn ends
-// and starts the next phase.
+// Story belt: a Jira story run through the same steps as the initiative loop (shared/story-method.ts).
+// Plan, each Implement cycle and Review run in fresh agents. A step ends by writing a marker under
+// `## Status` in .harness/state.md; the server reads that line when the agent's turn ends and starts
+// the next one. Done has no agent: the plugin opens the PR and, after the merge, closes the Jira story.
 
 export const PHASE_IDS = ["plan", "implement", "review", "done"] as const;
 export type PhaseId = (typeof PHASE_IDS)[number];
@@ -21,7 +23,8 @@ const extra = skillRef.extend({
 const phase = z.object({
   id: z.enum(PHASE_IDS),
   label: z.string(),
-  runs: skillRef,
+  // A skill the phase's agent is told to use. null runs the built-in step on its own.
+  runs: skillRef.nullable(),
   extras: z.array(extra),
   then: z.enum(THEN_VALUES),
 });
@@ -43,34 +46,10 @@ export type Phase = z.infer<typeof phase>;
 export type SkillSource = z.infer<typeof source>;
 
 export const DEFAULT_PHASES: Phase[] = [
-  {
-    id: "plan",
-    label: "Plan",
-    runs: { name: "ss-plan", source: MACHINE_SOURCE },
-    extras: [],
-    then: "you",
-  },
-  {
-    id: "implement",
-    label: "Implement",
-    runs: { name: "ss-implement", source: MACHINE_SOURCE },
-    extras: [{ name: "tdd", source: MACHINE_SOURCE }],
-    then: "auto",
-  },
-  {
-    id: "review",
-    label: "Review",
-    runs: { name: "ss-review", source: MACHINE_SOURCE },
-    extras: [{ name: "ss-security-audit", source: MACHINE_SOURCE, required: true }],
-    then: "pass",
-  },
-  {
-    id: "done",
-    label: "Done",
-    runs: { name: "ss-submit-pr", source: MACHINE_SOURCE },
-    extras: [],
-    then: "merge",
-  },
+  { id: "plan", label: "Plan", runs: null, extras: [], then: "you" },
+  { id: "implement", label: "Implement", runs: null, extras: [], then: "auto" },
+  { id: "review", label: "Review", runs: null, extras: [], then: "pass" },
+  { id: "done", label: "Done", runs: null, extras: [], then: "merge" },
 ];
 
 // Which handoffs each phase may use. Done always waits for the merge.
@@ -85,8 +64,6 @@ const beltValues = z.object({
   // Off: Start keeps the single-agent session. On: Start runs the Story belt.
   enabled: z.boolean().default(false),
   phases: z.array(phase).default(DEFAULT_PHASES),
-  implementMode: z.enum(["step", "loop"]).default("step"),
-  loopMax: z.number().int().min(1).max(20).default(6),
   reviewRounds: z.number().int().min(1).max(20).default(3),
   closeOnMerge: z.boolean().default(true),
   sources: z.array(source).default([]),
@@ -95,14 +72,33 @@ const beltValues = z.object({
 export const beltSettings = defineSettings({
   id: "belt",
   scope: "host",
-  version: 2,
+  version: 3,
   schema: beltValues,
   migrate(values) {
     const row = values !== null && typeof values === "object" ? (values as Record<string, unknown>) : {};
-    const parsed = beltValues.safeParse({ ...row, sources: [] });
+    const phases = Array.isArray(row.phases) ? row.phases.map(withoutSkillsync) : undefined;
+    const parsed = beltValues.safeParse({ ...row, phases });
     return parsed.success ? parsed.data : beltValues.parse({});
   },
 });
+
+// skillsync is retired: its machine skills (ss-*, tdd) were the old phase defaults. Saved phases drop
+// them so the built-in steps run; skills from connected sources are kept.
+function isSkillsync(ref: unknown) {
+  const row = ref !== null && typeof ref === "object" ? (ref as Record<string, unknown>) : {};
+  const name = typeof row.name === "string" ? row.name : "";
+  return row.source === MACHINE_SOURCE && (name.startsWith("ss-") || name === "tdd");
+}
+
+export function withoutSkillsync(saved: unknown) {
+  if (saved === null || typeof saved !== "object") return saved;
+  const row = saved as Record<string, unknown>;
+  return {
+    ...row,
+    runs: row.runs === undefined || isSkillsync(row.runs) ? null : row.runs,
+    extras: Array.isArray(row.extras) ? row.extras.filter((extra) => !isSkillsync(extra)) : [],
+  };
+}
 
 export type BeltConfig = z.infer<typeof beltValues>;
 
@@ -216,24 +212,12 @@ export const startBeltStory = defineRpc({
   output: z.object({ agentId: z.string(), warnings: z.array(z.string()) }),
 });
 
-export const BELT_AGENT_CONFIG = {
-  provider: "cursor/grok-4.6",
-  modeId: "agent",
-  thinkingOptionId: "medium",
-  featureValues: { auto_accept: true },
-};
-
 export const BELT_LABEL = "story";
 
 export type Ticket = { key: string; title: string; url: string | null };
 
 export function doneMarker(id: PhaseId) {
   return `${id}-done`;
-}
-
-export function nextPhase(phases: Phase[], id: PhaseId) {
-  const index = phases.findIndex((p) => p.id === id);
-  return index >= 0 ? (phases[index + 1] ?? null) : null;
 }
 
 export function phaseTitle(key: string, title: string, phaseLabel: string) {
@@ -250,74 +234,55 @@ export function phaseSkills(phase: Phase) {
   return { runs: phase.runs, extras: [...phase.extras, ...required] };
 }
 
-export function phasePrompt(config: BeltConfig, phase: Phase, ticket: Ticket, round = 1) {
+export function beltStory(ticket: Ticket, branch = "", base = "origin/main"): StoryContext {
+  return {
+    id: ticket.key,
+    title: ticket.title,
+    body: "",
+    ticketUrl: ticket.url,
+    storyFile: null,
+    storiesDir: null,
+    phaseLabel: null,
+    phaseTitle: null,
+    architectureFile: null,
+    initiativeTitle: null,
+    initiativeFile: null,
+    branch,
+    base,
+  };
+}
+
+export type PhasePromptOptions = {
+  round?: number;
+  cycle?: Cycle;
+  plan?: string;
+  branch?: string;
+  base?: string;
+};
+
+export const DONE_DESCRIPTION =
+  "No agent. The plugin commits anything left, pushes the branch and opens the PR from .harness/pr-body.md, then waits for you to merge.";
+
+export function phasePrompt(phase: Phase, ticket: Ticket, options: PhasePromptOptions = {}) {
+  if (phase.id === "done") return DONE_DESCRIPTION;
   const skills = phaseSkills(phase);
-  const fixing = phase.id === "implement" && round > 1;
-  const runs =
-    phase.id === "implement" && config.implementMode === "loop" && !fixing ? "ss-loop" : skills.runs.name;
-  const extras = skills.extras.map((e) => e.name);
+  const names = [skills.runs?.name, ...skills.extras.map((e) => e.name)].filter((name): name is string => Boolean(name));
+  const story = beltStory(ticket, options.branch, options.base);
   const lines = [
-    `/${runs} ${ticket.key} — ${ticket.title}`,
-    "",
-    `Story belt, phase ${PHASE_IDS.indexOf(phase.id) + 1}/${PHASE_IDS.length}: ${phase.label}${round > 1 ? ` (round ${round})` : ""}. You are a fresh agent for this phase only.`,
-    ticket.url ? `Jira: ${ticket.url}` : "",
-    extras.length > 0 ? `Also use these skills: ${extras.join(", ")}.` : "",
-    "Read the ticket and .harness/state.md with the attached MCP tools and files. Host MCP servers are already authenticated; do not open a browser or ask anyone to log in.",
-    "",
-    "Phase contract:",
-    ...phaseContract(config, phase, fixing),
-    ...(phase.then === "you" && phase.id !== "plan"
-      ? ["- Before writing the done marker, summarise the result and wait for the user to say go."]
-      : []),
-    "Do not start the next phase yourself. The Orchestrator plugin starts it in a fresh agent when it sees the marker.",
+    stepPrompt(phase.id, story, {
+      round: options.round ?? 1,
+      cycle: options.cycle,
+      plan: options.plan,
+      skills: names,
+    }),
   ];
-  return lines.filter((line, i) => line !== "" || lines[i - 1] !== "").join("\n");
-}
-
-const STATUS =
-  "the `## Status` section of `.harness/state.md` (replace its contents with the marker on its own line)";
-
-function phaseContract(config: BeltConfig, phase: Phase, fixing: boolean) {
-  const marker = `\`${doneMarker(phase.id)}\``;
-  if (phase.id === "plan") {
-    return phase.then === "you"
-      ? [
-          `- When the user has explicitly approved the plan, set ${STATUS} to ${marker}.`,
-          "- Do not write the marker before approval. Asking questions and waiting is expected.",
-        ]
-      : [`- When the plan is complete, set ${STATUS} to ${marker}.`];
+  if (phase.id === "plan" && phase.then === "auto") {
+    lines.push("", "This belt runs Plan without approval: when the plan is complete, set `## Status` to `plan-done` without waiting.");
   }
-  if (phase.id === "implement") {
-    return [
-      fixing
-        ? "- Review failed. Fix only the findings listed under `## Status` / the review notes in .harness/state.md, with tests."
-        : config.implementMode === "loop"
-          ? `- Walk the Remaining cycles (at most ${config.loopMax}).`
-          : "- Work the RED→GREEN plan cycle by cycle.",
-      `- When every cycle is green${fixing ? " and the findings are fixed" : ""}, set ${STATUS} to ${marker}.`,
-      "- If you are blocked, set it to `implement-blocked` and say why.",
-    ];
+  if (phase.id !== "plan" && phase.then === "you") {
+    lines.push("", "Before writing your marker, summarise the result and wait for the user to say go.");
   }
-  if (phase.id === "review") {
-    return [
-      "- Review as a fresh critic, including the security audit. Do not fix findings yourself.",
-      `- On PASS, set ${STATUS} to ${marker}.`,
-      "- On FAIL, set it to `review-failed` and list the findings on the lines under it.",
-    ];
-  }
-  return [
-    "- Open the pull request and watch CI.",
-    `- When the PR is open and CI is green, set ${STATUS} to ${marker}.`,
-  ];
-}
-
-export function closePrompt(ticket: Ticket) {
-  return [
-    `/ss-close-story ${ticket.key}`,
-    "",
-    `The pull request for ${ticket.key} — ${ticket.title} merged. Close the story (subtasks first) with the attached Jira MCP tools.`,
-    "Host MCP servers are already authenticated; do not open a browser or ask anyone to log in.",
-  ].join("\n");
+  return lines.join("\n");
 }
 
 export function readStatus(stateMarkdown: string) {

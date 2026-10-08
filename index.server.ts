@@ -1,7 +1,8 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { loadDailyVerse } from "./server/bible-verse";
 import { listMergedPrs } from "./server/github-prs";
-import { readHostMcpServers } from "./server/host-mcp";
+import { pickMcpServers, readHostMcpServers } from "./server/host-mcp";
+import { mcpScopeFor } from "./server/mcp-scope";
 import {
   listAccessibleJiraBoards,
   listMyWorkStories,
@@ -149,7 +150,7 @@ export default function contribute(server: PluginServerContext) {
     return values?.enabled ? values : null;
   };
   const loop = createLoopAdvance((paseo, fresh) =>
-    closeMergedStories(paseo, fresh, readBelt, readAgentConfig),
+    closeMergedStories(paseo, fresh, readBelt),
   );
   server.handle(getSkillCatalog, async () => loadCatalog((await readBeltValues())?.sources ?? []));
   server.handle(addSkillSource, ({ location }) => addSource(location));
@@ -213,7 +214,7 @@ export default function contribute(server: PluginServerContext) {
     return listMergedPrs();
   });
   const offBeforeCreate = server.before("agent.create", async ({ request }) => {
-    const hostServers = await readHostMcpServers();
+    const hostServers = pickMcpServers(await readHostMcpServers(), mcpScopeFor(request.config.cwd));
     if (Object.keys(hostServers).length === 0) {
       return;
     }

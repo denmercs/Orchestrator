@@ -267,67 +267,73 @@ function PhaseCard({
         <Text style={[styles.muted, styles.pushRight]}>then {THEN_LABEL[phase.then]}</Text>
       </View>
 
-      <View style={styles.rowWrap}>
-        <Text style={styles.label}>Runs</Text>
-        <Chip
-          label={`${phase.runs.name} · ${sourceLabel(values, phase.runs.source)} ▾`}
-          active
-          styles={styles}
-          onPress={() => setPicking(picking === "runs" ? null : "runs")}
-        />
-        {!known(phase.runs) ? <Text style={styles.warn}>not found</Text> : null}
-        {phase.id === "implement" && values.implementMode === "loop" ? (
-          <Text style={styles.muted}>loop mode runs ss-loop</Text>
-        ) : null}
-      </View>
-      {picking === "runs" ? (
-        <SkillPicker
-          belt={belt}
-          values={values}
-          styles={styles}
-          current={phase.runs}
-          onPick={(ref) => {
-            onChange((p) => ({ ...p, runs: ref, extras: p.extras.filter((e) => !sameRef(e, ref)) }));
-            setPicking(null);
-          }}
-          onCancel={() => setPicking(null)}
-        />
-      ) : null}
-
-      <View style={styles.gap6}>
-        <Text style={styles.label}>Also loads</Text>
-        <View style={styles.chipRow}>
-          {skills.extras.map((extra) => (
+      {phase.id === "done" ? null : (
+        <>
+          <View style={styles.rowWrap}>
+            <Text style={styles.label}>Runs</Text>
             <Chip
-              key={`${extra.source}:${extra.name}`}
-              label={`${extra.required ? "required · " : ""}${extra.name} · ${sourceLabel(values, extra.source)}${known(extra) ? "" : " · not found"}${extra.required ? "" : "  ×"}`}
+              label={phase.runs ? `${phase.runs.name} · ${sourceLabel(values, phase.runs.source)} ▾` : "built-in step ▾"}
+              active
               styles={styles}
-              onPress={
-                extra.required
-                  ? undefined
-                  : () => onChange((p) => ({ ...p, extras: p.extras.filter((e) => !sameRef(e, extra)) }))
-              }
+              onPress={() => setPicking(picking === "runs" ? null : "runs")}
             />
-          ))}
-          <Chip label="+ add skill" styles={styles} onPress={() => setPicking(picking === "extra" ? null : "extra")} />
-        </View>
-        {picking === "extra" ? (
-          <SkillPicker
-            belt={belt}
-            values={values}
-            styles={styles}
-            onPick={(ref) => {
-              onChange((p) =>
-                sameRef(p.runs, ref) || p.extras.some((e) => sameRef(e, ref))
-                  ? p
-                  : { ...p, extras: [...p.extras, ref] },
-              );
-              setPicking(null);
-            }}
-            onCancel={() => setPicking(null)}
-          />
-        ) : null}
-      </View>
+            {phase.runs && !known(phase.runs) ? <Text style={styles.warn}>not found</Text> : null}
+            {phase.runs ? (
+              <Pressable accessibilityRole="button" onPress={() => onChange((p) => ({ ...p, runs: null }))}>
+                <Text style={styles.link}>use built-in</Text>
+              </Pressable>
+            ) : null}
+          </View>
+          {picking === "runs" ? (
+            <SkillPicker
+              belt={belt}
+              values={values}
+              styles={styles}
+              current={phase.runs ?? undefined}
+              onPick={(ref) => {
+                onChange((p) => ({ ...p, runs: ref, extras: p.extras.filter((e) => !sameRef(e, ref)) }));
+                setPicking(null);
+              }}
+              onCancel={() => setPicking(null)}
+            />
+          ) : null}
+
+          <View style={styles.gap6}>
+            <Text style={styles.label}>Also loads</Text>
+            <View style={styles.chipRow}>
+              {skills.extras.map((extra) => (
+                <Chip
+                  key={`${extra.source}:${extra.name}`}
+                  label={`${extra.required ? "required · " : ""}${extra.name} · ${sourceLabel(values, extra.source)}${known(extra) ? "" : " · not found"}${extra.required ? "" : "  ×"}`}
+                  styles={styles}
+                  onPress={
+                    extra.required
+                      ? undefined
+                      : () => onChange((p) => ({ ...p, extras: p.extras.filter((e) => !sameRef(e, extra)) }))
+                  }
+                />
+              ))}
+              <Chip label="+ add skill" styles={styles} onPress={() => setPicking(picking === "extra" ? null : "extra")} />
+            </View>
+            {picking === "extra" ? (
+              <SkillPicker
+                belt={belt}
+                values={values}
+                styles={styles}
+                onPick={(ref) => {
+                  onChange((p) =>
+                    (p.runs !== null && sameRef(p.runs, ref)) || p.extras.some((e) => sameRef(e, ref))
+                      ? p
+                      : { ...p, extras: [...p.extras, ref] },
+                  );
+                  setPicking(null);
+                }}
+                onCancel={() => setPicking(null)}
+              />
+            ) : null}
+          </View>
+        </>
+      )}
 
       <PhaseSettings phase={phase} belt={belt} values={values} styles={styles} />
 
@@ -351,7 +357,7 @@ function PhaseCard({
       <Pressable accessibilityRole="button" onPress={() => setPreview((v) => !v)}>
         <Text style={styles.link}>{preview ? "Hide prompt" : "Preview prompt"}</Text>
       </Pressable>
-      {preview ? <Text style={styles.code}>{phasePrompt(values, phase, PREVIEW_TICKET)}</Text> : null}
+      {preview ? <Text style={styles.code}>{phasePrompt(phase, PREVIEW_TICKET)}</Text> : null}
     </View>
   );
 }
@@ -370,12 +376,7 @@ function PhaseSettings({
   if (phase.id === "implement") {
     return (
       <View style={styles.rowWrap}>
-        <Text style={styles.muted}>Mode</Text>
-        <Chip label="step-by-step" active={values.implementMode === "step"} styles={styles} onPress={() => void belt.save({ implementMode: "step" })} />
-        <Chip label="loop (AFK)" active={values.implementMode === "loop"} styles={styles} onPress={() => void belt.save({ implementMode: "loop" })} />
-        {values.implementMode === "loop" ? (
-          <Stepper label="max cycles" value={values.loopMax} styles={styles} onChange={(v) => void belt.save({ loopMax: v })} />
-        ) : null}
+        <Text style={styles.muted}>One fresh agent per cycle in ## Cycles; the plugin commits each one</Text>
       </View>
     );
   }
@@ -392,7 +393,7 @@ function PhaseSettings({
       <View style={styles.rowWrap}>
         <Text style={styles.muted}>After merge</Text>
         <Chip
-          label={values.closeOnMerge ? "✓ run ss-close-story" : "leave Jira alone"}
+          label={values.closeOnMerge ? "✓ close the Jira story" : "leave Jira alone"}
           active={values.closeOnMerge}
           styles={styles}
           onPress={() => void belt.save({ closeOnMerge: !values.closeOnMerge })}
@@ -517,7 +518,7 @@ function SourceCard({
   const [update, setUpdate] = useState<UpdateCheck | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const usedBy = values.phases
-    .filter((p) => [p.runs, ...p.extras].some((ref) => ref.source === source.id))
+    .filter((p) => [p.runs, ...p.extras].some((ref) => ref?.source === source.id))
     .map((p) => p.label);
 
   async function runCheck() {

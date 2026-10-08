@@ -62,24 +62,26 @@ When you say "lock", the plan is marked agreed and the board shows **Planning do
 
 1. It picks the first phase with unmerged stories. A phase with no stories stops it there; plan that phase's architecture first.
 2. Each ready story (`todo`, every `depends_on` merged, no `blocked_by`) gets its own Paseo **worktree workspace** (🔁) on `feature/<phase>-<story-id>-<title>`, cut from the remote's default branch (set `base:` in `initiative.md` to override). Paseo runs the repo's `paseo.json` worktree setup. At most **parallel** stories run at once (default 1).
-3. Each step runs as a fresh agent in that workspace: **Plan** → **Implement** → **Review** → **Open PR**. A step ends by writing a marker under `## Status` in the worktree's `.harness/state.md`. When the agent's turn ends, the plugin reads it and starts the next step.
-   - **Plan** waits for you. The story shows **Your turn**; open its session to question the plan, push back, or approve it.
-   - **Implement** works test-first, cycle by cycle, committing each cycle locally.
-   - **Review** is a fresh critic (correctness, security, conventions, full gate). Findings send it back to Implement, up to **reviewRounds** (3); then the story blocks.
-   - **Open PR** pushes the branch and runs `gh pr create`, then stops.
-4. Every 2 minutes the plugin checks each open story PR with `gh`. A failing check starts a **Fix CI** agent with the failed logs, once per commit, up to **maxFixes** (3). Green shows **Merge**; you merge. A merge marks the story `merged`, archives its workspace and starts the next ready story; when a phase is all merged it moves to the next phase. When every phase is merged the initiative's loop is `done`.
+3. Each step runs as a fresh agent in that workspace: **Plan** → **Implement** (one agent per cycle) → **Review**, then the plugin opens the PR itself. A step ends by writing a marker under `## Status` in the worktree's `.harness/state.md`. When the agent's turn ends, the plugin reads it and starts the next step.
+   - **Plan** waits for you. The story shows **Your turn**; open its session to question the plan, push back, or approve it. It writes `## Plan` (naming the files) and a `## Cycles` checklist.
+   - **Implement** runs one fresh agent per unticked cycle. Each gets only its cycle line and `## Plan`, works test-first, ticks the cycle and stops. The plugin commits the cycle (never `.harness/`) and starts the next. A cycle that ends unticked blocks the story instead of running again. With no checklist, one agent does the whole change.
+   - **Review** is a fresh critic (correctness, security, conventions, full gate). Findings send it back to one Implement agent, up to **reviewRounds** (3); then the story blocks.
+   - After a pass, the plugin commits anything left, pushes the branch and runs `gh pr create` with `.harness/pr-body.md`. No agent runs for this.
+4. Every 2 minutes the plugin checks each open story PR with `gh`. A failing check starts a **Fix CI** agent with the failed logs, once per commit, up to **maxFixes** (3); the plugin commits and pushes its fix. Green shows **Merge**; you merge. A merge marks the story `merged`, archives its workspace and starts the next ready story; when a phase is all merged it moves to the next phase. When every phase is merged the initiative's loop is `done`.
 
 **Stop** only stops new work from starting; agents already running finish, and merges and CI are still recorded. **Start** again picks up from the story files. Work an agent finds outside its story is filed as a new `todo` story (`discovered_from:`) instead of done in place.
 
-The story files are the state. The loop writes `status`, `branch`, `base`, `workspace`, `worktree`, `step`, `round`, `agent`, `pr`, `ci`, `fix_attempts` and `blocked_reason` into their frontmatter, and `loop: on | off | done` into `initiative.md`. To retry a blocked story, set its `status` back (`todo` to start over) and remove `blocked_reason`. Repos with a started initiative are listed in `~/.orchestrator/initiative-loops.json` so the timer knows where to look.
+The story files are the state. The loop writes `status`, `branch`, `base`, `workspace`, `worktree`, `step`, `round`, `cycle`, `agent`, `pr`, `ci`, `fix_attempts` and `blocked_reason` into their frontmatter, and `loop: on | off | done` into `initiative.md`. To retry a blocked story, set its `status` back (`todo` to start over) and remove `blocked_reason`. Repos with a started initiative are listed in `~/.orchestrator/initiative-loops.json` so the timer knows where to look.
 
-**Agent**: every step runs on your Paseo agent profile named **default** (provider, model, mode, thinking). Without one, Claude runs on its own default model in auto mode. The step prompts name no skills or slash commands, so any provider works. `parallel`, `reviewRounds` and `maxFixes` live in the plugin's `initiative-loop` settings. How each step works lives in `server/story-method.ts`; the engine is `server/initiative-loop.ts`.
+**Agent**: every step runs on your Paseo agent profile named **default** (provider, model, mode, thinking). Without one, Claude runs on its own default model in auto mode. The step prompts name no skills or slash commands, so any provider works. `parallel`, `reviewRounds` and `maxFixes` live in the plugin's `initiative-loop` settings. How each step works lives in `shared/story-method.ts`; the engine is `server/initiative-loop.ts`.
+
+**MCP servers**: the plugin copies your Cursor, Claude and Kiro MCP servers onto agents, but story steps get only what they need. Initiative steps get none, belt Plan and Review get one Atlassian server, and architecture sessions get Atlassian only when the initiative publishes to Jira. Your own sessions keep every server. Servers are attached without `alwaysLoad`, so providers that defer tool loading still can. Each server's tool list is sent with every model call, so this keeps the per-turn context small.
 
 ## Skills and the Story belt
 
 The **Skills** button next to the board picker opens a drawer with two tabs.
 
-**Phases** sets up the Story belt: Plan → Implement → Review → Done. Each phase picks the skill it runs, extra skills it loads, and what happens when it ends. The security audit is always loaded in Review.
+**Phases** sets up the Story belt: Plan → Implement → Review → Done. It runs a Jira story through the same steps as the initiative loop (`shared/story-method.ts`): one agent per Implement cycle, commits and the PR by the plugin. Each phase runs its built-in step; you can name a skill for it to use and add extra skills, and pick what happens when it ends. Saved phases that pointed at the retired skillsync skills (`ss-*`, `tdd`) fall back to the built-in steps.
 
 The belt is off by default. Turn it on with **Belt on** in the drawer header. Then **Start** on a story card opens a Plan agent instead of a single session. Epics still use the epic loop.
 
@@ -88,11 +90,11 @@ Each phase runs in a fresh agent in the story's worktree and ends by writing a m
 | Marker | What happens next |
 |---|---|
 | `plan-done` | Implement starts. Plan writes it only after you approve the plan. |
-| `implement-done` | Review starts. |
+| `implement-done` | The plugin commits the cycle, then the next cycle's Implement agent starts, or Review once every cycle is ticked. |
 | `implement-blocked` | Nothing; waits for you. |
-| `review-done` | Done starts (opens the PR). |
+| `review-done` | The plugin pushes the branch and opens the PR (`pr-done` with its URL, or `pr-failed` with the reason). |
 | `review-failed` | A fresh Implement agent fixes the findings, then Review runs again, up to the round limit. |
-| `done-done` | Nothing until the PR merges; then `/ss-close-story` runs if **After merge** is on. |
+| `pr-done` | Nothing until the PR merges; then the plugin moves the Jira story and its subtasks to Done if **After merge** is on. |
 
 **Sources** connects skill repos: `owner/repo`, a git URL, or an absolute folder path. Git repos are cloned to `~/.orchestrator/skill-sources/` and pinned to a commit. **Check for updates** lists new commits and changed skills before you move the pin. Folders are read live. Skills already in `~/.claude` and `~/.agents` show as **This machine**.
 
