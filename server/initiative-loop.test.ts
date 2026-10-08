@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -14,6 +14,15 @@ import { sourceId } from "./skill-sources";
 // The loop's registry lives under the home folder, so each run gets its own.
 const home = mkdtempSync(join(tmpdir(), "loop-home-"));
 process.env.HOME = home;
+// gh answers `pr view` with whatever ghPr() last set, and fails when nothing is set.
+const ghReply = join(home, "gh-reply.json");
+process.env.GH_BIN = join(home, "gh");
+writeFileSync(process.env.GH_BIN, `#!/bin/sh\n[ -f "${ghReply}" ] && cat "${ghReply}" || exit 1\n`, "utf8");
+chmodSync(process.env.GH_BIN, 0o755);
+const ghPr = (state: string | null) => {
+  if (state) writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid: "abc" }), "utf8");
+  else rmSync(ghReply, { force: true });
+};
 const { createInitiativeLoop, RESUME_LINE, RESTART_LINE, nudgePrompt } = await import("./initiative-loop");
 
 type PaseoApi = PluginHandlerContext["paseo"];
@@ -62,6 +71,7 @@ function fixture(agent = "a1") {
 // follow-ups are recorded in `sent`.
 function fakePaseo(live: Agent[]) {
   const sent: { id: string; text: string }[] = [];
+  const archived: string[] = [];
   const created: {
     workspace: string;
     title: string;
@@ -83,6 +93,9 @@ function fakePaseo(live: Agent[]) {
       list: async () => ({ entries: live.map((agent) => ({ agent })) }),
     },
     workspaces: {
+      archive: async (workspace: string) => {
+        archived.push(workspace);
+      },
       ref: (workspace: string) => ({
         agents: {
           create: async (options: {
@@ -106,7 +119,7 @@ function fakePaseo(live: Agent[]) {
       }),
     },
   };
-  return { api: api as unknown as PaseoApi, created, sent };
+  return { api: api as unknown as PaseoApi, created, sent, archived };
 }
 
 const noExtras = async () => ({ phases: DEFAULT_PHASES, sources: [] });
@@ -660,4 +673,69 @@ test("a dead subagent-cycles parent comes back as a parent with only the open cy
   assert.match(created[0].prompt ?? "", /Cycle 2 — Warns/);
   assert.doesNotMatch(created[0].prompt ?? "", /Cycle 1 — Reads/);
   assert.equal(storyMeta(story).cycles, "subagents");
+});
+
+test("a step whose worktree is gone and whose PR merged is recorded merged and its workspace archived", async (t) => {
+  t.after(() => ghPr(null));
+  const { story, worktree, labels } = fixture("a1");
+  rmSync(worktree, { recursive: true });
+  ghPr("MERGED");
+  const { api, created, sent, archived } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  const meta = storyMeta(story);
+  assert.deepEqual([meta.status, meta.pr, meta.agent], ["merged", "45", undefined]);
+  assert.deepEqual(archived, ["ws1"]);
+  assert.deepEqual([created, sent], [[], []]);
+});
+
+test("a step whose worktree is gone with an open PR is handed to the PR watcher", async (t) => {
+  t.after(() => ghPr(null));
+  const { story, worktree, labels } = fixture("a1");
+  rmSync(worktree, { recursive: true });
+  ghPr("OPEN");
+  const { api, created } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  const meta = storyMeta(story);
+  assert.deepEqual([meta.status, meta.step, meta.pr, meta.ci], ["pr-open", "pr", "45", "none"]);
+  assert.deepEqual(created, []);
+});
+
+test("a step whose worktree is gone with a closed PR blocks", async (t) => {
+  t.after(() => ghPr(null));
+  const { story, worktree, labels } = fixture("a1");
+  rmSync(worktree, { recursive: true });
+  ghPr("CLOSED");
+  const { api } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(storyMeta(story).blocked_reason, "Its worktree is gone and PR #45 was closed without merging.");
+});
+
+test("a step whose worktree is gone with no PR retries, then blocks past maxRetries", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  rmSync(worktree, { recursive: true });
+  const { api, created } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  for (let tick = 0; tick < DEFAULT_LOOP_CONFIG.maxRetries; tick++) await initiative.tick();
+  assert.equal(storyMeta(story).status, "implementing");
+  assert.equal(storyMeta(story).retries, String(DEFAULT_LOOP_CONFIG.maxRetries));
+
+  await initiative.tick();
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(storyMeta(story).blocked_reason, "Its worktree is gone and feature/s1 has no PR.");
+  assert.deepEqual(created, []);
 });
