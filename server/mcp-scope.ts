@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { WORKER_MARK } from "../shared/marks";
 import type { McpScope } from "./host-mcp";
 
 // The agent.create hook only sees the new agent's config, not its labels, so the code that starts
@@ -27,7 +28,20 @@ export async function withMcpScope<T>(cwd: string | null | undefined, scope: Mcp
 }
 
 export function registerMcpScope(input: { cwd: string; scope: McpScope }, now = Date.now()) {
+  for (const [key, entry] of scopes) {
+    if (entry.expiresAt < now) {
+      scopes.delete(key);
+    }
+  }
   scopes.set(resolve(input.cwd), { scope: input.scope, expiresAt: now + MCP_SCOPE_TTL_MS });
+}
+
+// The epic parent creates each child's workspace with the worker title before its agent, so the
+// workspace.created event can scope that folder the same way the board does for its own sessions.
+export function scopeWorkerWorkspace(workspace: { cwd: string; name: string | null }, now = Date.now()) {
+  if (workspace.name?.startsWith(WORKER_MARK)) {
+    registerMcpScope({ cwd: workspace.cwd, scope: "jira" }, now);
+  }
 }
 
 export function mcpScopeFor(cwd: string | null | undefined, now = Date.now()): McpScope {

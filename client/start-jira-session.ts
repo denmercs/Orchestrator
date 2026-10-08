@@ -1,15 +1,13 @@
 import type { usePaseo } from "@getpaseo/plugin/client";
 import { FALLBACK_AGENT_CONFIG, type AgentCreateConfig } from "../shared/agent-runner";
+import { HARNESS_MARK, WORKER_MARK } from "../shared/marks";
 import type { BoardItem } from "./board-model";
 
 type PaseoApi = ReturnType<typeof usePaseo>;
 type PaseoProject = Awaited<ReturnType<PaseoApi["projects"]["list"]>>["projects"][number];
 
-// Workspace names are plain text, so the role mark is a text glyph. Monochrome on purpose: it takes
-// the row's text color instead of competing with Paseo's colored status dot beside it.
 // Agent titles stay unmarked because the board parses the Jira key from the start of them.
-export const HARNESS_MARK = "★";
-export const WORKER_MARK = "↳";
+export { HARNESS_MARK, WORKER_MARK };
 
 const PROJECT_HINTS: Record<string, string[]> = {
   QUICK: ["quickpress", "wiscodes-quickpress"],
@@ -65,9 +63,13 @@ export async function startJiraSession(
   }
   const warnings: string[] = [];
   if (registerScope) {
-    if (workspace.directory) {
-      await registerScope({ cwd: workspace.directory, scope: "jira" });
-    } else {
+    const registered = workspace.directory
+      ? await registerScope({ cwd: workspace.directory, scope: "jira" }).then(
+          () => true,
+          () => false,
+        )
+      : false;
+    if (!registered) {
       warnings.push("MCP scope not applied; this session gets every host server.");
     }
   }
@@ -139,7 +141,7 @@ function epicLoopPrompt(item: BoardItem) {
     "",
     "1. Read the epic and its child issues with the attached Jira/Atlassian MCP tools. Do not open a browser and do not ask anyone to log in.",
     "2. Plan remaining open children in dependency order.",
-    `3. For each ready child, create a Paseo subagent titled "<KEY> — <summary>" in its own worktree off this repo's main branch, and name that worktree's workspace "${WORKER_MARK} <KEY> — <summary>" so it reads as a worker in the sidebar.`,
+    `3. For each ready child, first call create_workspace for a worktree off this repo's main branch with title "${WORKER_MARK} <KEY> — <summary>" set in that same call, then immediately create the subagent in that workspace (pass its workspaceId to create_agent), titled "<KEY> — <summary>". The worker title marks it in the sidebar and gives the child the Jira server only.`,
     "4. Keep this session as the epic parent. Do not implement child tickets yourself unless a child is blocked on a decision only you can make.",
     "5. Give each child session the label jira=<KEY> and start its title with the key. The Orchestrator plugin uses them to find which epic parent to wake.",
     "6. Check child sessions by status only. Do not read their transcripts unless a child is blocked and you must unblock it.",

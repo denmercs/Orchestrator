@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BoardItem } from "./board-model";
-import { startJiraSession } from "./start-jira-session";
+import { WORKER_MARK, startJiraSession } from "./start-jira-session";
 
 type StartArgs = Parameters<typeof startJiraSession>;
 
@@ -109,4 +109,26 @@ test("an unknown workspace folder skips registering and warns", async () => {
   assert.deepEqual(result.warnings, [
     "MCP scope not applied; this session gets every host server.",
   ]);
+});
+
+test("the epic prompt titles each child workspace as a worker when it is created", async () => {
+  const prompts: string[] = [];
+  await startJiraSession(fakePaseo("/worktrees/quick-1", [], prompts), boardItem("epic"));
+  assert.match(prompts[0] ?? "", new RegExp(`create_workspace.*title "${WORKER_MARK} <KEY> — <summary>"`));
+  assert.match(prompts[0] ?? "", /then immediately create the subagent in that workspace \(pass its workspaceId to create_agent\)/);
+});
+
+test("a failed scope registration still creates the agent and warns", async () => {
+  const calls: string[] = [];
+  const result = await startJiraSession(
+    fakePaseo("/worktrees/quick-1", calls),
+    boardItem("story"),
+    undefined,
+    undefined,
+    async () => {
+      throw new Error("rpc down");
+    },
+  );
+  assert.deepEqual(calls, ["agents.create"]);
+  assert.deepEqual(result.warnings, ["MCP scope not applied; this session gets every host server."]);
 });

@@ -2,7 +2,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { loadDailyVerse } from "./server/bible-verse";
 import { listMergedPrs } from "./server/github-prs";
 import { pickMcpServers, readHostMcpServers } from "./server/host-mcp";
-import { mcpScopeFor, registerMcpScope } from "./server/mcp-scope";
+import { mcpScopeFor, registerMcpScope, scopeWorkerWorkspace } from "./server/mcp-scope";
 import {
   listAccessibleJiraBoards,
   listMyWorkStories,
@@ -234,6 +234,9 @@ export default function contribute(server: PluginServerContext) {
       },
     };
   });
+  const offWorkspaceCreated = server.on("workspace.created", ({ workspace }) => {
+    scopeWorkerWorkspace(workspace);
+  });
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     loop.rememberPaseo(paseo);
     void loop.onTurnEnded(event);
@@ -258,6 +261,7 @@ export default function contribute(server: PluginServerContext) {
     offPulseSettings();
     stopPlanServer();
     offBeforeCreate();
+    offWorkspaceCreated();
     offTurnEnded();
     clearInterval(timer);
   };
