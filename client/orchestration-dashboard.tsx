@@ -9,6 +9,7 @@ import {
   listJiraPullRequests,
   moveJiraIssue,
   listOrchestrationParents,
+  registerMcpScopeRpc,
   listOrchestrationSchedules,
   type JiraBoardColumn,
   type JiraBoardOption,
@@ -56,6 +57,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const runner = useSettings(agentRunnerSettings);
   const belt = useSettings(beltSettings);
   const startBelt = useRpc(startBeltStory);
+  const registerScope = useRpc(registerMcpScopeRpc);
   const defaultBoardId = boardSettings.status === "ready" ? boardSettings.values.defaultBoardId : "";
   const boardFilter = boardSettings.status === "ready" ? boardSettings.values.boardFilter : null;
   const [schedules, setSchedules] = useState<
@@ -337,7 +339,13 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         profilesFromConfigGet(await paseo.config.get()),
         profileId,
       );
-      const started = await startJiraSession(paseo, item, beltOn ? startBelt : undefined, agentConfig);
+      const started = await startJiraSession(
+        paseo,
+        item,
+        beltOn ? startBelt : undefined,
+        agentConfig,
+        registerScope,
+      );
       if (started.warnings.length > 0) {
         setSessionError(`Started, with warnings: ${started.warnings.join(" ")}`);
       }

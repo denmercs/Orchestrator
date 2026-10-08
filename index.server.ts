@@ -2,7 +2,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { loadDailyVerse } from "./server/bible-verse";
 import { listMergedPrs } from "./server/github-prs";
 import { pickMcpServers, readHostMcpServers } from "./server/host-mcp";
-import { mcpScopeFor } from "./server/mcp-scope";
+import { mcpScopeFor, registerMcpScope, scopeWorkerWorkspace } from "./server/mcp-scope";
 import {
   listAccessibleJiraBoards,
   listMyWorkStories,
@@ -51,6 +51,7 @@ import {
   planHarnessPhaseRpc,
   openPhasePlanRpc,
   refreshPhasePlanRpc,
+  registerMcpScopeRpc,
   listJiraPullRequests,
   listOrchestrationFolders,
   moveJiraIssue,
@@ -121,6 +122,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
   server.handle(openPhasePlanRpc, openPhasePlan);
   server.handle(refreshPhasePlanRpc, refreshPhasePlan);
+  server.handle(registerMcpScopeRpc, (input) => {
+    registerMcpScope(input);
+    return { ok: true as const };
+  });
   const context = server.registerSettings(contextSettings);
   let contextPaseo: Parameters<typeof loadRunnerConfig>[0] | null = null;
   const contextWatch = createContextWatch(
@@ -231,6 +236,9 @@ export default function contribute(server: PluginServerContext) {
       },
     };
   });
+  const offWorkspaceCreated = server.on("workspace.created", ({ workspace }) => {
+    scopeWorkerWorkspace(workspace);
+  });
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     loop.rememberPaseo(paseo);
     void loop.onTurnEnded(event);
@@ -255,6 +263,7 @@ export default function contribute(server: PluginServerContext) {
     offPulseSettings();
     stopPlanServer();
     offBeforeCreate();
+    offWorkspaceCreated();
     offTurnEnded();
     clearInterval(timer);
   };
