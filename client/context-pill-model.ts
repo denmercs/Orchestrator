@@ -132,3 +132,20 @@ export function summaryTiles(summary: ContextSummary): SummaryTile[] {
     { label: "Tokens avoided", value: formatTokens(summary.tokensAvoided) },
   ];
 }
+
+const LOOP_STEPS = ["plan", "implement", "review", "fix", "pr"];
+
+// The card's "Context tokens per step" row: loop steps in run order, then any other step A–Z. Tokens are
+// summed context size at each turn end, not billed tokens.
+export function stepTiles(summary: ContextSummary): SummaryTile[] {
+  const rank = (step: string) => {
+    const index = LOOP_STEPS.indexOf(step);
+    return index === -1 ? LOOP_STEPS.length : index;
+  };
+  return Object.keys(summary.byStep)
+    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+    .map((step) => {
+      const { turns, tokens, models } = summary.byStep[step];
+      return { label: step, value: `${formatTokens(tokens)} · ${turns} turn${turns === 1 ? "" : "s"} · ${models.join(", ")}` };
+    });
+}

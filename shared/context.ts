@@ -43,6 +43,9 @@ export const contextSummary = z.object({
   reminded: z.number(),
   // Σ(preTokens − used) over compact rows.
   tokensAvoided: z.number(),
+  // Per loop step, over turn rows with a step: turns, Σ used (context tokens, not billed), and the
+  // sorted distinct models ("unknown" when a row has none).
+  byStep: z.record(z.string(), z.object({ turns: z.number(), tokens: z.number(), models: z.array(z.string()) })),
 });
 
 export type ContextSummary = z.infer<typeof contextSummary>;

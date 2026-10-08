@@ -43,6 +43,27 @@ test("summariseTelemetry counts recorded rows", async () => {
     ignored: 1,
     reminded: 1,
     tokensAvoided: 120_000,
+    byStep: {},
+  });
+});
+
+test("summariseTelemetry totals turn rows per step", async () => {
+  const file = join(root, "by-step.jsonl");
+  const old: TelemetryRow = { at: "2026-10-01T10:04:00.000Z", agentId: "a3", provider: "claude", step: "implement", used: 50_000, max: 200_000, event: "turn" };
+  const rows: TelemetryRow[] = [
+    row("2026-10-01T10:00:00.000Z", "a1", 40_000, "turn", { step: "plan", model: "opus", cycle: null, story: "S6" }),
+    row("2026-10-01T10:01:00.000Z", "a1", 60_000, "turn", { step: "plan", model: "opus", cycle: null, story: "S6" }),
+    row("2026-10-01T10:02:00.000Z", "a2", 30_000, "turn", { step: "implement", model: "sonnet", cycle: 1, story: "S6" }),
+    row("2026-10-01T10:03:00.000Z", "a2", 0, "turn", { step: "implement", model: "sonnet", cycle: 1, story: "S6", used: null }),
+    old,
+    row("2026-10-01T10:05:00.000Z", "a2", 120_000, "warning", { step: "implement", level: "amber", model: "sonnet" }),
+    row("2026-10-01T10:06:00.000Z", "a4", 90_000, "turn", { model: "haiku" }),
+  ];
+  for (const r of rows) await recordTelemetry(r, file);
+
+  assert.deepEqual((await summariseTelemetry(null, file)).byStep, {
+    plan: { turns: 2, tokens: 100_000, models: ["opus"] },
+    implement: { turns: 3, tokens: 80_000, models: ["sonnet", "unknown"] },
   });
 });
 

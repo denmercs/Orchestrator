@@ -23,6 +23,8 @@ export type WatchAgent = {
   usage: ContextSnapshot["usage"];
   commands: ContextSnapshot["commands"];
   labels: Record<string, string>;
+  // Recorded for analysis only, never branched on.
+  model: string | null;
 };
 
 export type WatchPort = {
@@ -113,6 +115,7 @@ export function paseoPort(
         usage: refreshed.agent.lastUsage ?? null,
         commands: listed && !listed.error ? listed.commands : [],
         labels: refreshed.agent.labels ?? {},
+        model: refreshed.agent.model ?? null,
       };
     },
     async send(agentId, text) {
@@ -184,10 +187,12 @@ export function createContextWatch(port: WatchPort) {
   async function record(
     agentId: string,
     state: SessionState,
-    labels: Record<string, string>,
+    agent: WatchAgent,
     event: TelemetryEvent,
     extra: Pick<TelemetryRow, "level" | "preTokens"> = {},
   ): Promise<void> {
+    const { labels } = agent;
+    const rawCycle = labels["loop-cycle"];
     await port.record({
       at: port.now(),
       agentId,
@@ -197,6 +202,9 @@ export function createContextWatch(port: WatchPort) {
       max: state.reading?.max ?? null,
       event,
       ...extra,
+      model: agent.model,
+      cycle: rawCycle !== undefined && /^\d+$/.test(rawCycle) ? Number(rawCycle) : null,
+      story: labels["loop-story"] ?? null,
     });
   }
 
@@ -221,7 +229,7 @@ export function createContextWatch(port: WatchPort) {
     if (compaction) {
       // Recorded here rather than when Compact is pressed: this sees the real preTokens and the
       // smaller reading, and counts Claude's own auto-compacts the same way.
-      await record(agentId, state, agent.labels, `compact.${compaction.kind}`, {
+      await record(agentId, state, agent, `compact.${compaction.kind}`, {
         ...(compaction.preTokens === null ? {} : { preTokens: compaction.preTokens }),
       });
       state.memory = { warned: [], mode: "normal" };
@@ -229,13 +237,13 @@ export function createContextWatch(port: WatchPort) {
     if (pendingFresh.has(agentId)) {
       const preTokens = pendingFresh.get(agentId) ?? null;
       pendingFresh.delete(agentId);
-      await record(agentId, state, agent.labels, "compact.fresh", preTokens === null ? {} : { preTokens });
+      await record(agentId, state, agent, "compact.fresh", preTokens === null ? {} : { preTokens });
     }
-    await record(agentId, state, agent.labels, "turn");
+    await record(agentId, state, agent, "turn");
     const warning = nextWarning(state.memory, reading);
     if (warning) {
       state.memory.warned.push(warning.level);
-      await record(agentId, state, agent.labels, "warning", { level: warning.level });
+      await record(agentId, state, agent, "warning", { level: warning.level });
     }
   }
 
@@ -294,7 +302,7 @@ export function createContextWatch(port: WatchPort) {
       };
       sessions.set(agentId, state);
       state.memory.mode = action;
-      await record(agentId, state, agent.labels, action);
+      await record(agentId, state, agent, action);
       return { ok: true, error: null, agentId };
     },
   };
