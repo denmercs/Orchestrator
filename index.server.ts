@@ -65,7 +65,7 @@ import {
   upsertOrchestrationStandupNote,
 } from "./shared/orchestration";
 import { agentRunnerSettings } from "./shared/agent-runner";
-import { harnessSettings, jiraBoardSettings, prodPulseSettings, standupSettings } from "./shared/settings";
+import { harnessSettings, jiraBoardSettings, mcpSettings, prodPulseSettings, standupSettings } from "./shared/settings";
 import {
   addSkillSource,
   attachSkill,
@@ -93,6 +93,11 @@ export default function contribute(server: PluginServerContext) {
   const readHarness = async () => {
     const state = await harness.read();
     return state.status === "ready" ? state.values : { repo: "", epic: "" };
+  };
+  const mcp = server.registerSettings(mcpSettings);
+  const readMcpExclude = async () => {
+    const state = await mcp.read();
+    return state.status === "ready" ? state.values.mcpExclude : [];
   };
   server.handle(getEpicBoards, async ({ repos }, { paseo }) => {
     // The board polls every few seconds, so this keeps the loop's Paseo handle fresh for its timer.
@@ -230,7 +235,11 @@ export default function contribute(server: PluginServerContext) {
     return listMergedPrs();
   });
   const offBeforeCreate = server.before("agent.create", async ({ request }) => {
-    const hostServers = pickMcpServers(await readHostMcpServers(request.config.cwd), mcpScopeFor(request.config.cwd));
+    const hostServers = pickMcpServers(
+      await readHostMcpServers(request.config.cwd),
+      mcpScopeFor(request.config.cwd),
+      await readMcpExclude(),
+    );
     if (Object.keys(hostServers).length === 0) {
       return;
     }

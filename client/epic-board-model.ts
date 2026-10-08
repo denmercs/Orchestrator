@@ -2,14 +2,14 @@
 // Paseo client so they can be tested on their own.
 
 import type { EpicBoard, EpicStory } from "../shared/orchestration";
+import { boardKey } from "../shared/gates";
+
+export { boardKey };
 
 // Fast while something is moving (a loop runs or a phase is still being planned), slow otherwise:
 // every poll reads every initiative in every repo.
 export const POLL_MS = 3000;
 export const IDLE_POLL_MS = 10_000;
-
-// A board's identity, even when its state is null.
-export const boardKey = (board: EpicBoard) => `${board.repo}\n${board.initiative}`;
 
 export const lively = (board: EpicBoard) =>
   board.state !== null && (board.state.loop === "on" || board.state.plan?.status !== "agreed");

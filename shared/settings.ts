@@ -65,6 +65,16 @@ export const harnessSettings = defineSettings({
   }),
 });
 
+export const mcpSettings = defineSettings({
+  id: "mcp",
+  scope: "host",
+  version: 1,
+  schema: z.object({
+    // Host MCP server names never copied onto agents; Jira credential lookup still reads them.
+    mcpExclude: z.array(z.string()).default([]),
+  }),
+});
+
 export const dashboardSettings = defineSettings({
   id: "dashboard",
   scope: "host",

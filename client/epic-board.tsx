@@ -18,6 +18,7 @@ import {
   type HarnessRepo,
   type HarnessTracker,
 } from "../shared/orchestration";
+import { needsYou } from "../shared/gates";
 import { harnessSettings } from "../shared/settings";
 import { startInitiativeLoop, stopInitiativeLoop } from "../shared/initiative-loop";
 import { SessionLog } from "./session-log";
@@ -81,10 +82,6 @@ function subline(story: EpicStory) {
     .filter(Boolean)
     .join(" · ");
 }
-
-// A story waits on you when its plan needs approval, it is blocked, or its PR is green and ready to merge.
-const needsYou = (story: EpicStory) =>
-  story.status === "blocked" || story.status === "awaiting-approval" || (story.status === "pr-open" && story.ci === "green");
 
 function iconOf(story: EpicStory) {
   if (needsYou(story)) return "AlertCircle";

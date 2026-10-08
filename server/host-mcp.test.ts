@@ -45,6 +45,7 @@ test("mainCheckoutPath returns null when the common dir is bare or not named .gi
 
 let root: string;
 let home: string;
+let kiroHome: string;
 let projectA: string;
 let projectB: string;
 let elsewhere: string;
@@ -58,13 +59,13 @@ async function writeJson(file: string, value: unknown) {
 
 // Points HOME and every other config root at the fixture, and the process cwd elsewhere, so this
 // machine's own MCP config stays out of the results.
-async function withFixtureHome<T>(fn: () => Promise<T>): Promise<T> {
+async function withFixtureHome<T>(fn: () => Promise<T>, fixtureHome = home): Promise<T> {
   const keys = ["HOME", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR", "APPDATA", "PASEO_HOME"] as const;
   const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const savedCwd = process.cwd();
-  process.env.HOME = home;
-  process.env.XDG_CONFIG_HOME = join(home, ".config");
-  process.env.PASEO_HOME = join(home, ".paseo");
+  process.env.HOME = fixtureHome;
+  process.env.XDG_CONFIG_HOME = join(fixtureHome, ".config");
+  process.env.PASEO_HOME = join(fixtureHome, ".paseo");
   delete process.env.CLAUDE_CONFIG_DIR;
   delete process.env.APPDATA;
   process.chdir(elsewhere);
@@ -124,6 +125,33 @@ before(async () => {
   });
   await writeJson(join(home, ".mcp.json"), { mcpServers: { "home-mcp": { command: "home-cmd" } } });
   await writeJson(join(home, ".cursor", "mcp.json"), { mcpServers: { "cursor-one": { command: "cursor-cmd" } } });
+  // Paseo workspaces whose own MCP files attach only to agents inside them.
+  await writeJson(join(home, ".paseo", "projects", "workspaces.json"), [
+    { cwd: projectA },
+    { cwd: projectB },
+    { cwd: repo },
+  ]);
+  // `shared` is also in projectB's Kiro file, which is read later: skipped here, it must not hide that one.
+  await writeJson(join(projectA, ".mcp.json"), {
+    mcpServers: { "ws-alpha": { command: "ws-alpha-cmd" }, shared: { command: "shared-a-cmd" } },
+  });
+  // The plugin's own process cwd is a repo too: its file attaches only to agents inside it.
+  await writeJson(join(elsewhere, ".mcp.json"), { mcpServers: { "cwd-only": { command: "cwd-only-cmd" } } });
+  await writeJson(join(repo, ".cursor", "mcp.json"), { mcpServers: { "ws-gamma": { command: "ws-gamma-cmd" } } });
+  await writeJson(join(projectB, ".kiro", "settings", "mcp.json"), {
+    mcpServers: {
+      "ws-beta": { command: "ws-beta-cmd" },
+      shared: { command: "shared-b-cmd" },
+      "kiro-jira": {
+        command: "uvx",
+        env: { JIRA_URL: "kiro-jira.example.test", JIRA_USERNAME: "kiro@example.test", JIRA_API_TOKEN: "kiro-token" },
+      },
+    },
+  });
+  // A second home whose ~/.claude.json has no Jira credentials, so only projectB's Kiro file has them.
+  kiroHome = join(root, "kiro-home");
+  await writeJson(join(kiroHome, ".claude.json"), { mcpServers: { global: { command: "global-cmd" } } });
+  await writeJson(join(kiroHome, ".paseo", "projects", "workspaces.json"), [{ cwd: projectB }]);
 });
 
 after(async () => {
@@ -134,14 +162,28 @@ const GLOBALS = ["cursor-one", "global", "home-mcp"];
 
 test("readHostMcpServers inside a project adds that project's servers to the globals", async () => {
   const servers = await withFixtureHome(() => readHostMcpServers(join(projectA, "sub")));
-  assert.deepEqual(Object.keys(servers).sort(), ["alpha", ...GLOBALS].sort());
+  assert.deepEqual(Object.keys(servers).sort(), ["alpha", "shared", "ws-alpha", ...GLOBALS].sort());
 });
 
-test("readHostMcpServers outside every project gives only the globals", async () => {
+test("readHostMcpServers attaches a workspace's own .mcp.json servers only inside that workspace", async () => {
+  const inside = await withFixtureHome(() => readHostMcpServers(join(projectA, "sub")));
+  assert.ok("ws-alpha" in inside);
+  for (const cwd of [projectB, elsewhere]) {
+    const servers = await withFixtureHome(() => readHostMcpServers(cwd));
+    assert.equal("ws-alpha" in servers, false, `ws-alpha attached in ${cwd}`);
+  }
+});
+
+test("readHostMcpServers in the plugin cwd gives the globals plus that folder's own servers", async () => {
   const servers = await withFixtureHome(() => readHostMcpServers(elsewhere));
-  assert.deepEqual(Object.keys(servers).sort(), GLOBALS);
+  assert.deepEqual(Object.keys(servers).sort(), ["cwd-only", ...GLOBALS].sort());
   const homeMcp = servers["home-mcp"];
   assert.equal(homeMcp?.type === "stdio" ? homeMcp.command : null, "home-cmd");
+});
+
+test("readHostMcpServers attaches the plugin cwd's own .mcp.json servers only inside that folder", async () => {
+  const inside = await withFixtureHome(() => readHostMcpServers(join(projectA, "sub")));
+  assert.equal("cwd-only" in inside, false, "cwd-only attached in projectA/sub");
 });
 
 test("readHostMcpServers with no cwd gives only the globals", async () => {
@@ -151,9 +193,27 @@ test("readHostMcpServers with no cwd gives only the globals", async () => {
 
 test("readHostMcpServers counts a worktree as inside the project it was created from", async () => {
   const atRoot = await withFixtureHome(() => readHostMcpServers(worktree));
-  assert.deepEqual(Object.keys(atRoot).sort(), ["gamma", ...GLOBALS].sort());
+  assert.deepEqual(Object.keys(atRoot).sort(), ["gamma", "ws-gamma", ...GLOBALS].sort());
   const inApp = await withFixtureHome(() => readHostMcpServers(join(worktree, "packages", "app")));
-  assert.deepEqual(Object.keys(inApp).sort(), ["app", "gamma", ...GLOBALS].sort());
+  assert.deepEqual(Object.keys(inApp).sort(), ["app", "gamma", "ws-gamma", ...GLOBALS].sort());
+});
+
+test("readHostMcpServers scopes a workspace's .cursor and .kiro MCP files to that workspace", async () => {
+  const inside = await withFixtureHome(() => readHostMcpServers(join(projectA, "sub")));
+  assert.equal("ws-gamma" in inside, false, "ws-gamma attached in projectA/sub");
+  assert.equal("ws-beta" in inside, false, "ws-beta attached in projectA/sub");
+  const inB = await withFixtureHome(() => readHostMcpServers(projectB));
+  assert.ok("ws-beta" in inB);
+});
+
+test("a workspace server skipped by scope does not hide a same-named server from another workspace", async () => {
+  const command = (servers: Awaited<ReturnType<typeof readHostMcpServers>>) => {
+    const shared = servers.shared;
+    return shared?.type === "stdio" ? shared.command : null;
+  };
+  assert.equal(command(await withFixtureHome(() => readHostMcpServers(join(projectA, "sub")))), "shared-a-cmd");
+  assert.equal(command(await withFixtureHome(() => readHostMcpServers(projectB))), "shared-b-cmd");
+  assert.equal("shared" in (await withFixtureHome(() => readHostMcpServers(elsewhere))), false);
 });
 
 test("readAtlassianMcpEnv finds Jira credentials in a project scope from anywhere", async () => {
@@ -162,6 +222,15 @@ test("readAtlassianMcpEnv finds Jira credentials in a project scope from anywher
     JIRA_URL: "https://jira.example.test",
     JIRA_USERNAME: "fake@example.test",
     JIRA_API_TOKEN: "fake-token",
+  });
+});
+
+test("readAtlassianMcpEnv finds Jira credentials in a workspace's own Kiro MCP file", async () => {
+  const env = await withFixtureHome(() => readAtlassianMcpEnv(), kiroHome);
+  assert.deepEqual(env, {
+    JIRA_URL: "https://kiro-jira.example.test",
+    JIRA_USERNAME: "kiro@example.test",
+    JIRA_API_TOKEN: "kiro-token",
   });
 });
 
