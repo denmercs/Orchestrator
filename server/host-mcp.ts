@@ -25,16 +25,21 @@ const ATLASSIAN_NAMES = ["mcp-atlassian", "atlassian", "jira"];
 // model call, so this is the main lever on per-turn context size.
 export type McpScope = "all" | "jira" | "none";
 
-export function pickMcpServers(servers: Record<string, HostMcpServer>, scope: McpScope) {
+export function pickMcpServers(
+  servers: Record<string, HostMcpServer>,
+  scope: McpScope,
+  exclude: readonly string[] = [],
+) {
+  const kept = Object.fromEntries(Object.entries(servers).filter(([name]) => !exclude.includes(name)));
   if (scope === "all") {
-    return servers;
+    return kept;
   }
   if (scope === "none") {
     return {};
   }
   // Two Atlassian servers carry the same tools; the first one found is enough.
-  const jira = Object.keys(servers).find(isAtlassianName);
-  return jira ? { [jira]: servers[jira] } : {};
+  const jira = Object.keys(kept).find(isAtlassianName);
+  return jira ? { [jira]: kept[jira] } : {};
 }
 
 // Returned env/headers hold live credentials (API tokens, auth headers). Never log or return them over RPC.

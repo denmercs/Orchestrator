@@ -13,8 +13,21 @@ const servers: Record<string, HostMcpServer> = {
 };
 
 test("all keeps every host server, none keeps nothing", () => {
-  assert.equal(pickMcpServers(servers, "all"), servers);
+  assert.deepEqual(pickMcpServers(servers, "all"), servers);
   assert.deepEqual(pickMcpServers(servers, "none"), {});
+});
+
+test("an excluded server is dropped under all, and none stays empty", () => {
+  const { sentry: _sentry, ...rest } = servers;
+  assert.deepEqual(pickMcpServers(servers, "all", ["sentry"]), rest);
+  assert.deepEqual(pickMcpServers(servers, "none", ["sentry"]), {});
+});
+
+test("jira falls back to the next Atlassian server, or to nothing", () => {
+  assert.deepEqual(Object.keys(pickMcpServers(servers, "jira", ["mcp-atlassian"])), [
+    "com.atlassian/atlassian-mcp-server",
+  ]);
+  assert.deepEqual(pickMcpServers(servers, "jira", ["mcp-atlassian", "com.atlassian/atlassian-mcp-server"]), {});
 });
 
 test("jira keeps a single Atlassian server", () => {
