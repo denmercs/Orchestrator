@@ -279,6 +279,30 @@ export default function contribute(server: PluginServerContext) {
       console.warn("orchestrator: context watch failed", error);
     });
   });
+  // Paseo hands the plugin its API only inside events and RPCs, and the tick does nothing until it
+  // has one. Any session event arms it, so after a restart supervision resumes as soon as a session
+  // opens or starts a turn, not only at the next turn end.
+  const arm = (paseo: Parameters<typeof loop.rememberPaseo>[0]) => {
+    loop.rememberPaseo(paseo);
+    initiativeLoop.rememberPaseo(paseo);
+  };
+  const offSessionOpen = server.before("agent.session_open", (_input, { paseo }) => {
+    arm(paseo);
+  });
+  const offTurnStarted = server.on("agent.turn_started", (_event, { paseo }) => arm(paseo));
+  const offAgentCreated = server.on("agent.created", (_event, { paseo }) => arm(paseo));
+  const offPermissionRequested = server.on("agent.permission_requested", (event, { paseo }) => {
+    arm(paseo);
+    void initiativeLoop.onPermissionRequested(paseo, event).catch((error) => {
+      console.warn("orchestrator: loop permission request failed", error);
+    });
+  });
+  const offPermissionResolved = server.on("agent.permission_resolved", (event, { paseo }) => {
+    arm(paseo);
+    void initiativeLoop.onPermissionResolved(paseo, event).catch((error) => {
+      console.warn("orchestrator: loop permission resolve failed", error);
+    });
+  });
   void loop.seedMergedPrs();
   const timer = setInterval(() => {
     void loop.pollMergedPrs();
@@ -291,6 +315,11 @@ export default function contribute(server: PluginServerContext) {
     offBeforeCreate();
     offWorkspaceCreated();
     offTurnEnded();
+    offSessionOpen();
+    offTurnStarted();
+    offAgentCreated();
+    offPermissionRequested();
+    offPermissionResolved();
     clearInterval(timer);
   };
 }

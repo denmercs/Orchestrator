@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EpicBoard, EpicBoardState, EpicStory } from "../shared/orchestration";
-import { IDLE_POLL_MS, POLL_MS, boardKey, findSelected, pollDelay, toggleFold } from "./epic-board-model";
+import { IDLE_POLL_MS, POLL_MS, boardKey, findSelected, pollDelay, showFold, toggleFold } from "./epic-board-model";
 
 function board(state: Partial<EpicBoardState> | null, rest: Partial<EpicBoard> = {}): EpicBoard {
   return {
@@ -57,6 +57,18 @@ test("toggleFold adds then removes a key and leaves the input alone", () => {
   assert.notEqual(shown, folded);
   assert.deepEqual([...folded], ["a"]);
   assert.deepEqual([...shown], []);
+});
+
+test("showFold removes a folded key, is a copy when it isn't folded, and leaves the input alone", () => {
+  const folded = new Set(["a", "b"]);
+  const shown = showFold(folded, "a");
+  assert.notEqual(shown, folded);
+  assert.deepEqual([...folded], ["a", "b"]);
+  assert.deepEqual([...shown], ["b"]);
+  const same = showFold(folded, "c");
+  assert.notEqual(same, folded);
+  assert.deepEqual([...same], ["a", "b"]);
+  assert.deepEqual([...folded], ["a", "b"]);
 });
 
 function story(id: string): EpicStory {

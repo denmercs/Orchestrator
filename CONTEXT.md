@@ -111,11 +111,24 @@ A point where an agent is paused waiting on you. A story has at most one gate, d
 
 - **plan**: `awaiting-approval`. Text "Plan awaiting approval".
 - **merge**: `pr-open` with CI `green`. Text "PR #N ready to merge", or "PR ready to merge" with no PR number. Pending or failing CI is not a gate.
-- **stuck**: `blocked`. Text is the blocked reason, or "Blocked" when there is none. `blocked` stands in for stuck until stuck detection exists.
+- **stuck**: `blocked`. Text is the blocked reason, or "Blocked" when there is none. Loop supervision blocks a story once its retries run out, or while its session waits on a permission request.
 
 Each gate carries `board` (the board's selection key, `boardKey(board)`: `repo` + `"\n"` + `initiative`), `storyId`, and `where` (initiative title and phase label, "Orchestration Redesign · Phase 1"). `gatesOf(boards)` lists them in board order, then story order. A board whose state is null or failed to load has none. `needsYou(story)` is "has a gate", and the epic board's "Needs you" group and badges use it. Gates carry no time: stories have no timestamp. Code: `shared/gates.ts`.
 
 _Avoid_: blocker (for any gate), task, todo, action item.
+
+## Loop supervision
+
+How the initiative loop keeps a step moving with no agent watching it. Code: `supervise` and the turn-end and permission handlers in `server/initiative-loop.ts`. It covers the `plan`, `implement` and `review` steps while the story is `planning`, `implementing` or `reviewing` and its `.harness/state.md` marker is still `<step>-running`. `awaiting-approval` waits on you and `pr-open` has its own watcher, so neither is supervised.
+
+- **Stalled**: the story's current session ended a turn but its step isn't finished. Either the turn failed, or it completed without writing the step's marker. The turn end writes the reason to the story's `stalled:` frontmatter. The next tick sends that session a **nudge** (`nudgePrompt(reason)`). Leaving the nudge to the tick gives a rate limit or outage about two minutes to clear.
+- **Dead session**: the story's `agent:` is gone from Paseo, archived, `closed` or `error`. The tick starts a fresh session on the same step, round and cycle, labelled `loop-attempt: <n>`, whose prompt ends with `RESTART_LINE`. A subagent-cycles parent (`cycles: subagents`) comes back as a parent with only the cycles still open. If Paseo doesn't answer, the session is left alone and the tick tries again later.
+- **Retry**: each nudge or restart adds one to the story's `retries:`. A normal step start clears it. Once `retries` reaches the loop setting `maxRetries` (default 2), the story is blocked with the reason and the count.
+- **Permission wait**: a permission request from the story's current session blocks the story ("Waiting on permission: …") and sets `waiting_on: permission`. The story keeps its slot, because its session is still open. When the request is answered, the story goes back to the status it was blocked from.
+- A turn you cancel is never retried. The loop leaves that session to you.
+- The tick needs a Paseo handle. Paseo gives the plugin one only inside events and RPCs, so session open, turn start, agent create, permission events and the board's poll all provide it. After a restart, supervision resumes at the first of these.
+
+_Avoid_: watchdog, heartbeat (for supervision); hung, frozen (for stalled).
 
 ## Alerts bell
 
