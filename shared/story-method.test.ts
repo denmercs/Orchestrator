@@ -9,6 +9,7 @@ import {
   readSection,
   stepPrompt,
   writeMarker,
+  type LoopStep,
   type StoryContext,
 } from "./story-method";
 
@@ -134,22 +135,45 @@ test("two stories share a step prompt up to the story head", () => {
     branch: "feature/s42-export",
     base: "origin/release-7",
   };
-  const prefix = (s: StoryContext, round: number) => {
-    const prompt = stepPrompt("plan", s, { round });
+  const prefix = (step: LoopStep, s: StoryContext, round: number) => {
+    const prompt = stepPrompt(step, s, { round });
     const at = prompt.indexOf(`for story ${s.id}`);
-    assert.ok(at > 0, `head missing for ${s.id} r${round}`);
+    assert.ok(at > 0, `head missing for ${step} ${s.id} r${round}`);
     return prompt.slice(0, prompt.lastIndexOf("\n", at) + 1);
   };
-  for (const round of [1, 2]) {
-    const a = prefix(story, round);
-    assert.match(a, /## Rules for every step[\s\S]*## This step: plan/, `plan r${round} prefix`);
-    assert.equal(a, prefix(other, round), `plan r${round}`);
-    for (const s of [story, other]) {
-      for (const value of [s.id, s.title, s.body, s.branch, s.base, s.storiesDir!, s.phaseTitle!]) {
-        assert.ok(!prefix(s, round).includes(value), `plan r${round} prefix holds ${value}`);
+  const steps: [LoopStep, RegExp][] = [
+    ["plan", /## This step: plan/],
+    ["review", /## This step: review/],
+    ["pr", /## This step: open the pull request/],
+  ];
+  for (const [step, heading] of steps) {
+    for (const round of [1, 2]) {
+      const a = prefix(step, story, round);
+      assert.match(a, /## Rules for every step/, `${step} r${round} prefix`);
+      assert.match(a, heading, `${step} r${round} prefix`);
+      assert.equal(a, prefix(step, other, round), `${step} r${round}`);
+      for (const s of [story, other]) {
+        for (const value of [s.id, s.title, s.body, s.branch, s.base, s.storiesDir!, s.phaseTitle!]) {
+          assert.ok(!prefix(step, s, round).includes(value), `${step} r${round} prefix holds ${value}`);
+        }
       }
     }
   }
+});
+
+test("review points at the base under Where it sits; pr carries the exact commands after the head", () => {
+  const review = stepPrompt("review", story, { round: 1 });
+  assert.match(review, /diff against the base branch named under `## Where it sits`/);
+  assert.match(review, /cut from origin\/main/);
+  const pr = stepPrompt("pr", story, { round: 1 });
+  const head = pr.indexOf("for story S1");
+  const commands = pr.indexOf("\n## PR commands\n");
+  assert.ok(commands > head, "PR commands come after the head");
+  assert.ok(pr.includes("git push -u origin feature/s1"), "push line");
+  assert.ok(
+    pr.includes('gh pr create --base main --head feature/s1 --title "S1: Add search" --body-file .harness/pr-body.md'),
+    "gh pr create line",
+  );
 });
 
 test("Jira stories point at the ticket and file follow-ups as review findings", () => {
