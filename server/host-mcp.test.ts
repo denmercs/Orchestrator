@@ -130,7 +130,12 @@ before(async () => {
     { cwd: projectB },
     { cwd: repo },
   ]);
-  await writeJson(join(projectA, ".mcp.json"), { mcpServers: { "ws-alpha": { command: "ws-alpha-cmd" } } });
+  // Same name as a ~/.mcp.json server: scoped to projectA, it must not hide that one elsewhere.
+  await writeJson(join(projectA, ".mcp.json"), {
+    mcpServers: { "ws-alpha": { command: "ws-alpha-cmd" }, "home-mcp": { command: "ws-home-cmd" } },
+  });
+  // The plugin's own process cwd is a repo too: its file attaches only to agents inside it.
+  await writeJson(join(elsewhere, ".mcp.json"), { mcpServers: { "cwd-only": { command: "cwd-only-cmd" } } });
   await writeJson(join(repo, ".cursor", "mcp.json"), { mcpServers: { "ws-gamma": { command: "ws-gamma-cmd" } } });
   await writeJson(join(projectB, ".kiro", "settings", "mcp.json"), { mcpServers: { "ws-beta": { command: "ws-beta-cmd" } } });
 });
@@ -155,11 +160,16 @@ test("readHostMcpServers attaches a workspace's own .mcp.json servers only insid
   }
 });
 
-test("readHostMcpServers outside every project gives only the globals", async () => {
+test("readHostMcpServers in the plugin cwd gives the globals plus that folder's own servers", async () => {
   const servers = await withFixtureHome(() => readHostMcpServers(elsewhere));
-  assert.deepEqual(Object.keys(servers).sort(), GLOBALS);
+  assert.deepEqual(Object.keys(servers).sort(), ["cwd-only", ...GLOBALS].sort());
   const homeMcp = servers["home-mcp"];
   assert.equal(homeMcp?.type === "stdio" ? homeMcp.command : null, "home-cmd");
+});
+
+test("readHostMcpServers attaches the plugin cwd's own .mcp.json servers only inside that folder", async () => {
+  const inside = await withFixtureHome(() => readHostMcpServers(join(projectA, "sub")));
+  assert.equal("cwd-only" in inside, false, "cwd-only attached in projectA/sub");
 });
 
 test("readHostMcpServers with no cwd gives only the globals", async () => {
