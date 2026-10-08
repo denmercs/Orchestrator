@@ -214,7 +214,7 @@ export function createInitiativeLoop(
     story: StoryFile,
     step: LoopStep,
     round: number,
-    extra: { failing?: string; cycle?: Cycle } = {},
+    extra: { failing?: string; cycle?: Cycle; cycles?: Cycle[] } = {},
   ) {
     const { workspace, worktree } = story.meta;
     if (!workspace || !worktree) throw new Error(`${story.id} has no workspace.`);
@@ -227,6 +227,7 @@ export function createInitiativeLoop(
       "loop-step": step,
       "loop-round": String(round),
       ...(extra.cycle ? { "loop-cycle": String(extra.cycle.number) } : {}),
+      ...(extra.cycles ? { "loop-cycles": "subagents" } : {}),
     };
     const key = Object.values(labels).join("|");
     if (started.has(key)) return null;
@@ -266,6 +267,7 @@ export function createInitiativeLoop(
             round,
             failing: extra.failing,
             cycle: extra.cycle,
+            cycles: extra.cycles,
             plan: readSection(state, "Plan"),
             missing: planMissing(step, state, worktree),
             skills,
@@ -275,7 +277,9 @@ export function createInitiativeLoop(
       );
       writeFrontmatter(story.path, {
         status: STATUS_FOR[step],
-        ...(step === "fix" ? {} : { step, round, cycle: extra.cycle?.number ?? null }),
+        ...(step === "fix"
+          ? {}
+          : { step, round, cycle: extra.cycle?.number ?? null, cycles: extra.cycles ? "subagents" : null }),
         agent: agent.id,
         blocked_reason: null,
         blocked_from: null,
@@ -345,22 +349,30 @@ export function createInitiativeLoop(
     const on = initiativeLoopState(init.dir) === "on";
     const next = (to: LoopStep, nextRound: number, cycle?: Cycle) =>
       on ? startStep(api, config, init, phaseDir, story, to, nextRound, { cycle }) : null;
+    // Round 1 with cycles left: one parent that runs them in subagents, or the next cycle's own agent
+    // with `subagentCycles` off.
+    const nextImplement = (cycle: Cycle | undefined) => {
+      const open = readCycles(state).filter((item) => !item.done);
+      if (!on || !config.subagentCycles || !open.length) return next("implement", 1, cycle);
+      return startStep(api, config, init, phaseDir, story, "implement", 1, { cycles: open });
+    };
 
     if (step === "plan") {
-      if (marker === MARKERS.planDone) await next("implement", 1, readCycles(state).find((cycle) => !cycle.done));
+      if (marker === MARKERS.planDone) await nextImplement(readCycles(state).find((cycle) => !cycle.done));
       // The planner ended its turn without approval: it is asking you.
       else if (turnEnded && meta.status === "planning") writeFrontmatter(story.path, { status: "awaiting-approval" });
     } else if (step === "implement") {
       if (marker === MARKERS.implementDone) {
-        const finished = meta.cycle ? Number(meta.cycle) : null;
+        // A parent that ran the cycles in subagents must have ticked them all.
+        const finished = meta.cycles === "subagents" ? "all" : meta.cycle ? Number(meta.cycle) : null;
         const after = afterImplement(state, finished);
         if (after.kind === "blocked") {
           block(story, after.reason);
           return;
         }
-        const cycle = finished === null ? null : (readCycles(state).find((item) => item.number === finished) ?? null);
+        const cycle = typeof finished === "number" ? (readCycles(state).find((item) => item.number === finished) ?? null) : null;
         await commitStory(meta.worktree, implementCommitMessage(story.id, cycle, round));
-        if (after.kind === "cycle") await next("implement", round, after.cycle);
+        if (after.kind === "cycle") await (round === 1 ? nextImplement(after.cycle) : next("implement", round, after.cycle));
         else await next("review", round);
       } else if (marker === MARKERS.implementBlocked) block(story, detail || "Implement is blocked; open its session.");
     } else if (step === "review") {
@@ -539,9 +551,13 @@ export function createInitiativeLoop(
       const cycle = labels["loop-cycle"]
         ? readCycles(state).find((item) => String(item.number) === labels["loop-cycle"])
         : undefined;
+      // A parent gets back only the cycles it hasn't ticked yet.
+      const cycles =
+        labels["loop-cycles"] === "subagents" ? readCycles(state).filter((item) => !item.done) : undefined;
       const prompt = stepPrompt(step, ctx, {
         round: Number(labels["loop-round"]) || 1,
         cycle,
+        cycles,
         plan: readSection(state, "Plan"),
         missing: found.story.meta.worktree ? planMissing(step, state, found.story.meta.worktree) : [],
         skills: await resumeSkills(step, found.story.meta),
@@ -572,9 +588,10 @@ export function createInitiativeLoop(
           await finishFix(story);
           return;
         }
-        // Only the story's current step (and cycle) moves it on; an older session talking doesn't.
+        // Only the story's current step (and cycle, or parent) moves it on; an older session talking doesn't.
         if (labels["loop-step"] !== story.meta.step) return;
         if ((labels["loop-cycle"] ?? "") !== (story.meta.cycle ?? "")) return;
+        if ((labels["loop-cycles"] ?? "") !== (story.meta.cycles ?? "")) return;
         await reconcile(api, await readConfig(), init, phaseDir, story, true);
         await advance(api, await readConfig(), init);
       });
