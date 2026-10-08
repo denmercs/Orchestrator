@@ -12,7 +12,8 @@ const EXTENSION = /\.(?:[cm]?[jt]sx?|json|md|mdc|css|scss|html|ya?ml|sh|txt|toml
 const TOKEN = /`([^`]+)`|\(new\)|[^\s,;`]+/g;
 
 // Lines under a Files or Calls label belong to it until the next label, a heading or a blank line.
-// A path is a token with a `/` or a file extension; `:line` and trailing punctuation are dropped,
+// A backticked path has a `/` or a file extension; a bare one needs the extension, so prose like
+// `and/or` isn't read as a path. `:line` and trailing punctuation are dropped,
 // and anything with `(` (a call like `foo()`) is skipped. `(new)` marks the path just before it.
 export function planPaths(plan: string): PlanPath[] {
   const paths: PlanPath[] = [];
@@ -31,7 +32,7 @@ export function planPaths(plan: string): PlanPath[] {
         continue;
       }
       last = undefined;
-      const path = asPath(quoted ?? token);
+      const path = asPath(quoted ?? token, quoted !== undefined);
       if (path) paths.push((last = { path, isNew: false }));
     }
   }
@@ -48,9 +49,9 @@ export function missingPaths(paths: PlanPath[], worktree: string): string[] {
   return [...missing];
 }
 
-function asPath(token: string): string | undefined {
+function asPath(token: string, quoted: boolean): string | undefined {
   if (token.includes("(") || /\s/.test(token)) return undefined;
   const path = token.replace(/[.,;:)]+$/, "").replace(/(?::\d+)+$/, "");
   if (!/\w/.test(path) || path.includes(":")) return undefined;
-  return path.includes("/") || EXTENSION.test(path) ? path : undefined;
+  return EXTENSION.test(path) || (quoted && path.includes("/")) ? path : undefined;
 }

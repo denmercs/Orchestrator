@@ -53,6 +53,16 @@ test("planPaths: a plain label with bullets under it, until a blank line", () =>
   ]);
 });
 
+test("planPaths: bare words with a slash are prose, not paths; bare files and backticked dirs still count", () => {
+  const plan = "**Files:** `server/a.ts` and/or the client/server split, N/A, `client/`, server/b.ts";
+
+  assert.deepEqual(planPaths(plan), [
+    { path: "server/a.ts", isNew: false },
+    { path: "client/", isNew: false },
+    { path: "server/b.ts", isNew: false },
+  ]);
+});
+
 test("planPaths: no Files or Calls lines gives nothing", () => {
   assert.deepEqual(planPaths("Approach: edit `server/a.ts`.\n**Out of scope:** `server/b.ts`"), []);
   assert.deepEqual(planPaths(""), []);
