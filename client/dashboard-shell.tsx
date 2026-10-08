@@ -2,26 +2,27 @@ import { useMemo, type ReactNode } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { TABS, type TabId } from "../shared/dashboard-tabs";
+import { InlineVerse } from "./daily-verse";
 
 type Theme = PluginSurfaceProps["theme"];
 
-// The fixed top of the dashboard: title, the verse card until S5 inlines it, then the actions row passed as children.
+// The fixed top of the dashboard: title, the inline verse (unless showVerse is false), then the actions row passed as children.
 export function DashboardHeader({
   theme,
   compact,
-  verse,
+  showVerse = true,
   children,
 }: {
   theme: Theme;
   compact: boolean;
-  verse?: ReactNode;
+  showVerse?: boolean;
   children?: ReactNode;
 }) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   return (
     <View style={styles.header}>
       <Text style={styles.title}>Orchestration</Text>
-      {verse}
+      {showVerse ? <InlineVerse theme={theme} /> : null}
       {children ? <View style={styles.actions}>{children}</View> : null}
     </View>
   );

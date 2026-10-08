@@ -3,11 +3,13 @@ import { Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { getDailyVerse, type DailyVerse } from "../shared/orchestration";
+import { verseLine } from "./daily-verse-model";
 
 // Hourly is plenty: the verse only changes at midnight.
 const VERSE_POLL_MS = 60 * 60 * 1000;
 
-export function DailyVerseCard({ theme }: { theme: PluginSurfaceProps["theme"] }) {
+// One line under the header title: the quote truncates, the reference after it always shows.
+export function InlineVerse({ theme }: { theme: PluginSurfaceProps["theme"] }) {
   const load = useRpc(getDailyVerse);
   const [verse, setVerse] = useState<DailyVerse | null>(null);
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -34,41 +36,35 @@ export function DailyVerseCard({ theme }: { theme: PluginSurfaceProps["theme"] }
   if (!verse) {
     return null;
   }
+  const { quote, meta } = verseLine(verse);
   return (
-    <View style={styles.card}>
-      {verse.text ? <Text style={styles.text}>“{verse.text}”</Text> : null}
-      <Text style={styles.reference}>
-        {verse.reference}
-        {verse.text ? `  ·  ${verse.translation}` : ""}
-      </Text>
-      {verse.text && verse.copyright ? <Text style={styles.copyright}>{verse.copyright}</Text> : null}
+    <View style={styles.row}>
+      {quote ? (
+        <Text style={styles.quote} numberOfLines={1} ellipsizeMode="tail">
+          {quote}
+        </Text>
+      ) : null}
+      <Text style={styles.meta}>{meta}</Text>
     </View>
   );
 }
 
 function createStyles(theme: PluginSurfaceProps["theme"]) {
   return {
-    card: {
-      gap: 6,
-      paddingVertical: 10,
-      paddingHorizontal: 14,
-      borderLeftWidth: 3,
-      borderLeftColor: theme.colors.border,
-      backgroundColor: theme.colors.surface1,
-      borderRadius: 8,
+    row: {
+      flexDirection: "row" as const,
+      alignItems: "baseline" as const,
+      gap: 8,
     },
-    text: {
+    quote: {
+      flexShrink: 1,
       color: theme.colors.foreground,
       fontStyle: "italic" as const,
-      lineHeight: 20,
     },
-    reference: {
+    meta: {
+      flexShrink: 0,
       color: theme.colors.foregroundMuted,
       fontSize: 12,
-    },
-    copyright: {
-      color: theme.colors.foregroundMuted,
-      fontSize: 10,
     },
   };
 }
