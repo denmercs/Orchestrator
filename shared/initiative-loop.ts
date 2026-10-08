@@ -2,7 +2,8 @@ import { defineRpc, defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
 
 // The initiative loop: Start on an initiative runs its stories phase by phase, each in its own
-// Paseo worktree workspace, through Plan → Implement (one agent per cycle) → Review, then the plugin
+// Paseo worktree workspace, through Plan → Implement (one agent running each cycle in a subagent, or
+// one agent per cycle with `subagentCycles` off) → Review, then the plugin
 // opens the PR and watches CI until you merge. The engine is server/initiative-loop.ts; the step
 // prompts are shared/story-method.ts.
 
@@ -40,6 +41,9 @@ const loopValues = z.object({
       fix: z.string().default(""),
     })
     .prefault({}),
+  // Round-1 Implement with a cycle checklist: one agent that runs each cycle in a subagent, not one
+  // agent per cycle.
+  subagentCycles: z.boolean().default(true),
 });
 
 export type LoopConfig = z.infer<typeof loopValues>;
