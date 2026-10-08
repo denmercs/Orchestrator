@@ -19,6 +19,23 @@ export type HostMcpServer =
 
 const ATLASSIAN_NAMES = ["mcp-atlassian", "atlassian", "jira"];
 
+// Which host servers an agent gets. Loop and belt agents that only touch the worktree get none;
+// steps that read a ticket get one Atlassian server. Every server's tool list rides along on each
+// model call, so this is the main lever on per-turn context size.
+export type McpScope = "all" | "jira" | "none";
+
+export function pickMcpServers(servers: Record<string, HostMcpServer>, scope: McpScope) {
+  if (scope === "all") {
+    return servers;
+  }
+  if (scope === "none") {
+    return {};
+  }
+  // Two Atlassian servers carry the same tools; the first one found is enough.
+  const jira = Object.keys(servers).find(isAtlassianName);
+  return jira ? { [jira]: servers[jira] } : {};
+}
+
 // Returned env/headers hold live credentials (API tokens, auth headers). Never log or return them over RPC.
 export async function readHostMcpServers(): Promise<Record<string, HostMcpServer>> {
   const servers: Record<string, HostMcpServer> = {};
@@ -190,7 +207,7 @@ function toPaseoMcpServer(raw: Record<string, unknown>): HostMcpServer | null {
           }),
         )
       : undefined;
-    return { type: "stdio", command, args, env, alwaysLoad: true };
+    return { type: "stdio", command, args, env };
   }
 
   const url = asString(raw.url);
@@ -207,7 +224,7 @@ function toPaseoMcpServer(raw: Record<string, unknown>): HostMcpServer | null {
       )
     : undefined;
   const kind = asString(raw.type) === "sse" || url.includes("/sse") ? "sse" : "http";
-  return { type: kind, url, headers, alwaysLoad: true };
+  return { type: kind, url, headers };
 }
 
 function jiraEnvFromServer(server: Record<string, unknown>): Record<string, string | undefined> {

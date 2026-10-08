@@ -41,9 +41,9 @@ _Avoid_: skill id, skill key.
 
 ## Belt phase extras
 
-The extra skills a Story belt phase loads on top of the skill it runs. Code: `Phase.extras`, an array of `Extra` (a Skill ref plus optional `required` and `optional` flags). The skill the phase runs is `Phase.runs`, which is a single Skill ref and is not an extra. The phase prompt names the extras with "Also use these skills: …".
+The extra skills a Story belt phase loads on top of the skill it runs. Code: `Phase.extras`, an array of `Extra` (a Skill ref plus optional `required` and `optional` flags). The skill the phase runs is `Phase.runs`, a single Skill ref or `null` for the built-in step, and is not an extra. The phase prompt names the extras with "Also use these skills: …".
 
-An extra marked `required` in `DEFAULT_PHASES` is always loaded, even if saved settings removed it. `phaseSkills` adds it back. Today that is `ss-security-audit` in Review.
+An extra marked `required` in `DEFAULT_PHASES` is always loaded, even if saved settings removed it. `phaseSkills` adds it back. The defaults have none today: every phase runs its built-in step from `shared/story-method.ts`, and `Phase.runs` is `null` unless you pick a skill.
 
 _Avoid_: add-ons, plugins, secondary skills.
 

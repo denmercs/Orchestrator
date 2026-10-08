@@ -5,6 +5,7 @@ import type { AgentCreateConfig } from "../shared/agent-runner";
 import { phaseLabel, type HarnessTracker } from "../shared/orchestration";
 import { ARCHITECTURE_METHOD } from "./architecture-method";
 import { refreshPlanFromJira, syncPlanFromStories } from "./plan-status";
+import { withMcpScope } from "./mcp-scope";
 import { PHASE_FILE, epicDirFor, frontmatter, initiativeTitle, initiativeTracker, initiativesDir } from "./harness-layout";
 
 // The plugin's own architecture step. Creating a phase starts one agent in the repo that
@@ -85,21 +86,25 @@ export async function startPhaseArchitect(
     const meta = frontmatter(readFileSync(join(epicDir, PHASE_FILE), "utf8"));
     const phase = phaseLabel(meta.phase ?? "");
     const title = meta.title || epicPath.split("/").pop() || "";
-    const agent = await paseo.agents.create({
-      title: `${ARCHITECT_MARK} ${phase} architecture — ${title}`.slice(0, 60),
-      config: agentConfig,
-      cwd: root,
-      prompt: architectPrompt({
-        epicPath,
-        initiativePath: relative(root, initiativeDir).split(sep).join("/"),
-        initiative: initiativeTitle(initiativeDir),
-        tracker: initiativeTracker(initiativeDir),
-        number: meta.phase ?? "",
-        phase,
-        title,
+    const tracker = initiativeTracker(initiativeDir);
+    // Only an initiative that publishes to Jira needs a Jira server; nothing else needs MCP.
+    const agent = await withMcpScope(root, tracker === "jira" ? "jira" : "none", () =>
+      paseo.agents.create({
+        title: `${ARCHITECT_MARK} ${phase} architecture — ${title}`.slice(0, 60),
+        config: agentConfig,
+        cwd: root,
+        prompt: architectPrompt({
+          epicPath,
+          initiativePath: relative(root, initiativeDir).split(sep).join("/"),
+          initiative: initiativeTitle(initiativeDir),
+          tracker,
+          number: meta.phase ?? "",
+          phase,
+          title,
+        }),
+        labels: { kind: ARCHITECT_KIND, "harness-phase": epicPath },
       }),
-      labels: { kind: ARCHITECT_KIND, "harness-phase": epicPath },
-    });
+    );
     return { ok: true, error: null, agentId: agent.id };
   } catch (cause) {
     return { ok: false, error: cause instanceof Error ? cause.message : String(cause), agentId: null };
