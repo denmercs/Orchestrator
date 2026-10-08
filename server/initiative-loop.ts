@@ -7,7 +7,7 @@ import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@
 import type { AgentCreateConfig } from "../shared/agent-runner";
 import { LOOP_AGENT_KIND, type LoopConfig } from "../shared/initiative-loop";
 import { phaseLabel } from "../shared/orchestration";
-import { stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
+import { DEFAULT_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import {
   PHASES_DIR,
   PHASE_FILE,
@@ -234,9 +234,16 @@ export function createInitiativeLoop(
       await installBrief(worktree, briefTag(step, round, extra.cycle?.number)).catch((error) =>
         console.warn("orchestrator: install brief", story.id, error),
       );
-      const { phases, sources } = await readPipeline();
+      // Skills help a step but never gate it: a failed read or copy becomes a warning on the story.
+      const reason = (error: unknown) => (error instanceof Error ? error.message : String(error));
+      const warnings: string[] = [];
+      const { phases, sources } = await readPipeline().catch((error) => {
+        warnings.push(`pipeline: ${reason(error)}`);
+        return { phases: DEFAULT_PHASES, sources: [] };
+      });
       const extras = stepSkills(step, phases);
-      await installSkills(worktree, extras, sources);
+      warnings.push(...(await installSkills(worktree, extras, sources).catch((error) => [`skills: ${reason(error)}`])));
+      for (const warning of warnings) console.warn("orchestrator: skills", story.id, warning);
       // Story steps work from the story file and the worktree; none of them needs an MCP server.
       const agent = await withMcpScope(worktree, "none", () =>
         api.workspaces.ref(workspace).agents.create({
@@ -259,6 +266,7 @@ export function createInitiativeLoop(
         agent: agent.id,
         blocked_reason: null,
         blocked_from: null,
+        skill_warnings: warnings.join(" · ") || null,
       });
       return agent.id;
     } catch (error) {
