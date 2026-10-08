@@ -1,4 +1,4 @@
-import { usePaseo } from "@getpaseo/plugin/client";
+import type { usePaseo } from "@getpaseo/plugin/client";
 import { FALLBACK_AGENT_CONFIG, type AgentCreateConfig } from "../shared/agent-runner";
 import type { BoardItem } from "./board-model";
 
@@ -24,12 +24,16 @@ type StartBelt = (input: {
   url: string | null;
 }) => Promise<{ agentId: string; warnings: string[] }>;
 
+type RegisterScope = (input: { cwd: string; scope: "jira" | "none" }) => Promise<{ ok: true }>;
+
 // With `startBelt`, stories run the Story belt (Plan first); epics always run the epic loop.
+// `registerScope` gives the session or epic loop the Jira server only. The belt scopes its own steps.
 export async function startJiraSession(
   paseo: PaseoApi,
   item: BoardItem,
   startBelt?: StartBelt,
   agentConfig?: AgentCreateConfig,
+  registerScope?: RegisterScope,
 ) {
   if (!item.key) {
     throw new Error("This card has no Jira key.");
@@ -59,6 +63,14 @@ export async function startJiraSession(
     });
     return { agentId: started.agentId, workspaceId: workspace.id, warnings: started.warnings };
   }
+  const warnings: string[] = [];
+  if (registerScope) {
+    if (workspace.directory) {
+      await registerScope({ cwd: workspace.directory, scope: "jira" });
+    } else {
+      warnings.push("MCP scope not applied; this session gets every host server.");
+    }
+  }
   const agent = await workspace.agents.create({
     title,
     config: agentConfig ?? { ...FALLBACK_AGENT_CONFIG },
@@ -68,7 +80,7 @@ export async function startJiraSession(
       kind: item.role === "epic" ? "epic-loop" : "session",
     },
   });
-  return { agentId: agent.id, workspaceId: workspace.id, warnings: [] as string[] };
+  return { agentId: agent.id, workspaceId: workspace.id, warnings };
 }
 
 async function resolveProject(paseo: PaseoApi, issueKey: string) {
@@ -125,7 +137,7 @@ function epicLoopPrompt(item: BoardItem) {
     "",
     `This is a Jira Epic${item.url ? ` (${item.url})` : ""}. You are the parent orchestrator.`,
     "",
-    "1. Read the epic and its child issues with the attached MCP tools (Jira/Atlassian, plus GitHub, Sentry, and any other servers from Cursor, Claude, or Kiro). Do not open a browser and do not ask anyone to log in.",
+    "1. Read the epic and its child issues with the attached Jira/Atlassian MCP tools. Do not open a browser and do not ask anyone to log in.",
     "2. Plan remaining open children in dependency order.",
     `3. For each ready child, create a Paseo subagent titled "<KEY> — <summary>" in its own worktree off this repo's main branch, and name that worktree's workspace "${WORKER_MARK} <KEY> — <summary>" so it reads as a worker in the sidebar.`,
     "4. Keep this session as the epic parent. Do not implement child tickets yourself unless a child is blocked on a decision only you can make.",
@@ -134,7 +146,7 @@ function epicLoopPrompt(item: BoardItem) {
     "7. When nothing more is ready, end your turn. Do not wait, sleep or poll inside a turn. The plugin wakes this session when one of its children's pull requests merges; treat that as the signal to start the next ready ticket.",
     "8. Stop when the epic's open work is done or waiting on a human.",
     "",
-    "Use Paseo tools or the Paseo CLI to create those child sessions. Host MCP servers are already authenticated.",
+    "Use Paseo tools or the Paseo CLI to create those child sessions. The Jira/Atlassian MCP server is already authenticated.",
   ].join("\n");
 }
 
@@ -145,7 +157,7 @@ function storyPrompt(item: BoardItem) {
     "",
     `This is a Jira ${kind}${item.url ? ` (${item.url})` : ""}. Work in this worktree.`,
     "",
-    "1. Read the ticket and its acceptance criteria with the attached MCP tools (Jira/Atlassian, plus GitHub, Sentry, and any other servers from Cursor, Claude, or Kiro). Do not open a browser and do not ask anyone to log in. Those MCPs are already authenticated.",
+    "1. Read the ticket and its acceptance criteria with the attached Jira/Atlassian MCP tools. Do not open a browser and do not ask anyone to log in. They are already authenticated.",
     "2. Implement the change, with tests for the behavior you touch.",
     "3. Leave a short summary of what shipped and what is still open.",
     "",
