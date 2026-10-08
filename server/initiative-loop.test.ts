@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { FALLBACK_AGENT_CONFIG } from "../shared/agent-runner";
-import { frontmatter } from "./harness-layout";
+import { DEFAULT_PHASES, type SkillSource } from "../shared/pipeline";
+import { frontmatter, writeFrontmatter } from "./harness-layout";
+import { sourceId } from "./skill-sources";
 
 // The loop's registry lives under the home folder, so each run gets its own.
 const home = mkdtempSync(join(tmpdir(), "loop-home-"));
@@ -96,7 +98,9 @@ function fakePaseo(live: Agent[]) {
   return { api: api as unknown as PaseoApi, created };
 }
 
-const loop = () => createInitiativeLoop(async () => DEFAULT_LOOP_CONFIG, async () => FALLBACK_AGENT_CONFIG);
+const noExtras = async () => ({ phases: DEFAULT_PHASES, sources: [] });
+const loop = () =>
+  createInitiativeLoop(async () => DEFAULT_LOOP_CONFIG, async () => FALLBACK_AGENT_CONFIG, noExtras);
 const storyMeta = (file: string) => frontmatter(readFileSync(file, "utf8"));
 
 test("handOver moves agent: only when it names the old id", async () => {
@@ -170,6 +174,7 @@ test("a started step's agent gets the config readAgentConfig returns for that st
       asked.push([step, loopConfig]);
       return { provider: `claude/${step}-model`, modeId: "auto" };
     },
+    noExtras,
   );
   writeFileSync(join(worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nimplement-done\n", "utf8");
   const turnEnded = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
@@ -210,4 +215,42 @@ test("a Review agent started with a missing Plan path is created and told; resum
   assert.ok(created[0].prompt?.includes(line));
   const resumed = await initiative.resumePrompt(created[0].labels);
   assert.ok(resumed?.includes(line));
+});
+
+// A folder source holding skills/tdd/SKILL.md.
+function tddSource(): SkillSource {
+  const location = join(realpathSync(mkdtempSync(join(tmpdir(), "loop-source-"))), "source");
+  mkdirSync(join(location, "skills", "tdd"), { recursive: true });
+  writeFileSync(join(location, "skills", "tdd", "SKILL.md"), "---\nname: tdd\ndescription: Red, green.\n---\n# TDD\n", "utf8");
+  return { id: sourceId(location), label: "source", location, kind: "personal", enabled: true, pin: null };
+}
+
+test("an Implement step copies its extras into the worktree and names them in the prompt", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  writeFrontmatter(story, { status: "planning", step: "plan" });
+  const planLabels = { ...labels, "loop-step": "plan" };
+  const { api, created } = fakePaseo([{ id: "a1", labels: planLabels }]);
+  writeFileSync(
+    join(worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nplan-done\n\n## Cycles\n- [ ] Cycle 1 — Reads: test → change\n",
+    "utf8",
+  );
+  const source = tddSource();
+  const phases = DEFAULT_PHASES.map((phase) =>
+    phase.id === "implement" ? { ...phase, extras: [{ name: "tdd", source: source.id }] } : phase,
+  );
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    async () => ({ phases, sources: [source] }),
+  );
+  const turnEnded = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
+    ReturnType<typeof loop>["onTurnEnded"]
+  >[1];
+
+  await initiative.onTurnEnded(api, turnEnded);
+
+  assert.deepEqual(created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-cycle"]]), [["implement", "1"]]);
+  assert.ok(existsSync(join(worktree, ".claude", "skills", "tdd", "SKILL.md")), "expected .claude/skills/tdd/SKILL.md");
+  assert.ok(created[0].prompt?.includes("Also use these skills: tdd."));
 });

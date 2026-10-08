@@ -7,6 +7,7 @@ import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@
 import type { AgentCreateConfig } from "../shared/agent-runner";
 import { LOOP_AGENT_KIND, type LoopConfig } from "../shared/initiative-loop";
 import { phaseLabel } from "../shared/orchestration";
+import { stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import {
   PHASES_DIR,
   PHASE_FILE,
@@ -40,6 +41,7 @@ import {
   type StoryContext,
 } from "../shared/story-method";
 import { withMcpScope } from "./mcp-scope";
+import { installSkills } from "./skill-sources";
 import { commitStory, openStoryPr, pushStoryFix } from "./story-git";
 
 // The initiative loop, driven by Paseo events rather than a long-running process:
@@ -166,6 +168,8 @@ function block(story: StoryFile, reason: string) {
 export function createInitiativeLoop(
   readConfig: () => Promise<LoopConfig>,
   readAgentConfig: (api: PaseoApi, step: LoopStep, loop: LoopConfig) => Promise<AgentCreateConfig>,
+  // The drawer's phases and skill sources: each step loads its phase's extras.
+  readPipeline: () => Promise<{ phases: Phase[]; sources: SkillSource[] }>,
 ) {
   let paseo: PaseoApi | null = null;
   // Steps started by this process, so a repeated event can't start one twice before its label shows.
@@ -230,6 +234,9 @@ export function createInitiativeLoop(
       await installBrief(worktree, briefTag(step, round, extra.cycle?.number)).catch((error) =>
         console.warn("orchestrator: install brief", story.id, error),
       );
+      const { phases, sources } = await readPipeline();
+      const extras = stepSkills(step, phases);
+      await installSkills(worktree, extras, sources);
       // Story steps work from the story file and the worktree; none of them needs an MCP server.
       const agent = await withMcpScope(worktree, "none", () =>
         api.workspaces.ref(workspace).agents.create({
@@ -241,6 +248,7 @@ export function createInitiativeLoop(
             cycle: extra.cycle,
             plan: readSection(state, "Plan"),
             missing: planMissing(step, state, worktree),
+            skills: extras.map((skill) => skill.name),
           }),
           labels,
         }),
