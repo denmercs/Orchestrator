@@ -22,9 +22,9 @@ import {
   profilesFromConfigGet,
   resolveRunnerConfig,
 } from "../shared/agent-runner";
-import type { TabId } from "../shared/dashboard-tabs";
+import { tabCounts, type TabId } from "../shared/dashboard-tabs";
 import { pipelineSettings, startPipelineStory } from "../shared/pipeline";
-import { jiraBoardSettings } from "../shared/settings";
+import { dashboardSettings, jiraBoardSettings } from "../shared/settings";
 import { PR_POLL_MS } from "../shared/timing";
 import {
   type BoardItem,
@@ -83,7 +83,11 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const epic = useEpicBoards();
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [loopProfilesOpen, setLoopProfilesOpen] = useState(false);
-  const [tab, setTab] = useState<TabId>("initiatives");
+  const dashboard = useSettings(dashboardSettings);
+  // Null until the user picks one; until then the stored tab shows once it has loaded.
+  const [pickedTab, setPickedTab] = useState<TabId | null>(null);
+  const [tabSaveError, setTabSaveError] = useState<string | null>(null);
+  const tab: TabId = pickedTab ?? (dashboard.status === "ready" ? dashboard.values.tab : "initiatives");
   const agentIds = useMemo(
     () =>
       agents
@@ -206,6 +210,18 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     );
     if (!saved) {
       setJiraError(boardSettings.saveError ?? "Could not save the default board.");
+    }
+  }
+
+  async function selectTab(next: TabId) {
+    setPickedTab(next);
+    setTabSaveError(null);
+    if (dashboard.status !== "ready" || next === dashboard.values.tab) {
+      return;
+    }
+    const saved = await dashboard.save({ ...dashboard.values, tab: next }, dashboard.revision);
+    if (!saved) {
+      setTabSaveError(dashboard.saveError ?? "Could not save the selected tab.");
     }
   }
 
@@ -495,9 +511,16 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   return (
     <View style={styles.screen}>
       {header}
-      <TabBar theme={theme} compact={layout.compact} active={tab} counts={NO_COUNTS} onSelect={setTab} />
+      <TabBar
+        theme={theme}
+        compact={layout.compact}
+        active={tab}
+        counts={tabCounts({ boards: epic.boards, sprintIssues: jiraColumns.length > 0 ? jiraIssues : null, pulse })}
+        onSelect={(next) => void selectTab(next)}
+      />
       {/* Keyed by tab so each body starts at the top. */}
       <ScrollView key={tab} style={styles.screen} contentContainerStyle={styles.content}>
+        {tabSaveError ? <Text style={styles.danger}>{tabSaveError}</Text> : null}
         {loopProfilesOpen ? <LoopStepProfiles theme={theme} compact={layout.compact} /> : null}
         {body}
       </ScrollView>
@@ -521,15 +544,6 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     </View>
   );
 }
-
-// Counts arrive in cycle 4; until then no tab shows a pill.
-const NO_COUNTS: Record<TabId, number | null> = {
-  initiatives: null,
-  today: null,
-  todos: null,
-  board: null,
-  pulse: null,
-};
 
 const ALL_DEVELOPERS = "__all__";
 
