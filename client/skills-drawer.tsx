@@ -898,6 +898,8 @@ function createStyles(theme: Theme, compact: boolean) {
     triggerText: { color: c.foreground, fontWeight: "600" as const },
     triggerCount: { color: c.foregroundMuted, fontSize: 12 },
     overlay: {
+      // Above the dashboard header, which sits at zIndex 10 so its menus clear the tab body.
+      zIndex: 20,
       position: "absolute" as const,
       top: 0,
       right: 0,
