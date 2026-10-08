@@ -61,7 +61,7 @@ export type ContextSummary = z.infer<typeof contextSummary>;
 // is the ISO start of the caller's day for the spend windows; the server's local midnight without it.
 export const contextSummaryRpc = defineRpc({
   name: "orchestration.context.summary",
-  input: z.object({ since: z.string().nullable(), today: z.string().optional() }),
+  input: z.object({ since: z.string().nullable(), today: z.iso.datetime({ offset: true }).optional() }),
   output: contextSummary,
 });
 

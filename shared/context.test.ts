@@ -38,3 +38,8 @@ test("context.sessions takes agent ids and returns a status or null for each", (
   assert.deepEqual(contextSessionsRpc.output.parse([status, null]), [status, null]);
   assert.equal(contextSessionsRpc.output.safeParse([{ ...status, mode: "snooze" }]).success, false);
 });
+
+test("context.summary rejects a today that is not an ISO date-time", () => {
+  assert.equal(contextSummaryRpc.input.safeParse({ since: null, today: "nope" }).success, false);
+  assert.equal(contextSummaryRpc.input.safeParse({ since: null, today: "2026-10-08T00:00:00-05:00" }).success, true);
+});

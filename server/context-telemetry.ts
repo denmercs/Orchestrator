@@ -203,7 +203,9 @@ export async function summariseTelemetry(
   for (const agent of costs.values()) agent.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
   const dayStart = today === undefined ? startOfLocalDay(new Date()) : new Date(today);
   const weekStart = new Date(dayStart);
-  weekStart.setDate(weekStart.getDate() - 6);
+  // The caller's midnight steps back whole UTC days, so a DST change in the server's zone can't move it.
+  if (today === undefined) weekStart.setDate(weekStart.getDate() - 6);
+  else weekStart.setUTCDate(weekStart.getUTCDate() - 6);
   summary.spendToday = spendSince(costs, dayStart.toISOString());
   summary.spendWeek = spendSince(costs, weekStart.toISOString());
   return summary;

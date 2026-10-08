@@ -176,3 +176,15 @@ test("summariseTelemetry takes the spend baseline from the rotated file", async 
   assert.equal(summary.spendToday, 2);
   assert.equal(summary.spendWeek, 5);
 });
+
+test("summariseTelemetry steps the week back whole days from the caller's today, whatever the server's zone", async () => {
+  const file = join(root, "spend-week.jsonl");
+  // US clocks fall back on 2026-11-01, inside this week; the caller's midnight is 05:00Z.
+  const today = "2026-11-05T05:00:00.000Z";
+  await recordTelemetry(row("2026-10-30T04:30:00.000Z", "a1", 10_000, "turn", { costUsd: 1 }), file);
+  await recordTelemetry(row("2026-11-05T06:00:00.000Z", "a1", 10_000, "turn", { costUsd: 4 }), file);
+
+  // Week start is 2026-10-30T05:00Z exactly, so the 04:30Z row is the baseline.
+  const summary = await summariseTelemetry(null, file, today);
+  assert.equal(summary.spendWeek, 3);
+});
