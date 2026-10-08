@@ -474,7 +474,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
           {/* Lives in the Jira panel once a board loads; here so a board can still be chosen before then. */}
           {!jiraLoaded && !jiraError ? (
             <LoadingState theme={theme} compact={layout.compact}>
-              <Skeleton theme={theme}>
+              <Skeleton>
                 <SkeletonBar theme={theme} width="40%" height={16} />
               </Skeleton>
               <SkeletonCards theme={theme} count={3} compact={layout.compact} />
@@ -1218,7 +1218,7 @@ function StatsSkeleton({
   compact: boolean;
 }) {
   return (
-    <Skeleton theme={theme}>
+    <Skeleton>
       <View style={styles.stats}>
         {Array.from({ length: 4 }, (_, i) => (
           <View key={i} style={styles.stat}>

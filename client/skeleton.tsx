@@ -8,7 +8,7 @@ const PULSE_MS = 900;
 const DIM = 0.45;
 
 // Wraps skeleton bars and pulses them together: one loop per wrapper, stopped on unmount.
-export function Skeleton({ children }: { theme: Theme; children: ReactNode }) {
+export function Skeleton({ children }: { children: ReactNode }) {
   const opacity = useRef(new Animated.Value(DIM)).current;
 
   useEffect(() => {
@@ -41,7 +41,7 @@ export function SkeletonBar({
 export function SkeletonRows({ theme, rows = 3 }: { theme: Theme; rows?: number }) {
   const styles = useMemo(() => createStyles(false), []);
   return (
-    <Skeleton theme={theme}>
+    <Skeleton>
       <View style={styles.stack}>
         {Array.from({ length: rows }, (_, i) => (
           <SkeletonBar key={i} theme={theme} width={i === rows - 1 && rows > 1 ? "60%" : "100%"} />
@@ -65,7 +65,7 @@ export function SkeletonCards({
 }) {
   const styles = useMemo(() => createStyles(compact), [compact]);
   return (
-    <Skeleton theme={theme}>
+    <Skeleton>
       <View style={styles.cards}>
         {Array.from({ length: count }, (_, i) => (
           <View key={i} style={styles.card}>

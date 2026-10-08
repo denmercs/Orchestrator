@@ -75,7 +75,7 @@ export function StandupSection({
   const templatePath = settings.status === "ready" ? settings.values.templatePath : "";
   // Todos settle with no folder set, but not while settings are still loading the folder.
   const todosSettled = todosLoaded || (settings.status !== "loading" && !folderPath);
-  const firstLoadSettled = mergedSettled && workSettled && todosSettled;
+  const prsSettled = mergedSettled && workSettled;
   const selectedTemplate =
     templates.templates.find((template) => template.path === templatePath) ?? null;
   const { workPrs, personalPrs } = useMemo(() => {
@@ -398,206 +398,210 @@ export function StandupSection({
           ) : null}
         </View>
       </View>
-      {!firstLoadSettled ? (
-        <LoadingState theme={theme} compact={layout.compact}>
-          {(["40%", "30%", "35%"] as const).map((width) => (
-            <View key={width} style={styles.group}>
-              <Skeleton theme={theme}>
-                <SkeletonBar theme={theme} width={width} height={16} />
-              </Skeleton>
-              <SkeletonRows theme={theme} rows={3} />
-            </View>
-          ))}
-        </LoadingState>
-      ) : (
-        <View style={styles.body}>
-          <View style={styles.main}>
-            <Text style={styles.hint}>
-              {detectedLabel
-                ? `Select opens in the “${detectedLabel}” vault so you can pick a folder.`
-                : "Choose a folder. Today’s note is created or updated there."}
+      <View style={styles.body}>
+        <View style={styles.main}>
+          <Text style={styles.hint}>
+            {detectedLabel
+              ? `Select opens in the “${detectedLabel}” vault so you can pick a folder.`
+              : "Choose a folder. Today’s note is created or updated there."}
+          </Text>
+          <Text style={styles.path} numberOfLines={2}>
+            {folderPath || "No folder selected yet."}
+          </Text>
+          <Text style={styles.note} numberOfLines={1}>
+            Template: {selectedTemplate?.name ?? (templatePath ? templatePath : "Built-in standup")}
+          </Text>
+          {notePath ? (
+            <Text style={styles.note} numberOfLines={2}>
+              {notePath}
             </Text>
-            <Text style={styles.path} numberOfLines={2}>
-              {folderPath || "No folder selected yet."}
-            </Text>
-            <Text style={styles.note} numberOfLines={1}>
-              Template: {selectedTemplate?.name ?? (templatePath ? templatePath : "Built-in standup")}
-            </Text>
-            {notePath ? (
-              <Text style={styles.note} numberOfLines={2}>
-                {notePath}
-              </Text>
-            ) : null}
+          ) : null}
 
-            <View style={styles.group}>
-              <Text style={styles.groupTitle}>Work · DCE</Text>
-              <Text style={styles.label}>STORIES · {work.items.length}</Text>
-              {work.error ? <Text style={styles.danger}>{work.error}</Text> : null}
-              {work.items.length === 0 && !work.error ? (
-                <Text style={styles.hint}>No DCE stories assigned to you.</Text>
-              ) : (
-                work.items.map((item) => (
-                  <Pressable
-                    key={item.key}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Open ${item.key} ${item.summary}`}
-                    onPress={() => {
-                      void openExternalUrl(item.url);
-                    }}
-                    style={styles.prRow}
-                  >
-                    <Text style={styles.prKey}>{item.key}</Text>
-                    <Text style={styles.prTitle} numberOfLines={2}>
-                      {item.summary}
-                    </Text>
-                    <Text style={item.statusCategory === "done" ? styles.note : styles.workStatus}>
-                      {item.status}
-                    </Text>
-                  </Pressable>
-                ))
-              )}
-              <MergedList
-                label={`MERGED TODAY${merged.date ? ` · ${merged.date}` : ""}`}
-                prs={workPrs}
-                error={merged.error}
-                empty="No DCE pull requests merged today."
-                styles={styles}
-              />
-            </View>
+          {!prsSettled ? (
+            <LoadingState theme={theme} compact={layout.compact}>
+              {(["40%", "35%"] as const).map((width) => (
+                <View key={width} style={styles.group}>
+                  <Skeleton>
+                    <SkeletonBar theme={theme} width={width} height={16} />
+                  </Skeleton>
+                  <SkeletonRows theme={theme} rows={3} />
+                </View>
+              ))}
+            </LoadingState>
+          ) : (
+            <>
+              <View style={styles.group}>
+                <Text style={styles.groupTitle}>Work · DCE</Text>
+                <Text style={styles.label}>STORIES · {work.items.length}</Text>
+                {work.error ? <Text style={styles.danger}>{work.error}</Text> : null}
+                {work.items.length === 0 && !work.error ? (
+                  <Text style={styles.hint}>No DCE stories assigned to you.</Text>
+                ) : (
+                  work.items.map((item) => (
+                    <Pressable
+                      key={item.key}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open ${item.key} ${item.summary}`}
+                      onPress={() => {
+                        void openExternalUrl(item.url);
+                      }}
+                      style={styles.prRow}
+                    >
+                      <Text style={styles.prKey}>{item.key}</Text>
+                      <Text style={styles.prTitle} numberOfLines={2}>
+                        {item.summary}
+                      </Text>
+                      <Text style={item.statusCategory === "done" ? styles.note : styles.workStatus}>
+                        {item.status}
+                      </Text>
+                    </Pressable>
+                  ))
+                )}
+                <MergedList
+                  label={`MERGED TODAY${merged.date ? ` · ${merged.date}` : ""}`}
+                  prs={workPrs}
+                  error={merged.error}
+                  empty="No DCE pull requests merged today."
+                  styles={styles}
+                />
+              </View>
 
-            <View style={styles.groupDivider} />
+              <View style={styles.groupDivider} />
 
-            <View style={styles.group}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ expanded: personalExpanded }}
-                accessibilityLabel={`${personalExpanded ? "Collapse" : "Expand"} personal projects`}
-                onPress={() => {
-                  setPersonalExpanded((value) => !value);
-                }}
-                style={styles.groupToggle}
-              >
-                <Text style={styles.groupTitle}>
-                  {personalExpanded ? "▾" : "▸"} Personal projects
-                </Text>
-              </Pressable>
-              <MergedList
-                label={`MERGED TODAY${merged.date ? ` · ${merged.date}` : ""}`}
-                prs={personalPrs}
-                limit={personalExpanded ? undefined : PERSONAL_PREVIEW_COUNT}
-                error={merged.error}
-                empty="No personal pull requests merged today."
-                styles={styles}
-              />
-              {personalPrs.length > PERSONAL_PREVIEW_COUNT ? (
+              <View style={styles.group}>
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel={
-                    personalExpanded ? "Show fewer personal pull requests" : "Show all personal pull requests"
-                  }
+                  accessibilityState={{ expanded: personalExpanded }}
+                  accessibilityLabel={`${personalExpanded ? "Collapse" : "Expand"} personal projects`}
                   onPress={() => {
                     setPersonalExpanded((value) => !value);
                   }}
+                  style={styles.groupToggle}
                 >
-                  <Text style={styles.note}>
-                    {personalExpanded
-                      ? "Show top 3"
-                      : `Show all ${personalPrs.length} (+${personalPrs.length - PERSONAL_PREVIEW_COUNT} more)`}
+                  <Text style={styles.groupTitle}>
+                    {personalExpanded ? "▾" : "▸"} Personal projects
                   </Text>
                 </Pressable>
-              ) : null}
-            </View>
-          </View>
-
-          <View style={styles.todoPane}>
-            <Text style={styles.todoTitle}>Todo notes</Text>
-            <Text style={styles.hint}>
-              {folderPath
-                ? "New items go into today’s note. Open items from earlier notes stay listed."
-                : "Select a folder to write todos into the daily note."}
-            </Text>
-            <View style={styles.todoSplit}>
-              <View style={styles.todoComposer}>
-                <View style={styles.kindRow}>
-                  {(["todo", "blocker", "note"] as const).map((kind) => {
-                    const selected = todoKind === kind;
-                    return (
-                      <Pressable
-                        key={kind}
-                        accessibilityRole="button"
-                        accessibilityState={{ selected }}
-                        accessibilityLabel={`Add as ${kind}`}
-                        onPress={() => {
-                          setTodoKind(kind);
-                        }}
-                        style={selected ? styles.kindSelected : styles.kindButton}
-                      >
-                        <Text style={selected ? styles.kindSelectedText : styles.kindText}>
-                          {kindLabel(kind)}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-                <TextInput
-                  accessibilityLabel="Todo note text"
-                  placeholder={todoPlaceholder(todoKind)}
-                  placeholderTextColor={theme.colors.foregroundMuted}
-                  value={todoDraft}
-                  onChangeText={setTodoDraft}
-                  multiline
-                  textAlignVertical="top"
-                  blurOnSubmit={false}
-                  style={styles.todoInput}
+                <MergedList
+                  label={`MERGED TODAY${merged.date ? ` · ${merged.date}` : ""}`}
+                  prs={personalPrs}
+                  limit={personalExpanded ? undefined : PERSONAL_PREVIEW_COUNT}
+                  error={merged.error}
+                  empty="No personal pull requests merged today."
+                  styles={styles}
                 />
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Add ${todoKind} to today’s note`}
-                  disabled={!folderPath || todoBusy || todoDraft.trim().length === 0}
-                  onPress={() => {
-                    void addTodo();
-                  }}
-                  style={styles.primaryButton}
-                >
-                  <Text style={styles.primaryButtonText}>
-                    {todoBusy ? "Saving…" : `Add ${todoKind}`}
-                  </Text>
-                </Pressable>
-              </View>
-              <ScrollView style={styles.todoList} contentContainerStyle={styles.todoListContent}>
-                {openGroups.length === 0 ? (
-                  <Text style={styles.hint}>No open todo notes in any daily file.</Text>
-                ) : (
-                  <TodoGroups
-                    groups={openGroups}
-                    today={today}
-                    styles={styles}
-                    onToggle={(item) => {
-                      void toggleTodo(item);
-                    }}
-                    onRemove={(item) => {
-                      void removeTodo(item);
-                    }}
-                  />
-                )}
-                {completedCount > 0 ? (
+                {personalPrs.length > PERSONAL_PREVIEW_COUNT ? (
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={`Show ${completedCount} completed todo notes`}
+                    accessibilityLabel={
+                      personalExpanded ? "Show fewer personal pull requests" : "Show all personal pull requests"
+                    }
                     onPress={() => {
-                      setCompletedOpen(true);
+                      setPersonalExpanded((value) => !value);
                     }}
-                    style={styles.completedRow}
                   >
-                    <Text style={styles.completedText}>Completed · {completedCount}</Text>
-                    <Icon name="ChevronRight" size={14} color={theme.colors.foregroundMuted} />
+                    <Text style={styles.note}>
+                      {personalExpanded
+                        ? "Show top 3"
+                        : `Show all ${personalPrs.length} (+${personalPrs.length - PERSONAL_PREVIEW_COUNT} more)`}
+                    </Text>
                   </Pressable>
                 ) : null}
-              </ScrollView>
+              </View>
+            </>
+          )}
+        </View>
+
+        <View style={styles.todoPane}>
+          <Text style={styles.todoTitle}>Todo notes</Text>
+          <Text style={styles.hint}>
+            {folderPath
+              ? "New items go into today’s note. Open items from earlier notes stay listed."
+              : "Select a folder to write todos into the daily note."}
+          </Text>
+          <View style={styles.todoSplit}>
+            <View style={styles.todoComposer}>
+              <View style={styles.kindRow}>
+                {(["todo", "blocker", "note"] as const).map((kind) => {
+                  const selected = todoKind === kind;
+                  return (
+                    <Pressable
+                      key={kind}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`Add as ${kind}`}
+                      onPress={() => {
+                        setTodoKind(kind);
+                      }}
+                      style={selected ? styles.kindSelected : styles.kindButton}
+                    >
+                      <Text style={selected ? styles.kindSelectedText : styles.kindText}>
+                        {kindLabel(kind)}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <TextInput
+                accessibilityLabel="Todo note text"
+                placeholder={todoPlaceholder(todoKind)}
+                placeholderTextColor={theme.colors.foregroundMuted}
+                value={todoDraft}
+                onChangeText={setTodoDraft}
+                multiline
+                textAlignVertical="top"
+                blurOnSubmit={false}
+                style={styles.todoInput}
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Add ${todoKind} to today’s note`}
+                disabled={!folderPath || todoBusy || todoDraft.trim().length === 0}
+                onPress={() => {
+                  void addTodo();
+                }}
+                style={styles.primaryButton}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {todoBusy ? "Saving…" : `Add ${todoKind}`}
+                </Text>
+              </Pressable>
             </View>
+            <ScrollView style={styles.todoList} contentContainerStyle={styles.todoListContent}>
+              {!todosSettled ? (
+                <SkeletonRows theme={theme} rows={3} />
+              ) : openGroups.length === 0 ? (
+                <Text style={styles.hint}>No open todo notes in any daily file.</Text>
+              ) : (
+                <TodoGroups
+                  groups={openGroups}
+                  today={today}
+                  styles={styles}
+                  onToggle={(item) => {
+                    void toggleTodo(item);
+                  }}
+                  onRemove={(item) => {
+                    void removeTodo(item);
+                  }}
+                />
+              )}
+              {completedCount > 0 ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Show ${completedCount} completed todo notes`}
+                  onPress={() => {
+                    setCompletedOpen(true);
+                  }}
+                  style={styles.completedRow}
+                >
+                  <Text style={styles.completedText}>Completed · {completedCount}</Text>
+                  <Icon name="ChevronRight" size={14} color={theme.colors.foregroundMuted} />
+                </Pressable>
+              ) : null}
+            </ScrollView>
           </View>
         </View>
-      )}
+      </View>
 
       <Modal
         title="Select standup folder"

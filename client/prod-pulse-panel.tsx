@@ -273,7 +273,7 @@ export function ProdPulsePanel({
 export function ProdPulseSkeleton({ theme, compact }: { theme: Theme; compact: boolean }) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   return (
-    <Skeleton theme={theme}>
+    <Skeleton>
       <View style={styles.panel}>
         <SkeletonBar theme={theme} width="40%" height={22} />
         <SkeletonBar theme={theme} width="55%" height={12} />
