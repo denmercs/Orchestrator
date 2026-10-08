@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { accessSync, chmodSync, constants, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { briefScript } from "../shared/brief";
+import { installBrief } from "./brief-install";
 
 test("briefScript runs standalone: exit code, header, full log, pruned to 20", () => {
   const dir = mkdtempSync(join(tmpdir(), "brief-"));
@@ -36,6 +37,25 @@ test("briefScript runs standalone: exit code, header, full log, pruned to 20", (
     assert.equal(mine.length, 1);
     assert.equal(readFileSync(join(logs, mine[0]), "utf8"), "x\n");
     assert.ok(!left.includes("plan-old-00.log"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("installBrief writes an executable brief kept out of git", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "brief-install-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    await installBrief(dir, "plan");
+
+    const script = join(dir, ".harness", "bin", "brief");
+    accessSync(script, constants.X_OK);
+    assert.equal(readFileSync(script, "utf8"), briefScript("plan"));
+    const ignored = spawnSync("git", ["check-ignore", ".harness/bin/brief", ".harness/logs/x.log"], {
+      cwd: dir,
+      encoding: "utf8",
+    });
+    assert.equal(ignored.status, 0, ignored.stderr);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
