@@ -134,3 +134,8 @@ test("a session with an unknown step falls back to its title, then its id", () =
   assert.equal(stepTitle(session("a", "w", { "loop-step": "deploy" }, "🔁 S1 · Deploy")), "🔁 S1 · Deploy");
   assert.equal(stepTitle(session("agent-7", "w", { "loop-step": "toString" })), "agent-7");
 });
+
+test("a completed compaction shows the tokens it compacted from, when the item has them", () => {
+  assert.equal(logLine(entry(5, { type: "compaction", status: "completed", preTokens: 182_000 }))?.title, "Context compacted from 182k");
+  assert.equal(logLine(entry(6, { type: "compaction", status: "completed" }))?.title, "Context compacted");
+});

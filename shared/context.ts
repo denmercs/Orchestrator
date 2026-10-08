@@ -53,3 +53,28 @@ export const contextSummaryRpc = defineRpc({
   input: z.object({ since: z.string().nullable() }),
   output: contextSummary,
 });
+
+// One session's context as its pill shows it: the watch's reading and warning memory, plus the
+// red threshold for "Remind me at …". The pill's status RPC returns null for a gone agent.
+export const contextStatus = z.object({
+  agentId: z.string(),
+  reading: z.object({
+    used: z.number().nullable(),
+    max: z.number().nullable(),
+    level: z.enum(["ok", "amber", "red", "unknown"]),
+    capability: z.enum(["full", "partial", "basic"]),
+    strategy: z.enum(["native", "fresh"]),
+  }),
+  warned: z.array(z.enum(["amber", "red"])),
+  mode: z.enum(["normal", "remind", "ignore"]),
+  red: z.number(),
+});
+
+export type ContextStatus = z.infer<typeof contextStatus>;
+
+// Each listed session's pill status, in order; null for an agent that is gone.
+export const contextSessionsRpc = defineRpc({
+  name: "orchestration.context.sessions",
+  input: z.object({ agentIds: z.array(z.string()) }),
+  output: z.array(contextStatus.nullable()),
+});

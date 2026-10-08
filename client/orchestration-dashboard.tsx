@@ -32,6 +32,7 @@ import {
   groupJiraColumns,
   groupJiraEpics,
 } from "./board-model";
+import { ContextCard } from "./context-card";
 import { DailyVerseCard } from "./daily-verse";
 import { useEpicBoard } from "./epic-board";
 import { ProdPulseButton, ProdPulseDrawer, useProdPulse } from "./prod-pulse-drawer";
@@ -386,6 +387,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         </View>
 
         <DailyVerseCard theme={theme} />
+        <ContextCard theme={theme} />
 
         {loading ? <Text style={styles.muted}>Loading live catalog…</Text> : null}
         {error ? <Text style={styles.danger}>{error}</Text> : null}

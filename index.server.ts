@@ -20,7 +20,7 @@ import { createLoopAdvance } from "./server/loop-advance";
 import { createInitiativeLoop } from "./server/initiative-loop";
 import { createContextWatch, paseoPort } from "./server/context-watch";
 import { summariseTelemetry } from "./server/context-telemetry";
-import { contextAct, contextSettings, contextSummaryRpc } from "./shared/context";
+import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
   initiativeLoopSettings,
@@ -133,6 +133,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(contextAct, (input, { paseo }) => {
     contextPaseo = paseo;
     return contextWatch.act(input);
+  });
+  server.handle(contextSessionsRpc, ({ agentIds }, { paseo }) => {
+    contextPaseo = paseo;
+    return contextWatch.sessions(agentIds);
   });
   server.handle(contextSummaryRpc, ({ since }) => summariseTelemetry(since));
   const belt = server.registerSettings(beltSettings);

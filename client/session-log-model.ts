@@ -2,7 +2,9 @@
 // turned into short lines, and the pages merged as the tail refreshes and older pages load.
 // Kept free of React and the Paseo client so it can be tested on its own.
 
+import { detectCompaction, type ContextReading } from "../shared/context-meter";
 import { STEP_LABELS, type LoopStep } from "../shared/initiative-loop";
+import { formatTokens } from "./context-pill-model";
 
 // The parts of a Paseo agent snapshot the log reads.
 export type LogSession = { id: string; title: string | null; workspaceId?: string; labels?: Record<string, string> };
@@ -29,7 +31,7 @@ export type LogItem =
   | { type: "todo"; items: { text: string; completed: boolean }[] }
   | { type: "error"; message: string }
   | { type: "notification"; level: string; message: string }
-  | { type: "compaction"; status: string }
+  | { type: "compaction"; status: string; preTokens?: number }
   | { type: "plugin"; kind: string };
 
 export type LogEntry = { item: { type: string }; timestamp: string; seqStart: number; seqEnd: number };
@@ -94,6 +96,9 @@ function toolBody(detail: Record<string, unknown> & { type: string }, error: unk
   return parts.join("\n\n");
 }
 
+// The drawer has no reading of its own; a compaction item carries its preTokens.
+const NO_READING: ContextReading = { used: null, max: null, level: "unknown", capability: "basic", strategy: "fresh" };
+
 export function logLine(entry: LogEntry): LogLine | null {
   const item = entry.item as LogItem;
   const base = { key: `${entry.seqStart}`, timestamp: entry.timestamp, failed: false };
@@ -127,8 +132,13 @@ export function logLine(entry: LogEntry): LogLine | null {
       return { ...base, kind: "error", title: firstLine(item.message), body: item.message, failed: true };
     case "notification":
       return { ...base, kind: item.level === "error" ? "error" : "note", title: firstLine(item.message), body: item.message, failed: item.level === "error" };
-    case "compaction":
-      return item.status === "completed" ? { ...base, kind: "note", title: "Context compacted", body: "" } : null;
+    case "compaction": {
+      // The meter's own reading of the item, so the drawer and the watch agree on what compacted.
+      const compaction = detectCompaction(null, NO_READING, [item]);
+      if (!compaction) return null;
+      const from = compaction.preTokens === null ? "" : ` from ${formatTokens(compaction.preTokens)}`;
+      return { ...base, kind: "note", title: `Context compacted${from}`, body: "" };
+    }
     default:
       return null;
   }

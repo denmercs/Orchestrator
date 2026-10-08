@@ -320,3 +320,53 @@ test("act before any turn end still treats the first turn end as first sight", a
     ["remind", "turn"],
   );
 });
+
+test("sessions: a seen agent's stored reading and memory, an unseen one read on demand, a gone one null", async () => {
+  const agents = { a: agent(160_000), new: agent(40_000, {}, []) };
+  const { port } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a"));
+  await watch.act({ agentId: "a", action: "remind" });
+  // The stored reading is from the last turn end, not a fresh read.
+  agents.a = agent(170_000);
+
+  assert.deepEqual(await watch.sessions(["a", "new", "gone"]), [
+    {
+      agentId: "a",
+      reading: { used: 160_000, max: 200_000, level: "red", capability: "full", strategy: "native" },
+      warned: ["red"],
+      mode: "remind",
+      red: 150_000,
+    },
+    {
+      agentId: "new",
+      reading: { used: 40_000, max: 200_000, level: "ok", capability: "partial", strategy: "fresh" },
+      warned: [],
+      mode: "normal",
+      red: 150_000,
+    },
+    null,
+  ]);
+});
+
+test("sessions: waits for that agent's in-flight turn end, so a new warning is not missed", async () => {
+  const { port } = fakePort({ a: agent(120_000) });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const record = port.record;
+  port.record = async (row) => {
+    await gate;
+    await record(row);
+  };
+  const watch = createContextWatch(port);
+  const turnEnd = watch.onTurnEnded(turn("a"));
+  const status = watch.sessions(["a"]);
+  release();
+  await turnEnd;
+
+  const [result] = await status;
+  assert.deepEqual(result?.warned, ["amber"]);
+  assert.equal(result?.reading.used, 120_000);
+});
