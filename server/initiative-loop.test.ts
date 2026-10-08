@@ -255,6 +255,33 @@ test("an Implement step copies its extras into the worktree and names them in th
   assert.ok(created[0].prompt?.includes("Also use these skills: tdd."));
 });
 
+test("a resumed Implement agent's prompt names its extras again", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  writeFrontmatter(story, { status: "planning", step: "plan" });
+  const { api, created } = fakePaseo([{ id: "a1", labels: { ...labels, "loop-step": "plan" } }]);
+  writeFileSync(
+    join(worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nplan-done\n\n## Cycles\n- [ ] Cycle 1 — Reads: test → change\n",
+    "utf8",
+  );
+  const source = tddSource();
+  const phases = DEFAULT_PHASES.map((phase) =>
+    phase.id === "implement" ? { ...phase, extras: [{ name: "tdd", source: source.id }] } : phase,
+  );
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    async () => ({ phases, sources: [source] }),
+  );
+  await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
+    ReturnType<typeof loop>["onTurnEnded"]
+  >[1]);
+
+  const prompt = await initiative.resumePrompt(created[0].labels);
+
+  assert.ok(prompt?.includes("Also use these skills: tdd."), prompt ?? "no resume prompt");
+});
+
 // Fakes the turn end of the story's plan agent a1, with Implement cycle 1 next.
 function planDone() {
   const fx = fixture("a1");

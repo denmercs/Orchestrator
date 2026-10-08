@@ -524,11 +524,14 @@ export function createInitiativeLoop(
       const cycle = labels["loop-cycle"]
         ? readCycles(state).find((item) => String(item.number) === labels["loop-cycle"])
         : undefined;
+      // Names only: startStep already copied the extras into the worktree.
+      const { phases } = await readPipeline().catch(() => ({ phases: DEFAULT_PHASES }));
       const prompt = stepPrompt(step, ctx, {
         round: Number(labels["loop-round"]) || 1,
         cycle,
         plan: readSection(state, "Plan"),
         missing: found.story.meta.worktree ? planMissing(step, state, found.story.meta.worktree) : [],
+        skills: stepSkills(step, phases).map((skill) => skill.name),
       });
       return `${prompt}\n\n${RESUME_LINE}`;
     },
