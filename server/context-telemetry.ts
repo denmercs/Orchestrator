@@ -95,7 +95,7 @@ async function readRows(file: string): Promise<TelemetryRow[]> {
 
 // Totals over rows with `at >= since` (every row when since is null), read from the rotated
 // file and the current one so totals survive a rotation. A session counts as over threshold
-// when it has a `warning` row. `byStep` covers only `turn` rows with a step.
+// when it has a `warning` row. `byStep` covers only `turn` rows with a step, `byStory` only those with a story.
 export async function summariseTelemetry(
   since: string | null,
   file: string = TELEMETRY_FILE,
@@ -111,10 +111,12 @@ export async function summariseTelemetry(
     reminded: 0,
     tokensAvoided: 0,
     byStep: {},
+    byStory: {},
   };
   const sessions = new Set<string>();
   const overThreshold = new Set<string>();
   const stepModels = new Map<string, Set<string>>();
+  const storyModels = new Map<string, Set<string>>();
   for (const row of rows) {
     sessions.add(row.agentId);
     switch (row.event) {
@@ -127,6 +129,15 @@ export async function summariseTelemetry(
           const models = stepModels.get(row.step) ?? new Set<string>();
           models.add(row.model ?? "unknown");
           stepModels.set(row.step, models);
+        }
+        if (row.story != null) {
+          const key = `${row.initiative ?? "unknown"}/${row.story}`;
+          const story = (summary.byStory[key] ??= { turns: 0, tokens: 0, models: [] });
+          story.turns += 1;
+          story.tokens += row.used ?? 0;
+          const models = storyModels.get(key) ?? new Set<string>();
+          models.add(row.model ?? "unknown");
+          storyModels.set(key, models);
         }
         break;
       case "warning":
@@ -152,5 +163,6 @@ export async function summariseTelemetry(
   summary.sessions = sessions.size;
   summary.sessionsOverThreshold = overThreshold.size;
   for (const [step, models] of stepModels) summary.byStep[step].models = [...models].sort();
+  for (const [key, models] of storyModels) summary.byStory[key].models = [...models].sort();
   return summary;
 }
