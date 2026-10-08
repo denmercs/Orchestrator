@@ -91,6 +91,13 @@ test("a whole-story or fix agent goes on to any unticked cycle, else review", ()
   assert.deepEqual(afterImplement(state(""), null), { kind: "review" });
 });
 
+test("a parent that ran every cycle moves on to review, else blocks on the first unticked one", () => {
+  assert.deepEqual(afterImplement(state("- [x] Cycle 1 — A: a\n- [x] Cycle 2 — B: b"), "all"), { kind: "review" });
+  const after = afterImplement(state("- [x] Cycle 1 — A: a\n- [ ] Cycle 2 — B: b\n- [ ] Cycle 3 — C: c"), "all");
+  assert.equal(after.kind, "blocked");
+  assert.match(after.kind === "blocked" ? after.reason : "", /Cycle 2/);
+});
+
 test("commit messages name the cycle, the fix round or the whole change", () => {
   const cycle = readCycles(state("- [x] Cycle 3 — Rank: x"))[0];
   assert.equal(implementCommitMessage("S1", cycle, 1), "S1: Cycle 3 — Rank");

@@ -321,10 +321,17 @@ export type AfterImplement =
   | { kind: "blocked"; reason: string };
 
 // What follows an Implement agent that wrote implement-done. `finished` is the cycle it was given,
-// or null for a whole-story or fix-findings agent. A cycle that was not ticked stops the loop, so a
-// confused agent can't make the plugin start the same cycle forever.
-export function afterImplement(state: string, finished: number | null): AfterImplement {
+// "all" for a parent that ran every cycle in subagents, or null for a whole-story or fix-findings
+// agent. A cycle that was not ticked stops the loop, so a confused agent can't make the plugin start
+// the same cycle forever.
+export function afterImplement(state: string, finished: number | "all" | null): AfterImplement {
   const cycles = readCycles(state);
+  if (finished === "all") {
+    const open = cycles.find((cycle) => !cycle.done);
+    return open
+      ? { kind: "blocked", reason: `Cycle ${open.number} was not ticked in ## Cycles when Implement finished.` }
+      : { kind: "review" };
+  }
   if (finished !== null) {
     const own = cycles.find((cycle) => cycle.number === finished);
     if (own && !own.done) {
