@@ -40,7 +40,7 @@ import { InitiativePanels, StoryDrawer, useEpicBoards } from "./epic-board";
 import { ProdPulseButton, ProdPulseDrawer, useProdPulse } from "./prod-pulse-drawer";
 import { LoopProfilesToggle, LoopStepProfiles } from "./loop-step-profiles";
 import { RunnerPicker } from "./runner-picker";
-import { SkillsButton, SkillsDrawer } from "./skills-drawer";
+import { SkillsDrawer, StoryPipelineButton } from "./skills-drawer";
 import { startJiraSession } from "./start-jira-session";
 import { StandupSection } from "./standup-section";
 import { useOrchestrationCatalog } from "./use-orchestration-catalog";
@@ -403,10 +403,11 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         open={loopProfilesOpen}
         onPress={() => setLoopProfilesOpen((open) => !open)}
       />
-      <SkillsButton
+      <StoryPipelineButton
         theme={theme}
         pipelineOn={pipeline.status === "ready" && pipeline.values.enabled}
-        onPress={() => setSkillsOpen(true)}
+        open={skillsOpen}
+        onPress={() => setSkillsOpen((open) => !open)}
       />
       {pulse?.available ? (
         <ProdPulseButton pulse={pulse} theme={theme} onPress={() => setPulseOpen(true)} />
