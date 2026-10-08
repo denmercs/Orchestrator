@@ -72,7 +72,7 @@ test("showFold removes a folded key, is a copy when it isn't folded, and leaves 
 });
 
 function story(id: string): EpicStory {
-  return { id, title: id, status: "todo", dependsOn: [], blockedBy: "", blockedReason: "" } as unknown as EpicStory;
+  return { id, title: id, status: "todo", dependsOn: [], blockedBy: "", blockedReason: "", blockedFrom: "" } as unknown as EpicStory;
 }
 
 test("findSelected resolves the selected board and story", () => {
