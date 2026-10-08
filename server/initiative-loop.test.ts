@@ -141,6 +141,23 @@ test("resumePrompt gives a cycle agent back its cycle and the plan", async () =>
   assert.ok(prompt.endsWith(`\n\n${RESUME_LINE}`));
 });
 
+test("resumePrompt gives a parent Implement agent back only the cycles still unticked", async () => {
+  const { worktree, labels } = fixture();
+  writeFileSync(
+    join(worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nimplement-running\n\n## Plan\nChange server/meter.ts.\n\n## Cycles\n- [x] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once\n- [ ] Cycle 3 — Resets: reset test → clear\n",
+    "utf8",
+  );
+  const prompt = await loop().resumePrompt({ ...labels, "loop-cycles": "subagents" });
+
+  assert.ok(prompt);
+  assert.match(prompt, /## This step: run the cycles in subagents/);
+  assert.match(prompt, /## Cycles to run\n- \[ \] Cycle 2 — Warns.*\n- \[ \] Cycle 3 — Resets/);
+  assert.doesNotMatch(prompt, /Cycle 1 — Reads/);
+  assert.match(prompt, /Change server\/meter\.ts\./);
+  assert.ok(prompt.endsWith(`\n\n${RESUME_LINE}`));
+});
+
 test("after a hand-over, the new agent's implement-done starts exactly one Review agent; a repeat turn end and a tick start none", async () => {
   const { story, worktree, labels } = fixture("a1");
   // The fresh compact archived a1; f1 carries the same loop labels.

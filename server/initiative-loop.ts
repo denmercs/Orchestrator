@@ -551,9 +551,13 @@ export function createInitiativeLoop(
       const cycle = labels["loop-cycle"]
         ? readCycles(state).find((item) => String(item.number) === labels["loop-cycle"])
         : undefined;
+      // A parent gets back only the cycles it hasn't ticked yet.
+      const cycles =
+        labels["loop-cycles"] === "subagents" ? readCycles(state).filter((item) => !item.done) : undefined;
       const prompt = stepPrompt(step, ctx, {
         round: Number(labels["loop-round"]) || 1,
         cycle,
+        cycles,
         plan: readSection(state, "Plan"),
         missing: found.story.meta.worktree ? planMissing(step, state, found.story.meta.worktree) : [],
         skills: await resumeSkills(step, found.story.meta),
