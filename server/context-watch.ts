@@ -10,7 +10,8 @@ import {
   type WarningMemory,
 } from "../shared/context-meter";
 import type { ContextAction } from "../shared/context";
-import { keepList, nativeCompactor } from "./compactor";
+import { freshCompactor, keepList, nativeCompactor, type FreshPort } from "./compactor";
+import { excludeHarness } from "./harness-layout";
 import { recordTelemetry, type TelemetryEvent, type TelemetryRow } from "./context-telemetry";
 
 // The context watch (see CONTEXT.md, "Context watch"): on each turn end it takes a context
@@ -31,13 +32,74 @@ export type WatchPort = {
   record(row: TelemetryRow): Promise<void>;
   thresholds(): Promise<Thresholds>;
   now(): string;
+  // The fresh adapter's port.
+  fresh: FreshPort;
 };
 
 type PaseoApi = PluginHandlerContext["paseo"];
 
+// The initiative loop's side of a fresh compact (see server/initiative-loop.ts).
+export type LoopHandover = Pick<FreshPort, "handOver"> & {
+  resumePrompt: FreshPort["loopPrompt"];
+};
+
+// The handoff turn gets this long before the fresh compact gives up.
+const HANDOFF_TIMEOUT_MS = 10 * 60_000;
+
+function connected(paseo: () => PaseoApi | null): PaseoApi {
+  const api = paseo();
+  if (!api) throw new Error("Paseo is not connected yet.");
+  return api;
+}
+
+// The fresh adapter's real port.
+function paseoFreshPort(paseo: () => PaseoApi | null, loop: LoopHandover): FreshPort {
+  return {
+    async session(agentId) {
+      const refreshed = await connected(paseo).agents.ref(agentId).refresh();
+      if (!refreshed || refreshed.agent.archivedAt) return null;
+      const { agent } = refreshed;
+      return {
+        workspaceId: agent.workspaceId ?? null,
+        cwd: agent.cwd,
+        config: {
+          provider: agent.model ? `${agent.provider}/${agent.model}` : agent.provider,
+          ...(agent.currentModeId ? { modeId: agent.currentModeId } : {}),
+          ...(agent.thinkingOptionId ? { thinkingOptionId: agent.thinkingOptionId } : {}),
+        },
+        title: agent.title,
+        labels: agent.labels ?? {},
+        running: agent.status === "running",
+      };
+    },
+    async handoff(agentId, cwd, text) {
+      // The handoff lives in .harness/, which must never show in git.
+      await excludeHarness(cwd);
+      const result = await connected(paseo).agents.ref(agentId).run(text, { timeoutMs: HANDOFF_TIMEOUT_MS });
+      if (result.status !== "idle") throw new Error(result.error ?? `The handoff turn ended with ${result.status}.`);
+    },
+    async create({ workspaceId, cwd, ...options }) {
+      const api = connected(paseo);
+      const agent = workspaceId
+        ? await api.workspaces.ref(workspaceId).agents.create(options)
+        : await api.agents.create({ cwd, ...options });
+      return agent.id;
+    },
+    async archive(agentId) {
+      await connected(paseo).agents.ref(agentId).archive();
+    },
+    loopPrompt: (labels) => loop.resumePrompt(labels),
+    handOver: (labels, fromId, toId) => loop.handOver(labels, fromId, toId),
+  };
+}
+
 // The real port. `paseo` is the latest handle the plugin was given (null before the first
 // event), so one watch can live for the plugin's lifetime.
-export function paseoPort(paseo: () => PaseoApi | null, thresholds: () => Promise<Thresholds>): WatchPort {
+export function paseoPort(
+  paseo: () => PaseoApi | null,
+  thresholds: () => Promise<Thresholds>,
+  loop: LoopHandover,
+): WatchPort {
   return {
     async readAgent(agentId) {
       const api = paseo();
@@ -54,13 +116,12 @@ export function paseoPort(paseo: () => PaseoApi | null, thresholds: () => Promis
       };
     },
     async send(agentId, text) {
-      const api = paseo();
-      if (!api) throw new Error("Paseo is not connected yet.");
-      await api.agents.ref(agentId).send(text);
+      await connected(paseo).agents.ref(agentId).send(text);
     },
     record: (row) => recordTelemetry(row),
     thresholds,
     now: () => new Date().toISOString(),
+    fresh: paseoFreshPort(paseo, loop),
   };
 }
 
@@ -71,8 +132,6 @@ export type TurnEnded = {
 };
 
 export type ActResult = { ok: boolean; error: string | null; agentId: string | null };
-
-const FRESH_LATER = "Start fresh arrives in S3";
 
 type SessionState = {
   provider: string;
@@ -97,6 +156,28 @@ function unseenItems(timeline: readonly CompactionItem[], cursor: number | null)
 export function createContextWatch(port: WatchPort) {
   const sessions = new Map<string, SessionState>();
   const native = nativeCompactor(port.send);
+  const fresh = freshCompactor(port.fresh);
+  // Sessions mid-way through a fresh compact, so a second press can't start another.
+  const handingOver = new Set<string>();
+  // New sessions from a fresh compact → the old session's last `used`. Their first turn end writes
+  // the `compact.fresh` row, so it has a real reading to count tokens avoided against.
+  const pendingFresh = new Map<string, number | null>();
+
+  async function startFresh(agentId: string, labels: Record<string, string>, used: number | null): Promise<ActResult> {
+    if (handingOver.has(agentId)) return { ok: false, error: "That session is already starting fresh.", agentId: null };
+    handingOver.add(agentId);
+    try {
+      const result = await fresh.compact(agentId, keepList(labels));
+      pendingFresh.set(result.agentId, used);
+      // The old session is archived and sends no more turn ends.
+      sessions.delete(agentId);
+      return { ok: true, error: null, agentId: result.agentId };
+    } catch (cause) {
+      return { ok: false, error: cause instanceof Error ? cause.message : String(cause), agentId: null };
+    } finally {
+      handingOver.delete(agentId);
+    }
+  }
 
   async function record(
     agentId: string,
@@ -144,6 +225,11 @@ export function createContextWatch(port: WatchPort) {
         });
         state.memory = { warned: [], mode: "normal" };
       }
+      if (pendingFresh.has(agentId)) {
+        const preTokens = pendingFresh.get(agentId) ?? null;
+        pendingFresh.delete(agentId);
+        await record(agentId, state, agent.labels, "compact.fresh", preTokens === null ? {} : { preTokens });
+      }
       await record(agentId, state, agent.labels, "turn");
       const warning = nextWarning(state.memory, reading);
       if (warning) {
@@ -153,14 +239,16 @@ export function createContextWatch(port: WatchPort) {
     },
 
     // A pill action on one session. Compact sends `/compact` for a native session; its
-    // `compact.native` row is written by the next turn end.
+    // `compact.native` row is written by the next turn end. Start fresh, and Compact on a session
+    // without `/compact`, hand over to a new agent and return its id.
     async act({ agentId, action }: { agentId: string; action: ContextAction }): Promise<ActResult> {
-      if (action === "fresh") return { ok: false, error: FRESH_LATER, agentId: null };
       const agent = await port.readAgent(agentId);
       if (!agent) return { ok: false, error: "That session is no longer running.", agentId: null };
       const reading = readContext(agent, await port.thresholds());
+      if (action === "fresh" || (action === "compact" && reading.strategy === "fresh")) {
+        return startFresh(agentId, agent.labels, reading.used ?? sessions.get(agentId)?.reading?.used ?? null);
+      }
       if (action === "compact") {
-        if (reading.strategy !== "native") return { ok: false, error: FRESH_LATER, agentId: null };
         const result = await native.compact(agentId, keepList(agent.labels));
         return { ok: true, error: null, agentId: result.agentId };
       }
