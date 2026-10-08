@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
@@ -14,10 +14,16 @@ import { sourceId } from "./skill-sources";
 // The loop's registry lives under the home folder, so each run gets its own.
 const home = mkdtempSync(join(tmpdir(), "loop-home-"));
 process.env.HOME = home;
-const { createInitiativeLoop, RESUME_LINE } = await import("./initiative-loop");
+const { createInitiativeLoop, RESUME_LINE, RESTART_LINE, nudgePrompt } = await import("./initiative-loop");
 
 type PaseoApi = PluginHandlerContext["paseo"];
-type Agent = { id: string; labels: Record<string, string> };
+type Agent = {
+  id: string;
+  labels: Record<string, string>;
+  status?: string;
+  lastError?: string;
+  archivedAt?: string;
+};
 
 // A repo with one initiative (loop on), one phase and one story mid-Implement in a worktree.
 function fixture(agent = "a1") {
@@ -52,8 +58,10 @@ function fixture(agent = "a1") {
   return { root, worktree, story, labels };
 }
 
-// A fake Paseo: live agents by id; workspace creates are recorded and become live agents.
+// A fake Paseo: live agents by id; workspace creates are recorded and become live agents, and
+// follow-ups are recorded in `sent`.
 function fakePaseo(live: Agent[]) {
+  const sent: { id: string; text: string }[] = [];
   const created: {
     workspace: string;
     title: string;
@@ -66,7 +74,10 @@ function fakePaseo(live: Agent[]) {
       ref: (id: string) => ({
         refresh: async () => {
           const found = live.find((agent) => agent.id === id);
-          return found ? { agent: { labels: found.labels } } : null;
+          return found ? { agent: { status: "idle", ...found } } : null;
+        },
+        send: async (text: string) => {
+          sent.push({ id, text });
         },
       }),
       list: async () => ({ entries: live.map((agent) => ({ agent })) }),
@@ -95,7 +106,7 @@ function fakePaseo(live: Agent[]) {
       }),
     },
   };
-  return { api: api as unknown as PaseoApi, created };
+  return { api: api as unknown as PaseoApi, created, sent };
 }
 
 const noExtras = async () => ({ phases: DEFAULT_PHASES, sources: [] });
@@ -486,4 +497,167 @@ test("an unreadable pipeline doesn't stop the step; its error goes on the story"
 
   assert.deepEqual(created.map((agent) => agent.labels["loop-step"]), ["implement"]);
   assert.match(storyMeta(story).skill_warnings ?? "", /settings unreadable/);
+});
+
+type TurnEnded = Parameters<ReturnType<typeof loop>["onTurnEnded"]>[1];
+const ended = (id: string, outcome: Record<string, unknown>) => ({ agent: { id }, outcome }) as unknown as TurnEnded;
+
+test("a failed turn marks the step stalled; the tick nudges that session once and counts a retry", async () => {
+  const { story, labels } = fixture("a1");
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+
+  await initiative.onTurnEnded(api, ended("a1", { kind: "failed", error: { message: "rate limited" } }));
+  assert.equal(storyMeta(story).stalled, "Its last turn failed: rate limited");
+  assert.deepEqual(sent, [], "the turn end itself sends nothing; the tick does");
+
+  await initiative.tick();
+  await initiative.tick();
+
+  assert.deepEqual(sent, [{ id: "a1", text: nudgePrompt("Its last turn failed: rate limited") }]);
+  assert.deepEqual(created, []);
+  assert.equal(storyMeta(story).retries, "1");
+  assert.equal(storyMeta(story).stalled, undefined);
+  assert.equal(storyMeta(story).status, "implementing");
+});
+
+test("a turn that ends without the step's marker is nudged by the tick", async () => {
+  const { story, labels } = fixture("a1");
+  const { api, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+
+  await initiative.onTurnEnded(api, ended("a1", { kind: "completed" }));
+  await initiative.tick();
+
+  assert.deepEqual(sent.map((item) => item.id), ["a1"]);
+  assert.match(sent[0].text, /^It ended its turn without writing the step's marker\./);
+  assert.equal(storyMeta(story).retries, "1");
+});
+
+test("a turn you cancel is left alone", async () => {
+  const { story, labels } = fixture("a1");
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+
+  await initiative.onTurnEnded(api, ended("a1", { kind: "canceled", reason: "user" }));
+  await initiative.tick();
+
+  assert.equal(storyMeta(story).stalled, undefined);
+  assert.deepEqual([sent, created], [[], []]);
+});
+
+test("a closed session is replaced by a fresh one on the same step that resumes from state.md", async () => {
+  const { story, labels } = fixture("a1");
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels, status: "closed" }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+  await initiative.tick();
+
+  assert.deepEqual(
+    created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"], agent.labels["loop-attempt"]]),
+    [["implement", "1", "1"]],
+  );
+  assert.ok(created[0].prompt?.endsWith(`\n\n${RESTART_LINE}`), created[0].prompt);
+  assert.deepEqual(sent, []);
+  assert.equal(storyMeta(story).agent, "n1");
+  assert.equal(storyMeta(story).retries, "1");
+});
+
+test("a session Paseo no longer knows is replaced too", async () => {
+  const { story } = fixture("gone");
+  const { api, created } = fakePaseo([]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.deepEqual(created.map((agent) => agent.labels["loop-step"]), ["implement"]);
+  assert.equal(storyMeta(story).agent, "n1");
+});
+
+test("past maxRetries the story blocks with the reason instead of retrying", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { retries: 2 });
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels, status: "error", lastError: "provider crashed" }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.deepEqual([sent, created], [[], []]);
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(storyMeta(story).blocked_reason, "Implement: Its session failed: provider crashed. Gave up after 2 retries.");
+  assert.equal(storyMeta(story).blocked_from, "implementing");
+});
+
+test("a running session, or a Paseo that doesn't answer, is left alone", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { stalled: "Its last turn failed: boom" });
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels, status: "running" }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+  await initiative.tick();
+
+  const silent = fakePaseo([]);
+  (silent.api.agents as unknown as { ref: unknown }).ref = () => ({
+    refresh: async () => {
+      throw new Error("daemon unreachable");
+    },
+  });
+  initiative.rememberPaseo(silent.api);
+  await initiative.tick();
+
+  assert.deepEqual([sent, created, silent.sent, silent.created], [[], [], [], []]);
+  assert.equal(storyMeta(story).status, "implementing");
+});
+
+test("a permission request blocks the story and keeps its slot; answering it puts the story back", async () => {
+  const { story, labels } = fixture("a1");
+  const { api } = fakePaseo([{ id: "a1", labels }, { id: "other", labels: { ...labels, "loop-step": "review" } }]);
+  const initiative = loop();
+  const request = { name: "Bash", title: "Run npm install" };
+
+  await initiative.onPermissionRequested(api, { agent: { id: "other" }, request } as never);
+  assert.equal(storyMeta(story).status, "implementing", "only the story's current session counts");
+
+  // A ready second story: with one slot, it must wait while S1's session is still open.
+  writeFileSync(join(dirname(story), "02-next.md"), "---\nid: S2\ntitle: Next\nstatus: todo\n---\n", "utf8");
+  await initiative.onPermissionRequested(api, { agent: { id: "a1" }, request } as never);
+  await initiative.tick();
+  assert.equal(storyMeta(join(dirname(story), "02-next.md")).status, "todo", "S2 was picked up while S1 held the slot");
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(storyMeta(story).blocked_reason, "Waiting on permission: Run npm install. Answer it in the session.");
+  assert.equal(storyMeta(story).waiting_on, "permission");
+
+  await initiative.onPermissionResolved(api, { agent: { id: "a1" } } as never);
+  const meta = storyMeta(story);
+  assert.deepEqual(
+    [meta.status, meta.blocked_reason, meta.blocked_from, meta.waiting_on],
+    ["implementing", undefined, undefined, undefined],
+  );
+});
+
+test("a dead subagent-cycles parent comes back as a parent with only the open cycles", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  writeFrontmatter(story, { cycles: "subagents" });
+  writeFileSync(
+    join(worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nimplement-running\n\n## Cycles\n- [x] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once\n",
+    "utf8",
+  );
+  const { api, created } = fakePaseo([{ id: "a1", labels: { ...labels, "loop-cycles": "subagents" }, status: "closed" }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.deepEqual(
+    created.map((agent) => [agent.labels["loop-cycles"], agent.labels["loop-attempt"], agent.labels["loop-cycle"]]),
+    [["subagents", "1", undefined]],
+  );
+  assert.match(created[0].prompt ?? "", /Cycle 2 — Warns/);
+  assert.doesNotMatch(created[0].prompt ?? "", /Cycle 1 — Reads/);
+  assert.equal(storyMeta(story).cycles, "subagents");
 });
