@@ -51,6 +51,8 @@ export type StepExtra = {
   plan?: string;
   // Extra skills the user picked for this step, named in the prompt.
   skills?: string[];
+  // Existing-path entries in `## Plan` that aren't in the worktree.
+  missing?: string[];
 };
 
 const STATE = ".harness/state.md";
@@ -78,7 +80,7 @@ starting
 `;
 }
 
-function context(story: StoryContext) {
+function context(story: StoryContext, missing: string[] = []) {
   const where = [
     story.initiativeFile ? `- Initiative "${story.initiativeTitle ?? ""}": ${story.initiativeFile}` : "",
     story.phaseLabel
@@ -94,6 +96,10 @@ function context(story: StoryContext) {
     "",
     story.body.trim() ||
       (story.ticketUrl ? "_(Read the ticket with the Jira tools when your step needs it.)_" : "_(no body)_"),
+    "",
+    missing.length
+      ? `These paths in ## Plan don't exist: ${missing.join(", ")}. Find the right ones and correct ## Plan.`
+      : "",
     "",
     "## Where it sits",
     ...where,
@@ -138,7 +144,7 @@ export function stepPrompt(step: LoopStep, story: StoryContext, extra: StepExtra
   // Text shared by every story at this step comes first, so the provider can cache it across agents.
   // STEPS get no story; story values go after the head, in STEP_DATA and context().
   const data = STEP_DATA[step]?.(story, extra) ?? "";
-  return [FRESH, "", RULES(story), "", STEPS[step](extra, jira), "", head, skills, "", data, "", context(story)]
+  return [FRESH, "", RULES(story), "", STEPS[step](extra, jira), "", head, skills, "", data, "", context(story, extra.missing)]
     .filter((line, i, all) => line !== "" || all[i - 1] !== "")
     .join("\n");
 }

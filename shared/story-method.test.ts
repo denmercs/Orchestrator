@@ -228,6 +228,20 @@ test("review points at the base under Where it sits; pr carries the exact comman
   );
 });
 
+test("missing Plan paths go in the story section, after the head and before Where it sits", () => {
+  const line = "These paths in ## Plan don't exist: src/a.ts, src/b.ts. Find the right ones and correct ## Plan.";
+  const review = stepPrompt("review", story, { round: 1, missing: ["src/a.ts", "src/b.ts"] });
+  const at = review.indexOf(`\n${line}\n`);
+  assert.ok(at > review.indexOf("for story S1"), "missing line after the head");
+  assert.ok(at > review.indexOf("\n## Story S1 — Add search\n"), "missing line in the story section");
+  assert.ok(at < review.indexOf("\n## Where it sits\n"), "missing line before Where it sits");
+  for (const missing of [undefined, []]) {
+    const prompt = stepPrompt("review", story, { round: 1, missing });
+    assert.ok(!prompt.includes("don't exist"), "no line when nothing is missing");
+    assert.equal(prompt, stepPrompt("review", story, { round: 1 }));
+  }
+});
+
 test("Jira stories point at the ticket and file follow-ups as review findings", () => {
   const jira: StoryContext = {
     ...story,
