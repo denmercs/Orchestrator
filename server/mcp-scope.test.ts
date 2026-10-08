@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { pickMcpServers, type HostMcpServer } from "./host-mcp";
+import { registerMcpScopeRpc } from "../shared/orchestration";
 import { MCP_SCOPE_TTL_MS, mcpScopeFor, registerMcpScope, withMcpScope } from "./mcp-scope";
 
 const servers: Record<string, HostMcpServer> = {
@@ -57,4 +58,14 @@ test("a registered scope expires when no agent is created, and the entry is drop
 test("a folder nobody registered still gets every server", () => {
   registerMcpScope({ cwd: "/w/c", scope: "jira" }, 3_000_000);
   assert.equal(mcpScopeFor("/w/unregistered", 3_000_000), "all");
+});
+
+test("the register RPC's input goes straight to registerMcpScope", () => {
+  const t0 = 4_000_000;
+  registerMcpScope(registerMcpScopeRpc.input.parse({ cwd: "/w/rpc", scope: "jira" }), t0);
+  assert.equal(mcpScopeFor("/w/rpc", t0 + 1000), "jira");
+});
+
+test("the register RPC can only remove servers, so it rejects scope all", () => {
+  assert.equal(registerMcpScopeRpc.input.safeParse({ cwd: "/w/rpc", scope: "all" }).success, false);
 });

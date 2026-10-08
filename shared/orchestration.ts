@@ -542,6 +542,14 @@ export const refreshPhasePlanRpc = defineRpc({
   }),
 });
 
+// Registers the MCP scope for a folder just before the client creates an agent there
+// (server/mcp-scope.ts). Never "all": a client call can only remove servers.
+export const registerMcpScopeRpc = defineRpc({
+  name: "orchestration.mcp-scope-register",
+  input: z.object({ cwd: z.string(), scope: z.enum(["jira", "none"]) }),
+  output: z.object({ ok: z.literal(true) }),
+});
+
 export type HarnessRepo = z.infer<typeof harnessRepo>;
 export type HarnessTracker = z.infer<typeof harnessTracker>;
 export type HarnessLoopState = z.infer<typeof harnessLoopState>;
