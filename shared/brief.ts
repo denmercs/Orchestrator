@@ -42,3 +42,53 @@ export function pickLines(output: string, max = 80): string[] {
   const room = Math.max(0, max - summary.length - 1);
   return [...picked.slice(0, room), ...summary, `… ${picked.length - room} more lines in the log`].slice(-max);
 }
+
+// The runner half of `.harness/bin/brief`. Plain JS kept as a string so it ships inside the script.
+// Dynamic `import()` works whether the host repo's package.json makes the script CommonJS or ESM.
+const RUNNER = `(async () => {
+  const { spawn } = await import("node:child_process");
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const args = process.argv.slice(2);
+  if (args.length === 0) {
+    console.error("usage: brief <command…>");
+    process.exit(2);
+  }
+  const child = args.length === 1 && args[0].includes(" ")
+    ? spawn(args[0], { shell: true })
+    : spawn(args[0], args.slice(1));
+  let output = "";
+  child.stdout.on("data", (chunk) => (output += chunk));
+  child.stderr.on("data", (chunk) => (output += chunk));
+  const code = await new Promise((resolve) => {
+    child.on("error", (error) => {
+      output += error.message + "\\n";
+      resolve(127);
+    });
+    child.on("close", (exit) => resolve(exit ?? 1));
+  });
+
+  const logs = path.resolve(path.dirname(process.argv[1]), "..", "logs");
+  fs.mkdirSync(logs, { recursive: true });
+  const file = STEP + "-" + new Date().toISOString().replace(/[:.]/g, "-") + ".log";
+  fs.writeFileSync(path.join(logs, file), output);
+  const old = fs
+    .readdirSync(logs)
+    .filter((name) => name.endsWith(".log"))
+    .map((name) => ({ name, mtime: fs.statSync(path.join(logs, name)).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime)
+    .slice(20);
+  for (const log of old) fs.rmSync(path.join(logs, log.name), { force: true });
+
+  const lines = output.split("\\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  console.log("brief: exit " + code + " · " + lines.length + " lines · full log .harness/logs/" + file);
+  for (const line of pickLines(output)) console.log(line);
+  process.exit(code);
+})();
+`;
+
+// The standalone `.harness/bin/brief` script for one step: shebang, the picker's own source, the runner.
+export function briefScript(step: string): string {
+  return `#!/usr/bin/env node\nconst STEP = ${JSON.stringify(step)};\n${pickLines.toString()}\n${RUNNER}`;
+}
