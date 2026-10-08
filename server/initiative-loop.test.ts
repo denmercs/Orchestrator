@@ -98,7 +98,7 @@ test("resumePrompt is the step prompt plus the resume line", async () => {
   const prompt = await loop().resumePrompt(labels);
 
   assert.ok(prompt);
-  assert.match(prompt, /^Implement for story S1 — Demo story\.\n/);
+  assert.match(prompt, /^Implement for story S1 — Demo story\.$/m);
   assert.match(prompt, /## This step: implement the story/);
   assert.ok(prompt.endsWith(`\n\n${RESUME_LINE}`));
   assert.equal(await loop().resumePrompt({ ...labels, "loop-story": "S9" }), null);
@@ -114,7 +114,7 @@ test("resumePrompt gives a cycle agent back its cycle and the plan", async () =>
   const prompt = await loop().resumePrompt({ ...labels, "loop-cycle": "2" });
 
   assert.ok(prompt);
-  assert.match(prompt, /^Implement cycle 2 for story S1 — Demo story\.\n/);
+  assert.match(prompt, /^Implement cycle 2 for story S1 — Demo story\.$/m);
   assert.match(prompt, /## This step: Cycle 2 only\n- \[ \] Cycle 2 — Warns/);
   assert.match(prompt, /Change server\/meter\.ts\./);
   assert.ok(prompt.endsWith(`\n\n${RESUME_LINE}`));

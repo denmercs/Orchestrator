@@ -84,6 +84,7 @@ function context(story: StoryContext) {
     story.phaseLabel
       ? `- ${story.phaseLabel} — ${story.phaseTitle ?? ""}${story.architectureFile ? `: plan in ${story.architectureFile}` : ""}`
       : "",
+    story.storiesDir ? `- Stories folder: ${story.storiesDir}` : "",
     `- Branch ${story.branch || "(this worktree's branch)"}, cut from ${story.base}. This worktree is the story's only checkout.`,
   ].filter(Boolean);
   return [
@@ -107,11 +108,13 @@ function followUps(story: StoryContext) {
   Note it under \`## Review findings\` as "follow-up: <what and why>".`;
   }
   return `- Work found outside this story (a bug elsewhere, missing groundwork, a follow-up) is not done here. File it as a
-  new story file in ${story.storiesDir}/ named NN-<slug>.md (NN after the highest existing number) with
-  frontmatter \`id\` (next free id in the same style), \`title\`, \`status: todo\`, \`depends_on\` (only stories that
-  must merge first) and \`discovered_from: ${story.id}\`, and a short body saying what and why. At most three per
-  story; after that, note it under \`## Review findings\` instead.`;
+  new story file in the stories folder named under \`## Where it sits\`, named NN-<slug>.md (NN after the highest
+  existing number) with frontmatter \`id\` (next free id in the same style), \`title\`, \`status: todo\`,
+  \`depends_on\` (only stories that must merge first) and \`discovered_from\` set to this story's id, and a short
+  body saying what and why. At most three per story; after that, note it under \`## Review findings\` instead.`;
 }
+
+const FRESH = "You are a fresh agent for this step only, inside the Orchestrator story loop.";
 
 const RULES = (story: StoryContext) => `## Rules for every step
 - Work only in this worktree, on this story. Read AGENTS.md, CLAUDE.md, .cursor/rules, .kiro/steering and
@@ -127,10 +130,10 @@ ${followUps(story)}
 
 export function stepPrompt(step: LoopStep, story: StoryContext, extra: StepExtra) {
   const label = extra.cycle ? `${STEP_LABELS[step]} cycle ${extra.cycle.number}` : STEP_LABELS[step];
-  const head = `${label} for story ${story.id} — ${story.title}${extra.round > 1 ? ` (round ${extra.round})` : ""}.
-You are a fresh agent for this step only, inside the Orchestrator story loop.`;
+  const head = `${label} for story ${story.id} — ${story.title}${extra.round > 1 ? ` (round ${extra.round})` : ""}.`;
   const skills = extra.skills?.length ? `Also use these skills: ${extra.skills.join(", ")}.` : "";
-  return [head, skills, "", STEPS[step](story, extra), "", RULES(story), "", context(story)]
+  // Text shared by every story at this step comes first, so the provider can cache it across agents.
+  return [FRESH, "", RULES(story), "", STEPS[step](story, extra), "", head, skills, "", context(story)]
     .filter((line, i, all) => line !== "" || all[i - 1] !== "")
     .join("\n");
 }

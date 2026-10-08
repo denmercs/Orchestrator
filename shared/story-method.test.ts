@@ -121,6 +121,37 @@ test("no step prompt names a skillsync command or tells the agent to commit or p
   }
 });
 
+test("two stories share a step prompt up to the story head", () => {
+  const other: StoryContext = {
+    ...story,
+    id: "S42",
+    title: "Export reports",
+    body: "Admins can export reports as CSV.",
+    storyFile: "/repo/.harness/initiatives/y/phases/3-q/stories/07-export.md",
+    storiesDir: "/repo/.harness/initiatives/y/phases/3-q/stories",
+    phaseLabel: "Phase 3",
+    phaseTitle: "Reporting",
+    branch: "feature/s42-export",
+    base: "origin/release-7",
+  };
+  const prefix = (s: StoryContext, round: number) => {
+    const prompt = stepPrompt("plan", s, { round });
+    const at = prompt.indexOf(`for story ${s.id}`);
+    assert.ok(at > 0, `head missing for ${s.id} r${round}`);
+    return prompt.slice(0, prompt.lastIndexOf("\n", at) + 1);
+  };
+  for (const round of [1, 2]) {
+    const a = prefix(story, round);
+    assert.match(a, /## Rules for every step[\s\S]*## This step: plan/, `plan r${round} prefix`);
+    assert.equal(a, prefix(other, round), `plan r${round}`);
+    for (const s of [story, other]) {
+      for (const value of [s.id, s.title, s.body, s.branch, s.base, s.storiesDir!, s.phaseTitle!]) {
+        assert.ok(!prefix(s, round).includes(value), `plan r${round} prefix holds ${value}`);
+      }
+    }
+  }
+});
+
 test("Jira stories point at the ticket and file follow-ups as review findings", () => {
   const jira: StoryContext = {
     ...story,
