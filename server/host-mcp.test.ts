@@ -131,6 +131,8 @@ before(async () => {
     { cwd: repo },
   ]);
   await writeJson(join(projectA, ".mcp.json"), { mcpServers: { "ws-alpha": { command: "ws-alpha-cmd" } } });
+  await writeJson(join(repo, ".cursor", "mcp.json"), { mcpServers: { "ws-gamma": { command: "ws-gamma-cmd" } } });
+  await writeJson(join(projectB, ".kiro", "settings", "mcp.json"), { mcpServers: { "ws-beta": { command: "ws-beta-cmd" } } });
 });
 
 after(async () => {
@@ -167,9 +169,17 @@ test("readHostMcpServers with no cwd gives only the globals", async () => {
 
 test("readHostMcpServers counts a worktree as inside the project it was created from", async () => {
   const atRoot = await withFixtureHome(() => readHostMcpServers(worktree));
-  assert.deepEqual(Object.keys(atRoot).sort(), ["gamma", ...GLOBALS].sort());
+  assert.deepEqual(Object.keys(atRoot).sort(), ["gamma", "ws-gamma", ...GLOBALS].sort());
   const inApp = await withFixtureHome(() => readHostMcpServers(join(worktree, "packages", "app")));
-  assert.deepEqual(Object.keys(inApp).sort(), ["app", "gamma", ...GLOBALS].sort());
+  assert.deepEqual(Object.keys(inApp).sort(), ["app", "gamma", "ws-gamma", ...GLOBALS].sort());
+});
+
+test("readHostMcpServers scopes a workspace's .cursor and .kiro MCP files to that workspace", async () => {
+  const inside = await withFixtureHome(() => readHostMcpServers(join(projectA, "sub")));
+  assert.equal("ws-gamma" in inside, false, "ws-gamma attached in projectA/sub");
+  assert.equal("ws-beta" in inside, false, "ws-beta attached in projectA/sub");
+  const inB = await withFixtureHome(() => readHostMcpServers(projectB));
+  assert.ok("ws-beta" in inB);
 });
 
 test("readAtlassianMcpEnv finds Jira credentials in a project scope from anywhere", async () => {
