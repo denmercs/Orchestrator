@@ -75,7 +75,7 @@ The story files are the state. The loop writes `status`, `branch`, `base`, `work
 
 **Agent**: every step runs on your Paseo agent profile named **default** (provider, model, mode, thinking). Without one, Claude runs on its own default model in auto mode. The step prompts name no skills or slash commands, so any provider works. `parallel`, `reviewRounds` and `maxFixes` live in the plugin's `initiative-loop` settings. How each step works lives in `shared/story-method.ts`; the engine is `server/initiative-loop.ts`.
 
-**MCP servers**: the plugin copies your Cursor, Claude and Kiro MCP servers onto agents, but story steps get only what they need. Initiative steps get none, belt Plan and Review get one Atlassian server, and architecture sessions get Atlassian only when the initiative publishes to Jira. Your own sessions keep every server. Servers are attached without `alwaysLoad`, so providers that defer tool loading still can. Each server's tool list is sent with every model call, so this keeps the per-turn context small.
+**MCP servers**: the plugin copies your Cursor, Claude and Kiro MCP servers onto agents, but story steps get only what they need. Initiative steps get none, belt Plan and Review get one Atlassian server, and architecture sessions get Atlassian only when the initiative publishes to Jira. Story sessions and epic loops started from the board get Atlassian only. Your own Paseo sessions, and anything else the plugin did not start, keep every server. Servers are attached without `alwaysLoad`, so providers that defer tool loading still can. Each server's tool list is sent with every model call, so this keeps the per-turn context small.
 
 ## Skills and the Story belt
 
