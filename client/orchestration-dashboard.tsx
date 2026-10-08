@@ -36,6 +36,7 @@ import { ContextCard } from "./context-card";
 import { DailyVerseCard } from "./daily-verse";
 import { useEpicBoard } from "./epic-board";
 import { ProdPulseButton, ProdPulseDrawer, useProdPulse } from "./prod-pulse-drawer";
+import { LoopProfilesToggle, LoopStepProfiles } from "./loop-step-profiles";
 import { RunnerPicker } from "./runner-picker";
 import { SkillsButton, SkillsDrawer } from "./skills-drawer";
 import { startJiraSession } from "./start-jira-session";
@@ -77,6 +78,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const [pulseOpen, setPulseOpen] = useState(false);
   const epic = useEpicBoard({ theme, compact: layout.compact, navigation });
   const [skillsOpen, setSkillsOpen] = useState(false);
+  const [loopProfilesOpen, setLoopProfilesOpen] = useState(false);
   const agentIds = useMemo(
     () =>
       agents
@@ -373,6 +375,12 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
           <Text style={styles.title}>Orchestration</Text>
           <View style={styles.titleActions}>
             <RunnerPicker theme={theme} compact={layout.compact} />
+            <LoopProfilesToggle
+              theme={theme}
+              compact={layout.compact}
+              open={loopProfilesOpen}
+              onPress={() => setLoopProfilesOpen((open) => !open)}
+            />
             <SkillsButton
               theme={theme}
               beltOn={belt.status === "ready" && belt.values.enabled}
@@ -385,6 +393,8 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
             {jiraColumns.length === 0 ? boardPicker : null}
           </View>
         </View>
+
+        {loopProfilesOpen ? <LoopStepProfiles theme={theme} compact={layout.compact} /> : null}
 
         <DailyVerseCard theme={theme} />
         <ContextCard theme={theme} />
