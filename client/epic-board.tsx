@@ -22,7 +22,7 @@ import { needsYou } from "../shared/gates";
 import { harnessSettings } from "../shared/settings";
 import { startInitiativeLoop, stopInitiativeLoop } from "../shared/initiative-loop";
 import { SessionLog } from "./session-log";
-import { boardKey, findSelected, pollDelay, toggleFold, type Selection } from "./epic-board-model";
+import { boardKey, findSelected, pollDelay, showFold, toggleFold, type Selection } from "./epic-board-model";
 
 // Every initiative's current phase (see server/harness-layout.ts) as its dependency graph: one
 // card per story, arrows from a dependency to the stories that need it. Initiatives are occasional
@@ -239,6 +239,8 @@ export type EpicBoards = {
   select(board: EpicBoard, story: string | null): void;
   folded: ReadonlySet<string>;
   toggleFold(board: EpicBoard): void;
+  // Unfolds a panel and opens one of its stories, by keys (an alert names them without the board).
+  reveal(board: string, story: string): void;
   refresh(): Promise<void>;
 };
 
@@ -305,8 +307,12 @@ export function useEpicBoards(): EpicBoards {
   const toggle = useCallback((board: EpicBoard) => {
     setFolded((current) => toggleFold(current, boardKey(board)));
   }, []);
+  const reveal = useCallback((board: string, story: string) => {
+    setFolded((current) => showFold(current, board));
+    setSelected({ board, story });
+  }, []);
 
-  return { boards, error, selected, select, folded, toggleFold: toggle, refresh };
+  return { boards, error, selected, select, folded, toggleFold: toggle, reveal, refresh };
 }
 
 type ViewProps = { epic: EpicBoards; theme: Theme; compact: boolean; navigation: Navigation };

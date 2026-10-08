@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boardKey, gatesOf, needsYou, type Gate } from "./gates";
+import { boardKey, gatesOf, needsYou, waitingLabel, type Gate } from "./gates";
 import type { EpicBoard, EpicBoardState, EpicStory } from "./orchestration";
 
 function story(id: string, fields: Partial<EpicStory> = {}): EpicStory {
@@ -102,4 +102,10 @@ test("gatesOf: board order, then story order within each board", () => {
       ["/c\nsecond", "C2", "Second · Phase 2"],
     ],
   );
+});
+
+test("waitingLabel: nothing waiting, or a count of what waits on you", () => {
+  assert.equal(waitingLabel(0), "Nothing is waiting on you");
+  assert.equal(waitingLabel(1), "1 waiting on you");
+  assert.equal(waitingLabel(3), "3 waiting on you");
 });
