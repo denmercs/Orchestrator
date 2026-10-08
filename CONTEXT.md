@@ -45,11 +45,23 @@ The extra skills a Story belt phase loads on top of the skill it runs. Code: `Ph
 
 An extra marked `required` in `DEFAULT_PHASES` is always loaded, even if saved settings removed it. `phaseSkills` adds it back. The defaults have none today: every phase runs its built-in step from `shared/story-method.ts`, and `Phase.runs` is `null` unless you pick a skill.
 
+The initiative loop uses the same extras: each loop step loads the extras of the phase it maps to (see Loop step skills).
+
 _Avoid_: add-ons, plugins, secondary skills.
+
+## Loop step skills
+
+The skills an initiative loop step loads: the extras of the Skills drawer phase that the step maps to. plan → Plan, implement and fix → Implement, review → Review, pr → Done. Code: `LoopStep` in `shared/initiative-loop.ts` names the steps; the extras come from `Phase.extras`, with `required` ones added back through `phaseSkills`, as for the belt. They reach the loop agent by the Worktree copy into the story worktree, and the step prompt names them with "Also use these skills: …", left out when there are none. A ref that can't be found is a warning on the story, never a failed step.
+
+`Phase.runs` is belt-only. The skill a phase runs carries its own `.harness/state.md` contract, which would fight the step prompt, so a loop step loads only the extras. The belt switch (`enabled`) does not affect loop step skills: they load whether the Story belt is on or off.
+
+Review is an audit container. No skill is forced into it by default; the loop's review step loads whatever the user adds to the drawer's Review phase.
+
+_Avoid_: loop skills, step extras.
 
 ## Worktree copy
 
-How a phase's skills reach a new story agent. When a phase starts, `installSkills` copies each non-`installed` Skill ref (the `runs` skill and the extras) from its source into the story worktree:
+How drawer skills reach a new story agent, whether a Story belt phase or an initiative loop step starts it. `installSkills` copies each non-`installed` Skill ref from its source into the story worktree: for a belt phase the `runs` skill and the extras, for a loop step only the extras of its phase (see Loop step skills).
 
 - a skill folder goes to `.claude/skills/<folder>`, `.cursor/skills/<folder>` and `.agents/skills/<folder>`, named after its folder, not its frontmatter `name`;
 - a command goes to `.claude/commands/<folder>.md` and `.cursor/commands/<folder>.md`.
