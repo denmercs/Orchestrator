@@ -124,6 +124,14 @@ test("no step prompt names a skillsync command or tells the agent to commit or p
   }
 });
 
+test("every step prompt sends tests, lint and build through the brief wrapper, not tail", () => {
+  for (const step of LOOP_STEPS.filter((s) => s !== "pr")) {
+    const prompt = stepPrompt(step, story, { round: 1 });
+    assert.match(prompt, /run tests, lint and build through `\.harness\/bin\/brief`/, step);
+    assert.doesNotMatch(prompt, /tail -n 60/, step);
+  }
+});
+
 test("two stories share a step prompt up to the story head", () => {
   const other: StoryContext = {
     ...story,
