@@ -240,6 +240,42 @@ function planDone() {
   return { ...fx, api, created, turnEnded };
 }
 
+test("plan-done with two unticked cycles starts one parent Implement agent; with subagentCycles off, the Cycle 1 agent", async () => {
+  const twoCycles =
+    "# S1 — Demo story\n\n## Status\nplan-done\n\n## Plan\nChange server/meter.ts.\n\n## Cycles\n- [ ] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once\n";
+  const parent = planDone();
+  writeFileSync(join(parent.worktree, ".harness", "state.md"), twoCycles, "utf8");
+
+  await loop().onTurnEnded(parent.api, parent.turnEnded("a1"));
+
+  assert.equal(parent.created.length, 1);
+  const [agent] = parent.created;
+  assert.equal(agent.labels["loop-step"], "implement");
+  assert.equal(agent.labels["loop-cycles"], "subagents");
+  assert.equal(agent.labels["loop-cycle"], undefined);
+  assert.match(agent.prompt ?? "", /## This step: run the cycles in subagents/);
+  assert.match(agent.prompt ?? "", /## Cycles to run\n- \[ \] Cycle 1 — Reads.*\n- \[ \] Cycle 2 — Warns/);
+  assert.equal(storyMeta(parent.story).cycles, "subagents");
+  assert.equal(storyMeta(parent.story).cycle, undefined);
+
+  const perCycle = planDone();
+  writeFileSync(join(perCycle.worktree, ".harness", "state.md"), twoCycles, "utf8");
+  const off = createInitiativeLoop(
+    async () => ({ ...DEFAULT_LOOP_CONFIG, subagentCycles: false }),
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+  );
+
+  await off.onTurnEnded(perCycle.api, perCycle.turnEnded("a1"));
+
+  assert.deepEqual(
+    perCycle.created.map((item) => [item.labels["loop-cycle"], item.labels["loop-cycles"]]),
+    [["1", undefined]],
+  );
+  assert.match(perCycle.created[0].prompt ?? "", /## Cycle 1 only/);
+  assert.equal(storyMeta(perCycle.story).cycles, undefined);
+});
+
 // A pipeline whose Implement phase has the tdd extra from a connected folder source.
 function tddPipeline() {
   const source = tddSource();
@@ -249,10 +285,11 @@ function tddPipeline() {
   return { phases, sources: [source] };
 }
 
-// A loop that reads `pipeline` on each call, so a test can change it between steps.
+// A loop that reads `pipeline` on each call, so a test can change it between steps. One agent per
+// cycle, as these tests were written for.
 function tddLoop(pipeline = tddPipeline()) {
   return createInitiativeLoop(
-    async () => DEFAULT_LOOP_CONFIG,
+    async () => ({ ...DEFAULT_LOOP_CONFIG, subagentCycles: false }),
     async () => FALLBACK_AGENT_CONFIG,
     async () => pipeline,
   );
