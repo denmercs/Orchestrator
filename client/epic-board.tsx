@@ -21,6 +21,7 @@ import {
 import { harnessSettings } from "../shared/settings";
 import { startInitiativeLoop, stopInitiativeLoop } from "../shared/initiative-loop";
 import { SessionLog } from "./session-log";
+import { boardKey, pollDelay } from "./epic-board-model";
 
 // Every initiative's current phase (see server/harness-layout.ts) as its dependency graph: one
 // card per story, arrows from a dependency to the stories that need it. Initiatives are occasional
@@ -30,12 +31,6 @@ type Theme = PluginSurfaceProps["theme"];
 type Navigation = PluginSurfaceProps["navigation"];
 type Styles = ReturnType<typeof createStyles>;
 
-// Fast while something is moving (a loop runs or a phase is still being planned), slow otherwise:
-// every poll reads every initiative in every repo.
-const POLL_MS = 3000;
-const IDLE_POLL_MS = 10_000;
-const lively = (board: EpicBoard) =>
-  board.state !== null && (board.state.loop === "on" || board.state.plan?.status !== "agreed");
 const W = 230;
 const H = 66;
 const GX = 72;
@@ -281,16 +276,16 @@ export function useEpicBoard({
 
   // The next poll waits for the last one, so a slow read (the first `gh` lookup per repo) can't
   // stack up requests.
-  const fast = useRef(true);
+  const delay = useRef(pollDelay(null));
   useEffect(() => {
-    fast.current = boards?.some(lively) ?? true;
+    delay.current = pollDelay(boards);
   }, [boards]);
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
       await refresh();
-      if (!stopped) timer = setTimeout(() => void tick(), fast.current ? POLL_MS : IDLE_POLL_MS);
+      if (!stopped) timer = setTimeout(() => void tick(), delay.current);
     };
     void tick();
     return () => {
@@ -351,8 +346,7 @@ export function useEpicBoard({
     };
   }
 
-  const keyOf = (board: EpicBoard) => `${board.repo}\n${board.initiative}`;
-  const open = selected ? boards.find((board) => keyOf(board) === selected.board) : undefined;
+  const open = selected ? boards.find((board) => boardKey(board) === selected.board) : undefined;
   const story = open?.state?.stories.find((item) => item.id === selected?.story) ?? null;
 
   const panels = (
@@ -363,7 +357,7 @@ export function useEpicBoard({
         </Text>
       ) : null}
       {boards.map((board) => {
-        const key = keyOf(board);
+        const key = boardKey(board);
         return (
           <InitiativePanel
             key={key}
@@ -390,7 +384,7 @@ export function useEpicBoard({
         theme={theme}
         styles={styles}
         onClose={() => setSelected(null)}
-        onSelect={(id) => setSelected({ board: keyOf(open), story: id })}
+        onSelect={(id) => setSelected({ board: boardKey(open), story: id })}
         navigation={navigation}
       />
     ) : null;
