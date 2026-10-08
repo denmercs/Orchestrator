@@ -36,7 +36,6 @@ import {
 } from "./board-model";
 import { ContextCard } from "./context-card";
 import { DashboardHeader, TabBar } from "./dashboard-shell";
-import { DailyVerseCard } from "./daily-verse";
 import { InitiativePanels, StoryDrawer, useEpicBoards } from "./epic-board";
 import { ProdPulseButton, ProdPulseDrawer, useProdPulse } from "./prod-pulse-drawer";
 import { LoopProfilesToggle, LoopStepProfiles } from "./loop-step-profiles";
@@ -396,7 +395,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     ) : null;
 
   const header = (
-    <DashboardHeader theme={theme} compact={layout.compact} verse={<DailyVerseCard theme={theme} />}>
+    <DashboardHeader theme={theme} compact={layout.compact}>
       <RunnerPicker theme={theme} compact={layout.compact} />
       <LoopProfilesToggle
         theme={theme}
