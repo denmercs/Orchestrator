@@ -1,3 +1,5 @@
+import type { LoopConfig, LoopStep } from "./initiative-loop";
+
 export const FALLBACK_AGENT_CONFIG = {
   provider: "claude",
   modeId: "auto",
@@ -56,6 +58,42 @@ export function resolveRunnerConfig(
   return {
     profile,
     config: profile ? materializeProfile(profile) : { ...fallback },
+  };
+}
+
+// Decision d1: Plan and Review default to an Opus profile, Implement and Fix CI to a Sonnet one.
+const STEP_TIER: Partial<Record<LoopStep, string>> = {
+  plan: "opus",
+  review: "opus",
+  implement: "sonnet",
+  fix: "sonnet",
+};
+
+// The profile a loop step's agent runs on: the step's own setting (id or name), else the d1 tier
+// among profiles of the runner's provider, else the runner profile, else FALLBACK_AGENT_CONFIG.
+export function profileForStep(
+  loop: Pick<LoopConfig, "profiles">,
+  step: LoopStep,
+  profiles: AgentProfile[],
+  runnerProfileId: string,
+) {
+  const runner = pickProfile(profiles, runnerProfileId);
+  const tier = STEP_TIER[step];
+  const setId = step === "pr" ? "" : loop.profiles[step];
+  const provider = runner?.provider ?? FALLBACK_AGENT_CONFIG.provider;
+  const profile =
+    (setId ? pickProfile(profiles, setId) : null) ??
+    (tier
+      ? profiles.find(
+          (candidate) =>
+            candidate.provider === provider &&
+            `${candidate.model ?? ""} ${candidate.name}`.toLowerCase().includes(tier),
+        )
+      : null) ??
+    runner;
+  return {
+    profile,
+    config: profile ? materializeProfile(profile) : { ...FALLBACK_AGENT_CONFIG },
   };
 }
 

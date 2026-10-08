@@ -11,7 +11,7 @@ import {
   moveIssueToColumn,
 } from "./server/jira";
 import { deleteInitiative, loadHarnessBoards } from "./server/harness-board";
-import { loadRunnerConfig } from "./server/agent-runner";
+import { loadRunnerConfig, loadStepConfig } from "./server/agent-runner";
 import { startPhaseArchitect } from "./server/harness-architect";
 import { openPhasePlan, refreshPhasePlan } from "./server/phase-plan";
 import { stopPlanServer } from "./server/plan-server";
@@ -79,10 +79,12 @@ import {
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(standupSettings);
   const runnerSettings = server.registerSettings(agentRunnerSettings);
-  const readAgentConfig = async (paseo: Parameters<typeof loadRunnerConfig>[0]) => {
+  const readRunnerProfileId = async () => {
     const state = await runnerSettings.read();
-    return loadRunnerConfig(paseo, state.status === "ready" ? state.values.profileId : "");
+    return state.status === "ready" ? state.values.profileId : "";
   };
+  const readAgentConfig = async (paseo: Parameters<typeof loadRunnerConfig>[0]) =>
+    loadRunnerConfig(paseo, await readRunnerProfileId());
   const boardSettings = server.registerSettings(jiraBoardSettings);
   const pulseSettings = server.registerSettings(prodPulseSettings);
   const harness = server.registerSettings(harnessSettings);
@@ -114,7 +116,7 @@ export default function contribute(server: PluginServerContext) {
   const initiativeLoop = createInitiativeLoop(async () => {
     const state = await loopSettings.read();
     return state.status === "ready" ? state.values : DEFAULT_LOOP_CONFIG;
-  }, readAgentConfig);
+  }, async (paseo, step, loop) => loadStepConfig(paseo, loop, step, await readRunnerProfileId()));
   server.handle(startInitiativeLoop, (input, { paseo }) => initiativeLoop.start(paseo, input));
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
   server.handle(openPhasePlanRpc, openPhasePlan);

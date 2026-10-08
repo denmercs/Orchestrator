@@ -52,7 +52,7 @@ function fixture(agent = "a1") {
 
 // A fake Paseo: live agents by id; workspace creates are recorded and become live agents.
 function fakePaseo(live: Agent[]) {
-  const created: { workspace: string; title: string; labels: Record<string, string> }[] = [];
+  const created: { workspace: string; title: string; labels: Record<string, string>; config?: unknown }[] = [];
   const api = {
     agents: {
       ref: (id: string) => ({
@@ -66,9 +66,9 @@ function fakePaseo(live: Agent[]) {
     workspaces: {
       ref: (workspace: string) => ({
         agents: {
-          create: async (options: { title: string; labels: Record<string, string> }) => {
+          create: async (options: { title: string; labels: Record<string, string>; config?: unknown }) => {
             const id = `n${created.length + 1}`;
-            created.push({ workspace, title: options.title, labels: options.labels });
+            created.push({ workspace, title: options.title, labels: options.labels, config: options.config });
             live.push({ id, labels: options.labels });
             return { id };
           },
@@ -141,4 +141,29 @@ test("after a hand-over, the new agent's implement-done starts exactly one Revie
   );
   assert.equal(storyMeta(story).agent, "n1");
   assert.equal(storyMeta(story).step, "review");
+});
+
+test("a started step's agent gets the config readAgentConfig returns for that step and the loop config", async () => {
+  const { worktree, labels } = fixture("a1");
+  const { api, created } = fakePaseo([{ id: "a1", labels }]);
+  const asked: [string, unknown][] = [];
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async (_api, step, loopConfig) => {
+      asked.push([step, loopConfig]);
+      return { provider: `claude/${step}-model`, modeId: "auto" };
+    },
+  );
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nimplement-done\n", "utf8");
+  const turnEnded = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
+    ReturnType<typeof loop>["onTurnEnded"]
+  >[1];
+
+  await initiative.onTurnEnded(api, turnEnded);
+
+  assert.deepEqual(asked, [["review", DEFAULT_LOOP_CONFIG]]);
+  assert.deepEqual(
+    created.map((agent) => [agent.labels["loop-step"], agent.config]),
+    [["review", { provider: "claude/review-model", modeId: "auto" }]],
+  );
 });

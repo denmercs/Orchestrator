@@ -6,6 +6,7 @@ export {
   materializeProfile,
   pickProfile,
   profileCaption,
+  profileForStep,
   profilesFromConfigGet,
   resolveRunnerConfig,
   type AgentCreateConfig,
