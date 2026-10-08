@@ -205,6 +205,7 @@ export function createContextWatch(port: WatchPort) {
       model: agent.model,
       cycle: rawCycle !== undefined && /^\d+$/.test(rawCycle) ? Number(rawCycle) : null,
       story: labels["loop-story"] ?? null,
+      initiative: labels["loop-initiative"] ?? null,
     });
   }
 
