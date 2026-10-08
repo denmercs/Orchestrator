@@ -17,6 +17,10 @@ export const STEP_LABELS: Record<LoopStep, string> = {
   fix: "Fix CI",
 };
 
+// The steps that run an agent and so get a profile of their own (Open PR runs none).
+export const PROFILE_STEPS = ["plan", "implement", "review", "fix"] as const;
+export type ProfileStep = (typeof PROFILE_STEPS)[number];
+
 // The `kind` label on every loop session; the story drawer lists a story's sessions by it.
 export const LOOP_AGENT_KIND = "initiative-loop";
 
@@ -27,6 +31,15 @@ const loopValues = z.object({
   reviewRounds: z.number().int().min(1).max(10).default(3),
   // Fix CI attempts per story before it blocks for you.
   maxFixes: z.number().int().min(0).max(10).default(3),
+  // Agent profile id per step; empty means Auto (an Opus or Sonnet profile, else the runner's).
+  profiles: z
+    .object({
+      plan: z.string().default(""),
+      implement: z.string().default(""),
+      review: z.string().default(""),
+      fix: z.string().default(""),
+    })
+    .prefault({}),
 });
 
 export type LoopConfig = z.infer<typeof loopValues>;
