@@ -75,3 +75,31 @@ test("gatesOf: one gate per gated story on a board, with kind, text, board and w
   ];
   assert.deepEqual(gatesOf([BOARD]), expected);
 });
+
+test("gatesOf: a board with no state, or one that failed to load, has no gates", () => {
+  const empty: EpicBoard = { repo: "/repo", initiative: "missing", state: null, error: null };
+  const failed: EpicBoard = { repo: "/repo", initiative: "broken", state: null, error: "state.md not found" };
+  assert.deepEqual(gatesOf([empty, failed]), []);
+});
+
+test("gatesOf: board order, then story order within each board", () => {
+  const first = board("/a", "first", "First", "1", [
+    story("A1", { status: "blocked" }),
+    story("A2", { status: "todo" }),
+    story("A3", { status: "awaiting-approval" }),
+  ]);
+  const missing: EpicBoard = { repo: "/b", initiative: "missing", state: null, error: "boom" };
+  const second = board("/c", "second", "Second", "2", [
+    story("C1", { status: "pr-open", ci: "green", pr: 7 }),
+    story("C2", { status: "awaiting-approval" }),
+  ]);
+  assert.deepEqual(
+    gatesOf([first, missing, second]).map((gate) => [gate.board, gate.storyId, gate.where]),
+    [
+      ["/a\nfirst", "A1", "First · Phase 1"],
+      ["/a\nfirst", "A3", "First · Phase 1"],
+      ["/c\nsecond", "C1", "Second · Phase 2"],
+      ["/c\nsecond", "C2", "Second · Phase 2"],
+    ],
+  );
+});
