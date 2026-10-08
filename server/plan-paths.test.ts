@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { planPaths } from "./plan-paths";
+import { missingPaths, planPaths } from "./plan-paths";
 
 test("planPaths: a bold Files label, wrapped onto a second line, with (new) marked", () => {
   const plan = [
@@ -53,4 +56,31 @@ test("planPaths: a plain label with bullets under it, until a blank line", () =>
 test("planPaths: no Files or Calls lines gives nothing", () => {
   assert.deepEqual(planPaths("Approach: edit `server/a.ts`.\n**Out of scope:** `server/b.ts`"), []);
   assert.deepEqual(planPaths(""), []);
+});
+
+test("missingPaths: only existing-path entries missing on disk, relative to the worktree, once each", () => {
+  const worktree = mkdtempSync(join(tmpdir(), "plan-paths-"));
+  try {
+    mkdirSync(join(worktree, "server"));
+    writeFileSync(join(worktree, "server/here.ts"), "");
+    const absent = join(worktree, "nowhere/abs.ts");
+
+    assert.deepEqual(
+      missingPaths(
+        [
+          { path: "server/here.ts", isNew: false },
+          { path: "server/gone.ts", isNew: false },
+          { path: "server/brand-new.ts", isNew: true },
+          { path: "server/gone.ts", isNew: false },
+          { path: join(worktree, "server/here.ts"), isNew: false },
+          { path: absent, isNew: false },
+        ],
+        worktree,
+      ),
+      ["server/gone.ts", absent],
+    );
+    assert.deepEqual(missingPaths([], worktree), []);
+  } finally {
+    rmSync(worktree, { recursive: true, force: true });
+  }
 });

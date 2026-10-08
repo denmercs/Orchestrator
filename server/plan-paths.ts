@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+
 // Reads the brief in a story's `## Plan`: the paths named on its
 // Files and Calls lines, so the loop can tell a later step which of them aren't on disk.
 
@@ -33,6 +36,16 @@ export function planPaths(plan: string): PlanPath[] {
     }
   }
   return paths;
+}
+
+// The paths that should already exist but don't: `(new)` ones are skipped, relative paths resolve
+// against the worktree, and each path is reported once.
+export function missingPaths(paths: PlanPath[], worktree: string): string[] {
+  const missing = new Set<string>();
+  for (const { path, isNew } of paths) {
+    if (!isNew && !existsSync(resolve(worktree, path))) missing.add(path);
+  }
+  return [...missing];
 }
 
 function asPath(token: string): string | undefined {
