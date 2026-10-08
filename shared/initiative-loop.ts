@@ -31,6 +31,9 @@ const loopValues = z.object({
   reviewRounds: z.number().int().min(1).max(10).default(3),
   // Fix CI attempts per story before it blocks for you.
   maxFixes: z.number().int().min(0).max(10).default(3),
+  // Times the loop restarts or nudges a step whose session failed, died or stopped without its
+  // marker, before the story blocks for you.
+  maxRetries: z.number().int().min(0).max(10).default(2),
   // Agent profile id per step; empty means Auto (an Opus or Sonnet profile, else the runner's).
   profiles: z
     .object({

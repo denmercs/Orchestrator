@@ -53,6 +53,11 @@ import { commitStory, openStoryPr, pushStoryFix } from "./story-git";
 //                    plugin) → Review → the plugin pushes and opens the PR itself.
 //   the 2-minute tick watches each open PR: a failing check starts a Fix CI agent, a merge marks the
 //                    story merged, archives its workspace and starts the next ready story.
+//   supervision      keeps a step moving without an agent watching it. A failed turn, or a turn that
+//                    ends without the step's marker, marks the story `stalled` and the tick nudges that
+//                    session; a session that is gone, closed or errored is replaced by a fresh one. After
+//                    maxRetries the story blocks. A permission request blocks the story until it's answered.
+//                    A turn you cancel is left alone.
 // The story files are the state: the loop writes status, branch, workspace, agent, pr and ci into
 // their frontmatter, so it resumes from them after a restart. Paseo owns the worktrees and agents.
 
@@ -67,6 +72,11 @@ const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 // Repos with an initiative that has been started, so the tick knows where to look.
 const REGISTRY = join(homedir(), ".orchestrator", "initiative-loops.json");
 const ACTIVE = new Set(["planning", "awaiting-approval", "implementing", "reviewing", "pr-open"]);
+// The statuses whose step session the loop supervises. awaiting-approval waits on you and pr-open
+// has its own watcher.
+const SUPERVISED = new Set(["planning", "implementing", "reviewing"]);
+const SUPERVISED_STEPS = new Set<string>(["plan", "implement", "review"]);
+const PERMISSION = "permission";
 const STATUS_FOR: Record<LoopStep, string> = {
   plan: "planning",
   implement: "implementing",
@@ -79,6 +89,13 @@ const execFileAsync = promisify(execFile);
 
 // Ends a loop agent's prompt when a fresh compact restarts its step in a new session.
 export const RESUME_LINE = "Resume from `.harness/state.md`. An earlier session for this step ran out of context.";
+// Ends the prompt of a fresh session that replaces one that died mid-step.
+export const RESTART_LINE = "Resume from `.harness/state.md`. An earlier session for this step stopped before it finished.";
+
+// The follow-up sent to a stalled step session.
+export function nudgePrompt(why: string) {
+  return `${why}\n\nCarry on with this step from \`.harness/state.md\`. When it is finished, write the step's marker under ## Status as your first prompt says.`;
+}
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
 
@@ -214,7 +231,8 @@ export function createInitiativeLoop(
     story: StoryFile,
     step: LoopStep,
     round: number,
-    extra: { failing?: string; cycle?: Cycle } = {},
+    // attempt: a supervised restart of a step whose session died; it keeps the story's retry count.
+    extra: { failing?: string; cycle?: Cycle; attempt?: number } = {},
   ) {
     const { workspace, worktree } = story.meta;
     if (!workspace || !worktree) throw new Error(`${story.id} has no workspace.`);
@@ -227,6 +245,7 @@ export function createInitiativeLoop(
       "loop-step": step,
       "loop-round": String(round),
       ...(extra.cycle ? { "loop-cycle": String(extra.cycle.number) } : {}),
+      ...(extra.attempt ? { "loop-attempt": String(extra.attempt) } : {}),
     };
     const key = Object.values(labels).join("|");
     if (started.has(key)) return null;
@@ -257,19 +276,20 @@ export function createInitiativeLoop(
       warnings.push(...(await installSkills(worktree, extras, sources).catch((error) => [`skills: ${reason(error)}`])));
       for (const warning of warnings) console.warn("orchestrator: skills", story.id, warning);
       const skills = await skillPaths(worktree, extras, sources);
+      const prompt = stepPrompt(step, ctx, {
+        round,
+        failing: extra.failing,
+        cycle: extra.cycle,
+        plan: readSection(state, "Plan"),
+        missing: planMissing(step, state, worktree),
+        skills,
+      });
       // Story steps work from the story file and the worktree; none of them needs an MCP server.
       const agent = await withMcpScope(worktree, "none", () =>
         api.workspaces.ref(workspace).agents.create({
           title: `${MARK} ${story.id} · ${label} — ${ctx.title}`.slice(0, 60),
           config: agentConfig,
-          prompt: stepPrompt(step, ctx, {
-            round,
-            failing: extra.failing,
-            cycle: extra.cycle,
-            plan: readSection(state, "Plan"),
-            missing: planMissing(step, state, worktree),
-            skills,
-          }),
+          prompt: extra.attempt ? `${prompt}\n\n${RESTART_LINE}` : prompt,
           labels,
         }),
       );
@@ -279,6 +299,9 @@ export function createInitiativeLoop(
         agent: agent.id,
         blocked_reason: null,
         blocked_from: null,
+        stalled: null,
+        waiting_on: null,
+        ...(extra.attempt ? {} : { retries: null }),
         skill_warnings: warnings.join(" · ") || null,
         // The first prompt's skills line, so a resumed agent gets the same one.
         step_skills: formatSkills(skills) || null,
@@ -443,7 +466,10 @@ export function createInitiativeLoop(
     if (!phaseDir) return { started: startedNow, reason };
     const merged = new Set(phaseDirs(init).flatMap((dir) => readStoryFiles(dir).filter(isMerged).map((story) => story.id)));
     const stories = readStoryFiles(phaseDir);
-    const inFlight = stories.filter((story) => ACTIVE.has(story.meta.status ?? "")).length;
+    // A story blocked on a permission request still has its session open, so it keeps its slot.
+    const inFlight = stories.filter(
+      (story) => ACTIVE.has(story.meta.status ?? "") || story.meta.waiting_on === PERMISSION,
+    ).length;
     const ready = stories.filter(
       (story) =>
         (story.meta.status || "todo") === "todo" &&
@@ -466,13 +492,56 @@ export function createInitiativeLoop(
     };
   }
 
+  // Keeps an in-flight step moving when its session can't. A session that is gone, closed or errored
+  // gets a fresh one; a stalled one (a failed turn, or a turn that ended without the step's marker)
+  // gets a nudge. Each counts as a retry; past maxRetries the story blocks for you.
+  async function supervise(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile) {
+    const { meta } = story;
+    const step = meta.step as LoopStep;
+    if (!meta.worktree || !meta.agent || !SUPERVISED.has(meta.status ?? "") || !SUPERVISED_STEPS.has(step)) return;
+    const state = readText(stateFile(meta.worktree));
+    // Any other marker is the step's own answer, and reconcile acts on it.
+    if (readMarker(state).marker !== `${step}-running`) return;
+    const session = await api.agents
+      .ref(meta.agent)
+      .refresh()
+      .then((found) => found?.agent ?? null, () => undefined);
+    // Paseo didn't answer: that says nothing about the session, so try again next tick.
+    if (session === undefined) return;
+    if (session?.status === "running" || session?.status === "initializing") return;
+    const dead = !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
+    if (!dead && !meta.stalled) return;
+    const why = dead
+      ? session?.lastError
+        ? `Its session failed: ${session.lastError}.`
+        : "Its session is gone."
+      : meta.stalled ?? "";
+    const retries = Number(meta.retries) || 0;
+    if (retries >= config.maxRetries) {
+      block(story, `${STEP_LABELS[step]}: ${why} Gave up after ${retries} ${retries === 1 ? "retry" : "retries"}.`);
+      return;
+    }
+    writeFrontmatter(story.path, { retries: retries + 1, stalled: null });
+    if (!dead) {
+      await api.agents.ref(meta.agent).send(nudgePrompt(why));
+      return;
+    }
+    const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
+    const cycle = meta.cycle ? readCycles(state).find((item) => String(item.number) === meta.cycle) : undefined;
+    await startStep(api, config, init, phaseDir, fresh, step, Number(meta.round) || 1, { cycle, attempt: retries + 1 });
+  }
+
   // Everything the loop does for one initiative on a tick: PRs, in-flight steps, then free slots.
   async function sweep(api: PaseoApi, config: LoopConfig, init: Initiative) {
     for (const phaseDir of phaseDirs(init)) {
       for (const story of readStoryFiles(phaseDir)) {
         try {
           if (story.meta.status === "pr-open") await watchPr(api, config, init, phaseDir, story);
-          else if (initiativeLoopState(init.dir) === "on") await reconcile(api, config, init, phaseDir, story, false);
+          else if (initiativeLoopState(init.dir) === "on") {
+            await reconcile(api, config, init, phaseDir, story, false);
+            const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id);
+            if (fresh) await supervise(api, config, init, phaseDir, fresh);
+          }
         } catch (error) {
           console.warn("orchestrator: initiative loop", init.slug, story.id, error);
         }
@@ -560,7 +629,9 @@ export function createInitiativeLoop(
 
     onTurnEnded(api: PaseoApi, event: { agent: PluginHookAgent; outcome: PluginTurnOutcome }) {
       paseo = api;
-      if (event.outcome.kind !== "completed") return Promise.resolve();
+      // You stopped it: the loop leaves it to you.
+      if (event.outcome.kind === "canceled") return Promise.resolve();
+      const outcome = event.outcome;
       return serial(async () => {
         const labels = (await api.agents.ref(event.agent.id).refresh())?.agent.labels ?? {};
         if (labels.kind !== KIND || !labels["loop-repo"] || !labels["loop-initiative"]) return;
@@ -569,14 +640,60 @@ export function createInitiativeLoop(
         const story = readStoryFiles(phaseDir).find((item) => item.id === labels["loop-story"]);
         if (!story) return;
         if (labels["loop-step"] === "fix") {
-          await finishFix(story);
+          if (outcome.kind === "completed") await finishFix(story);
           return;
         }
         // Only the story's current step (and cycle) moves it on; an older session talking doesn't.
         if (labels["loop-step"] !== story.meta.step) return;
         if ((labels["loop-cycle"] ?? "") !== (story.meta.cycle ?? "")) return;
+        // A failed turn is retried by the tick, which gives a rate limit or outage time to clear.
+        if (outcome.kind === "failed") {
+          if (story.meta.agent === event.agent.id && SUPERVISED.has(story.meta.status ?? "")) {
+            writeFrontmatter(story.path, { stalled: `Its last turn failed: ${outcome.error.message}` });
+          }
+          return;
+        }
         await reconcile(api, await readConfig(), init, phaseDir, story, true);
+        // Still running its step after the turn: the session stopped without its marker.
+        const after = readStoryFiles(phaseDir).find((item) => item.id === story.id);
+        if (
+          after?.meta.agent === event.agent.id &&
+          after.meta.worktree &&
+          SUPERVISED.has(after.meta.status ?? "") &&
+          SUPERVISED_STEPS.has(after.meta.step ?? "") &&
+          readMarker(readText(stateFile(after.meta.worktree))).marker === `${after.meta.step}-running`
+        ) {
+          writeFrontmatter(after.path, { stalled: "It ended its turn without writing the step's marker." });
+        }
         await advance(api, await readConfig(), init);
+      });
+    },
+
+    // A step session asked for permission: the story blocks until it's answered, so it shows as
+    // needing you. It keeps its slot, since its session is still open.
+    onPermissionRequested(api: PaseoApi, event: { agent: PluginHookAgent; request: { name: string; title?: string } }) {
+      paseo = api;
+      return serial(async () => {
+        const found = labelledStory((await api.agents.ref(event.agent.id).refresh())?.agent.labels ?? {});
+        if (!found || found.story.meta.agent !== event.agent.id || !SUPERVISED.has(found.story.meta.status ?? "")) return;
+        block(found.story, `Waiting on permission: ${event.request.title || event.request.name}. Answer it in the session.`);
+        writeFrontmatter(found.story.path, { waiting_on: PERMISSION });
+      });
+    },
+
+    // The permission was answered: the story goes back to the step it was on.
+    onPermissionResolved(api: PaseoApi, event: { agent: PluginHookAgent }) {
+      paseo = api;
+      return serial(async () => {
+        const found = labelledStory((await api.agents.ref(event.agent.id).refresh())?.agent.labels ?? {});
+        const meta = found?.story.meta;
+        if (!found || !meta || meta.waiting_on !== PERMISSION || meta.agent !== event.agent.id) return;
+        writeFrontmatter(found.story.path, {
+          status: meta.blocked_from || "todo",
+          blocked_reason: null,
+          blocked_from: null,
+          waiting_on: null,
+        });
       });
     },
 
