@@ -18,6 +18,7 @@ import {
   type HarnessRepo,
   type HarnessTracker,
 } from "../shared/orchestration";
+import { boardKey, needsYou } from "../shared/gates";
 import { harnessSettings } from "../shared/settings";
 import { startInitiativeLoop, stopInitiativeLoop } from "../shared/initiative-loop";
 import { SessionLog } from "./session-log";
@@ -86,10 +87,6 @@ function subline(story: EpicStory) {
     .filter(Boolean)
     .join(" · ");
 }
-
-// A story waits on you when its plan needs approval, it is blocked, or its PR is green and ready to merge.
-const needsYou = (story: EpicStory) =>
-  story.status === "blocked" || story.status === "awaiting-approval" || (story.status === "pr-open" && story.ci === "green");
 
 function iconOf(story: EpicStory) {
   if (needsYou(story)) return "AlertCircle";
@@ -351,8 +348,7 @@ export function useEpicBoard({
     };
   }
 
-  const keyOf = (board: EpicBoard) => `${board.repo}\n${board.initiative}`;
-  const open = selected ? boards.find((board) => keyOf(board) === selected.board) : undefined;
+  const open = selected ? boards.find((board) => boardKey(board) === selected.board) : undefined;
   const story = open?.state?.stories.find((item) => item.id === selected?.story) ?? null;
 
   const panels = (
@@ -363,7 +359,7 @@ export function useEpicBoard({
         </Text>
       ) : null}
       {boards.map((board) => {
-        const key = keyOf(board);
+        const key = boardKey(board);
         return (
           <InitiativePanel
             key={key}
@@ -390,7 +386,7 @@ export function useEpicBoard({
         theme={theme}
         styles={styles}
         onClose={() => setSelected(null)}
-        onSelect={(id) => setSelected({ board: keyOf(open), story: id })}
+        onSelect={(id) => setSelected({ board: boardKey(open), story: id })}
         navigation={navigation}
       />
     ) : null;

@@ -104,3 +104,21 @@ The pure function that turns what a session reports into a context reading. It r
 - **Context card**: the dashboard card with the last 7 days of telemetry from `orchestration.context.summary`: sessions over threshold, warnings, compactions taken (native + fresh) vs ignored, Claude's auto-compacts apart, and tokens avoided. Below them, a **Context tokens per step** row gives each loop step's turns, summed `used` and models (`byStep` in the summary, tiles from `stepTiles`); that is the context size at each turn end added up, not billed tokens. The row is skipped when no turn has a step. Code: `client/context-card.tsx`, tiles from `summaryTiles`.
 
 _Avoid_: token meter, context gauge (for the meter); threshold state (for level); summarise, reset (for compact); alert, nag (for warning).
+
+## Gate
+
+A point where an agent is paused waiting on you. A story has at most one gate, decided by its status alone:
+
+- **plan**: `awaiting-approval`. Text "Plan awaiting approval".
+- **merge**: `pr-open` with CI `green`. Text "PR #N ready to merge", or "PR ready to merge" with no PR number. Pending or failing CI is not a gate.
+- **stuck**: `blocked`. Text is the blocked reason, or "Blocked" when there is none. `blocked` stands in for stuck until stuck detection exists.
+
+Each gate carries `board` (the board's selection key, `boardKey(board)`: `repo` + `"\n"` + `initiative`), `storyId`, and `where` (initiative title and phase label, "Orchestration Redesign · Phase 1"). `gatesOf(boards)` lists them in board order, then story order. A board whose state is null or failed to load has none. `needsYou(story)` is "has a gate", and the epic board's "Needs you" group and badges use it. Gates carry no time: stories have no timestamp. Code: `shared/gates.ts`.
+
+_Avoid_: blocker (for any gate), task, todo, action item.
+
+## Alerts bell
+
+The bell in the header that lists the current gates, one row per Gate, with a badge showing the gate count. Clicking a row opens that story on the epic board (`gate.board`, `gate.storyId`). Its alerts are gates and nothing else; context-meter warnings stay on the Context pill and are never in the bell.
+
+_Avoid_: notifications, inbox, alert (for a context-meter warning).
