@@ -225,63 +225,6 @@ function tddSource(): SkillSource {
   return { id: sourceId(location), label: "source", location, kind: "personal", enabled: true, pin: null };
 }
 
-test("an Implement step copies its extras into the worktree and names them in the prompt", async () => {
-  const { story, worktree, labels } = fixture("a1");
-  writeFrontmatter(story, { status: "planning", step: "plan" });
-  const planLabels = { ...labels, "loop-step": "plan" };
-  const { api, created } = fakePaseo([{ id: "a1", labels: planLabels }]);
-  writeFileSync(
-    join(worktree, ".harness", "state.md"),
-    "# S1 — Demo story\n\n## Status\nplan-done\n\n## Cycles\n- [ ] Cycle 1 — Reads: test → change\n",
-    "utf8",
-  );
-  const source = tddSource();
-  const phases = DEFAULT_PHASES.map((phase) =>
-    phase.id === "implement" ? { ...phase, extras: [{ name: "tdd", source: source.id }] } : phase,
-  );
-  const initiative = createInitiativeLoop(
-    async () => DEFAULT_LOOP_CONFIG,
-    async () => FALLBACK_AGENT_CONFIG,
-    async () => ({ phases, sources: [source] }),
-  );
-  const turnEnded = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
-    ReturnType<typeof loop>["onTurnEnded"]
-  >[1];
-
-  await initiative.onTurnEnded(api, turnEnded);
-
-  assert.deepEqual(created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-cycle"]]), [["implement", "1"]]);
-  assert.ok(existsSync(join(worktree, ".claude", "skills", "tdd", "SKILL.md")), "expected .claude/skills/tdd/SKILL.md");
-  assert.ok(created[0].prompt?.includes("Also use these skills: tdd."));
-});
-
-test("a resumed Implement agent's prompt names its extras again", async () => {
-  const { story, worktree, labels } = fixture("a1");
-  writeFrontmatter(story, { status: "planning", step: "plan" });
-  const { api, created } = fakePaseo([{ id: "a1", labels: { ...labels, "loop-step": "plan" } }]);
-  writeFileSync(
-    join(worktree, ".harness", "state.md"),
-    "# S1 — Demo story\n\n## Status\nplan-done\n\n## Cycles\n- [ ] Cycle 1 — Reads: test → change\n",
-    "utf8",
-  );
-  const source = tddSource();
-  const phases = DEFAULT_PHASES.map((phase) =>
-    phase.id === "implement" ? { ...phase, extras: [{ name: "tdd", source: source.id }] } : phase,
-  );
-  const initiative = createInitiativeLoop(
-    async () => DEFAULT_LOOP_CONFIG,
-    async () => FALLBACK_AGENT_CONFIG,
-    async () => ({ phases, sources: [source] }),
-  );
-  await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
-    ReturnType<typeof loop>["onTurnEnded"]
-  >[1]);
-
-  const prompt = await initiative.resumePrompt(created[0].labels);
-
-  assert.ok(prompt?.includes("Also use these skills: tdd."), prompt ?? "no resume prompt");
-});
-
 // Fakes the turn end of the story's plan agent a1, with Implement cycle 1 next.
 function planDone() {
   const fx = fixture("a1");
@@ -296,6 +239,52 @@ function planDone() {
     ({ agent: { id }, outcome: { kind: "completed" } }) as unknown as Parameters<ReturnType<typeof loop>["onTurnEnded"]>[1];
   return { ...fx, api, created, turnEnded };
 }
+
+// A loop whose Implement phase has the tdd extra from a connected folder source.
+function tddLoop() {
+  const source = tddSource();
+  const phases = DEFAULT_PHASES.map((phase) =>
+    phase.id === "implement" ? { ...phase, extras: [{ name: "tdd", source: source.id }] } : phase,
+  );
+  return createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    async () => ({ phases, sources: [source] }),
+  );
+}
+
+test("an Implement step copies its extras into the worktree and names them in the prompt", async () => {
+  const { worktree, api, created, turnEnded } = planDone();
+  const initiative = tddLoop();
+
+  await initiative.onTurnEnded(api, turnEnded("a1"));
+
+  assert.deepEqual(created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-cycle"]]), [["implement", "1"]]);
+  assert.ok(existsSync(join(worktree, ".claude", "skills", "tdd", "SKILL.md")), "expected .claude/skills/tdd/SKILL.md");
+  assert.ok(created[0].prompt?.includes("Also use these skills: tdd."));
+});
+
+test("a resumed Implement agent's prompt names its extras again", async () => {
+  const { api, created, turnEnded } = planDone();
+  const initiative = tddLoop();
+  await initiative.onTurnEnded(api, turnEnded("a1"));
+
+  const prompt = await initiative.resumePrompt(created[0].labels);
+
+  assert.ok(prompt?.includes("Also use these skills: tdd."), prompt ?? "no resume prompt");
+});
+
+test("a skill copy that throws doesn't stop the step; its error goes on the story", async () => {
+  const { story, worktree, api, created, turnEnded } = planDone();
+  // A file where the .claude folder should be, so creating .claude/skills fails mid-copy.
+  writeFileSync(join(worktree, ".claude"), "", "utf8");
+  const initiative = tddLoop();
+
+  await initiative.onTurnEnded(api, turnEnded("a1"));
+
+  assert.deepEqual(created.map((agent) => agent.labels["loop-step"]), ["implement"]);
+  assert.match(storyMeta(story).skill_warnings ?? "", /^skills: /);
+});
 
 test("a skill warning doesn't stop the step; it goes on the story until a clean step start clears it", async () => {
   const { story, worktree, api, created, turnEnded } = planDone();
