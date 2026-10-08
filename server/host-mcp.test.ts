@@ -45,6 +45,7 @@ test("mainCheckoutPath returns null when the common dir is bare or not named .gi
 
 let root: string;
 let home: string;
+let kiroHome: string;
 let projectA: string;
 let projectB: string;
 let elsewhere: string;
@@ -58,13 +59,13 @@ async function writeJson(file: string, value: unknown) {
 
 // Points HOME and every other config root at the fixture, and the process cwd elsewhere, so this
 // machine's own MCP config stays out of the results.
-async function withFixtureHome<T>(fn: () => Promise<T>): Promise<T> {
+async function withFixtureHome<T>(fn: () => Promise<T>, fixtureHome = home): Promise<T> {
   const keys = ["HOME", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR", "APPDATA", "PASEO_HOME"] as const;
   const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const savedCwd = process.cwd();
-  process.env.HOME = home;
-  process.env.XDG_CONFIG_HOME = join(home, ".config");
-  process.env.PASEO_HOME = join(home, ".paseo");
+  process.env.HOME = fixtureHome;
+  process.env.XDG_CONFIG_HOME = join(fixtureHome, ".config");
+  process.env.PASEO_HOME = join(fixtureHome, ".paseo");
   delete process.env.CLAUDE_CONFIG_DIR;
   delete process.env.APPDATA;
   process.chdir(elsewhere);
@@ -137,7 +138,19 @@ before(async () => {
   // The plugin's own process cwd is a repo too: its file attaches only to agents inside it.
   await writeJson(join(elsewhere, ".mcp.json"), { mcpServers: { "cwd-only": { command: "cwd-only-cmd" } } });
   await writeJson(join(repo, ".cursor", "mcp.json"), { mcpServers: { "ws-gamma": { command: "ws-gamma-cmd" } } });
-  await writeJson(join(projectB, ".kiro", "settings", "mcp.json"), { mcpServers: { "ws-beta": { command: "ws-beta-cmd" } } });
+  await writeJson(join(projectB, ".kiro", "settings", "mcp.json"), {
+    mcpServers: {
+      "ws-beta": { command: "ws-beta-cmd" },
+      "kiro-jira": {
+        command: "uvx",
+        env: { JIRA_URL: "kiro-jira.example.test", JIRA_USERNAME: "kiro@example.test", JIRA_API_TOKEN: "kiro-token" },
+      },
+    },
+  });
+  // A second home whose ~/.claude.json has no Jira credentials, so only projectB's Kiro file has them.
+  kiroHome = join(root, "kiro-home");
+  await writeJson(join(kiroHome, ".claude.json"), { mcpServers: { global: { command: "global-cmd" } } });
+  await writeJson(join(kiroHome, ".paseo", "projects", "workspaces.json"), [{ cwd: projectB }]);
 });
 
 after(async () => {
@@ -198,6 +211,15 @@ test("readAtlassianMcpEnv finds Jira credentials in a project scope from anywher
     JIRA_URL: "https://jira.example.test",
     JIRA_USERNAME: "fake@example.test",
     JIRA_API_TOKEN: "fake-token",
+  });
+});
+
+test("readAtlassianMcpEnv finds Jira credentials in a workspace's own Kiro MCP file", async () => {
+  const env = await withFixtureHome(() => readAtlassianMcpEnv(), kiroHome);
+  assert.deepEqual(env, {
+    JIRA_URL: "https://kiro-jira.example.test",
+    JIRA_USERNAME: "kiro@example.test",
+    JIRA_API_TOKEN: "kiro-token",
   });
 });
 
