@@ -126,10 +126,11 @@ const RULES = (story: StoryContext) => `## Rules for every step
 - Work only in this worktree, on this story. Read AGENTS.md, CLAUDE.md, .cursor/rules, .kiro/steering and
   CONTRIBUTING.md when they exist, and follow the repo's own scripts for tests, lint and build.
 - ${STATE} is this story's working file. Keep its section headings; update only the sections your step owns.
-- Keep context small: start from the files named in \`## Plan\` instead of searching the whole repo, run the
-  narrowest test command that covers your work, and run tests, lint and build through \`.harness/bin/brief\`
-  (for example \`.harness/bin/brief npm test\`). Its output is failures plus a summary; the full log is in
-  \`.harness/logs/\`.
+- Keep context small: open the files in \`## Plan\` first,
+  search further only when they turn out wrong or incomplete, and when they do, correct \`## Plan\`.
+  Run the narrowest test command that covers your work,
+  and run tests, lint and build through \`.harness/bin/brief\` (for example \`.harness/bin/brief npm test\`).
+  Its output is failures plus a summary; the full log is in \`.harness/logs/\`.
 - End the step by replacing everything under \`## Status\` with your marker on its own line. The plugin reads
   that line when your turn ends and starts the next step in a fresh agent. Do not start the next step yourself.
 - Do not commit, push or merge. The plugin commits each finished step and opens the PR.
@@ -173,8 +174,12 @@ ${planText || "_(empty — read ## Plan in the state file)_"}`;
 const STEPS: Record<LoopStep, (extra: StepExtra, jira: boolean) => string> = {
   plan: (_extra, jira) => `## This step: plan the story, then wait for approval
 1. Read the story${jira ? " (the Jira ticket and its acceptance criteria)" : ""}, its phase plan and the code it touches. Use real paths from this checkout.
-2. Write \`## Plan\` in ${STATE}: the approach in a few lines, the files you expect to change, and how the
-   story's acceptance will be checked. Later agents work from this section alone, so name the files.
+2. Write \`## Plan\` in ${STATE}: the approach in a few lines, then these labelled lines, then how the story's
+   acceptance will be checked. Later agents start from this section alone, so use real paths.
+   - \`**Files:**\` the paths you expect to change, with \`(new)\` after each new one.
+   - \`**Calls:**\` the functions or interfaces the change uses, each with its path.
+   - \`**Commands:**\` the narrowest test command for this work, and the gate.
+   - \`**Out of scope:**\` nearby work this story does not do.
 3. Write \`## Open decisions\`: each real choice as "question → recommended answer → what changes either way".
    List small defaults you assumed as "assumption → answer" lines.
 4. Write \`## Cycles\`: the work as test-first cycles, one checklist line each, in order:

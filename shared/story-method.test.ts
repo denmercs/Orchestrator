@@ -242,6 +242,20 @@ test("missing Plan paths go in the story section, after the head and before Wher
   }
 });
 
+test("the Plan step asks for the brief lines, and the rules start every step from them", () => {
+  const plan = stepPrompt("plan", story, { round: 1 });
+  for (const label of ["**Files:**", "**Calls:**", "**Commands:**", "**Out of scope:**"]) {
+    assert.ok(plan.includes(label), `Plan prompt asks for ${label}`);
+  }
+  assert.match(plan, /`\(new\)`/, "Files marks new paths");
+  for (const step of LOOP_STEPS) {
+    const prompt = stepPrompt(step, story, { round: 1 });
+    assert.match(prompt, /open the files in `## Plan` first/, `${step}: open the Plan files first`);
+    assert.match(prompt, /search further only when they turn out wrong or incomplete/, `${step}: search only when needed`);
+    assert.match(prompt, /correct `## Plan`/, `${step}: correct the Plan`);
+  }
+});
+
 test("Jira stories point at the ticket and file follow-ups as review findings", () => {
   const jira: StoryContext = {
     ...story,
