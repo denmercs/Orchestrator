@@ -182,3 +182,59 @@ test("pickLines: failures past the cap are cut with a note, the summary is kept"
   assert.equal(picked[0], "not ok 1 - case 0");
   assert.deepEqual(picked.slice(-4), ["# tests 40", "# pass 0", "# fail 40", "… 124 more lines in the log"]);
 });
+
+// Real `node --test` TAP output when a test file crashes on load (`import "./missing.mjs"`): the cause
+// is only in the `# ` comments before `# Subtest:`; the YAML just says `error: 'test failed'`.
+const TAP_LOAD_CRASH = `TAP version 13
+# node:internal/modules/esm/resolve:274
+#     throw new ERR_MODULE_NOT_FOUND(
+#           ^
+# Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/tmp/missing.mjs' imported from /tmp/bad.test.mjs
+#     at finalizeResolution (node:internal/modules/esm/resolve:274:11)
+#     at ModuleJob._link (node:internal/modules/esm/module_job:182:49) {
+#   code: 'ERR_MODULE_NOT_FOUND',
+#   url: 'file:///tmp/missing.mjs'
+# }
+# Node.js v22.22.0
+# Subtest: bad.test.mjs
+not ok 1 - bad.test.mjs
+  ---
+  duration_ms: 35.902041
+  type: 'test'
+  location: '/tmp/bad.test.mjs:1:1'
+  failureType: 'testCodeFailure'
+  exitCode: 1
+  signal: ~
+  error: 'test failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+# Subtest: ok
+ok 2 - ok
+  ---
+  duration_ms: 0.697583
+  type: 'test'
+  ...
+1..2
+# tests 2
+# pass 1
+# fail 1
+`;
+
+test("pickLines: a test file that crashes on load keeps the crash comments without stack frames", () => {
+  assert.deepEqual(pickLines(TAP_LOAD_CRASH), [
+    "# node:internal/modules/esm/resolve:274",
+    "#     throw new ERR_MODULE_NOT_FOUND(",
+    "#           ^",
+    "# Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/tmp/missing.mjs' imported from /tmp/bad.test.mjs",
+    "#   code: 'ERR_MODULE_NOT_FOUND',",
+    "#   url: 'file:///tmp/missing.mjs'",
+    "# }",
+    "# Node.js v22.22.0",
+    "not ok 1 - bad.test.mjs",
+    "  location: '/tmp/bad.test.mjs:1:1'",
+    "  error: 'test failed'",
+    "# tests 2",
+    "# pass 1",
+    "# fail 1",
+  ]);
+});

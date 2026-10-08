@@ -128,6 +128,6 @@ export async function prForBranch(cwd: string, branch: string) {
 
 // The lines of a `gh run view --log-failed` log worth showing, without gh's per-line prefix.
 export function briefCiLog(log: string) {
-  const lines = log.split("\n").map((line) => line.replace(/^[^\t\n]*\t[^\t\n]*\t\d{4}-\d\d-\d\dT\S+Z ?/, ""));
-  return pickLines(lines.join("\n")).join("\n");
+  const lines = log.split("\n").map((line) => line.replace(/^[^\t\n]*\t[^\t\n]*\t\uFEFF?\d{4}-\d\d-\d\dT\S+Z ?/, ""));
+  return pickLines(lines.join("\n")).join("\n").slice(-4000);
 }

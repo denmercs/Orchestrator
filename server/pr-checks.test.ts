@@ -36,3 +36,14 @@ test("briefCiLog strips gh prefixes and keeps a failure far from the end", () =>
   assert.ok(!brief.includes("2026-10-08T"));
   assert.ok(!brief.includes("stack:"));
 });
+
+test("briefCiLog strips the prefix gh writes with a BOM before the timestamp", () => {
+  assert.equal(briefCiLog("test\tRun npm test\t﻿2026-10-08T12:00:00.1234567Z hello"), "hello");
+});
+
+test("briefCiLog caps unrecognised output at 4000 characters", () => {
+  const log = Array.from({ length: 100 }, (_, i) => prefix(`${i} ${"x".repeat(1000)}`)).join("\n");
+  const brief = briefCiLog(log);
+  assert.ok(brief.length <= 4000, `got ${brief.length} chars`);
+  assert.ok(brief.endsWith("x".repeat(100)));
+});

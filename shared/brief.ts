@@ -10,6 +10,7 @@ export function pickLines(output: string, max = 80): string[] {
   for (let i = 0; i < lines.length; i++) {
     const failure = /^(\s*)not ok \d+ - /.exec(lines[i]);
     if (!failure) continue;
+    const subtest = i - 1;
     const pad = failure[1] + "  ";
     if (lines[i + 1] !== pad + "---") continue;
     const fields: { key: string; lines: string[] }[] = [];
@@ -21,6 +22,14 @@ export function pickLines(output: string, max = 80): string[] {
     }
     i = j;
     if (fields.some((f) => f.key === "failureType" && f.lines[0].includes("subtestsFailed"))) continue;
+    // A file that crashes on load has `exitCode` and only `error: 'test failed'`; the cause is in the
+    // `# ` comments node prints just before its `# Subtest:` line.
+    const comment = failure[1] + "# ";
+    if (fields.some((f) => f.key === "exitCode") && lines[subtest]?.startsWith(comment + "Subtest: ")) {
+      let from = subtest;
+      while (from > 0 && lines[from - 1].startsWith(comment) && !lines[from - 1].startsWith(comment + "Subtest: ")) from--;
+      picked.push(...lines.slice(from, subtest).filter((line) => !/^\s*#\s+at /.test(line)));
+    }
     picked.push(failure.input);
     for (const f of fields) if (keep.includes(f.key)) picked.push(...f.lines);
   }
@@ -54,9 +63,12 @@ const RUNNER = `(async () => {
     console.error("usage: brief <command…>");
     process.exit(2);
   }
+  const stdio = ["ignore", "pipe", "pipe"];
   const child = args.length === 1 && args[0].includes(" ")
-    ? spawn(args[0], { shell: true })
-    : spawn(args[0], args.slice(1));
+    ? spawn(args[0], { shell: true, stdio })
+    : spawn(args[0], args.slice(1), { stdio });
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
   let output = "";
   child.stdout.on("data", (chunk) => (output += chunk));
   child.stderr.on("data", (chunk) => (output += chunk));

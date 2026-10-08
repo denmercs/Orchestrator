@@ -66,3 +66,34 @@ test("briefTag names the step, its cycle and its round", () => {
   assert.equal(briefTag("plan", 1), "plan");
   assert.equal(briefTag("fix", 3), "fix-r3");
 });
+
+// Writes `briefScript` into a temp `.harness/bin/brief` and runs it with `args`.
+function runBrief(args: string[]) {
+  const dir = mkdtempSync(join(tmpdir(), "brief-run-"));
+  try {
+    const bin = join(dir, ".harness", "bin");
+    mkdirSync(bin, { recursive: true });
+    const script = join(bin, "brief");
+    writeFileSync(script, briefScript("implement-c1"));
+    chmodSync(script, 0o755);
+    const run = spawnSync(script, args, { cwd: dir, encoding: "utf8", timeout: 5000 });
+    const logs = join(dir, ".harness", "logs");
+    const log = run.status === null ? "" : readFileSync(join(logs, readdirSync(logs)[0]), "utf8");
+    return { run, log };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("briefScript does not leave the command waiting on stdin", () => {
+  const { run } = runBrief([process.execPath, "-e", "process.stdin.resume(); process.stdin.on('end', () => process.exit(0))"]);
+  assert.equal(run.status, 0, `timed out or failed: ${run.error ?? run.stderr}`);
+});
+
+test("briefScript keeps a multibyte character split across output chunks", () => {
+  const split = "process.stdout.write(Buffer.from([0xe2])); setTimeout(() => process.stdout.write(Buffer.from([0x9c, 0x96, 0x0a])), 100)";
+  const { run, log } = runBrief([process.execPath, "-e", split]);
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(log, "✖\n");
+  assert.match(run.stdout, /^✖$/m);
+});
