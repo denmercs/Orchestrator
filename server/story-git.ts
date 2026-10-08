@@ -9,9 +9,6 @@ import { gh, prForBranch } from "./pr-checks";
 
 const execFileAsync = promisify(execFile);
 
-// .harness/ is the story's working folder and never goes into a commit.
-const NOT_HARNESS = ["--", ".", ":(exclude).harness"];
-
 async function git(cwd: string, args: string[], timeout = 60_000) {
   const { stdout } = await execFileAsync("git", args, { cwd, timeout, maxBuffer: 8 * 1024 * 1024 });
   return stdout.trim();
@@ -21,9 +18,12 @@ export async function currentBranch(cwd: string) {
   return git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
 }
 
-// Commits everything the agent changed outside .harness/. Returns false when there was nothing to commit.
+// Commits everything the agent changed outside .harness/, the story's working folder. Returns false
+// when there was nothing to commit. Stages all, then unstages .harness: an exclude pathspec makes git
+// exit 1 when .harness is itself ignored (.git/info/exclude), even though it staged the rest.
 export async function commitStory(cwd: string, message: string) {
-  await git(cwd, ["add", "-A", ...NOT_HARNESS]);
+  await git(cwd, ["add", "-A"]);
+  await git(cwd, ["reset", "-q", "--", ".harness"]);
   const staged = await git(cwd, ["diff", "--cached", "--name-only"]);
   if (!staged) {
     return false;

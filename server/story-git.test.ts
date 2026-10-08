@@ -32,6 +32,25 @@ test("commits the agent's changes but never .harness/", async () => {
   }
 });
 
+test("commits when .harness/ is in .git/info/exclude", async () => {
+  const { dir, git, done } = repo();
+  try {
+    writeFileSync(join(dir, "search.ts"), "export const x = 1;\n");
+    git("add", "search.ts");
+    git("commit", "-q", "-m", "add search");
+    writeFileSync(join(dir, ".git", "info", "exclude"), ".harness/\n");
+    writeFileSync(join(dir, "search.ts"), "export const x = 2;\n");
+    mkdirSync(join(dir, ".harness"));
+    writeFileSync(join(dir, ".harness", "state.md"), "## Status\nimplement-done\n");
+
+    assert.equal(await commitStory(dir, "S1: Cycle 1 — Parse"), true);
+    assert.equal(git("show", "--name-only", "--format=", "HEAD"), "search.ts");
+    assert.equal(git("status", "--porcelain"), "");
+  } finally {
+    done();
+  }
+});
+
 test("nothing to commit is not an error", async () => {
   const { dir, git, done } = repo();
   try {
