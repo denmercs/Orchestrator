@@ -21,7 +21,9 @@ import {
 import { needsYou } from "../shared/gates";
 import { harnessSettings } from "../shared/settings";
 import { startInitiativeLoop, stopInitiativeLoop } from "../shared/initiative-loop";
+import { LoadingState } from "./loading-state";
 import { SessionLog } from "./session-log";
+import { SkeletonBar, SkeletonCards, SkeletonRows } from "./skeleton";
 import { boardKey, findSelected, pollDelay, showFold, toggleFold, type Selection } from "./epic-board-model";
 
 // Every initiative's current phase (see server/harness-layout.ts) as its dependency graph: one
@@ -352,12 +354,21 @@ export function InitiativePanels({ epic, theme, compact, navigation }: ViewProps
     );
   }
 
+  // First load only: once boards arrive, later refreshes keep them on screen; errors keep their text.
+  if (boards === null && !error) {
+    return (
+      <LoadingState theme={theme} compact={compact}>
+        <SkeletonCards theme={theme} count={2} height={compact ? 120 : 160} compact />
+      </LoadingState>
+    );
+  }
+
   if (!boards?.length) {
     return (
       <View style={[styles.panel, styles.folded]}>
         <Text style={styles.foldedTitle}>Initiatives</Text>
         <Text style={[error ? styles.danger : styles.muted, styles.flex]} numberOfLines={1}>
-          {error ?? (boards ? "not set up" : "Loading…")}
+          {error ?? "not set up"}
         </Text>
         <Button label="Initiatives" styles={styles} onPress={() => setEditing(true)} />
       </View>
@@ -394,8 +405,8 @@ export function InitiativePanels({ epic, theme, compact, navigation }: ViewProps
   );
 }
 
-// The selected story's drawer, for the screen root so it covers the whole surface like the prod
-// pulse drawer. Renders nothing while no story is selected.
+// The selected story's drawer, mounted at the screen root so it covers the whole surface. Renders
+// nothing while no story is selected.
 export function StoryDrawer({ epic, theme, compact, navigation }: ViewProps) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   const open = findSelected(epic.boards, epic.selected);
@@ -566,7 +577,14 @@ function InitiativePanel({
           <Text style={[styles.panelTitle, styles.flex]}>{board.initiative}</Text>
           <Button label="Initiatives" styles={styles} onPress={onPicker} />
         </View>
-        <Text style={error ? styles.danger : styles.muted}>{error ?? "Loading the initiative…"}</Text>
+        {error ? (
+          <Text style={styles.danger}>{error}</Text>
+        ) : (
+          <LoadingState theme={theme} compact={compact}>
+            <SkeletonBar theme={theme} width="40%" height={16} />
+            <SkeletonRows theme={theme} rows={4} />
+          </LoadingState>
+        )}
       </View>
     );
   }

@@ -27,7 +27,9 @@ import {
   type SourceStatus,
   type Then,
 } from "../shared/pipeline";
+import { LoadingState } from "./loading-state";
 import { installsLabel, rowState } from "./registry-search-model";
+import { SkeletonRows } from "./skeleton";
 
 type Theme = PluginSurfaceProps["theme"];
 type Styles = ReturnType<typeof createStyles>;
@@ -69,6 +71,7 @@ function usePipeline(open: boolean) {
   const [error, setError] = useState<string | null>(null);
 
   const values: PipelineConfig | null = settings.status === "ready" ? settings.values : null;
+  const settingsError = settings.status === "error" || settings.status === "invalid" ? settings.error : null;
   const sourcesKey = JSON.stringify(values?.sources ?? []);
 
   const reload = useCallback(async () => {
@@ -103,7 +106,7 @@ function usePipeline(open: boolean) {
     return saved;
   }
 
-  return { values, catalog, statuses, loading, error, setError, reload, save };
+  return { values, settingsError, catalog, statuses, loading, error, setError, reload, save };
 }
 type Pipeline = ReturnType<typeof usePipeline>;
 
@@ -208,7 +211,13 @@ export function SkillsDrawer({
         </View>
         <ScrollView style={styles.flex1} contentContainerStyle={styles.bodyContent}>
           {!values ? (
-            <Text style={styles.muted}>Loading settings…</Text>
+            pipeline.settingsError ? (
+              <Text style={[styles.muted, styles.danger]}>{pipeline.settingsError}</Text>
+            ) : (
+              <LoadingState theme={theme} compact={compact}>
+                <SkeletonRows theme={theme} rows={5} />
+              </LoadingState>
+            )
           ) : tab === "phases" ? (
             <PhasesTab pipeline={pipeline} values={values} styles={styles} />
           ) : (
