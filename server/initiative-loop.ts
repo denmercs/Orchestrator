@@ -56,7 +56,8 @@ import { commitStory, openStoryPr, pushStoryFix } from "./story-git";
 //   supervision      keeps a step moving without an agent watching it. A failed turn, or a turn that
 //                    ends without the step's marker, marks the story `stalled` and the tick nudges that
 //                    session; a session that is gone, closed or errored is replaced by a fresh one. After
-//                    maxRetries the story blocks. A permission request blocks the story until it's answered.
+//                    maxRetries the story blocks. A story whose worktree is gone goes to its branch's PR.
+//                    A permission request blocks the story until it's answered.
 //                    A turn you cancel is left alone.
 // The story files are the state: the loop writes status, branch, workspace, agent, pr and ci into
 // their frontmatter, so it resumes from them after a restart. Paseo owns the worktrees and agents.
@@ -511,6 +512,10 @@ export function createInitiativeLoop(
     const { meta } = story;
     const step = meta.step as LoopStep;
     if (!meta.worktree || !meta.agent || !SUPERVISED.has(meta.status ?? "") || !SUPERVISED_STEPS.has(step)) return;
+    if (!existsSync(meta.worktree)) {
+      await worktreeGone(api, config, init, phaseDir, story);
+      return;
+    }
     const state = readText(stateFile(meta.worktree));
     // Any other marker is the step's own answer, and reconcile acts on it.
     if (readMarker(state).marker !== `${step}-running`) return;
@@ -547,6 +552,28 @@ export function createInitiativeLoop(
       cycles,
       attempt: retries + 1,
     });
+  }
+
+  // A story's worktree was removed mid-step, so there is nothing to resume. Its work went somewhere,
+  // usually a PR opened and merged outside the loop: hand an open or merged PR to the PR watcher so
+  // the story stops holding a slot. A closed PR blocks it for you. No PR counts as a retry, since gh
+  // being down looks the same, and blocks it past maxRetries.
+  async function worktreeGone(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile) {
+    const { meta } = story;
+    const pr = meta.branch ? await prStatus(init.root, meta.branch) : null;
+    if (pr?.state === "closed") {
+      block(story, `Its worktree is gone and PR #${pr.number} was closed without merging.`);
+      return;
+    }
+    if (!pr) {
+      const retries = Number(meta.retries) || 0;
+      if (retries >= config.maxRetries) block(story, `Its worktree is gone and ${meta.branch || "its branch"} has no PR.`);
+      else writeFrontmatter(story.path, { retries: retries + 1 });
+      return;
+    }
+    writeFrontmatter(story.path, { status: "pr-open", step: "pr", round: 1, cycle: null, agent: null, retries: null, pr: pr.number, ci: "pending" });
+    const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
+    await watchPr(api, config, init, phaseDir, fresh);
   }
 
   // Everything the loop does for one initiative on a tick: PRs, in-flight steps, then free slots.
