@@ -1,4 +1,5 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { CURSOR_THEMES } from "./client/cursor-themes";
 import { OrchestrationDashboard } from "./client/orchestration-dashboard";
 import { contributeSessionRolePills } from "./client/session-role-pills";
 import { attachSkill } from "./shared/pipeline";
@@ -36,7 +37,8 @@ export default function contribute(client: PluginClientContext) {
     search: attachSkill,
   });
   const offPills = contributeSessionRolePills(client);
+  const offThemes = CURSOR_THEMES.map((theme) => client.addTheme(theme));
   return async () => {
-    await Promise.all([offAttach(), offPills()]);
+    await Promise.all([offAttach(), offPills(), ...offThemes.map((off) => off())]);
   };
 }

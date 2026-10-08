@@ -1,5 +1,6 @@
 import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
+import { TAB_IDS } from "./dashboard-tabs";
 
 export const standupSettings = defineSettings({
   id: "standup",
@@ -71,5 +72,15 @@ export const mcpSettings = defineSettings({
   schema: z.object({
     // Host MCP server names never copied onto agents; Jira credential lookup still reads them.
     mcpExclude: z.array(z.string()).default([]),
+  }),
+});
+
+export const dashboardSettings = defineSettings({
+  id: "dashboard",
+  scope: "host",
+  version: 1,
+  schema: z.object({
+    // Tab the dashboard opens on; an unknown stored tab falls back to initiatives.
+    tab: z.enum(TAB_IDS).default("initiatives").catch("initiatives"),
   }),
 });
