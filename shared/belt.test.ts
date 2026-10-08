@@ -7,6 +7,7 @@ import {
   findRef,
   matchesRef,
   phasePrompt,
+  stepSkills,
   withoutSkillsync,
   type CatalogSkill,
 } from "./belt";
@@ -81,4 +82,16 @@ test("a picked phase skill is named in the prompt, and auto Plan skips approval"
   const prompt = phasePrompt(plan, ticket);
   assert.match(prompt, /Also use these skills: my-planner\./);
   assert.match(prompt, /without waiting/);
+});
+
+test("implement and fix both load the saved Implement extras", () => {
+  const extras = [{ name: "react-review", source: "team-skills" }];
+  const phases = DEFAULT_PHASES.map((p) => (p.id === "implement" ? { ...p, extras } : p));
+  assert.deepEqual(stepSkills("implement", phases), extras);
+  assert.deepEqual(stepSkills("fix", phases), extras);
+});
+
+test("plan and pr load no extras with the default phases", () => {
+  assert.deepEqual(stepSkills("plan", DEFAULT_PHASES), []);
+  assert.deepEqual(stepSkills("pr", DEFAULT_PHASES), []);
 });

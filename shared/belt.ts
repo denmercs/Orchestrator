@@ -1,5 +1,6 @@
 import { defineRpc, defineSettings, PluginAttachmentSearchPayloadSchema } from "@getpaseo/plugin";
 import { z } from "zod";
+import type { LoopStep } from "./initiative-loop";
 import { stepPrompt, type Cycle, type StoryContext } from "./story-method";
 
 // Story belt: a Jira story run through the same steps as the initiative loop (shared/story-method.ts).
@@ -232,6 +233,22 @@ export function phaseSkills(phase: Phase) {
     (r) => r.required && !phase.extras.some((e) => e.name === r.name),
   );
   return { runs: phase.runs, extras: [...phase.extras, ...required] };
+}
+
+// The drawer phase whose extras each loop step loads. Fix reworks code, so it uses Implement's.
+export const STEP_PHASES: Record<LoopStep, PhaseId> = {
+  plan: "plan",
+  implement: "implement",
+  fix: "implement",
+  review: "review",
+  pr: "done",
+};
+
+// A loop step's extras from the saved phases, or the default phase when they lack it. Never `runs`.
+export function stepSkills(step: LoopStep, phases: Phase[]): Extra[] {
+  const id = STEP_PHASES[step];
+  const phase = phases.find((p) => p.id === id) ?? DEFAULT_PHASES.find((p) => p.id === id);
+  return phase ? phaseSkills(phase).extras : [];
 }
 
 export function beltStory(ticket: Ticket, branch = "", base = "origin/main"): StoryContext {
