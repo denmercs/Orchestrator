@@ -60,12 +60,14 @@ function agent(
   labels: Record<string, string> = {},
   commands = ["compact"],
   model: string | null = null,
+  costUsd: number | null = null,
 ): WatchAgent {
   return {
     usage: used === null ? null : { contextWindowUsedTokens: used, contextWindowMaxTokens: 200_000 },
     commands: commands.map((name) => ({ name })),
     labels,
     model,
+    costUsd,
   };
 }
 
@@ -75,7 +77,13 @@ function turn(id: string, timeline: Item[] = []): TurnEnded {
 
 test("onTurnEnded: one turn end writes one turn row with provider and step", async () => {
   const { port, rows } = fakePort({
-    a1: agent(40_000, { "loop-step": "implement", "loop-story": "S2", "loop-initiative": "telemetry" }),
+    a1: agent(
+      40_000,
+      { "loop-step": "implement", "loop-story": "S2", "loop-initiative": "telemetry" },
+      ["compact"],
+      null,
+      0.42,
+    ),
   });
   await createContextWatch(port).onTurnEnded(turn("a1"));
 
@@ -92,8 +100,19 @@ test("onTurnEnded: one turn end writes one turn row with provider and step", asy
       cycle: null,
       story: "S2",
       initiative: "telemetry",
+      costUsd: 0.42,
     },
   ]);
+});
+
+test("onTurnEnded: a turn row's cost is null when the agent reports none", async () => {
+  const { port, rows } = fakePort({ a1: agent(40_000) });
+  await createContextWatch(port).onTurnEnded(turn("a1"));
+
+  assert.deepEqual(
+    rows.map((r) => [r.event, r.costUsd]),
+    [["turn", null]],
+  );
 });
 
 test("onTurnEnded: a turn row carries the agent's model and its loop cycle, story and initiative", async () => {

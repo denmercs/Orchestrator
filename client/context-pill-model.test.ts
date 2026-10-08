@@ -126,6 +126,8 @@ test("summaryTiles: over threshold, warnings, taken vs ignored, auto, tokens avo
     tokensAvoided: 412_000,
     byStep: {},
     byStory: {},
+    spendToday: 0,
+    spendWeek: 0,
   });
   assert.deepEqual(tiles, [
     { label: "Sessions over threshold", value: "2" },
@@ -147,6 +149,8 @@ const emptySummary = {
   tokensAvoided: 0,
   byStep: {},
   byStory: {},
+  spendToday: 0,
+  spendWeek: 0,
 };
 
 test("stepTiles: loop order then the rest A-Z, tokens · turns · models", () => {
