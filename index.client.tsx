@@ -1,7 +1,7 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { OrchestrationDashboard } from "./client/orchestration-dashboard";
 import { contributeSessionRolePills } from "./client/session-role-pills";
-import { attachSkill } from "./shared/belt";
+import { attachSkill } from "./shared/pipeline";
 import { INSTALL_LABEL } from "./shared/install";
 
 const TITLE = INSTALL_LABEL ? `Orchestration (${INSTALL_LABEL})` : "Orchestration";

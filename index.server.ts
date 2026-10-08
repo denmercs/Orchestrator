@@ -16,7 +16,7 @@ import { startPhaseArchitect } from "./server/harness-architect";
 import { openPhasePlan, refreshPhasePlan } from "./server/phase-plan";
 import { stopPlanServer } from "./server/plan-server";
 import { createHarnessEpic, listHarness } from "./server/harness-layout";
-import { advanceBelt, closeMergedStories, startStory } from "./server/belt-advance";
+import { advancePipeline, closeMergedStories, startStory } from "./server/pipeline-advance";
 import { createLoopAdvance } from "./server/loop-advance";
 import { createInitiativeLoop } from "./server/initiative-loop";
 import { createContextWatch, paseoPort } from "./server/context-watch";
@@ -69,13 +69,13 @@ import { harnessSettings, jiraBoardSettings, prodPulseSettings, standupSettings 
 import {
   addSkillSource,
   attachSkill,
-  beltSettings,
+  pipelineSettings,
   checkSkillSource,
   getSkillCatalog,
   removeSkillSource,
   searchSkillRegistry,
-  startBeltStory,
-} from "./shared/belt";
+  startPipelineStory,
+} from "./shared/pipeline";
 
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(standupSettings);
@@ -147,22 +147,22 @@ export default function contribute(server: PluginServerContext) {
     return contextWatch.sessions(agentIds);
   });
   server.handle(contextSummaryRpc, ({ since }) => summariseTelemetry(since));
-  const belt = server.registerSettings(beltSettings);
-  const readBeltValues = async () => {
-    const state = await belt.read();
+  const pipeline = server.registerSettings(pipelineSettings);
+  const readPipelineValues = async () => {
+    const state = await pipeline.read();
     return state.status === "ready" ? state.values : null;
   };
-  const readBelt = async () => {
-    const values = await readBeltValues();
+  const readPipeline = async () => {
+    const values = await readPipelineValues();
     return values?.enabled ? values : null;
   };
   const loop = createLoopAdvance((paseo, fresh) =>
-    closeMergedStories(paseo, fresh, readBelt),
+    closeMergedStories(paseo, fresh, readPipeline),
   );
-  server.handle(getSkillCatalog, async () => loadCatalog((await readBeltValues())?.sources ?? []));
+  server.handle(getSkillCatalog, async () => loadCatalog((await readPipelineValues())?.sources ?? []));
   server.handle(addSkillSource, ({ location }) => addSource(location));
   server.handle(checkSkillSource, async ({ id }) => {
-    const source = (await readBeltValues())?.sources.find((s) => s.id === id);
+    const source = (await readPipelineValues())?.sources.find((s) => s.id === id);
     if (!source) {
       return { ok: false, error: "That source is not connected.", head: null, commits: [], changedSkills: [] };
     }
@@ -170,13 +170,13 @@ export default function contribute(server: PluginServerContext) {
   });
   server.handle(removeSkillSource, ({ id }) => removeSourceCheckout(id));
   server.handle(searchSkillRegistry, async ({ query }) =>
-    searchSkillsSh(query, { fetch, sources: (await readBeltValues())?.sources ?? [] }),
+    searchSkillsSh(query, { fetch, sources: (await readPipelineValues())?.sources ?? [] }),
   );
-  server.handle(attachSkill, async ({ query }) => attachSkills(query, (await readBeltValues())?.sources ?? []));
-  server.handle(startBeltStory, async (input, { paseo }) => {
-    const config = await readBelt();
+  server.handle(attachSkill, async ({ query }) => attachSkills(query, (await readPipelineValues())?.sources ?? []));
+  server.handle(startPipelineStory, async (input, { paseo }) => {
+    const config = await readPipeline();
     if (!config) {
-      throw new Error("The Story belt is off. Turn it on in Skills first.");
+      throw new Error("The Story pipeline is off. Turn it on in Skills first.");
     }
     return startStory(paseo, config, input, await readAgentConfig(paseo));
   });
@@ -242,8 +242,8 @@ export default function contribute(server: PluginServerContext) {
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     loop.rememberPaseo(paseo);
     void loop.onTurnEnded(event);
-    void advanceBelt(paseo, event, readBelt, readAgentConfig).catch((error) => {
-      console.warn("orchestrator: belt advance failed", error);
+    void advancePipeline(paseo, event, readPipeline, readAgentConfig).catch((error) => {
+      console.warn("orchestrator: pipeline advance failed", error);
     });
     void initiativeLoop.onTurnEnded(paseo, event).catch((error) => {
       console.warn("orchestrator: initiative loop failed", error);

@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { after, before, test } from "node:test";
 import { PluginAttachmentSearchPayloadSchema } from "@getpaseo/plugin";
-import { MACHINE_SOURCE, type SkillSource } from "../shared/belt";
+import { MACHINE_SOURCE, type SkillSource } from "../shared/pipeline";
 import { attachmentUrl, attachSkills } from "./skill-attach";
 import { sourceId } from "./skill-sources";
 

@@ -1,4 +1,4 @@
-import type { RegistryHit } from "../shared/belt";
+import type { RegistryHit } from "../shared/pipeline";
 
 // "1 install", "999 installs", "1.2k installs", "1.5M installs".
 export function installsLabel(installs: number) {

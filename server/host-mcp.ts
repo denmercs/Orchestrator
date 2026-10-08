@@ -20,7 +20,7 @@ export type HostMcpServer =
 
 const ATLASSIAN_NAMES = ["mcp-atlassian", "atlassian", "jira"];
 
-// Which host servers an agent gets. Loop and belt agents that only touch the worktree get none;
+// Which host servers an agent gets. Loop and pipeline agents that only touch the worktree get none;
 // steps that read a ticket get one Atlassian server. Every server's tool list rides along on each
 // model call, so this is the main lever on per-turn context size.
 export type McpScope = "all" | "jira" | "none";

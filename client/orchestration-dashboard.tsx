@@ -22,7 +22,7 @@ import {
   profilesFromConfigGet,
   resolveRunnerConfig,
 } from "../shared/agent-runner";
-import { beltSettings, startBeltStory } from "../shared/belt";
+import { pipelineSettings, startPipelineStory } from "../shared/pipeline";
 import { jiraBoardSettings } from "../shared/settings";
 import { PR_POLL_MS } from "../shared/timing";
 import {
@@ -55,8 +55,8 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const moveIssue = useRpc(moveJiraIssue);
   const boardSettings = useSettings(jiraBoardSettings);
   const runner = useSettings(agentRunnerSettings);
-  const belt = useSettings(beltSettings);
-  const startBelt = useRpc(startBeltStory);
+  const pipeline = useSettings(pipelineSettings);
+  const startPipeline = useRpc(startPipelineStory);
   const registerScope = useRpc(registerMcpScopeRpc);
   const defaultBoardId = boardSettings.status === "ready" ? boardSettings.values.defaultBoardId : "";
   const boardFilter = boardSettings.status === "ready" ? boardSettings.values.boardFilter : null;
@@ -333,7 +333,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     setStartingId(item.id);
     setSessionError(null);
     try {
-      const beltOn = belt.status === "ready" && belt.values.enabled;
+      const pipelineOn = pipeline.status === "ready" && pipeline.values.enabled;
       const profileId = runner.status === "ready" ? runner.values.profileId : "";
       const { config: agentConfig } = resolveRunnerConfig(
         profilesFromConfigGet(await paseo.config.get()),
@@ -342,7 +342,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
       const started = await startJiraSession(
         paseo,
         item,
-        beltOn ? startBelt : undefined,
+        pipelineOn ? startPipeline : undefined,
         agentConfig,
         registerScope,
       );
@@ -391,7 +391,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
             />
             <SkillsButton
               theme={theme}
-              beltOn={belt.status === "ready" && belt.values.enabled}
+              pipelineOn={pipeline.status === "ready" && pipeline.values.enabled}
               onPress={() => setSkillsOpen(true)}
             />
             {pulse?.available ? (

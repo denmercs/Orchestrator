@@ -1,5 +1,5 @@
 // How one story is delivered, for both the initiative loop (server/initiative-loop.ts) and the
-// Story belt (server/belt-advance.ts). Each step runs in a fresh agent in the story's worktree and
+// Story pipeline (server/pipeline-advance.ts). Each step runs in a fresh agent in the story's worktree and
 // gets its prompt from here; the server decides which step runs next from the marker the step
 // writes. The prompts name no skills or slash commands, so they work the same for every provider
 // (Claude, Cursor, Kiro). Edit here to change how every story is delivered.

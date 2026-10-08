@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url";
 import type { PluginAttachmentItem, PluginAttachmentSearchPayload } from "@getpaseo/plugin";
-import { MACHINE_SOURCE, type CatalogSkill, type SkillSource } from "../shared/belt";
+import { MACHINE_SOURCE, type CatalogSkill, type SkillSource } from "../shared/pipeline";
 import { loadCatalog, parseLocation, readSkills, type SkillContent } from "./skill-sources";
 
 type Content = Exclude<SkillContent, { error: string }>;

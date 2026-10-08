@@ -12,7 +12,7 @@ import {
   stepSkills,
   withoutSkillsync,
   type CatalogSkill,
-} from "./belt";
+} from "./pipeline";
 import { LOOP_STEPS } from "./initiative-loop";
 
 const skill: CatalogSkill = {
@@ -68,7 +68,7 @@ test("saved phases drop retired skillsync skills but keep skills from connected 
   assert.deepEqual(withoutSkillsync(kept), kept);
 });
 
-test("the default belt runs built-in steps and never names a skillsync command", () => {
+test("the default pipeline runs built-in steps and never names a skillsync command", () => {
   const ticket = { key: "KEY-1", title: "Example", url: null };
   for (const phase of DEFAULT_PHASES) {
     assert.equal(phase.runs, null);

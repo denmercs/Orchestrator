@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { RegistrySearch, SkillSource } from "../shared/belt";
+import type { RegistrySearch, SkillSource } from "../shared/pipeline";
 import { sourceId } from "./skill-sources";
 
 type Options = { fetch: typeof fetch; sources: SkillSource[] };

@@ -3,17 +3,17 @@ import { join } from "node:path";
 import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
 import type { AgentCreateConfig } from "../shared/agent-runner";
 import {
-  BELT_LABEL,
+  PIPELINE_LABEL,
   PHASE_IDS,
-  beltStory,
+  pipelineStory,
   phasePrompt,
   phaseSkills,
   phaseTitle,
-  type BeltConfig,
+  type PipelineConfig,
   type Phase,
   type SkillRef,
   type Ticket,
-} from "../shared/belt";
+} from "../shared/pipeline";
 import {
   MARKERS,
   afterImplement,
@@ -34,7 +34,7 @@ import { commitStory, currentBranch, openStoryPr } from "./story-git";
 
 type PaseoApi = PluginHandlerContext["paseo"];
 type Labels = Record<string, string>;
-type ReadConfig = () => Promise<BeltConfig | null>;
+type ReadConfig = () => Promise<PipelineConfig | null>;
 type ReadAgentConfig = (paseo: PaseoApi) => Promise<AgentCreateConfig>;
 
 // Jira Start on a story card branches the worktree off origin/main (client/start-jira-session.ts).
@@ -44,7 +44,7 @@ const SCOPE: Record<Phase["id"], McpScope> = { plan: "jira", implement: "none", 
 
 // Phases already started by this process, so a repeated event can't start one twice.
 const started = new Set<string>();
-// The newest belt agent in each worktree. Only it moves the story on, so an older cycle's session
+// The newest pipeline agent in each worktree. Only it moves the story on, so an older cycle's session
 // that you reply to later can't advance the story a second time. Empty after a restart.
 const latest = new Map<string, string>();
 
@@ -61,25 +61,25 @@ function ticketOf(labels: Labels): Ticket {
 
 export async function startStory(
   paseo: PaseoApi,
-  config: BeltConfig,
+  config: PipelineConfig,
   input: { workspaceId: string; key: string; title: string; url: string | null },
   agentConfig: AgentCreateConfig,
 ) {
   const plan = config.phases.find((p) => p.id === "plan");
   if (!plan) {
-    throw new Error("The belt has no Plan phase.");
+    throw new Error("The pipeline has no Plan phase.");
   }
   const workspace = paseo.workspaces.ref(input.workspaceId);
   const cwd = workspace.directory ?? (await workspace.refresh())?.workspaceDirectory ?? null;
   const ticket: Ticket = { key: input.key, title: input.title, url: input.url };
   if (cwd && !existsSync(stateFile(cwd))) {
     mkdirSync(join(cwd, ".harness"), { recursive: true });
-    writeFileSync(stateFile(cwd), seedState(beltStory(ticket, "", BASE)), "utf8");
+    writeFileSync(stateFile(cwd), seedState(pipelineStory(ticket, "", BASE)), "utf8");
   }
   const labels: Labels = {
     jira: input.key,
     kind: "session",
-    belt: BELT_LABEL,
+    pipeline: PIPELINE_LABEL,
     "jira-title": input.title.slice(0, 200),
     "jira-url": input.url ?? "",
   };
@@ -94,7 +94,7 @@ export async function startStory(
   return { agentId: result.agent.id, warnings: result.warnings };
 }
 
-export async function advanceBelt(
+export async function advancePipeline(
   paseo: PaseoApi,
   event: { agent: PluginHookAgent; outcome: PluginTurnOutcome },
   readConfig: ReadConfig,
@@ -106,7 +106,7 @@ export async function advanceBelt(
   const refreshed = await paseo.agents.ref(event.agent.id).refresh();
   const labels: Labels = { ...(refreshed?.agent.labels ?? {}) };
   const phaseId = labels.phase;
-  if (labels.belt !== BELT_LABEL || !labels.jira || !PHASE_IDS.includes(phaseId as Phase["id"])) {
+  if (labels.pipeline !== PIPELINE_LABEL || !labels.jira || !PHASE_IDS.includes(phaseId as Phase["id"])) {
     return;
   }
   const config = await readConfig();
@@ -187,7 +187,7 @@ export async function closeMergedStories(paseo: PaseoApi, fresh: MergedPr[], rea
   if (keys.size === 0) {
     return;
   }
-  const agents = await listBeltAgents(paseo);
+  const agents = await listPipelineAgents(paseo);
   for (const key of keys) {
     const dedupe = `close:${key}`;
     if (started.has(dedupe) || !agents.some((agent) => agent.labels?.jira === key)) {
@@ -204,7 +204,7 @@ export async function closeMergedStories(paseo: PaseoApi, fresh: MergedPr[], rea
 
 async function startPhase(
   paseo: PaseoApi,
-  config: BeltConfig,
+  config: PipelineConfig,
   phase: Phase,
   ticket: Ticket,
   baseLabels: Labels,
@@ -260,13 +260,13 @@ async function startPhase(
   }
 }
 
-async function listBeltAgents(paseo: PaseoApi) {
+async function listPipelineAgents(paseo: PaseoApi) {
   const listed = await paseo.agents.list({ filter: { includeArchived: false }, page: { limit: 200 } });
-  return listed.entries.map((entry) => entry.agent).filter((agent) => agent.labels?.belt === BELT_LABEL);
+  return listed.entries.map((entry) => entry.agent).filter((agent) => agent.labels?.pipeline === PIPELINE_LABEL);
 }
 
 async function phaseAgentExists(paseo: PaseoApi, labels: Labels, workspaceId: string | null) {
-  const agents = await listBeltAgents(paseo);
+  const agents = await listPipelineAgents(paseo);
   return agents.some(
     (agent) =>
       agent.labels?.jira === labels.jira &&
