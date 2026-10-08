@@ -131,9 +131,9 @@ before(async () => {
     { cwd: projectB },
     { cwd: repo },
   ]);
-  // Same name as a ~/.mcp.json server: scoped to projectA, it must not hide that one elsewhere.
+  // `shared` is also in projectB's Kiro file, which is read later: skipped here, it must not hide that one.
   await writeJson(join(projectA, ".mcp.json"), {
-    mcpServers: { "ws-alpha": { command: "ws-alpha-cmd" }, "home-mcp": { command: "ws-home-cmd" } },
+    mcpServers: { "ws-alpha": { command: "ws-alpha-cmd" }, shared: { command: "shared-a-cmd" } },
   });
   // The plugin's own process cwd is a repo too: its file attaches only to agents inside it.
   await writeJson(join(elsewhere, ".mcp.json"), { mcpServers: { "cwd-only": { command: "cwd-only-cmd" } } });
@@ -141,6 +141,7 @@ before(async () => {
   await writeJson(join(projectB, ".kiro", "settings", "mcp.json"), {
     mcpServers: {
       "ws-beta": { command: "ws-beta-cmd" },
+      shared: { command: "shared-b-cmd" },
       "kiro-jira": {
         command: "uvx",
         env: { JIRA_URL: "kiro-jira.example.test", JIRA_USERNAME: "kiro@example.test", JIRA_API_TOKEN: "kiro-token" },
@@ -161,7 +162,7 @@ const GLOBALS = ["cursor-one", "global", "home-mcp"];
 
 test("readHostMcpServers inside a project adds that project's servers to the globals", async () => {
   const servers = await withFixtureHome(() => readHostMcpServers(join(projectA, "sub")));
-  assert.deepEqual(Object.keys(servers).sort(), ["alpha", "ws-alpha", ...GLOBALS].sort());
+  assert.deepEqual(Object.keys(servers).sort(), ["alpha", "shared", "ws-alpha", ...GLOBALS].sort());
 });
 
 test("readHostMcpServers attaches a workspace's own .mcp.json servers only inside that workspace", async () => {
@@ -203,6 +204,16 @@ test("readHostMcpServers scopes a workspace's .cursor and .kiro MCP files to tha
   assert.equal("ws-beta" in inside, false, "ws-beta attached in projectA/sub");
   const inB = await withFixtureHome(() => readHostMcpServers(projectB));
   assert.ok("ws-beta" in inB);
+});
+
+test("a workspace server skipped by scope does not hide a same-named server from another workspace", async () => {
+  const command = (servers: Awaited<ReturnType<typeof readHostMcpServers>>) => {
+    const shared = servers.shared;
+    return shared?.type === "stdio" ? shared.command : null;
+  };
+  assert.equal(command(await withFixtureHome(() => readHostMcpServers(join(projectA, "sub")))), "shared-a-cmd");
+  assert.equal(command(await withFixtureHome(() => readHostMcpServers(projectB))), "shared-b-cmd");
+  assert.equal("shared" in (await withFixtureHome(() => readHostMcpServers(elsewhere))), false);
 });
 
 test("readAtlassianMcpEnv finds Jira credentials in a project scope from anywhere", async () => {
