@@ -35,7 +35,7 @@ import {
 } from "./board-model";
 import { ContextCard } from "./context-card";
 import { DailyVerseCard } from "./daily-verse";
-import { useEpicBoard } from "./epic-board";
+import { InitiativePanels, StoryDrawer, useEpicBoards } from "./epic-board";
 import { ProdPulseButton, ProdPulseDrawer, useProdPulse } from "./prod-pulse-drawer";
 import { LoopProfilesToggle, LoopStepProfiles } from "./loop-step-profiles";
 import { RunnerPicker } from "./runner-picker";
@@ -78,7 +78,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const { pulse, refresh: refreshPulse } = useProdPulse();
   const [pulseOpen, setPulseOpen] = useState(false);
-  const epic = useEpicBoard({ theme, compact: layout.compact, navigation });
+  const epic = useEpicBoards();
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [loopProfilesOpen, setLoopProfilesOpen] = useState(false);
   const agentIds = useMemo(
@@ -437,7 +437,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
           />
         </View>
 
-        {epic.panels}
+        <InitiativePanels epic={epic} theme={theme} compact={layout.compact} navigation={navigation} />
 
         <StandupSection theme={theme} layout={layout} />
 
@@ -480,7 +480,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
           onRefresh={refreshPulse}
         />
       ) : null}
-      {epic.drawer}
+      <StoryDrawer epic={epic} theme={theme} compact={layout.compact} navigation={navigation} />
       <SkillsDrawer
         theme={theme}
         compact={layout.compact}
