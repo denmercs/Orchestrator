@@ -23,6 +23,7 @@ import {
 } from "./harness-layout";
 import { briefTag, installBrief } from "./brief-install";
 import { failureReport, prForBranch, prStatus } from "./pr-checks";
+import { missingPaths, planPaths } from "./plan-paths";
 import {
   MARKERS,
   STEP_LABELS,
@@ -182,6 +183,13 @@ export function createInitiativeLoop(
     return listed.entries.map((entry) => entry.agent).filter((agent) => agent.labels?.kind === KIND);
   }
 
+  // The `## Plan` paths that Implement, Review or Fix CI can't find on disk. The Plan step writes them,
+  // so it isn't checked.
+  function planMissing(step: LoopStep, state: string, worktree: string) {
+    if (step !== "implement" && step !== "review" && step !== "fix") return [];
+    return missingPaths(planPaths(readSection(state, "Plan")), worktree);
+  }
+
   async function startStep(
     api: PaseoApi,
     config: LoopConfig,
@@ -232,6 +240,7 @@ export function createInitiativeLoop(
             failing: extra.failing,
             cycle: extra.cycle,
             plan: readSection(state, "Plan"),
+            missing: planMissing(step, state, worktree),
           }),
           labels,
         }),
@@ -503,6 +512,7 @@ export function createInitiativeLoop(
         round: Number(labels["loop-round"]) || 1,
         cycle,
         plan: readSection(state, "Plan"),
+        missing: found.story.meta.worktree ? planMissing(step, state, found.story.meta.worktree) : [],
       });
       return `${prompt}\n\n${RESUME_LINE}`;
     },
