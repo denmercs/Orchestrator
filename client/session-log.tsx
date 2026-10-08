@@ -13,6 +13,7 @@ import {
   type LogPage,
   type LogState,
 } from "./session-log-model";
+import { SkeletonRows } from "./skeleton";
 
 // Every session the initiative loop ran for one story (Plan, Implement, Review, Open PR, Fix CI),
 // oldest first, each with its timeline. The newest session is open and follows its tail while the
@@ -92,7 +93,7 @@ export function SessionLog({
   }, [paseo, storyId, initiative, workspace]);
 
   if (error && !agents) return <Text style={styles.error}>{error}</Text>;
-  if (!agents) return <Text style={styles.muted}>Loading sessions…</Text>;
+  if (!agents) return <SkeletonRows theme={theme} rows={3} />;
   if (!agents.length) return null;
 
   return (
@@ -210,7 +211,7 @@ function SessionBlock({
             </Pressable>
           ) : null}
           {error ? <Text style={styles.error}>{error}</Text> : null}
-          {!log && !error ? <Text style={styles.muted}>Loading log…</Text> : null}
+          {!log && !error ? <SkeletonRows theme={theme} rows={3} /> : null}
           {log && !lines.length ? <Text style={styles.muted}>Nothing logged yet.</Text> : null}
           {lines.map((line) => (
             <Line key={line.key} line={line} styles={styles} theme={theme} />

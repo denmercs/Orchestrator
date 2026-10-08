@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { openExternalUrl, useRpc, useSettings } from "@getpaseo/plugin/client";
-import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
+import { Icon } from "@getpaseo/plugin/client/react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import {
   getProdPulse,
@@ -12,6 +12,7 @@ import {
   type ProdPulseIssue,
 } from "../shared/orchestration";
 import { prodPulseSettings } from "../shared/settings";
+import { Skeleton, SkeletonBar } from "./skeleton";
 
 const PULSE_POLL_MS = 5 * 60 * 1000;
 
@@ -30,12 +31,16 @@ const DEFAULT_SECTIONS: Record<SectionId, boolean> = {
 export function useProdPulse() {
   const load = useRpc(getProdPulse);
   const [pulse, setPulse] = useState<ProdPulse | null>(null);
+  // True once the first fetch settles, either way; later refreshes keep content on screen.
+  const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       setPulse(await load({}));
     } catch {
       setPulse(null);
+    } finally {
+      setLoaded(true);
     }
   }, [load]);
 
@@ -49,48 +54,19 @@ export function useProdPulse() {
     };
   }, [refresh]);
 
-  return { pulse, refresh };
+  return { pulse, loaded, refresh };
 }
 
-export function ProdPulseButton({
-  pulse,
-  theme,
-  onPress,
-}: {
-  pulse: ProdPulse;
-  theme: Theme;
-  onPress(): void;
-}) {
-  const styles = useMemo(() => createStyles(theme, false), [theme]);
-  const newBugs = pulse.issues.filter((issue) => issue.origin !== "seen-before").length;
-  const tone = worstTone(pulse);
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`Open Sentry prod pulse, ${newBugs} new bugs`}
-      onPress={onPress}
-      style={styles.trigger}
-    >
-      <View style={[styles.dot, { backgroundColor: toneColor(theme, tone) }]} />
-      <Text style={styles.triggerText}>Sentry</Text>
-      {newBugs > 0 ? <Text style={styles.triggerCount}>{newBugs} new</Text> : null}
-    </Pressable>
-  );
-}
-
-export function ProdPulseDrawer({
+// The Pulse tab body. Scrolls with the tab, so it has no ScrollView of its own.
+export function ProdPulsePanel({
   pulse,
   theme,
   compact,
-  open,
-  onClose,
   onRefresh,
 }: {
   pulse: ProdPulse;
   theme: Theme;
   compact: boolean;
-  open: boolean;
-  onClose(): void;
   onRefresh(): Promise<void>;
 }) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
@@ -99,14 +75,8 @@ export function ProdPulseDrawer({
   const [sections, setSections] = useState<Record<SectionId, boolean>>(DEFAULT_SECTIONS);
 
   useEffect(() => {
-    if (open) {
-      void onRefresh();
-    }
-  }, [open, onRefresh]);
-
-  if (!open) {
-    return null;
-  }
+    void onRefresh();
+  }, [onRefresh]);
 
   const outcome = outcomeBadge(pulse.outcome);
   const newBugs = pulse.issues.filter((issue) => issue.origin !== "seen-before");
@@ -130,192 +100,194 @@ export function ProdPulseDrawer({
   }
 
   return (
-    <View style={styles.overlay}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Close Sentry prod pulse"
-        onPress={onClose}
-        style={styles.backdrop}
-      />
-      <View style={styles.drawer} accessibilityViewIsModal>
-        <View style={styles.header}>
-          <Icon name="Activity" size={18} color={theme.colors.foreground} />
-          <Text style={styles.title}>Prod pulse</Text>
-          <Pill label={outcome.label} tone={outcome.tone} theme={theme} styles={styles} />
-          <View style={styles.headerActions}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Reload prod pulse"
-              disabled={refreshing}
-              onPress={() => {
-                void refresh();
-              }}
-              style={styles.headerButton}
-            >
-              <Text style={styles.headerButtonText}>{refreshing ? "Loading…" : "Reload"}</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close Sentry prod pulse"
-              onPress={onClose}
-              style={styles.headerButton}
-            >
-              <Text style={styles.headerButtonText}>Close</Text>
-            </Pressable>
-          </View>
+    <View style={styles.panel}>
+      <View style={styles.header}>
+        <Icon name="Activity" size={18} color={theme.colors.foreground} />
+        <Text style={styles.title}>Prod pulse</Text>
+        <Pill label={outcome.label} tone={outcome.tone} theme={theme} styles={styles} />
+        <View style={styles.headerActions}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Reload prod pulse"
+            disabled={refreshing}
+            onPress={() => {
+              void refresh();
+            }}
+            style={styles.headerButton}
+          >
+            <Text style={styles.headerButtonText}>{refreshing ? "Loading…" : "Reload"}</Text>
+          </Pressable>
         </View>
-        <Text style={styles.meta}>
-          {pulse.checkedAt ? `Checked ${formatTime(pulse.checkedAt)} (${ago(pulse.checkedAt)})` : "Not checked yet"}
-          {pulse.changedAt && pulse.changedAt !== pulse.checkedAt
-            ? ` · Last change ${formatTime(pulse.changedAt)}`
-            : ""}
-        </Text>
+      </View>
+      <Text style={styles.meta}>
+        {pulse.checkedAt ? `Checked ${formatTime(pulse.checkedAt)} (${ago(pulse.checkedAt)})` : "Not checked yet"}
+        {pulse.changedAt && pulse.changedAt !== pulse.checkedAt
+          ? ` · Last change ${formatTime(pulse.changedAt)}`
+          : ""}
+      </Text>
 
-        <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
-          {pulse.outcome === "failed" ? (
-            <Text style={styles.banner}>
-              The last check failed: {pulse.failReason ?? "unknown error"}. Numbers below are from{" "}
-              {pulse.changedAt ? formatTime(pulse.changedAt) : "the previous run"}.
-            </Text>
-          ) : pulse.stale ? (
-            <Text style={styles.banner}>
-              This may be out of date. No check has run since{" "}
-              {pulse.checkedAt ? formatTime(pulse.checkedAt) : "the last publish"}. The scheduled
-              job may have stopped.
-            </Text>
-          ) : null}
-          <AutomationPanel open={open} theme={theme} styles={styles} />
+      <View style={styles.bodyContent}>
+        {pulse.outcome === "failed" ? (
+          <Text style={styles.banner}>
+            The last check failed: {pulse.failReason ?? "unknown error"}. Numbers below are from{" "}
+            {pulse.changedAt ? formatTime(pulse.changedAt) : "the previous run"}.
+          </Text>
+        ) : pulse.stale ? (
+          <Text style={styles.banner}>
+            This may be out of date. No check has run since{" "}
+            {pulse.checkedAt ? formatTime(pulse.checkedAt) : "the last publish"}. The scheduled
+            job may have stopped.
+          </Text>
+        ) : null}
+        <AutomationPanel theme={theme} styles={styles} />
 
-          {pulse.systemNotes.map((note) => (
-            <Text key={note} style={styles.muted}>
-              {note}
-            </Text>
-          ))}
+        {pulse.systemNotes.map((note) => (
+          <Text key={note} style={styles.muted}>
+            {note}
+          </Text>
+        ))}
 
-          <SectionHeader
-            label={`RELEASE HEALTH · ${pulse.cards.length}`}
-            open={sections.health}
-            styles={styles}
-            onToggle={() => toggleSection("health")}
-          />
-          {!sections.health ? null : pulse.cards.length === 0 ? (
-            <Text style={styles.empty}>No releases recorded yet.</Text>
-          ) : (
-            pulse.cards.map((card) => (
-              <HealthRow key={card.key} card={card} theme={theme} styles={styles} />
-            ))
-          )}
+        <SectionHeader
+          label={`RELEASE HEALTH · ${pulse.cards.length}`}
+          open={sections.health}
+          styles={styles}
+          onToggle={() => toggleSection("health")}
+        />
+        {!sections.health ? null : pulse.cards.length === 0 ? (
+          <Text style={styles.empty}>No releases recorded yet.</Text>
+        ) : (
+          pulse.cards.map((card) => (
+            <HealthRow key={card.key} card={card} theme={theme} styles={styles} />
+          ))
+        )}
 
-          <SectionHeader
-            label={`NEW BUGS ON THIS RELEASE · ${newBugs.length}`}
-            open={sections.newBugs}
-            styles={styles}
-            onToggle={() => toggleSection("newBugs")}
-          />
-          {!sections.newBugs ? null : newBugs.length === 0 ? (
-            <Text style={styles.empty}>None. No new bugs in the current prod releases.</Text>
-          ) : (
-            <View style={styles.list}>
-              {newBugs.map((issue) => (
-                <IssueRow
-                  key={issue.id}
-                  issue={issue}
-                  open={Boolean(expanded[issue.id])}
-                  theme={theme}
-                  styles={styles}
-                  onToggle={() => toggle(issue.id)}
-                />
-              ))}
-            </View>
-          )}
-
-          {seenBefore.length > 0 || pulse.older.length > 0 ? (
-            <>
-              <SectionHeader
-                label={`OLDER BUGS STILL HITTING · ${seenBefore.length + pulse.older.length}`}
-                open={sections.older}
+        <SectionHeader
+          label={`NEW BUGS ON THIS RELEASE · ${newBugs.length}`}
+          open={sections.newBugs}
+          styles={styles}
+          onToggle={() => toggleSection("newBugs")}
+        />
+        {!sections.newBugs ? null : newBugs.length === 0 ? (
+          <Text style={styles.empty}>None. No new bugs in the current prod releases.</Text>
+        ) : (
+          <View style={styles.list}>
+            {newBugs.map((issue) => (
+              <IssueRow
+                key={issue.id}
+                issue={issue}
+                open={Boolean(expanded[issue.id])}
+                theme={theme}
                 styles={styles}
-                onToggle={() => toggleSection("older")}
+                onToggle={() => toggle(issue.id)}
               />
-              {sections.older ? (
-                <View style={styles.list}>
-                  {seenBefore.map((issue) => (
-                    <IssueRow
-                      key={issue.id}
-                      issue={issue}
-                      open={Boolean(expanded[issue.id])}
-                      theme={theme}
-                      styles={styles}
-                      onToggle={() => toggle(issue.id)}
-                    />
-                  ))}
-                  {pulse.older.map((row) => (
-                    <Pressable
-                      key={row.id}
-                      accessibilityRole="link"
-                      accessibilityLabel={`Open ${row.title} in Sentry`}
-                      disabled={!row.sentryUrl}
-                      onPress={() => {
-                        if (row.sentryUrl) {
-                          void openExternalUrl(row.sentryUrl);
-                        }
-                      }}
-                      style={styles.row}
-                    >
-                      <View style={styles.rowHead}>
-                        <Pill label="Older" tone="muted" theme={theme} styles={styles} />
-                        <Text style={styles.chip}>{row.product}</Text>
-                        <Text style={styles.counts}>
-                          {row.users.toLocaleString()} users · {row.events.toLocaleString()} events
-                        </Text>
-                      </View>
-                      <Text style={styles.olderTitle} numberOfLines={2}>
-                        {row.title}
+            ))}
+          </View>
+        )}
+
+        {seenBefore.length > 0 || pulse.older.length > 0 ? (
+          <>
+            <SectionHeader
+              label={`OLDER BUGS STILL HITTING · ${seenBefore.length + pulse.older.length}`}
+              open={sections.older}
+              styles={styles}
+              onToggle={() => toggleSection("older")}
+            />
+            {sections.older ? (
+              <View style={styles.list}>
+                {seenBefore.map((issue) => (
+                  <IssueRow
+                    key={issue.id}
+                    issue={issue}
+                    open={Boolean(expanded[issue.id])}
+                    theme={theme}
+                    styles={styles}
+                    onToggle={() => toggle(issue.id)}
+                  />
+                ))}
+                {pulse.older.map((row) => (
+                  <Pressable
+                    key={row.id}
+                    accessibilityRole="link"
+                    accessibilityLabel={`Open ${row.title} in Sentry`}
+                    disabled={!row.sentryUrl}
+                    onPress={() => {
+                      if (row.sentryUrl) {
+                        void openExternalUrl(row.sentryUrl);
+                      }
+                    }}
+                    style={styles.row}
+                  >
+                    <View style={styles.rowHead}>
+                      <Pill label="Older" tone="muted" theme={theme} styles={styles} />
+                      <Text style={styles.chip}>{row.product}</Text>
+                      <Text style={styles.counts}>
+                        {row.users.toLocaleString()} users · {row.events.toLocaleString()} events
                       </Text>
-                    </Pressable>
-                  ))}
-                </View>
-              ) : null}
-            </>
-          ) : null}
+                    </View>
+                    <Text style={styles.olderTitle} numberOfLines={2}>
+                      {row.title}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+          </>
+        ) : null}
 
-          <SectionHeader
-            label={`SUGGESTED NEXT STEPS · ${pulse.actions.length}`}
-            open={sections.nextSteps}
-            styles={styles}
-            onToggle={() => toggleSection("nextSteps")}
-          />
-          {!sections.nextSteps ? null : pulse.actions.length === 0 ? (
-            <Text style={styles.empty}>None.</Text>
-          ) : (
-            pulse.actions.map((action) => (
-              <Text key={action} style={styles.bullet}>
-                • {action}
-              </Text>
-            ))
-          )}
+        <SectionHeader
+          label={`SUGGESTED NEXT STEPS · ${pulse.actions.length}`}
+          open={sections.nextSteps}
+          styles={styles}
+          onToggle={() => toggleSection("nextSteps")}
+        />
+        {!sections.nextSteps ? null : pulse.actions.length === 0 ? (
+          <Text style={styles.empty}>None.</Text>
+        ) : (
+          pulse.actions.map((action) => (
+            <Text key={action} style={styles.bullet}>
+              • {action}
+            </Text>
+          ))
+        )}
 
-          {pulse.dashboardUrl ? (
-            <Pressable
-              accessibilityRole="link"
-              accessibilityLabel="Open the full release health dashboard"
-              onPress={() => {
-                if (pulse.dashboardUrl) {
-                  void openExternalUrl(pulse.dashboardUrl);
-                }
-              }}
-              style={styles.linkButton}
-            >
-              <Text style={styles.linkButtonText}>Open full release health dashboard</Text>
-            </Pressable>
-          ) : null}
-        </ScrollView>
+        {pulse.dashboardUrl ? (
+          <Pressable
+            accessibilityRole="link"
+            accessibilityLabel="Open the full release health dashboard"
+            onPress={() => {
+              if (pulse.dashboardUrl) {
+                void openExternalUrl(pulse.dashboardUrl);
+              }
+            }}
+            style={styles.linkButton}
+          >
+            <Text style={styles.linkButtonText}>Open full release health dashboard</Text>
+          </Pressable>
+        ) : null}
       </View>
     </View>
   );
 }
 
-function AutomationPanel({ open, theme, styles }: { open: boolean; theme: Theme; styles: Styles }) {
+// Pulse tab first load: header, meta line and three section rows (children of LoadingState).
+export function ProdPulseSkeleton({ theme, compact }: { theme: Theme; compact: boolean }) {
+  const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
+  return (
+    <Skeleton theme={theme}>
+      <View style={styles.panel}>
+        <SkeletonBar theme={theme} width="40%" height={22} />
+        <SkeletonBar theme={theme} width="55%" height={12} />
+        <View style={styles.bodyContent}>
+          <SkeletonBar theme={theme} height={16} />
+          <SkeletonBar theme={theme} height={16} />
+          <SkeletonBar theme={theme} height={16} />
+        </View>
+      </View>
+    </Skeleton>
+  );
+}
+
+function AutomationPanel({ theme, styles }: { theme: Theme; styles: Styles }) {
   const settings = useSettings(prodPulseSettings);
   const loadAutomation = useRpc(getProdPulseAutomation);
   const [automation, setAutomation] = useState<ProdPulseAutomation | null>(null);
@@ -332,10 +304,8 @@ function AutomationPanel({ open, theme, styles }: { open: boolean; theme: Theme;
   }, [loadAutomation]);
 
   useEffect(() => {
-    if (open) {
-      void refresh();
-    }
-  }, [open, refresh]);
+    void refresh();
+  }, [refresh]);
 
   async function toggle() {
     if (settings.status !== "ready" || saving) {
@@ -411,7 +381,7 @@ function AutomationPanel({ open, theme, styles }: { open: boolean; theme: Theme;
       {!enabled && active > 0 ? (
         <Text style={styles.caveat}>
           Off, but {active === 1 ? "1 schedule is" : `${active} schedules are`} still active from outside
-          the drawer. Turn this on and off again to pause {active === 1 ? "it" : "them"}.
+          this tab. Turn this on and off again to pause {active === 1 ? "it" : "them"}.
         </Text>
       ) : null}
       {error || automation?.error ? <Text style={styles.caveat}>{error ?? automation?.error}</Text> : null}
@@ -612,16 +582,6 @@ function Pill({ label, tone, theme, styles }: { label: string; tone: Tone; theme
   );
 }
 
-function worstTone(pulse: ProdPulse): Tone {
-  if (pulse.outcome === "failed" || pulse.cards.some((card) => card.healthKey === "unhealthy")) {
-    return "danger";
-  }
-  if (pulse.stale || pulse.cards.some((card) => card.healthKey === "watch")) {
-    return "warning";
-  }
-  return pulse.cards.length > 0 ? "success" : "muted";
-}
-
 function healthTone(key: ProdPulseCard["healthKey"]): Tone {
   return key === "unhealthy" ? "danger" : key === "watch" ? "warning" : key === "healthy" ? "success" : "muted";
 }
@@ -661,22 +621,6 @@ function signalColor(theme: Theme, tone: Tone) {
   return tone === "danger" ? theme.colors.statusDanger : tone === "warning" ? theme.colors.statusWarning : null;
 }
 
-function toneColor(theme: Theme, tone: Tone) {
-  if (tone === "danger") {
-    return theme.colors.statusDanger;
-  }
-  if (tone === "warning") {
-    return theme.colors.statusWarning;
-  }
-  if (tone === "success") {
-    return theme.colors.statusSuccess;
-  }
-  if (tone === "accent") {
-    return theme.colors.accent;
-  }
-  return theme.colors.foregroundMuted;
-}
-
 function formatRate(value: number | null) {
   return value === null ? "–" : `${(value * 100).toFixed(2)}%`;
 }
@@ -703,57 +647,7 @@ function ago(iso: string) {
 
 function createStyles(theme: Theme, compact: boolean) {
   return {
-    trigger: {
-      flexDirection: "row" as const,
-      alignItems: "center" as const,
-      gap: 8,
-      paddingHorizontal: 12,
-      paddingVertical: 10,
-      borderWidth: 1,
-      borderColor: theme.colors.border,
-      borderRadius: 12,
-      backgroundColor: theme.colors.surface1,
-    },
-    triggerText: {
-      color: theme.colors.foreground,
-      fontWeight: "600" as const,
-    },
-    triggerCount: {
-      color: theme.colors.foregroundMuted,
-      fontSize: 12,
-    },
-    dot: {
-      width: 8,
-      height: 8,
-      borderRadius: 4,
-    },
-    overlay: {
-      // Above the dashboard header, which sits at zIndex 10 so its menus clear the tab body.
-      zIndex: 20,
-      position: "absolute" as const,
-      top: 0,
-      right: 0,
-      bottom: 0,
-      left: 0,
-      flexDirection: "row" as const,
-      justifyContent: "flex-end" as const,
-    },
-    backdrop: {
-      position: "absolute" as const,
-      top: 0,
-      right: 0,
-      bottom: 0,
-      left: 0,
-      backgroundColor: "rgba(0, 0, 0, 0.32)",
-    },
-    drawer: {
-      width: compact ? ("100%" as const) : 560,
-      maxWidth: "100%" as const,
-      height: "100%" as const,
-      backgroundColor: theme.colors.surface0,
-      borderLeftWidth: compact ? 0 : 1,
-      borderLeftColor: theme.colors.border,
-      paddingTop: compact ? 16 : 20,
+    panel: {
       gap: 6,
     },
     header: {
@@ -761,7 +655,6 @@ function createStyles(theme: Theme, compact: boolean) {
       alignItems: "center" as const,
       flexWrap: "wrap" as const,
       gap: 10,
-      paddingHorizontal: compact ? 16 : 20,
     },
     title: {
       color: theme.colors.foreground,
@@ -787,13 +680,9 @@ function createStyles(theme: Theme, compact: boolean) {
     meta: {
       color: theme.colors.foregroundMuted,
       fontSize: 13,
-      paddingHorizontal: compact ? 16 : 20,
-    },
-    body: {
-      flex: 1,
     },
     bodyContent: {
-      padding: compact ? 16 : 20,
+      paddingVertical: compact ? 16 : 20,
       gap: 10,
     },
     banner: {

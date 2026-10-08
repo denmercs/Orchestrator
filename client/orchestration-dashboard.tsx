@@ -37,7 +37,10 @@ import {
 import { ContextCard } from "./context-card";
 import { DashboardHeader, TabBar } from "./dashboard-shell";
 import { InitiativePanels, StoryDrawer, useEpicBoards } from "./epic-board";
-import { ProdPulseButton, ProdPulseDrawer, useProdPulse } from "./prod-pulse-drawer";
+import { LoadingState } from "./loading-state";
+import { Skeleton, SkeletonBar, SkeletonCards } from "./skeleton";
+import { ProdPulsePanel, ProdPulseSkeleton, useProdPulse } from "./prod-pulse-panel";
+import { pulseTabState } from "./prod-pulse-model";
 import { LoopProfilesToggle, LoopStepProfiles } from "./loop-step-profiles";
 import { RunnerPicker } from "./runner-picker";
 import { SkillsDrawer, StoryPipelineButton } from "./skills-drawer";
@@ -75,11 +78,12 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const [selectedJiraColumn, setSelectedJiraColumn] = useState<string | null>(null);
   const [jiraPrs, setJiraPrs] = useState<JiraPullRequest[]>([]);
   const [jiraError, setJiraError] = useState<string | null>(null);
+  // True once the first board fetch settles (either way); never reset, so polls keep the board on screen.
+  const [jiraLoaded, setJiraLoaded] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [startingId, setStartingId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const { pulse, refresh: refreshPulse } = useProdPulse();
-  const [pulseOpen, setPulseOpen] = useState(false);
+  const { pulse, loaded: pulseLoaded, refresh: refreshPulse } = useProdPulse();
   const epic = useEpicBoards();
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [loopProfilesOpen, setLoopProfilesOpen] = useState(false);
@@ -242,6 +246,8 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
       setJiraColumns([]);
       setJiraSprint(null);
       setJiraError(cause instanceof Error ? cause.message : "Unable to read Jira board");
+    } finally {
+      setJiraLoaded(true);
     }
   }, [loadJiraBoard, selectedBoardId, selectedJiraBoard?.projectKey]);
 
@@ -409,9 +415,6 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         open={skillsOpen}
         onPress={() => setSkillsOpen((open) => !open)}
       />
-      {pulse?.available ? (
-        <ProdPulseButton pulse={pulse} theme={theme} onPress={() => setPulseOpen(true)} />
-      ) : null}
     </DashboardHeader>
   );
 
@@ -422,33 +425,36 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         <>
           <ContextCard theme={theme} />
 
-          {loading ? <Text style={styles.muted}>Loading live catalog…</Text> : null}
           {error ? <Text style={styles.danger}>{error}</Text> : null}
 
-          <View style={styles.stats}>
-            <ProgressStat
-              label="PROGRESS"
-              value={`${board.inProgress}/${board.total || 0}`}
-              hint={board.hasJira ? `${board.total} on the board` : `${board.total} active agents`}
-              ratio={board.total ? board.inProgress / board.total : 0}
-              styles={styles}
-              theme={theme}
-            />
-            <CountStat label="IN PROGRESS" value={board.inProgress} hint="running" styles={styles} />
-            <CountStat
-              label="READY TO START"
-              value={board.readyToStart}
-              hint="waiting on dependencies"
-              styles={styles}
-            />
-            <CountStat
-              label="BLOCKED"
-              value={board.blockedCount}
-              hint="for the loop"
-              valueColor={theme.colors.statusDanger}
-              styles={styles}
-            />
-          </View>
+          {loading ? (
+            <StatsSkeleton styles={styles} theme={theme} compact={layout.compact} />
+          ) : (
+            <View style={styles.stats}>
+              <ProgressStat
+                label="PROGRESS"
+                value={`${board.inProgress}/${board.total || 0}`}
+                hint={board.hasJira ? `${board.total} on the board` : `${board.total} active agents`}
+                ratio={board.total ? board.inProgress / board.total : 0}
+                styles={styles}
+                theme={theme}
+              />
+              <CountStat label="IN PROGRESS" value={board.inProgress} hint="running" styles={styles} />
+              <CountStat
+                label="READY TO START"
+                value={board.readyToStart}
+                hint="waiting on dependencies"
+                styles={styles}
+              />
+              <CountStat
+                label="BLOCKED"
+                value={board.blockedCount}
+                hint="for the loop"
+                valueColor={theme.colors.statusDanger}
+                styles={styles}
+              />
+            </View>
+          )}
 
           <InitiativePanels epic={epic} theme={theme} compact={layout.compact} navigation={navigation} />
         </>
@@ -466,7 +472,14 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
           {jiraError ? <Text style={styles.danger}>{jiraError}</Text> : null}
           {sessionError ? <Text style={styles.danger}>{sessionError}</Text> : null}
           {/* Lives in the Jira panel once a board loads; here so a board can still be chosen before then. */}
-          {jiraColumns.length === 0 ? (
+          {!jiraLoaded && !jiraError ? (
+            <LoadingState theme={theme} compact={layout.compact}>
+              <Skeleton theme={theme}>
+                <SkeletonBar theme={theme} width="40%" height={16} />
+              </Skeleton>
+              <SkeletonCards theme={theme} count={3} compact={layout.compact} />
+            </LoadingState>
+          ) : jiraColumns.length === 0 ? (
             boardPicker
           ) : (
             <JiraBoard
@@ -499,13 +512,25 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         </>
       );
       break;
-    case "pulse":
-      body = (
-        <Text style={styles.muted}>
-          {pulse?.available ? "Prod pulse opens from the Sentry button above." : "Prod pulse isn't set up."}
-        </Text>
-      );
+    case "pulse": {
+      const pulseState = pulseTabState({ pulse, loaded: pulseLoaded });
+      body =
+        pulseState.kind === "loading" ? (
+          <LoadingState theme={theme} compact={layout.compact}>
+            <ProdPulseSkeleton theme={theme} compact={layout.compact} />
+          </LoadingState>
+        ) : pulseState.kind === "empty" ? (
+          <Text style={styles.muted}>{pulseState.text}</Text>
+        ) : (
+          <ProdPulsePanel
+            pulse={pulseState.pulse}
+            theme={theme}
+            compact={layout.compact}
+            onRefresh={refreshPulse}
+          />
+        );
       break;
+    }
   }
 
   return (
@@ -524,16 +549,6 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         {loopProfilesOpen ? <LoopStepProfiles theme={theme} compact={layout.compact} /> : null}
         {body}
       </ScrollView>
-      {pulse?.available ? (
-        <ProdPulseDrawer
-          pulse={pulse}
-          theme={theme}
-          compact={layout.compact}
-          open={pulseOpen}
-          onClose={() => setPulseOpen(false)}
-          onRefresh={refreshPulse}
-        />
-      ) : null}
       <StoryDrawer epic={epic} theme={theme} compact={layout.compact} navigation={navigation} />
       <SkillsDrawer
         theme={theme}
@@ -1189,6 +1204,31 @@ function CountStat({
       <Text style={[styles.statValue, valueColor ? { color: valueColor } : null]}>{value}</Text>
       <Text style={styles.statHint}>{hint}</Text>
     </View>
+  );
+}
+
+// The four stat tiles' shape while the catalog's first load runs: label, value, hint.
+function StatsSkeleton({
+  styles,
+  theme,
+  compact,
+}: {
+  styles: ReturnType<typeof createStyles>;
+  theme: PluginSurfaceProps["theme"];
+  compact: boolean;
+}) {
+  return (
+    <Skeleton theme={theme}>
+      <View style={styles.stats}>
+        {Array.from({ length: 4 }, (_, i) => (
+          <View key={i} style={styles.stat}>
+            <SkeletonBar theme={theme} width="50%" height={10} />
+            <SkeletonBar theme={theme} width="35%" height={compact ? 22 : 28} />
+            <SkeletonBar theme={theme} width="70%" height={10} />
+          </View>
+        ))}
+      </View>
+    </Skeleton>
   );
 }
 
