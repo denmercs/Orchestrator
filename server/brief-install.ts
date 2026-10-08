@@ -12,3 +12,9 @@ export async function installBrief(worktree: string, step: string): Promise<void
   chmodSync(script, 0o755);
   await excludeHarness(worktree);
 }
+
+// The step's log tag: `plan`, `implement-c2`, `fix-r3`, `implement-c2-r2`.
+export function briefTag(step: string, round: number, cycle?: number): string {
+  const base = cycle ? `${step}-c${cycle}` : step;
+  return round > 1 ? `${base}-r${round}` : base;
+}

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { briefScript } from "../shared/brief";
-import { installBrief } from "./brief-install";
+import { briefTag, installBrief } from "./brief-install";
 
 test("briefScript runs standalone: exit code, header, full log, pruned to 20", () => {
   const dir = mkdtempSync(join(tmpdir(), "brief-"));
@@ -59,4 +59,10 @@ test("installBrief writes an executable brief kept out of git", async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("briefTag names the step, its cycle and its round", () => {
+  assert.equal(briefTag("implement", 2, 2), "implement-c2-r2");
+  assert.equal(briefTag("plan", 1), "plan");
+  assert.equal(briefTag("fix", 3), "fix-r3");
 });

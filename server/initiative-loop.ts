@@ -21,6 +21,7 @@ import {
   writeFrontmatter,
   slugOf,
 } from "./harness-layout";
+import { briefTag, installBrief } from "./brief-install";
 import { failureReport, prForBranch, prStatus } from "./pr-checks";
 import {
   MARKERS,
@@ -217,6 +218,10 @@ export function createInitiativeLoop(
       const base = extra.cycle ? `${STEP_LABELS[step]} ${extra.cycle.number}` : STEP_LABELS[step];
       const label = round > 1 ? `${base} r${round}` : base;
       const config = await readAgentConfig(api);
+      // A missing wrapper costs the agent its short test output, not the step.
+      await installBrief(worktree, briefTag(step, round, extra.cycle?.number)).catch((error) =>
+        console.warn("orchestrator: install brief", story.id, error),
+      );
       // Story steps work from the story file and the worktree; none of them needs an MCP server.
       const agent = await withMcpScope(worktree, "none", () =>
         api.workspaces.ref(workspace).agents.create({
