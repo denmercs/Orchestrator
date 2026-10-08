@@ -1490,6 +1490,8 @@ function createStyles(theme: Theme, compact: boolean) {
     buttonPrimaryText: { color: c.accentForeground },
     buttonDangerText: { color: c.statusDanger },
     overlay: {
+      // Above the dashboard header, which sits at zIndex 10 so its menus clear the tab body.
+      zIndex: 20,
       position: "absolute" as const,
       top: 0,
       right: 0,
