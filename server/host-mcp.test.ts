@@ -124,6 +124,13 @@ before(async () => {
   });
   await writeJson(join(home, ".mcp.json"), { mcpServers: { "home-mcp": { command: "home-cmd" } } });
   await writeJson(join(home, ".cursor", "mcp.json"), { mcpServers: { "cursor-one": { command: "cursor-cmd" } } });
+  // Paseo workspaces whose own MCP files attach only to agents inside them.
+  await writeJson(join(home, ".paseo", "projects", "workspaces.json"), [
+    { cwd: projectA },
+    { cwd: projectB },
+    { cwd: repo },
+  ]);
+  await writeJson(join(projectA, ".mcp.json"), { mcpServers: { "ws-alpha": { command: "ws-alpha-cmd" } } });
 });
 
 after(async () => {
@@ -134,7 +141,16 @@ const GLOBALS = ["cursor-one", "global", "home-mcp"];
 
 test("readHostMcpServers inside a project adds that project's servers to the globals", async () => {
   const servers = await withFixtureHome(() => readHostMcpServers(join(projectA, "sub")));
-  assert.deepEqual(Object.keys(servers).sort(), ["alpha", ...GLOBALS].sort());
+  assert.deepEqual(Object.keys(servers).sort(), ["alpha", "ws-alpha", ...GLOBALS].sort());
+});
+
+test("readHostMcpServers attaches a workspace's own .mcp.json servers only inside that workspace", async () => {
+  const inside = await withFixtureHome(() => readHostMcpServers(join(projectA, "sub")));
+  assert.ok("ws-alpha" in inside);
+  for (const cwd of [projectB, elsewhere]) {
+    const servers = await withFixtureHome(() => readHostMcpServers(cwd));
+    assert.equal("ws-alpha" in servers, false, `ws-alpha attached in ${cwd}`);
+  }
 });
 
 test("readHostMcpServers outside every project gives only the globals", async () => {
