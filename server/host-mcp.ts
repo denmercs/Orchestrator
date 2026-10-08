@@ -115,7 +115,7 @@ function agentFolders(cwd: string): Promise<string[]> {
 async function loadNamedMcpServers(): Promise<NamedMcpServer[]> {
   const found: NamedMcpServer[] = [];
   const seenFiles = new Set<string>();
-  for (const file of await mcpConfigFiles()) {
+  for (const { file, project } of await mcpConfigFiles()) {
     if (seenFiles.has(file)) {
       continue;
     }
@@ -124,7 +124,7 @@ async function loadNamedMcpServers(): Promise<NamedMcpServer[]> {
     if (parsed == null) {
       continue;
     }
-    found.push(...(path.basename(file) === ".claude.json" ? walkClaudeJson(parsed) : walkAll(parsed)));
+    found.push(...(path.basename(file) === ".claude.json" ? walkClaudeJson(parsed) : walkAll(parsed, project)));
   }
   return found;
 }
@@ -147,7 +147,8 @@ function walkClaudeJson(value: unknown): NamedMcpServer[] {
   return found;
 }
 
-async function mcpConfigFiles(): Promise<string[]> {
+// Home-level files are untagged and attach everywhere; a project file carries the folder it came from.
+async function mcpConfigFiles(): Promise<Array<{ file: string; project?: string }>> {
   const home = homedir();
   const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
   const appData = process.env.APPDATA;
@@ -173,21 +174,20 @@ async function mcpConfigFiles(): Promise<string[]> {
       path.join(appData, "Code", "User", "mcp.json"),
     );
   }
-  files.push(...(await projectMcpFiles()));
-  return files;
+  return [...files.map((file) => ({ file })), ...(await projectMcpFiles())];
 }
 
-async function projectMcpFiles(): Promise<string[]> {
+async function projectMcpFiles(): Promise<Array<{ file: string; project: string }>> {
   const roots = new Set<string>([process.cwd()]);
   for (const cwd of await paseoWorkspaceCwds()) {
     roots.add(cwd);
   }
-  const files: string[] = [];
+  const files: Array<{ file: string; project: string }> = [];
   for (const root of roots) {
     files.push(
-      path.join(root, ".mcp.json"),
-      path.join(root, ".cursor", "mcp.json"),
-      path.join(root, ".kiro", "settings", "mcp.json"),
+      { file: path.join(root, ".mcp.json"), project: root },
+      { file: path.join(root, ".cursor", "mcp.json"), project: root },
+      { file: path.join(root, ".kiro", "settings", "mcp.json"), project: root },
     );
   }
   return files;
