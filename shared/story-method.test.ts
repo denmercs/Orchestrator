@@ -115,6 +115,25 @@ test("a cycle prompt carries only that cycle and the plan", () => {
   assert.doesNotMatch(prompt, /Cycle 1 — A/);
 });
 
+test("a parent prompt runs the unticked cycles in subagents, with the brief and the fallback", () => {
+  const text = state("- [x] Cycle 1 — A: a\n- [ ] Cycle 2 — B: b\n- [ ] Cycle 3 — C: c");
+  const prompt = stepPrompt("implement", story, { round: 1, cycles: readCycles(text), plan: readSection(text, "Plan") });
+  const head = prompt.indexOf("for story S1");
+  const step = prompt.slice(0, head);
+  assert.match(step, /## This step: run the cycles in subagents/);
+  assert.match(step, /## Cycle brief/);
+  assert.match(step, /If you can't start subagents, work the cycles yourself, one at a time, in the same order/);
+  assert.match(step, /tick its line in `## Cycles`/);
+  assert.match(step, /set `## Status` to `implement-done`/);
+  const brief = step.slice(step.indexOf("\n## Cycle brief\n"));
+  assert.match(brief, /Do not touch `## Status`/);
+  assert.match(brief, /may hold a half-finished cycle/);
+  assert.ok(prompt.indexOf("\n## Cycles to run\n- [ ] Cycle 2 — B: b\n- [ ] Cycle 3 — C: c\n") > head, "cycles after the head");
+  assert.ok(prompt.indexOf("Change src/search.ts") > head, "plan after the head");
+  assert.doesNotMatch(prompt, /Cycle 1 — A/);
+  assert.doesNotMatch(prompt, /one implement cycle/);
+});
+
 test("a cycle left after a review round still gets its cycle prompt, not the findings prompt", () => {
   const cycle = readCycles(state("- [ ] Cycle 4 — Rank: x"))[0];
   const prompt = stepPrompt("implement", story, { round: 2, cycle });
@@ -155,11 +174,12 @@ test("two stories share a step prompt up to the story head", () => {
     base: "origin/release-7",
   };
   // Story-specific step data: each story gets its own cycle, plan and failing checks.
-  const data = new Map<StoryContext, { cycle: Cycle; plan: string; failing: string }>([
+  const data = new Map<StoryContext, { cycle: Cycle; cycles: Cycle[]; plan: string; failing: string }>([
     [
       story,
       {
         cycle: readCycles(state("- [ ] Cycle 2 — Rank: test order → sort"))[0],
+        cycles: readCycles(state("- [ ] Cycle 1 — Parse: test parse → parser\n- [ ] Cycle 2 — Rank: test order → sort")),
         plan: "Change src/search.ts and src/search.test.ts.",
         failing: "- lint: src/search.ts unused import",
       },
@@ -168,6 +188,7 @@ test("two stories share a step prompt up to the story head", () => {
       other,
       {
         cycle: readCycles(state("- [ ] Cycle 5 — CSV: test columns → write csv"))[0],
+        cycles: readCycles(state("- [ ] Cycle 4 — Header: test header → write header\n- [ ] Cycle 5 — CSV: test columns → write csv")),
         plan: "Change src/export.ts.",
         failing: "- unit: export.test.ts columns out of order",
       },
@@ -186,6 +207,12 @@ test("two stories share a step prompt up to the story head", () => {
       /## This step: one implement cycle/,
       (s, round) => ({ round, cycle: data.get(s)!.cycle, plan: data.get(s)!.plan }),
     ],
+    [
+      "implement parent",
+      "implement",
+      /## This step: run the cycles in subagents/,
+      (s) => ({ round: 1, cycles: data.get(s)!.cycles, plan: data.get(s)!.plan }),
+    ],
     ["fix", "fix", /## This step: fix the failing CI checks/, (s, round) => ({ round, failing: data.get(s)!.failing })],
   ];
   const prefix = (step: LoopStep, s: StoryContext, extra: StepExtra) => {
@@ -201,8 +228,9 @@ test("two stories share a step prompt up to the story head", () => {
       assert.match(a, heading, `${name} r${round} prefix`);
       assert.equal(a, prefix(step, other, extra(other, round)), `${name} r${round}`);
       for (const s of [story, other]) {
-        const { cycle, plan, failing } = data.get(s)!;
-        const values = [s.id, s.title, s.body, s.branch, s.base, s.storiesDir!, s.phaseTitle!, cycle.line, plan, failing];
+        const { cycle, cycles, plan, failing } = data.get(s)!;
+        const lines = cycles.map((c) => c.line);
+        const values = [s.id, s.title, s.body, s.branch, s.base, s.storiesDir!, s.phaseTitle!, cycle.line, ...lines, plan, failing];
         for (const value of values) {
           assert.ok(!prefix(step, s, extra(s, round)).includes(value), `${name} r${round} prefix holds ${value}`);
         }
