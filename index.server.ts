@@ -69,6 +69,7 @@ import { harnessSettings, jiraBoardSettings, prodPulseSettings, standupSettings 
 import {
   addSkillSource,
   attachSkill,
+  DEFAULT_PHASES,
   pipelineSettings,
   checkSkillSource,
   getSkillCatalog,
@@ -113,11 +114,24 @@ export default function contribute(server: PluginServerContext) {
   server.handle(planHarnessPhaseRpc, async (input, { paseo }) =>
     startPhaseArchitect(paseo, input, await readAgentConfig(paseo)),
   );
+  const pipeline = server.registerSettings(pipelineSettings);
+  const readPipelineValues = async () => {
+    const state = await pipeline.read();
+    return state.status === "ready" ? state.values : null;
+  };
   const loopSettings = server.registerSettings(initiativeLoopSettings);
-  const initiativeLoop = createInitiativeLoop(async () => {
-    const state = await loopSettings.read();
-    return state.status === "ready" ? state.values : DEFAULT_LOOP_CONFIG;
-  }, async (paseo, step, loop) => loadStepConfig(paseo, loop, step, await readRunnerProfileId()));
+  const initiativeLoop = createInitiativeLoop(
+    async () => {
+      const state = await loopSettings.read();
+      return state.status === "ready" ? state.values : DEFAULT_LOOP_CONFIG;
+    },
+    async (paseo, step, loop) => loadStepConfig(paseo, loop, step, await readRunnerProfileId()),
+    // Loop steps load the drawer's extras whether or not the Story pipeline is switched on (d2).
+    async () => {
+      const values = await readPipelineValues();
+      return values ? { phases: values.phases, sources: values.sources } : { phases: DEFAULT_PHASES, sources: [] };
+    },
+  );
   server.handle(startInitiativeLoop, (input, { paseo }) => initiativeLoop.start(paseo, input));
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
   server.handle(openPhasePlanRpc, openPhasePlan);
@@ -147,11 +161,6 @@ export default function contribute(server: PluginServerContext) {
     return contextWatch.sessions(agentIds);
   });
   server.handle(contextSummaryRpc, ({ since }) => summariseTelemetry(since));
-  const pipeline = server.registerSettings(pipelineSettings);
-  const readPipelineValues = async () => {
-    const state = await pipeline.read();
-    return state.status === "ready" ? state.values : null;
-  };
   const readPipeline = async () => {
     const values = await readPipelineValues();
     return values?.enabled ? values : null;

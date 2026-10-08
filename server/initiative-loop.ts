@@ -7,6 +7,7 @@ import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@
 import type { AgentCreateConfig } from "../shared/agent-runner";
 import { LOOP_AGENT_KIND, type LoopConfig } from "../shared/initiative-loop";
 import { phaseLabel } from "../shared/orchestration";
+import { DEFAULT_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import {
   PHASES_DIR,
   PHASE_FILE,
@@ -40,6 +41,7 @@ import {
   type StoryContext,
 } from "../shared/story-method";
 import { withMcpScope } from "./mcp-scope";
+import { installSkills } from "./skill-sources";
 import { commitStory, openStoryPr, pushStoryFix } from "./story-git";
 
 // The initiative loop, driven by Paseo events rather than a long-running process:
@@ -166,6 +168,8 @@ function block(story: StoryFile, reason: string) {
 export function createInitiativeLoop(
   readConfig: () => Promise<LoopConfig>,
   readAgentConfig: (api: PaseoApi, step: LoopStep, loop: LoopConfig) => Promise<AgentCreateConfig>,
+  // The drawer's phases and skill sources: each step loads its phase's extras.
+  readPipeline: () => Promise<{ phases: Phase[]; sources: SkillSource[] }>,
 ) {
   let paseo: PaseoApi | null = null;
   // Steps started by this process, so a repeated event can't start one twice before its label shows.
@@ -230,6 +234,16 @@ export function createInitiativeLoop(
       await installBrief(worktree, briefTag(step, round, extra.cycle?.number)).catch((error) =>
         console.warn("orchestrator: install brief", story.id, error),
       );
+      // Skills help a step but never gate it: a failed read or copy becomes a warning on the story.
+      const reason = (error: unknown) => (error instanceof Error ? error.message : String(error));
+      const warnings: string[] = [];
+      const { phases, sources } = await readPipeline().catch((error) => {
+        warnings.push(`pipeline: ${reason(error)}`);
+        return { phases: DEFAULT_PHASES, sources: [] };
+      });
+      const extras = stepSkills(step, phases);
+      warnings.push(...(await installSkills(worktree, extras, sources).catch((error) => [`skills: ${reason(error)}`])));
+      for (const warning of warnings) console.warn("orchestrator: skills", story.id, warning);
       // Story steps work from the story file and the worktree; none of them needs an MCP server.
       const agent = await withMcpScope(worktree, "none", () =>
         api.workspaces.ref(workspace).agents.create({
@@ -241,6 +255,7 @@ export function createInitiativeLoop(
             cycle: extra.cycle,
             plan: readSection(state, "Plan"),
             missing: planMissing(step, state, worktree),
+            skills: extras.map((skill) => skill.name),
           }),
           labels,
         }),
@@ -251,6 +266,7 @@ export function createInitiativeLoop(
         agent: agent.id,
         blocked_reason: null,
         blocked_from: null,
+        skill_warnings: warnings.join(" · ") || null,
       });
       return agent.id;
     } catch (error) {
@@ -508,11 +524,14 @@ export function createInitiativeLoop(
       const cycle = labels["loop-cycle"]
         ? readCycles(state).find((item) => String(item.number) === labels["loop-cycle"])
         : undefined;
+      // Names only: startStep already copied the extras into the worktree.
+      const { phases } = await readPipeline().catch(() => ({ phases: DEFAULT_PHASES }));
       const prompt = stepPrompt(step, ctx, {
         round: Number(labels["loop-round"]) || 1,
         cycle,
         plan: readSection(state, "Plan"),
         missing: found.story.meta.worktree ? planMissing(step, state, found.story.meta.worktree) : [],
+        skills: stepSkills(step, phases).map((skill) => skill.name),
       });
       return `${prompt}\n\n${RESUME_LINE}`;
     },
