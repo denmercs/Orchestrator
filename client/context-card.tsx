@@ -3,7 +3,7 @@ import { Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { contextSummaryRpc, type ContextSummary } from "../shared/context";
-import { summaryTiles } from "./context-pill-model";
+import { stepTiles, summaryTiles } from "./context-pill-model";
 
 const CARD_POLL_MS = 60_000;
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -32,6 +32,7 @@ export function ContextCard({ theme }: { theme: PluginSurfaceProps["theme"] }) {
   }, [load]);
 
   if (!summary) return null;
+  const steps = stepTiles(summary);
   return (
     <View style={styles.card}>
       <Text style={styles.heading}>CONTEXT · last 7 days</Text>
@@ -43,6 +44,19 @@ export function ContextCard({ theme }: { theme: PluginSurfaceProps["theme"] }) {
           </View>
         ))}
       </View>
+      {steps.length > 0 && (
+        <>
+          <Text style={styles.heading}>Context tokens per step</Text>
+          <View style={styles.tiles}>
+            {steps.map((tile) => (
+              <View key={tile.label} style={styles.tile}>
+                <Text style={styles.value}>{tile.value}</Text>
+                <Text style={styles.label}>{tile.label}</Text>
+              </View>
+            ))}
+          </View>
+        </>
+      )}
     </View>
   );
 }
