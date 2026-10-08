@@ -240,16 +240,21 @@ function planDone() {
   return { ...fx, api, created, turnEnded };
 }
 
-// A loop whose Implement phase has the tdd extra from a connected folder source.
-function tddLoop() {
+// A pipeline whose Implement phase has the tdd extra from a connected folder source.
+function tddPipeline() {
   const source = tddSource();
   const phases = DEFAULT_PHASES.map((phase) =>
     phase.id === "implement" ? { ...phase, extras: [{ name: "tdd", source: source.id }] } : phase,
   );
+  return { phases, sources: [source] };
+}
+
+// A loop that reads `pipeline` on each call, so a test can change it between steps.
+function tddLoop(pipeline = tddPipeline()) {
   return createInitiativeLoop(
     async () => DEFAULT_LOOP_CONFIG,
     async () => FALLBACK_AGENT_CONFIG,
-    async () => ({ phases, sources: [source] }),
+    async () => pipeline,
   );
 }
 
@@ -265,14 +270,28 @@ test("an Implement step copies its extras into the worktree and names them in th
   assert.equal(storyMeta(story).step_skills, "tdd (.agents/skills/tdd/SKILL.md)");
 });
 
-test("a resumed Implement agent's prompt names its extras again", async () => {
+test("a resumed Implement agent gets the first prompt's skills line even after the phase drops the extra", async () => {
   const { api, created, turnEnded } = planDone();
-  const initiative = tddLoop();
+  const pipeline = tddPipeline();
+  const initiative = tddLoop(pipeline);
   await initiative.onTurnEnded(api, turnEnded("a1"));
+  pipeline.phases = DEFAULT_PHASES;
 
   const prompt = await initiative.resumePrompt(created[0].labels);
 
-  assert.ok(prompt?.includes("Also use these skills: tdd."), prompt ?? "no resume prompt");
+  assert.ok(prompt?.includes("Also use these skills: tdd (.agents/skills/tdd/SKILL.md)."), prompt ?? "no resume prompt");
+});
+
+test("a resumed Implement agent whose story has no step_skills gets the looked-up paths", async () => {
+  const { story, api, created, turnEnded } = planDone();
+  const initiative = tddLoop();
+  await initiative.onTurnEnded(api, turnEnded("a1"));
+  writeFrontmatter(story, { step_skills: null });
+
+  const prompt = await initiative.resumePrompt(created[0].labels);
+
+  assert.equal(storyMeta(story).step_skills, undefined);
+  assert.ok(prompt?.includes("Also use these skills: tdd (.agents/skills/tdd/SKILL.md)."), prompt ?? "no resume prompt");
 });
 
 test("a skill copy that throws doesn't stop the step; its error goes on the story", async () => {

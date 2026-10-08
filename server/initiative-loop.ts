@@ -31,6 +31,7 @@ import {
   afterImplement,
   formatSkills,
   implementCommitMessage,
+  parseSkills,
   readCycles,
   readMarker,
   readSection,
@@ -193,6 +194,16 @@ export function createInitiativeLoop(
   function planMissing(step: LoopStep, state: string, worktree: string) {
     if (step !== "implement" && step !== "review" && step !== "fix") return [];
     return missingPaths(planPaths(readSection(state, "Plan")), worktree);
+  }
+
+  // A resumed agent's skills line: the first prompt's, saved as `step_skills`. A story started
+  // before that field existed looks the paths up again, without copying.
+  async function resumeSkills(step: LoopStep, meta: StoryFile["meta"]) {
+    if (meta.step_skills) return parseSkills(meta.step_skills);
+    const { phases, sources } = await readPipeline().catch(() => ({ phases: DEFAULT_PHASES, sources: [] }));
+    const extras = stepSkills(step, phases);
+    if (!meta.worktree) return extras.map((skill) => ({ name: skill.name }));
+    return skillPaths(meta.worktree, extras, sources);
   }
 
   async function startStep(
@@ -528,14 +539,12 @@ export function createInitiativeLoop(
       const cycle = labels["loop-cycle"]
         ? readCycles(state).find((item) => String(item.number) === labels["loop-cycle"])
         : undefined;
-      // Names only: startStep already copied the extras into the worktree.
-      const { phases } = await readPipeline().catch(() => ({ phases: DEFAULT_PHASES }));
       const prompt = stepPrompt(step, ctx, {
         round: Number(labels["loop-round"]) || 1,
         cycle,
         plan: readSection(state, "Plan"),
         missing: found.story.meta.worktree ? planMissing(step, state, found.story.meta.worktree) : [],
-        skills: stepSkills(step, phases).map((skill) => ({ name: skill.name })),
+        skills: await resumeSkills(step, found.story.meta),
       });
       return `${prompt}\n\n${RESUME_LINE}`;
     },
