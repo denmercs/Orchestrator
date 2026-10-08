@@ -363,13 +363,14 @@ export function createInitiativeLoop(
       else if (turnEnded && meta.status === "planning") writeFrontmatter(story.path, { status: "awaiting-approval" });
     } else if (step === "implement") {
       if (marker === MARKERS.implementDone) {
-        const finished = meta.cycle ? Number(meta.cycle) : null;
+        // A parent that ran the cycles in subagents must have ticked them all.
+        const finished = meta.cycles === "subagents" ? "all" : meta.cycle ? Number(meta.cycle) : null;
         const after = afterImplement(state, finished);
         if (after.kind === "blocked") {
           block(story, after.reason);
           return;
         }
-        const cycle = finished === null ? null : (readCycles(state).find((item) => item.number === finished) ?? null);
+        const cycle = typeof finished === "number" ? (readCycles(state).find((item) => item.number === finished) ?? null) : null;
         await commitStory(meta.worktree, implementCommitMessage(story.id, cycle, round));
         if (after.kind === "cycle") await (round === 1 ? nextImplement(after.cycle) : next("implement", round, after.cycle));
         else await next("review", round);

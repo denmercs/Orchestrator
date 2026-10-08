@@ -276,6 +276,43 @@ test("plan-done with two unticked cycles starts one parent Implement agent; with
   assert.equal(storyMeta(perCycle.story).cycles, undefined);
 });
 
+test("the parent's implement-done commits once and starts Review; with a cycle unticked the story blocks", async () => {
+  const finish = (cycles: string) => {
+    const fx = fixture("a1");
+    writeFrontmatter(fx.story, { cycles: "subagents" });
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: fx.worktree, encoding: "utf8" }).trim();
+    git("config", "user.email", "test@example.com");
+    git("config", "user.name", "Test");
+    writeFileSync(join(fx.worktree, "meter.ts"), "export const meter = 1;\n", "utf8");
+    writeFileSync(
+      join(fx.worktree, ".harness", "state.md"),
+      `# S1 — Demo story\n\n## Status\nimplement-done\n\n## Cycles\n${cycles}`,
+      "utf8",
+    );
+    const { api, created } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-cycles": "subagents" } }]);
+    const turnEnded = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
+      ReturnType<typeof loop>["onTurnEnded"]
+    >[1];
+    return { ...fx, api, created, turnEnded, git };
+  };
+
+  const done = finish("- [x] Cycle 1 — Reads: test → change\n- [x] Cycle 2 — Warns: warning test → warn once\n");
+  await loop().onTurnEnded(done.api, done.turnEnded);
+
+  assert.equal(done.git("log", "--format=%s"), "S1: Implement");
+  assert.deepEqual(
+    done.created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"]]),
+    [["review", "1"]],
+  );
+
+  const open = finish("- [x] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once\n");
+  await loop().onTurnEnded(open.api, open.turnEnded);
+
+  assert.equal(open.created.length, 0);
+  assert.equal(storyMeta(open.story).status, "blocked");
+  assert.match(storyMeta(open.story).blocked_reason ?? "", /Cycle 2/);
+});
+
 // A pipeline whose Implement phase has the tdd extra from a connected folder source.
 function tddPipeline() {
   const source = tddSource();
