@@ -49,11 +49,28 @@ export type StepExtra = {
   // Implement: the one cycle this agent works, and the plan it works from.
   cycle?: Cycle;
   plan?: string;
-  // Extra skills the user picked for this step, named in the prompt.
-  skills?: string[];
+  // Extra skills the user picked for this step, named in the prompt with the path they were copied to.
+  skills?: StepSkill[];
   // Existing-path entries in `## Plan` that aren't in the worktree.
   missing?: string[];
 };
+
+export type StepSkill = { name: string; path?: string };
+
+// The text after "Also use these skills: ". Skill names never hold ", " or " (", so parseSkills can split it.
+export function formatSkills(skills: StepSkill[]) {
+  return skills.map((skill) => (skill.path ? `${skill.name} (${skill.path})` : skill.name)).join(", ");
+}
+
+export function parseSkills(text: string): StepSkill[] {
+  return text
+    .split(", ")
+    .filter(Boolean)
+    .map((part) => {
+      const match = /^(.+?) \((.+)\)$/.exec(part);
+      return match ? { name: match[1], path: match[2] } : { name: part };
+    });
+}
 
 const STATE = ".harness/state.md";
 // The plan is pasted into each cycle prompt so the agent starts from it instead of re-exploring.
@@ -140,7 +157,7 @@ ${followUps(story)}
 export function stepPrompt(step: LoopStep, story: StoryContext, extra: StepExtra) {
   const label = extra.cycle ? `${STEP_LABELS[step]} cycle ${extra.cycle.number}` : STEP_LABELS[step];
   const head = `${label} for story ${story.id} — ${story.title}${extra.round > 1 ? ` (round ${extra.round})` : ""}.`;
-  const skills = extra.skills?.length ? `Also use these skills: ${extra.skills.join(", ")}.` : "";
+  const skills = extra.skills?.length ? `Also use these skills: ${formatSkills(extra.skills)}.` : "";
   const jira = Boolean(story.ticketUrl) && !story.body.trim();
   // Text shared by every story at this step comes first, so the provider can cache it across agents.
   // STEPS get no story; story values go after the head, in STEP_DATA and context().

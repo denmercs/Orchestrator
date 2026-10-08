@@ -29,7 +29,9 @@ import {
   MARKERS,
   STEP_LABELS,
   afterImplement,
+  formatSkills,
   implementCommitMessage,
+  parseSkills,
   readCycles,
   readMarker,
   readSection,
@@ -41,7 +43,7 @@ import {
   type StoryContext,
 } from "../shared/story-method";
 import { withMcpScope } from "./mcp-scope";
-import { installSkills } from "./skill-sources";
+import { installSkills, skillPaths } from "./skill-sources";
 import { commitStory, openStoryPr, pushStoryFix } from "./story-git";
 
 // The initiative loop, driven by Paseo events rather than a long-running process:
@@ -194,6 +196,16 @@ export function createInitiativeLoop(
     return missingPaths(planPaths(readSection(state, "Plan")), worktree);
   }
 
+  // A resumed agent's skills line: the first prompt's, saved as `step_skills`. A story started
+  // before that field existed looks the paths up again, without copying.
+  async function resumeSkills(step: LoopStep, meta: StoryFile["meta"]) {
+    if (meta.step_skills) return parseSkills(meta.step_skills);
+    const { phases, sources } = await readPipeline().catch(() => ({ phases: DEFAULT_PHASES, sources: [] }));
+    const extras = stepSkills(step, phases);
+    if (!meta.worktree) return extras.map((skill) => ({ name: skill.name }));
+    return skillPaths(meta.worktree, extras, sources);
+  }
+
   async function startStep(
     api: PaseoApi,
     config: LoopConfig,
@@ -244,6 +256,7 @@ export function createInitiativeLoop(
       const extras = stepSkills(step, phases);
       warnings.push(...(await installSkills(worktree, extras, sources).catch((error) => [`skills: ${reason(error)}`])));
       for (const warning of warnings) console.warn("orchestrator: skills", story.id, warning);
+      const skills = await skillPaths(worktree, extras, sources);
       // Story steps work from the story file and the worktree; none of them needs an MCP server.
       const agent = await withMcpScope(worktree, "none", () =>
         api.workspaces.ref(workspace).agents.create({
@@ -255,7 +268,7 @@ export function createInitiativeLoop(
             cycle: extra.cycle,
             plan: readSection(state, "Plan"),
             missing: planMissing(step, state, worktree),
-            skills: extras.map((skill) => skill.name),
+            skills,
           }),
           labels,
         }),
@@ -267,6 +280,8 @@ export function createInitiativeLoop(
         blocked_reason: null,
         blocked_from: null,
         skill_warnings: warnings.join(" · ") || null,
+        // The first prompt's skills line, so a resumed agent gets the same one.
+        step_skills: formatSkills(skills) || null,
       });
       return agent.id;
     } catch (error) {
@@ -524,14 +539,12 @@ export function createInitiativeLoop(
       const cycle = labels["loop-cycle"]
         ? readCycles(state).find((item) => String(item.number) === labels["loop-cycle"])
         : undefined;
-      // Names only: startStep already copied the extras into the worktree.
-      const { phases } = await readPipeline().catch(() => ({ phases: DEFAULT_PHASES }));
       const prompt = stepPrompt(step, ctx, {
         round: Number(labels["loop-round"]) || 1,
         cycle,
         plan: readSection(state, "Plan"),
         missing: found.story.meta.worktree ? planMissing(step, state, found.story.meta.worktree) : [],
-        skills: stepSkills(step, phases).map((skill) => skill.name),
+        skills: await resumeSkills(step, found.story.meta),
       });
       return `${prompt}\n\n${RESUME_LINE}`;
     },

@@ -12,6 +12,7 @@ import {
   readFrontmatter,
   readSkill,
   readSkills,
+  skillPaths,
   SOURCES_ROOT,
   sourceId,
 } from "./skill-sources";
@@ -235,6 +236,37 @@ test("two nested `review/` folders in one source keep the first copy and warn na
   assert.equal(
     await readFile(join(cwd, ".claude", "skills", "review", "SKILL.md"), "utf8"),
     "---\nname: eng-review\n---\nEngineering review.\n",
+  );
+});
+
+test("skillPaths names the copied file for each extra that installSkills copied", async () => {
+  const commands = await folderSource("paths-commands", { "commands/ship.md": "---\ndescription: Ship it.\n---\nShip.\n" });
+  const a = await folderSource("paths-review-a", { "review/SKILL.md": "---\nname: review\n---\nReview A.\n" });
+  const b = await folderSource("paths-review-b", { "review/SKILL.md": "---\nname: review\n---\nReview B.\n" });
+  const sources = [fixture, commands, a, b];
+  const refs = [
+    { name: NAME, source: fixture.id },
+    { name: "ship", source: commands.id },
+    { name: "grill-me", source: MACHINE_SOURCE },
+    { name: "missing-skill", source: fixture.id },
+    { name: "review", source: a.id },
+    { name: "review", source: b.id },
+  ];
+  const cwd = await storyWorktree();
+  await installSkills(cwd, refs, sources);
+
+  assert.deepEqual(await skillPaths(cwd, refs, sources), [
+    { name: NAME, path: `.agents/skills/${FOLDER}/SKILL.md` },
+    { name: "ship", path: ".claude/commands/ship.md" },
+    { name: "grill-me" },
+    { name: "missing-skill" },
+    { name: "review", path: ".agents/skills/review/SKILL.md" },
+    { name: "review" },
+  ]);
+  // Nothing was copied into this worktree, so no file is there to open.
+  assert.deepEqual(
+    await skillPaths(await storyWorktree(), refs, sources),
+    refs.map((r) => ({ name: r.name })),
   );
 });
 

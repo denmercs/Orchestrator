@@ -466,32 +466,36 @@ async function listFiles(root: string): Promise<string[]> {
   return files.sort();
 }
 
-// Copy the phase's skills from connected sources into the story worktree, where the agent
-// picks them up as project skills. Machine skills are already global and are skipped.
-export async function installSkills(cwd: string, refs: SkillRef[], sources: SkillSource[]) {
-  const warnings: string[] = [];
-  const excludes: string[] = [];
+// Where each ref's copy goes, without writing anything. `targets` is empty for a machine ref
+// and for a ref that can't be copied (`warning` says why). `copy` is false when the same skill
+// was already listed earlier in the phase.
+type Resolved = { ref: SkillRef; entry?: Found; targets: string[]; copy: boolean; warning?: string };
+
+async function resolveSkills(refs: SkillRef[], sources: SkillSource[]): Promise<Resolved[]> {
+  const resolved: Resolved[] = [];
   // Which skill took each copy target in this phase, so a second skill with the same folder
   // name is skipped instead of overwriting the first. The same skill listed twice is just copied once.
   const claimed = new Map<string, { label: string; path: string }>();
   for (const ref of refs) {
+    const skip = (warning?: string) => resolved.push({ ref, targets: [], copy: false, warning });
     if (ref.source === MACHINE_SOURCE) {
+      skip();
       continue;
     }
     const source = sources.find((s) => s.id === ref.source);
     if (!source || !source.enabled) {
-      warnings.push(`${ref.name}: source "${ref.source}" is not connected or is off.`);
+      skip(`${ref.name}: source "${ref.source}" is not connected or is off.`);
       continue;
     }
     let entry: Found | undefined;
     try {
       entry = findSkill(await scan(await materialise(source)), ref.name);
     } catch (error) {
-      warnings.push(`${ref.name}: ${message(error)}`);
+      skip(`${ref.name}: ${message(error)}`);
       continue;
     }
     if (!entry) {
-      warnings.push(`${ref.name}: not found in ${source.label}.`);
+      skip(`${ref.name}: not found in ${source.label}.`);
       continue;
     }
     const targets =
@@ -501,15 +505,31 @@ export async function installSkills(cwd: string, refs: SkillRef[], sources: Skil
     const key = `${entry.kind}:${entry.folder}`;
     const first = claimed.get(key);
     if (first?.path === entry.path) {
+      resolved.push({ ref, entry, targets, copy: false });
       continue;
     }
     if (first) {
-      warnings.push(
-        `${ref.name} (${source.label}): ${targets[0]} is already taken by ${first.label} in this phase; skipped.`,
-      );
+      skip(`${ref.name} (${source.label}): ${targets[0]} is already taken by ${first.label} in this phase; skipped.`);
       continue;
     }
     claimed.set(key, { label: `${ref.name} (${source.label})`, path: entry.path });
+    resolved.push({ ref, entry, targets, copy: true });
+  }
+  return resolved;
+}
+
+// Copy the phase's skills from connected sources into the story worktree, where the agent
+// picks them up as project skills. Machine skills are already global and are skipped.
+export async function installSkills(cwd: string, refs: SkillRef[], sources: SkillSource[]) {
+  const warnings: string[] = [];
+  const excludes: string[] = [];
+  for (const { entry, targets, copy, warning } of await resolveSkills(refs, sources)) {
+    if (warning) {
+      warnings.push(warning);
+    }
+    if (!entry || !copy) {
+      continue;
+    }
     for (const target of targets) {
       if (await isTracked(cwd, target)) {
         warnings.push(`${target} is committed in this repo; left it alone.`);
@@ -528,6 +548,31 @@ export async function installSkills(cwd: string, refs: SkillRef[], sources: Skil
     });
   }
   return warnings;
+}
+
+// The file in the worktree a prompt can point each ref at, in ref order: `.agents/skills/<folder>/SKILL.md`
+// for a skill, `.claude/commands/<folder>.md` for a command. A ref gets no path when it is a machine
+// skill, wasn't copied, or its file isn't in `cwd`. Never throws; on error every ref is named without a path.
+export async function skillPaths(
+  cwd: string,
+  refs: SkillRef[],
+  sources: SkillSource[],
+): Promise<{ name: string; path?: string }[]> {
+  try {
+    const resolved = await resolveSkills(refs, sources);
+    return await Promise.all(
+      resolved.map(async ({ ref, entry, targets }) => {
+        const target = entry?.kind === "skill" ? targets.find((t) => t.startsWith(".agents/")) : targets[0];
+        if (!entry || !target) {
+          return { name: ref.name };
+        }
+        const path = entry.kind === "skill" ? `${target}/SKILL.md` : target;
+        return (await exists(join(cwd, path))) ? { name: ref.name, path } : { name: ref.name };
+      }),
+    );
+  } catch {
+    return refs.map((ref) => ({ name: ref.name }));
+  }
 }
 
 async function isTracked(cwd: string, path: string) {
