@@ -228,6 +228,34 @@ test("review points at the base under Where it sits; pr carries the exact comman
   );
 });
 
+test("missing Plan paths go in the story section, after the head and before Where it sits", () => {
+  const line = "These paths in ## Plan don't exist: src/a.ts, src/b.ts. Find the right ones and correct ## Plan.";
+  const review = stepPrompt("review", story, { round: 1, missing: ["src/a.ts", "src/b.ts"] });
+  const at = review.indexOf(`\n${line}\n`);
+  assert.ok(at > review.indexOf("for story S1"), "missing line after the head");
+  assert.ok(at > review.indexOf("\n## Story S1 — Add search\n"), "missing line in the story section");
+  assert.ok(at < review.indexOf("\n## Where it sits\n"), "missing line before Where it sits");
+  for (const missing of [undefined, []]) {
+    const prompt = stepPrompt("review", story, { round: 1, missing });
+    assert.ok(!prompt.includes("don't exist"), "no line when nothing is missing");
+    assert.equal(prompt, stepPrompt("review", story, { round: 1 }));
+  }
+});
+
+test("the Plan step asks for the brief lines, and the rules start every step from them", () => {
+  const plan = stepPrompt("plan", story, { round: 1 });
+  for (const label of ["**Files:**", "**Calls:**", "**Commands:**", "**Out of scope:**"]) {
+    assert.ok(plan.includes(label), `Plan prompt asks for ${label}`);
+  }
+  assert.match(plan, /`\(new\)`/, "Files marks new paths");
+  for (const step of LOOP_STEPS) {
+    const prompt = stepPrompt(step, story, { round: 1 });
+    assert.match(prompt, /open the files in `## Plan` first/, `${step}: open the Plan files first`);
+    assert.match(prompt, /search further only when they turn out wrong or incomplete/, `${step}: search only when needed`);
+    assert.match(prompt, /correct `## Plan`/, `${step}: correct the Plan`);
+  }
+});
+
 test("Jira stories point at the ticket and file follow-ups as review findings", () => {
   const jira: StoryContext = {
     ...story,

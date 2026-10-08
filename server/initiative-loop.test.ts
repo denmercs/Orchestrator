@@ -52,7 +52,13 @@ function fixture(agent = "a1") {
 
 // A fake Paseo: live agents by id; workspace creates are recorded and become live agents.
 function fakePaseo(live: Agent[]) {
-  const created: { workspace: string; title: string; labels: Record<string, string>; config?: unknown }[] = [];
+  const created: {
+    workspace: string;
+    title: string;
+    labels: Record<string, string>;
+    config?: unknown;
+    prompt?: string;
+  }[] = [];
   const api = {
     agents: {
       ref: (id: string) => ({
@@ -66,9 +72,20 @@ function fakePaseo(live: Agent[]) {
     workspaces: {
       ref: (workspace: string) => ({
         agents: {
-          create: async (options: { title: string; labels: Record<string, string>; config?: unknown }) => {
+          create: async (options: {
+            title: string;
+            labels: Record<string, string>;
+            config?: unknown;
+            prompt?: string;
+          }) => {
             const id = `n${created.length + 1}`;
-            created.push({ workspace, title: options.title, labels: options.labels, config: options.config });
+            created.push({
+              workspace,
+              title: options.title,
+              labels: options.labels,
+              config: options.config,
+              prompt: options.prompt,
+            });
             live.push({ id, labels: options.labels });
             return { id };
           },
@@ -166,4 +183,31 @@ test("a started step's agent gets the config readAgentConfig returns for that st
     created.map((agent) => [agent.labels["loop-step"], agent.config]),
     [["review", { provider: "claude/review-model", modeId: "auto" }]],
   );
+});
+
+test("a Review agent started with a missing Plan path is created and told; resumePrompt says the same", async () => {
+  const { worktree, labels } = fixture("a1");
+  const { api, created } = fakePaseo([{ id: "a1", labels }]);
+  // The loop commits the finished step, and this test leaves a file to commit.
+  execFileSync("git", ["config", "user.email", "loop@test"], { cwd: worktree });
+  execFileSync("git", ["config", "user.name", "Loop"], { cwd: worktree });
+  mkdirSync(join(worktree, "server"), { recursive: true });
+  writeFileSync(join(worktree, "server", "meter.ts"), "export {};\n", "utf8");
+  writeFileSync(
+    join(worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nimplement-done\n\n## Plan\n**Files:** `server/meter.ts`, `server/gone.ts`, `server/fresh.ts` (new)\n",
+    "utf8",
+  );
+  const turnEnded = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
+    ReturnType<typeof loop>["onTurnEnded"]
+  >[1];
+  const initiative = loop();
+
+  await initiative.onTurnEnded(api, turnEnded);
+
+  const line = "These paths in ## Plan don't exist: server/gone.ts. Find the right ones and correct ## Plan.";
+  assert.deepEqual(created.map((agent) => agent.labels["loop-step"]), ["review"]);
+  assert.ok(created[0].prompt?.includes(line));
+  const resumed = await initiative.resumePrompt(created[0].labels);
+  assert.ok(resumed?.includes(line));
 });
