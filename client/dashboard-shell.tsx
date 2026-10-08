@@ -5,20 +5,23 @@ import { TABS, type TabId } from "../shared/dashboard-tabs";
 
 type Theme = PluginSurfaceProps["theme"];
 
-// The fixed top of the dashboard: title, then the actions row passed as children.
+// The fixed top of the dashboard: title, the verse card until S5 inlines it, then the actions row passed as children.
 export function DashboardHeader({
   theme,
   compact,
+  verse,
   children,
 }: {
   theme: Theme;
   compact: boolean;
+  verse?: ReactNode;
   children?: ReactNode;
 }) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   return (
     <View style={styles.header}>
       <Text style={styles.title}>Orchestration</Text>
+      {verse}
       {children ? <View style={styles.actions}>{children}</View> : null}
     </View>
   );

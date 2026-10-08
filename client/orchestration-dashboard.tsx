@@ -22,6 +22,7 @@ import {
   profilesFromConfigGet,
   resolveRunnerConfig,
 } from "../shared/agent-runner";
+import type { TabId } from "../shared/dashboard-tabs";
 import { pipelineSettings, startPipelineStory } from "../shared/pipeline";
 import { jiraBoardSettings } from "../shared/settings";
 import { PR_POLL_MS } from "../shared/timing";
@@ -34,6 +35,7 @@ import {
   groupJiraEpics,
 } from "./board-model";
 import { ContextCard } from "./context-card";
+import { DashboardHeader, TabBar } from "./dashboard-shell";
 import { DailyVerseCard } from "./daily-verse";
 import { InitiativePanels, StoryDrawer, useEpicBoards } from "./epic-board";
 import { ProdPulseButton, ProdPulseDrawer, useProdPulse } from "./prod-pulse-drawer";
@@ -81,6 +83,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const epic = useEpicBoards();
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [loopProfilesOpen, setLoopProfilesOpen] = useState(false);
+  const [tab, setTab] = useState<TabId>("initiatives");
   const agentIds = useMemo(
     () =>
       agents
@@ -376,99 +379,127 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
       />
     ) : null;
 
+  const header = (
+    <DashboardHeader theme={theme} compact={layout.compact} verse={<DailyVerseCard theme={theme} />}>
+      <RunnerPicker theme={theme} compact={layout.compact} />
+      <LoopProfilesToggle
+        theme={theme}
+        compact={layout.compact}
+        open={loopProfilesOpen}
+        onPress={() => setLoopProfilesOpen((open) => !open)}
+      />
+      <SkillsButton
+        theme={theme}
+        pipelineOn={pipeline.status === "ready" && pipeline.values.enabled}
+        onPress={() => setSkillsOpen(true)}
+      />
+      {pulse?.available ? (
+        <ProdPulseButton pulse={pulse} theme={theme} onPress={() => setPulseOpen(true)} />
+      ) : null}
+    </DashboardHeader>
+  );
+
+  let body: ReactNode;
+  switch (tab) {
+    case "initiatives":
+      body = (
+        <>
+          <ContextCard theme={theme} />
+
+          {loading ? <Text style={styles.muted}>Loading live catalog…</Text> : null}
+          {error ? <Text style={styles.danger}>{error}</Text> : null}
+
+          <View style={styles.stats}>
+            <ProgressStat
+              label="PROGRESS"
+              value={`${board.inProgress}/${board.total || 0}`}
+              hint={board.hasJira ? `${board.total} on the board` : `${board.total} active agents`}
+              ratio={board.total ? board.inProgress / board.total : 0}
+              styles={styles}
+              theme={theme}
+            />
+            <CountStat label="IN PROGRESS" value={board.inProgress} hint="running" styles={styles} />
+            <CountStat
+              label="READY TO START"
+              value={board.readyToStart}
+              hint="waiting on dependencies"
+              styles={styles}
+            />
+            <CountStat
+              label="BLOCKED"
+              value={board.blockedCount}
+              hint="for the loop"
+              valueColor={theme.colors.statusDanger}
+              styles={styles}
+            />
+          </View>
+
+          <InitiativePanels epic={epic} theme={theme} compact={layout.compact} navigation={navigation} />
+        </>
+      );
+      break;
+    case "today":
+      body = <StandupSection theme={theme} layout={layout} />;
+      break;
+    case "todos":
+      body = <Text style={styles.muted}>Todos are in the Today tab for now.</Text>;
+      break;
+    case "board":
+      body = (
+        <>
+          {jiraError ? <Text style={styles.danger}>{jiraError}</Text> : null}
+          {sessionError ? <Text style={styles.danger}>{sessionError}</Text> : null}
+          {/* Lives in the Jira panel once a board loads; here so a board can still be chosen before then. */}
+          {jiraColumns.length === 0 ? (
+            boardPicker
+          ) : (
+            <JiraBoard
+              title={selectedJiraBoard?.name ?? "Jira board"}
+              boardPicker={boardPicker}
+              sprint={jiraSprint}
+              issues={jiraIssues}
+              columns={jiraColumns}
+              sessions={sessionItems}
+              prsByKey={prsByKey}
+              prColors={{ foreground: theme.colors.foreground, muted: theme.colors.foregroundMuted }}
+              defaultDeveloper={defaultDeveloper}
+              onDeveloperChange={(next) => void saveDefaultDeveloper(next)}
+              groupByEpic={groupByEpic}
+              onGroupByEpicChange={(next) => void saveGroupByEpic(next)}
+              compact={layout.compact}
+              selectedColumn={selectedJiraColumn}
+              expanded={expanded}
+              startingId={startingId}
+              styles={styles}
+              onSelectColumn={setSelectedJiraColumn}
+              onMoveIssue={(key, column) => moveIssue({ key, column })}
+              onMoved={() => void refreshJira()}
+              onToggle={toggleExpanded}
+              onOpen={openItem}
+              onOpenJira={openInJira}
+              onStart={startItem}
+            />
+          )}
+        </>
+      );
+      break;
+    case "pulse":
+      body = (
+        <Text style={styles.muted}>
+          {pulse?.available ? "Prod pulse opens from the Sentry button above." : "Prod pulse isn't set up."}
+        </Text>
+      );
+      break;
+  }
+
   return (
     <View style={styles.screen}>
-      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-        <View style={styles.titleRow}>
-          <Text style={styles.title}>Orchestration</Text>
-          <View style={styles.titleActions}>
-            <RunnerPicker theme={theme} compact={layout.compact} />
-            <LoopProfilesToggle
-              theme={theme}
-              compact={layout.compact}
-              open={loopProfilesOpen}
-              onPress={() => setLoopProfilesOpen((open) => !open)}
-            />
-            <SkillsButton
-              theme={theme}
-              pipelineOn={pipeline.status === "ready" && pipeline.values.enabled}
-              onPress={() => setSkillsOpen(true)}
-            />
-            {pulse?.available ? (
-              <ProdPulseButton pulse={pulse} theme={theme} onPress={() => setPulseOpen(true)} />
-            ) : null}
-            {/* Lives in the Jira panel once a board loads; here so a board can still be chosen before then. */}
-            {jiraColumns.length === 0 ? boardPicker : null}
-          </View>
-        </View>
-
+      {header}
+      <TabBar theme={theme} compact={layout.compact} active={tab} counts={NO_COUNTS} onSelect={setTab} />
+      {/* Keyed by tab so each body starts at the top. */}
+      <ScrollView key={tab} style={styles.screen} contentContainerStyle={styles.content}>
         {loopProfilesOpen ? <LoopStepProfiles theme={theme} compact={layout.compact} /> : null}
-
-        <DailyVerseCard theme={theme} />
-        <ContextCard theme={theme} />
-
-        {loading ? <Text style={styles.muted}>Loading live catalog…</Text> : null}
-        {error ? <Text style={styles.danger}>{error}</Text> : null}
-        {jiraError ? <Text style={styles.danger}>{jiraError}</Text> : null}
-        {sessionError ? <Text style={styles.danger}>{sessionError}</Text> : null}
-
-        <View style={styles.stats}>
-          <ProgressStat
-            label="PROGRESS"
-            value={`${board.inProgress}/${board.total || 0}`}
-            hint={board.hasJira ? `${board.total} on the board` : `${board.total} active agents`}
-            ratio={board.total ? board.inProgress / board.total : 0}
-            styles={styles}
-            theme={theme}
-          />
-          <CountStat label="IN PROGRESS" value={board.inProgress} hint="running" styles={styles} />
-          <CountStat
-            label="READY TO START"
-            value={board.readyToStart}
-            hint="waiting on dependencies"
-            styles={styles}
-          />
-          <CountStat
-            label="BLOCKED"
-            value={board.blockedCount}
-            hint="for the loop"
-            valueColor={theme.colors.statusDanger}
-            styles={styles}
-          />
-        </View>
-
-        <InitiativePanels epic={epic} theme={theme} compact={layout.compact} navigation={navigation} />
-
-        <StandupSection theme={theme} layout={layout} />
-
-        {jiraColumns.length > 0 ? (
-          <JiraBoard
-            title={selectedJiraBoard?.name ?? "Jira board"}
-            boardPicker={boardPicker}
-            sprint={jiraSprint}
-            issues={jiraIssues}
-            columns={jiraColumns}
-            sessions={sessionItems}
-            prsByKey={prsByKey}
-            prColors={{ foreground: theme.colors.foreground, muted: theme.colors.foregroundMuted }}
-            defaultDeveloper={defaultDeveloper}
-            onDeveloperChange={(next) => void saveDefaultDeveloper(next)}
-            groupByEpic={groupByEpic}
-            onGroupByEpicChange={(next) => void saveGroupByEpic(next)}
-            compact={layout.compact}
-            selectedColumn={selectedJiraColumn}
-            expanded={expanded}
-            startingId={startingId}
-            styles={styles}
-            onSelectColumn={setSelectedJiraColumn}
-            onMoveIssue={(key, column) => moveIssue({ key, column })}
-            onMoved={() => void refreshJira()}
-            onToggle={toggleExpanded}
-            onOpen={openItem}
-            onOpenJira={openInJira}
-            onStart={startItem}
-          />
-        ) : null}
+        {body}
       </ScrollView>
       {pulse?.available ? (
         <ProdPulseDrawer
@@ -490,6 +521,15 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     </View>
   );
 }
+
+// Counts arrive in cycle 4; until then no tab shows a pill.
+const NO_COUNTS: Record<TabId, number | null> = {
+  initiatives: null,
+  today: null,
+  todos: null,
+  board: null,
+  pulse: null,
+};
 
 const ALL_DEVELOPERS = "__all__";
 
@@ -1324,25 +1364,6 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
       gap: compact ? 14 : 18,
       alignSelf: "stretch" as const,
       width: "100%" as const,
-    },
-    titleRow: {
-      // Keeps the board menu above the sections that follow it.
-      zIndex: 10,
-      flexDirection: compact ? ("column" as const) : ("row" as const),
-      alignItems: compact ? ("stretch" as const) : ("flex-start" as const),
-      justifyContent: "space-between" as const,
-      gap: 12,
-    },
-    titleActions: {
-      flexDirection: compact ? ("column" as const) : ("row" as const),
-      alignItems: compact ? ("stretch" as const) : ("flex-start" as const),
-      gap: 8,
-    },
-    title: {
-      color: theme.colors.foreground,
-      fontSize: compact ? 22 : 28,
-      fontWeight: "600" as const,
-      flexShrink: 1,
     },
     picker: {
       minWidth: compact ? undefined : 220,
