@@ -116,6 +116,17 @@ test("a loop agent gets the step prompt plus resume, no handoff turn, and the st
   assert.deepEqual(calls[3], ["handOver", labels, "a1", "a2"]);
 });
 
+test("a loop agent's fresh session keeps the step's profile config", async () => {
+  const labels = { kind: "initiative-loop", "loop-step": "plan", "loop-story": "S9", "loop-round": "1" };
+  const stepConfig = { provider: "claude/opus", modeId: "bypassPermissions", thinkingOptionId: "max" };
+  const { port, calls } = fakeFresh({ ...session(labels), config: stepConfig }, { loopPrompt: "Plan S9." });
+
+  await freshCompactor(port).compact("a1", keepList(labels));
+
+  const created = calls.find((call) => call[0] === "create")?.[1] as { config: unknown };
+  assert.deepEqual(created.config, stepConfig);
+});
+
 test("a running session is refused", async () => {
   const { port, calls } = fakeFresh(session({}, true));
 
