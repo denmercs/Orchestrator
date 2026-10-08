@@ -23,6 +23,7 @@ import {
   resolveRunnerConfig,
 } from "../shared/agent-runner";
 import { tabCounts, type TabId } from "../shared/dashboard-tabs";
+import { gatesOf } from "../shared/gates";
 import { pipelineSettings, startPipelineStory } from "../shared/pipeline";
 import { dashboardSettings, jiraBoardSettings } from "../shared/settings";
 import { PR_POLL_MS } from "../shared/timing";
@@ -34,6 +35,7 @@ import {
   groupJiraColumns,
   groupJiraEpics,
 } from "./board-model";
+import { AlertsBell } from "./alerts-bell";
 import { ContextCard } from "./context-card";
 import { DashboardHeader, TabBar } from "./dashboard-shell";
 import { InitiativePanels, StoryDrawer, useEpicBoards } from "./epic-board";
@@ -83,6 +85,8 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const epic = useEpicBoards();
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [loopProfilesOpen, setLoopProfilesOpen] = useState(false);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const gates = useMemo(() => gatesOf(epic.boards ?? []), [epic.boards]);
   const dashboard = useSettings(dashboardSettings);
   // Null until the user picks one; until then the stored tab shows once it has loaded.
   const [pickedTab, setPickedTab] = useState<TabId | null>(null);
@@ -403,6 +407,18 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         open={loopProfilesOpen}
         onPress={() => setLoopProfilesOpen((open) => !open)}
       />
+      <AlertsBell
+        theme={theme}
+        compact={layout.compact}
+        gates={gates}
+        open={alertsOpen}
+        onOpenChange={setAlertsOpen}
+        onOpenGate={(gate) => {
+          setAlertsOpen(false);
+          void selectTab("initiatives");
+          epic.reveal(gate.board, gate.storyId);
+        }}
+      />
       <StoryPipelineButton
         theme={theme}
         pipelineOn={pipelineOn}
@@ -511,6 +527,15 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   return (
     <View style={styles.screen}>
       {header}
+      {/* Below the header (zIndex 10), so an outside press closes the alerts popover. */}
+      {alertsOpen ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close alerts"
+          onPress={() => setAlertsOpen(false)}
+          style={styles.alertsBackdrop}
+        />
+      ) : null}
       <TabBar
         theme={theme}
         compact={layout.compact}
@@ -1372,6 +1397,15 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
     screen: {
       flex: 1,
       backgroundColor: theme.colors.surface0,
+    },
+    alertsBackdrop: {
+      zIndex: 9,
+      position: "absolute" as const,
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
+      backgroundColor: "transparent",
     },
     content: {
       padding: pad,

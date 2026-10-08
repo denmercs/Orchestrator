@@ -25,6 +25,13 @@ export function toggleFold(folded: ReadonlySet<string>, key: string): ReadonlySe
   return next;
 }
 
+// Shows a panel whether or not it was folded; never mutates the set it was given.
+export function showFold(folded: ReadonlySet<string>, key: string): ReadonlySet<string> {
+  const next = new Set(folded);
+  next.delete(key);
+  return next;
+}
+
 export type Selection = { board: string; story: string };
 
 // The selection is kept as keys so it survives a poll; this resolves it against the latest read.
