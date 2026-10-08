@@ -1,8 +1,9 @@
 import { defineRpc, defineSettings, PluginAttachmentSearchPayloadSchema } from "@getpaseo/plugin";
 import { z } from "zod";
+import type { LoopStep } from "./initiative-loop";
 import { stepPrompt, type Cycle, type StoryContext } from "./story-method";
 
-// Story belt: a Jira story run through the same steps as the initiative loop (shared/story-method.ts).
+// Story pipeline: a Jira story run through the same steps as the initiative loop (shared/story-method.ts).
 // Plan, each Implement cycle and Review run in fresh agents. A step ends by writing a marker under
 // `## Status` in .harness/state.md; the server reads that line when the agent's turn ends and starts
 // the next one. Done has no agent: the plugin opens the PR and, after the merge, closes the Jira story.
@@ -60,8 +61,8 @@ export const THEN_CHOICES: Record<PhaseId, Then[]> = {
   done: ["merge"],
 };
 
-const beltValues = z.object({
-  // Off: Start keeps the single-agent session. On: Start runs the Story belt.
+const pipelineValues = z.object({
+  // Off: Start keeps the single-agent session. On: Start runs the Story pipeline.
   enabled: z.boolean().default(false),
   phases: z.array(phase).default(DEFAULT_PHASES),
   reviewRounds: z.number().int().min(1).max(20).default(3),
@@ -69,16 +70,16 @@ const beltValues = z.object({
   sources: z.array(source).default([]),
 });
 
-export const beltSettings = defineSettings({
-  id: "belt",
+export const pipelineSettings = defineSettings({
+  id: "pipeline",
   scope: "host",
   version: 3,
-  schema: beltValues,
+  schema: pipelineValues,
   migrate(values) {
     const row = values !== null && typeof values === "object" ? (values as Record<string, unknown>) : {};
     const phases = Array.isArray(row.phases) ? row.phases.map(withoutSkillsync) : undefined;
-    const parsed = beltValues.safeParse({ ...row, phases });
-    return parsed.success ? parsed.data : beltValues.parse({});
+    const parsed = pipelineValues.safeParse({ ...row, phases });
+    return parsed.success ? parsed.data : pipelineValues.parse({});
   },
 });
 
@@ -100,7 +101,7 @@ export function withoutSkillsync(saved: unknown) {
   };
 }
 
-export type BeltConfig = z.infer<typeof beltValues>;
+export type PipelineConfig = z.infer<typeof pipelineValues>;
 
 const catalogSkill = z.object({
   name: z.string(),
@@ -136,7 +137,7 @@ const sourceStatus = z.object({
 export type SourceStatus = z.infer<typeof sourceStatus>;
 
 export const getSkillCatalog = defineRpc({
-  name: "orchestration.belt.catalog",
+  name: "orchestration.pipeline.catalog",
   input: z.object({}),
   output: z.object({
     skills: z.array(catalogSkill),
@@ -145,7 +146,7 @@ export const getSkillCatalog = defineRpc({
 });
 
 export const addSkillSource = defineRpc({
-  name: "orchestration.belt.source.add",
+  name: "orchestration.pipeline.source.add",
   input: z.object({ location: z.string() }),
   output: z.object({
     ok: z.boolean(),
@@ -159,7 +160,7 @@ export const addSkillSource = defineRpc({
 });
 
 export const checkSkillSource = defineRpc({
-  name: "orchestration.belt.source.check",
+  name: "orchestration.pipeline.source.check",
   input: z.object({ id: z.string() }),
   output: z.object({
     ok: z.boolean(),
@@ -171,7 +172,7 @@ export const checkSkillSource = defineRpc({
 });
 
 export const removeSkillSource = defineRpc({
-  name: "orchestration.belt.source.remove",
+  name: "orchestration.pipeline.source.remove",
   input: z.object({ id: z.string() }),
   output: z.object({ ok: z.boolean() }),
 });
@@ -188,7 +189,7 @@ const registryHit = z.object({
 export type RegistryHit = z.infer<typeof registryHit>;
 
 export const searchSkillRegistry = defineRpc({
-  name: "orchestration.belt.registry.search",
+  name: "orchestration.pipeline.registry.search",
   input: z.object({ query: z.string() }),
   output: z.object({ results: z.array(registryHit), error: z.string().nullable() }),
 });
@@ -201,8 +202,8 @@ export const attachSkill = defineRpc({
   output: PluginAttachmentSearchPayloadSchema,
 });
 
-export const startBeltStory = defineRpc({
-  name: "orchestration.belt.start",
+export const startPipelineStory = defineRpc({
+  name: "orchestration.pipeline.start",
   input: z.object({
     workspaceId: z.string(),
     key: z.string(),
@@ -212,7 +213,7 @@ export const startBeltStory = defineRpc({
   output: z.object({ agentId: z.string(), warnings: z.array(z.string()) }),
 });
 
-export const BELT_LABEL = "story";
+export const PIPELINE_LABEL = "story";
 
 export type Ticket = { key: string; title: string; url: string | null };
 
@@ -234,7 +235,23 @@ export function phaseSkills(phase: Phase) {
   return { runs: phase.runs, extras: [...phase.extras, ...required] };
 }
 
-export function beltStory(ticket: Ticket, branch = "", base = "origin/main"): StoryContext {
+// The drawer phase whose extras each loop step loads. Fix reworks code, so it uses Implement's.
+export const STEP_PHASES: Record<LoopStep, PhaseId> = {
+  plan: "plan",
+  implement: "implement",
+  fix: "implement",
+  review: "review",
+  pr: "done",
+};
+
+// A loop step's extras from the saved phases, or the default phase when they lack it. Never `runs`.
+export function stepSkills(step: LoopStep, phases: Phase[]): Extra[] {
+  const id = STEP_PHASES[step];
+  const phase = phases.find((p) => p.id === id) ?? DEFAULT_PHASES.find((p) => p.id === id);
+  return phase ? phaseSkills(phase).extras : [];
+}
+
+export function pipelineStory(ticket: Ticket, branch = "", base = "origin/main"): StoryContext {
   return {
     id: ticket.key,
     title: ticket.title,
@@ -267,7 +284,7 @@ export function phasePrompt(phase: Phase, ticket: Ticket, options: PhasePromptOp
   if (phase.id === "done") return DONE_DESCRIPTION;
   const skills = phaseSkills(phase);
   const names = [skills.runs?.name, ...skills.extras.map((e) => e.name)].filter((name): name is string => Boolean(name));
-  const story = beltStory(ticket, options.branch, options.base);
+  const story = pipelineStory(ticket, options.branch, options.base);
   const lines = [
     stepPrompt(phase.id, story, {
       round: options.round ?? 1,
@@ -277,7 +294,7 @@ export function phasePrompt(phase: Phase, ticket: Ticket, options: PhasePromptOp
     }),
   ];
   if (phase.id === "plan" && phase.then === "auto") {
-    lines.push("", "This belt runs Plan without approval: when the plan is complete, set `## Status` to `plan-done` without waiting.");
+    lines.push("", "This pipeline runs Plan without approval: when the plan is complete, set `## Status` to `plan-done` without waiting.");
   }
   if (phase.id !== "plan" && phase.then === "you") {
     lines.push("", "Before writing your marker, summarise the result and wait for the user to say go.");

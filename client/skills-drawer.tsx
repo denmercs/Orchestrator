@@ -8,7 +8,7 @@ import {
   MACHINE_SOURCE,
   THEN_CHOICES,
   addSkillSource,
-  beltSettings,
+  pipelineSettings,
   checkSkillSource,
   findRef,
   getSkillCatalog,
@@ -17,7 +17,7 @@ import {
   phaseSkills,
   removeSkillSource,
   searchSkillRegistry,
-  type BeltConfig,
+  type PipelineConfig,
   type CatalogSkill,
   type Phase,
   type PhaseId,
@@ -26,7 +26,7 @@ import {
   type SkillSource,
   type SourceStatus,
   type Then,
-} from "../shared/belt";
+} from "../shared/pipeline";
 import { installsLabel, rowState } from "./registry-search-model";
 
 type Theme = PluginSurfaceProps["theme"];
@@ -60,15 +60,15 @@ function shortSha(sha: string | null) {
   return sha ? sha.slice(0, 7) : null;
 }
 
-function useBelt(open: boolean) {
-  const settings = useSettings(beltSettings);
+function usePipeline(open: boolean) {
+  const settings = useSettings(pipelineSettings);
   const loadCatalog = useRpc(getSkillCatalog);
   const [catalog, setCatalog] = useState<CatalogSkill[]>([]);
   const [statuses, setStatuses] = useState<SourceStatus[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const values: BeltConfig | null = settings.status === "ready" ? settings.values : null;
+  const values: PipelineConfig | null = settings.status === "ready" ? settings.values : null;
   const sourcesKey = JSON.stringify(values?.sources ?? []);
 
   const reload = useCallback(async () => {
@@ -91,41 +91,41 @@ function useBelt(open: boolean) {
     // Sources changing (connect, toggle, update) changes the catalog.
   }, [open, reload, sourcesKey]);
 
-  async function save(patch: Partial<BeltConfig>) {
+  async function save(patch: Partial<PipelineConfig>) {
     if (settings.status !== "ready") {
       return false;
     }
     setError(null);
     const saved = await settings.save({ ...settings.values, ...patch }, settings.revision);
     if (!saved) {
-      setError(settings.saveError ?? "Could not save the belt settings.");
+      setError(settings.saveError ?? "Could not save the pipeline settings.");
     }
     return saved;
   }
 
   return { values, catalog, statuses, loading, error, setError, reload, save };
 }
-type Belt = ReturnType<typeof useBelt>;
+type Pipeline = ReturnType<typeof usePipeline>;
 
 export function SkillsButton({
   theme,
-  beltOn,
+  pipelineOn,
   onPress,
 }: {
   theme: Theme;
-  beltOn: boolean;
+  pipelineOn: boolean;
   onPress(): void;
 }) {
   const styles = useMemo(() => createStyles(theme, false), [theme]);
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Open skills and phases, Story belt ${beltOn ? "on" : "off"}`}
+      accessibilityLabel={`Open skills and phases, Story pipeline ${pipelineOn ? "on" : "off"}`}
       onPress={onPress}
       style={styles.trigger}
     >
       <Text style={styles.triggerText}>Skills</Text>
-      <Text style={styles.triggerCount}>belt {beltOn ? "on" : "off"}</Text>
+      <Text style={styles.triggerCount}>pipeline {pipelineOn ? "on" : "off"}</Text>
     </Pressable>
   );
 }
@@ -142,13 +142,13 @@ export function SkillsDrawer({
   onClose(): void;
 }) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
-  const belt = useBelt(open);
+  const pipeline = usePipeline(open);
   const [tab, setTab] = useState<"phases" | "sources">("phases");
 
   if (!open) {
     return null;
   }
-  const values = belt.values;
+  const values = pipeline.values;
   const enabled = values?.enabled ?? false;
 
   return (
@@ -166,22 +166,22 @@ export function SkillsDrawer({
             <Pressable
               accessibilityRole="switch"
               accessibilityState={{ checked: enabled }}
-              accessibilityLabel="Use the Story belt when starting stories"
+              accessibilityLabel="Use the Story pipeline when starting stories"
               disabled={!values}
-              onPress={() => void belt.save({ enabled: !enabled })}
+              onPress={() => void pipeline.save({ enabled: !enabled })}
               style={[styles.headerButton, enabled ? styles.chipActive : null]}
             >
               <Text style={enabled ? styles.chipTextActive : styles.headerButtonText}>
-                Belt {enabled ? "on" : "off"}
+                Pipeline {enabled ? "on" : "off"}
               </Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
-              disabled={belt.loading}
-              onPress={() => void belt.reload()}
+              disabled={pipeline.loading}
+              onPress={() => void pipeline.reload()}
               style={styles.headerButton}
             >
-              <Text style={styles.headerButtonText}>{belt.loading ? "Loading…" : "Reload"}</Text>
+              <Text style={styles.headerButtonText}>{pipeline.loading ? "Loading…" : "Reload"}</Text>
             </Pressable>
             <Pressable accessibilityRole="button" onPress={onClose} style={styles.headerButton}>
               <Text style={styles.headerButtonText}>Close</Text>
@@ -191,20 +191,20 @@ export function SkillsDrawer({
         <Text style={styles.hint}>
           {enabled
             ? "Start on a story card runs Plan in a fresh agent. Each phase starts the next when it writes <phase>-done under ## Status in .harness/state.md."
-            : "Belt off: Start keeps the single-agent session. Changes here are still saved."}
+            : "Pipeline off: Start keeps the single-agent session. Changes here are still saved."}
         </Text>
-        {belt.error ? <Text style={[styles.hint, styles.danger]}>{belt.error}</Text> : null}
+        {pipeline.error ? <Text style={[styles.hint, styles.danger]}>{pipeline.error}</Text> : null}
         <View style={styles.tabs}>
-          <Chip label="Phases · Story belt" active={tab === "phases"} styles={styles} onPress={() => setTab("phases")} />
+          <Chip label="Phases · Story pipeline" active={tab === "phases"} styles={styles} onPress={() => setTab("phases")} />
           <Chip label="Sources" active={tab === "sources"} styles={styles} onPress={() => setTab("sources")} />
         </View>
         <ScrollView style={styles.flex1} contentContainerStyle={styles.bodyContent}>
           {!values ? (
             <Text style={styles.muted}>Loading settings…</Text>
           ) : tab === "phases" ? (
-            <PhasesTab belt={belt} values={values} styles={styles} />
+            <PhasesTab pipeline={pipeline} values={values} styles={styles} />
           ) : (
-            <SourcesTab belt={belt} values={values} styles={styles} />
+            <SourcesTab pipeline={pipeline} values={values} styles={styles} />
           )}
         </ScrollView>
       </View>
@@ -214,9 +214,9 @@ export function SkillsDrawer({
 
 // ---------- Phases ----------
 
-function PhasesTab({ belt, values, styles }: { belt: Belt; values: BeltConfig; styles: Styles }) {
+function PhasesTab({ pipeline, values, styles }: { pipeline: Pipeline; values: PipelineConfig; styles: Styles }) {
   function updatePhase(id: PhaseId, change: (phase: Phase) => Phase) {
-    void belt.save({ phases: values.phases.map((phase) => (phase.id === id ? change(phase) : phase)) });
+    void pipeline.save({ phases: values.phases.map((phase) => (phase.id === id ? change(phase) : phase)) });
   }
   return (
     <>
@@ -225,13 +225,13 @@ function PhasesTab({ belt, values, styles }: { belt: Belt; values: BeltConfig; s
           key={phase.id}
           index={index}
           phase={phase}
-          belt={belt}
+          pipeline={pipeline}
           values={values}
           styles={styles}
           onChange={(change) => updatePhase(phase.id, change)}
         />
       ))}
-      <Pressable accessibilityRole="button" onPress={() => void belt.save({ phases: DEFAULT_PHASES })}>
+      <Pressable accessibilityRole="button" onPress={() => void pipeline.save({ phases: DEFAULT_PHASES })}>
         <Text style={styles.link}>Reset phases to defaults</Text>
       </Pressable>
     </>
@@ -241,22 +241,22 @@ function PhasesTab({ belt, values, styles }: { belt: Belt; values: BeltConfig; s
 function PhaseCard({
   phase,
   index,
-  belt,
+  pipeline,
   values,
   styles,
   onChange,
 }: {
   phase: Phase;
   index: number;
-  belt: Belt;
-  values: BeltConfig;
+  pipeline: Pipeline;
+  values: PipelineConfig;
   styles: Styles;
   onChange(change: (phase: Phase) => Phase): void;
 }) {
   const [picking, setPicking] = useState<"runs" | "extra" | null>(null);
   const [preview, setPreview] = useState(false);
   const skills = phaseSkills(phase);
-  const known = (ref: SkillRef) => belt.loading || belt.catalog.some((s) => matchesRef(s, ref));
+  const known = (ref: SkillRef) => pipeline.loading || pipeline.catalog.some((s) => matchesRef(s, ref));
 
   return (
     <View style={styles.card}>
@@ -286,7 +286,7 @@ function PhaseCard({
           </View>
           {picking === "runs" ? (
             <SkillPicker
-              belt={belt}
+              pipeline={pipeline}
               values={values}
               styles={styles}
               current={phase.runs ?? undefined}
@@ -317,7 +317,7 @@ function PhaseCard({
             </View>
             {picking === "extra" ? (
               <SkillPicker
-                belt={belt}
+                pipeline={pipeline}
                 values={values}
                 styles={styles}
                 onPick={(ref) => {
@@ -335,7 +335,7 @@ function PhaseCard({
         </>
       )}
 
-      <PhaseSettings phase={phase} belt={belt} values={values} styles={styles} />
+      <PhaseSettings phase={phase} pipeline={pipeline} values={values} styles={styles} />
 
       {THEN_CHOICES[phase.id].length > 1 ? (
         <View style={styles.gap6}>
@@ -364,13 +364,13 @@ function PhaseCard({
 
 function PhaseSettings({
   phase,
-  belt,
+  pipeline,
   values,
   styles,
 }: {
   phase: Phase;
-  belt: Belt;
-  values: BeltConfig;
+  pipeline: Pipeline;
+  values: PipelineConfig;
   styles: Styles;
 }) {
   if (phase.id === "implement") {
@@ -384,7 +384,7 @@ function PhaseSettings({
     return (
       <View style={styles.rowWrap}>
         <Text style={styles.muted}>Findings → fresh Implement agent</Text>
-        <Stepper label="max rounds" value={values.reviewRounds} styles={styles} onChange={(v) => void belt.save({ reviewRounds: v })} />
+        <Stepper label="max rounds" value={values.reviewRounds} styles={styles} onChange={(v) => void pipeline.save({ reviewRounds: v })} />
       </View>
     );
   }
@@ -396,7 +396,7 @@ function PhaseSettings({
           label={values.closeOnMerge ? "✓ close the Jira story" : "leave Jira alone"}
           active={values.closeOnMerge}
           styles={styles}
-          onPress={() => void belt.save({ closeOnMerge: !values.closeOnMerge })}
+          onPress={() => void pipeline.save({ closeOnMerge: !values.closeOnMerge })}
         />
       </View>
     );
@@ -405,15 +405,15 @@ function PhaseSettings({
 }
 
 function SkillPicker({
-  belt,
+  pipeline,
   values,
   styles,
   current,
   onPick,
   onCancel,
 }: {
-  belt: Belt;
-  values: BeltConfig;
+  pipeline: Pipeline;
+  values: PipelineConfig;
   styles: Styles;
   current?: SkillRef;
   onPick(ref: SkillRef): void;
@@ -421,8 +421,8 @@ function SkillPicker({
 }) {
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
-  const list = belt.catalog.filter((skill) => skill.name.toLowerCase().includes(needle)).slice(0, 60);
-  const selected = current ? findRef(belt.catalog, current) : undefined;
+  const list = pipeline.catalog.filter((skill) => skill.name.toLowerCase().includes(needle)).slice(0, 60);
+  const selected = current ? findRef(pipeline.catalog, current) : undefined;
   return (
     <View style={styles.picker}>
       <TextInput
@@ -461,12 +461,12 @@ function SkillPicker({
 
 // ---------- Sources ----------
 
-function SourcesTab({ belt, values, styles }: { belt: Belt; values: BeltConfig; styles: Styles }) {
-  const machineCount = belt.catalog.filter((s) => s.source === MACHINE_SOURCE).length;
-  const connector = useConnectSource(belt, values);
+function SourcesTab({ pipeline, values, styles }: { pipeline: Pipeline; values: PipelineConfig; styles: Styles }) {
+  const machineCount = pipeline.catalog.filter((s) => s.source === MACHINE_SOURCE).length;
+  const connector = useConnectSource(pipeline, values);
 
   function updateSource(id: string, change: (source: SkillSource) => SkillSource) {
-    return belt.save({ sources: values.sources.map((s) => (s.id === id ? change(s) : s)) });
+    return pipeline.save({ sources: values.sources.map((s) => (s.id === id ? change(s) : s)) });
   }
 
   return (
@@ -484,9 +484,9 @@ function SourcesTab({ belt, values, styles }: { belt: Belt; values: BeltConfig; 
         <SourceCard
           key={source.id}
           source={source}
-          status={belt.statuses.find((s) => s.id === source.id)}
+          status={pipeline.statuses.find((s) => s.id === source.id)}
           values={values}
-          belt={belt}
+          pipeline={pipeline}
           styles={styles}
           onChange={(change) => updateSource(source.id, change)}
         />
@@ -501,14 +501,14 @@ function SourceCard({
   source,
   status,
   values,
-  belt,
+  pipeline,
   styles,
   onChange,
 }: {
   source: SkillSource;
   status: SourceStatus | undefined;
-  values: BeltConfig;
-  belt: Belt;
+  values: PipelineConfig;
+  pipeline: Pipeline;
   styles: Styles;
   onChange(change: (source: SkillSource) => SkillSource): Promise<boolean>;
 }) {
@@ -534,7 +534,7 @@ function SourceCard({
   }
 
   async function removeSource() {
-    const saved = await belt.save({ sources: values.sources.filter((s) => s.id !== source.id) });
+    const saved = await pipeline.save({ sources: values.sources.filter((s) => s.id !== source.id) });
     if (saved) {
       await remove({ id: source.id }).catch(() => undefined);
     }
@@ -637,7 +637,7 @@ type Connector = ReturnType<typeof useConnectSource>;
 // Clones (or checks) a location and saves it as a pinned source. One per Sources tab, shared by the
 // search card and the connect field: each connect saves the whole sources list, so only one runs
 // at a time.
-function useConnectSource(belt: Belt, values: BeltConfig) {
+function useConnectSource(pipeline: Pipeline, values: PipelineConfig) {
   const add = useRpc(addSkillSource);
   const running = useRef(false);
   const [connecting, setConnecting] = useState<{ location: string; from: ConnectFrom } | null>(null);
@@ -664,7 +664,7 @@ function useConnectSource(belt: Belt, values: BeltConfig) {
         enabled: true,
         pin: result.pin,
       };
-      return await belt.save({
+      return await pipeline.save({
         sources: [...values.sources.filter((s) => s.id !== next.id), next],
       });
     } catch (cause) {
@@ -824,7 +824,7 @@ function ConnectSource({ connector, styles }: { connector: Connector; styles: St
 
 // ---------- small bits ----------
 
-function sourceLabel(values: BeltConfig, id: string) {
+function sourceLabel(values: PipelineConfig, id: string) {
   if (id === MACHINE_SOURCE) {
     return "This machine";
   }

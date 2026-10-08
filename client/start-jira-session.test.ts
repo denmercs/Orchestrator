@@ -78,12 +78,12 @@ for (const role of ["story", "epic"] as const) {
   });
 }
 
-test("the belt path never registers a scope from the client", async () => {
+test("the pipeline path never registers a scope from the client", async () => {
   const calls: string[] = [];
   await startJiraSession(
     fakePaseo("/worktrees/quick-1", calls),
     boardItem("story"),
-    async () => ({ agentId: "belt", warnings: [] }),
+    async () => ({ agentId: "pipeline", warnings: [] }),
     undefined,
     async () => {
       calls.push("registerScope");

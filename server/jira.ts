@@ -144,7 +144,7 @@ export async function moveIssueToColumn(
 }
 
 // Moves an issue, and its subtasks first, to a status in Jira's "done" category. Issues already
-// done are left alone. Used when a Story belt PR merges, in place of an agent.
+// done are left alone. Used when a Story pipeline PR merges, in place of an agent.
 export async function closeIssue(key: string): Promise<{ ok: boolean; error: string | null }> {
   try {
     const credentials = await resolveCredentials();

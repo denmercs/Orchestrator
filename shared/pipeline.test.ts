@@ -7,9 +7,13 @@ import {
   findRef,
   matchesRef,
   phasePrompt,
+  phaseSkills,
+  STEP_PHASES,
+  stepSkills,
   withoutSkillsync,
   type CatalogSkill,
-} from "./belt";
+} from "./pipeline";
+import { LOOP_STEPS } from "./initiative-loop";
 
 const skill: CatalogSkill = {
   name: "vercel-react-best-practices",
@@ -64,7 +68,7 @@ test("saved phases drop retired skillsync skills but keep skills from connected 
   assert.deepEqual(withoutSkillsync(kept), kept);
 });
 
-test("the default belt runs built-in steps and never names a skillsync command", () => {
+test("the default pipeline runs built-in steps and never names a skillsync command", () => {
   const ticket = { key: "KEY-1", title: "Example", url: null };
   for (const phase of DEFAULT_PHASES) {
     assert.equal(phase.runs, null);
@@ -81,4 +85,45 @@ test("a picked phase skill is named in the prompt, and auto Plan skips approval"
   const prompt = phasePrompt(plan, ticket);
   assert.match(prompt, /Also use these skills: my-planner\./);
   assert.match(prompt, /without waiting/);
+});
+
+test("implement and fix both load the saved Implement extras", () => {
+  const extras = [{ name: "react-review", source: "team-skills" }];
+  const phases = DEFAULT_PHASES.map((p) => (p.id === "implement" ? { ...p, extras } : p));
+  assert.deepEqual(stepSkills("implement", phases), extras);
+  assert.deepEqual(stepSkills("fix", phases), extras);
+});
+
+test("plan and pr load no extras with the default phases", () => {
+  assert.deepEqual(stepSkills("plan", DEFAULT_PHASES), []);
+  assert.deepEqual(stepSkills("pr", DEFAULT_PHASES), []);
+});
+
+test("a custom extra added to Done shows up for pr", () => {
+  const extras = [{ name: "release-notes", source: "team-skills" }];
+  const phases = DEFAULT_PHASES.map((p) => (p.id === "done" ? { ...p, extras } : p));
+  assert.deepEqual(stepSkills("pr", phases), extras);
+});
+
+test("saved phases missing Review fall back to the default Review phase", () => {
+  const phases = DEFAULT_PHASES.filter((p) => p.id !== "review");
+  assert.deepEqual(stepSkills("review", phases), []);
+});
+
+test("a Review phase with runs set loads only its extras, never the runs skill", () => {
+  const runs = { name: "my-reviewer", source: "team-skills" };
+  const extras = [{ name: "react-review", source: "team-skills" }];
+  const phases = DEFAULT_PHASES.map((p) => (p.id === "review" ? { ...p, runs, extras } : p));
+  const skills = stepSkills("review", phases);
+  assert.deepEqual(skills, extras);
+  assert.ok(!skills.some((s) => s.name === runs.name));
+});
+
+test("every loop step loads its mapped phase's extras", () => {
+  const phases = DEFAULT_PHASES.map((p) => ({ ...p, extras: [{ name: `${p.id}-extra`, source: "team-skills" }] }));
+  for (const step of LOOP_STEPS) {
+    const phase = phases.find((p) => p.id === STEP_PHASES[step]);
+    assert.ok(phase);
+    assert.deepEqual(stepSkills(step, phases), phaseSkills(phase).extras);
+  }
 });

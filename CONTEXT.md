@@ -1,6 +1,6 @@
 # Orchestrator: vocabulary
 
-This file defines the words the plugin code uses: the Skills drawer, the Story belt and the skill sources behind them, and the context meter that watches each session's size. Later work should reuse these names instead of making up new ones. When code adds or renames one of these concepts, update this file in the same change.
+This file defines the words the plugin code uses: the Skills drawer, the Story pipeline and the skill sources behind them, and the context meter that watches each session's size. Later work should reuse these names instead of making up new ones. When code adds or renames one of these concepts, update this file in the same change.
 
 ## Phase 1 rule
 
@@ -8,7 +8,7 @@ Skills are used through pinned sources, worktree copies and attachments. They ar
 
 ## Skill source
 
-A place skills are read from. Code: `SkillSource` in `shared/belt.ts` (`id`, `label`, `location`, `kind`, `enabled`, `pin`). Sources are stored in the belt settings (`sources`) and managed on the drawer's **Sources** tab. There are three kinds of location, worked out by `parseLocation` in `server/skill-sources.ts`:
+A place skills are read from. Code: `SkillSource` in `shared/pipeline.ts` (`id`, `label`, `location`, `kind`, `enabled`, `pin`). Sources are stored in the pipeline settings (`sources`) and managed on the drawer's **Sources** tab. There are three kinds of location, worked out by `parseLocation` in `server/skill-sources.ts`:
 
 - **git**: an `owner/repo` (taken as GitHub) or a git URL (`https://`, `ssh://`, `git@`). `addSource` clones it and pins it to the current commit.
 - **folder**: an absolute or `~/` path. Read live in place. It has no pin and no checkout.
@@ -35,13 +35,13 @@ _Avoid_: plugin, tool, package.
 
 ## Skill ref
 
-A pointer from the belt settings to a catalog skill. Code: `SkillRef` (`name`, `source`). It matches a catalog skill on the same `source` whose `name` or `folder` equals the ref's `name` (`matchesRef` in `shared/belt.ts`; `findSkill` on the server prefers a `name` match). Refs saved with folder names keep working. A ref whose source is gone, turned off, or has no skill by that name is not an error when saved. `installSkills` reports it as a warning when the phase starts.
+A pointer from the pipeline settings to a catalog skill. Code: `SkillRef` (`name`, `source`). It matches a catalog skill on the same `source` whose `name` or `folder` equals the ref's `name` (`matchesRef` in `shared/pipeline.ts`; `findSkill` on the server prefers a `name` match). Refs saved with folder names keep working. A ref whose source is gone, turned off, or has no skill by that name is not an error when saved. `installSkills` reports it as a warning when the phase starts.
 
 _Avoid_: skill id, skill key.
 
-## Belt phase extras
+## Pipeline phase extras
 
-The extra skills a Story belt phase loads on top of the skill it runs. Code: `Phase.extras`, an array of `Extra` (a Skill ref plus optional `required` and `optional` flags). The skill the phase runs is `Phase.runs`, a single Skill ref or `null` for the built-in step, and is not an extra. The phase prompt names the extras with "Also use these skills: …".
+The extra skills a Story pipeline phase loads on top of the skill it runs. Code: `Phase.extras`, an array of `Extra` (a Skill ref plus optional `required` and `optional` flags). The skill the phase runs is `Phase.runs`, a single Skill ref or `null` for the built-in step, and is not an extra. The phase prompt names the extras with "Also use these skills: …".
 
 An extra marked `required` in `DEFAULT_PHASES` is always loaded, even if saved settings removed it. `phaseSkills` adds it back. The defaults have none today: every phase runs its built-in step from `shared/story-method.ts`, and `Phase.runs` is `null` unless you pick a skill.
 
@@ -51,9 +51,9 @@ _Avoid_: add-ons, plugins, secondary skills.
 
 ## Loop step skills
 
-The skills an initiative loop step loads: the extras of the Skills drawer phase that the step maps to. plan → Plan, implement and fix → Implement, review → Review, pr → Done. Code: `LoopStep` in `shared/initiative-loop.ts` names the steps; the extras come from `Phase.extras`, with `required` ones added back through `phaseSkills`, as for the belt. They reach the loop agent by the Worktree copy into the story worktree, and the step prompt names them with "Also use these skills: …", left out when there are none. A ref that can't be found is a warning on the story, never a failed step.
+The skills an initiative loop step loads: the extras of the Skills drawer phase that the step maps to. plan → Plan, implement and fix → Implement, review → Review, pr → Done. Code: `LoopStep` in `shared/initiative-loop.ts` names the steps; the extras come from `Phase.extras`, with `required` ones added back through `phaseSkills`, as for the pipeline. They reach the loop agent by the Worktree copy into the story worktree, and the step prompt names them with "Also use these skills: …", left out when there are none. A ref that can't be found is a warning on the story, never a failed step.
 
-`Phase.runs` is belt-only. The skill a phase runs carries its own `.harness/state.md` contract, which would fight the step prompt, so a loop step loads only the extras. The belt switch (`enabled`) does not affect loop step skills: they load whether the Story belt is on or off.
+`Phase.runs` is pipeline-only. The skill a phase runs carries its own `.harness/state.md` contract, which would fight the step prompt, so a loop step loads only the extras. The pipeline switch (`enabled`) does not affect loop step skills: they load whether the Story pipeline is on or off.
 
 Review is an audit container. No skill is forced into it by default; the loop's review step loads whatever the user adds to the drawer's Review phase.
 
@@ -61,7 +61,7 @@ _Avoid_: loop skills, step extras.
 
 ## Worktree copy
 
-How drawer skills reach a new story agent, whether a Story belt phase or an initiative loop step starts it. `installSkills` copies each non-`installed` Skill ref from its source into the story worktree: for a belt phase the `runs` skill and the extras, for a loop step only the extras of its phase (see Loop step skills).
+How drawer skills reach a new story agent, whether a Story pipeline phase or an initiative loop step starts it. `installSkills` copies each non-`installed` Skill ref from its source into the story worktree: for a pipeline phase the `runs` skill and the extras, for a loop step only the extras of its phase (see Loop step skills).
 
 - a skill folder goes to `.claude/skills/<folder>`, `.cursor/skills/<folder>` and `.agents/skills/<folder>`, named after its folder, not its frontmatter `name`;
 - a command goes to `.claude/commands/<folder>.md` and `.cursor/commands/<folder>.md`.
@@ -78,7 +78,7 @@ _Avoid_: marketplace, store, skills.sh source.
 
 ## Skill attachment
 
-A skill handed to an agent that is already running, through that agent's composer, instead of through a belt phase. The skill is read from a connected Skill source. Nothing is copied into the worktree or installed globally. Belt phase extras serve new story agents. Attachments serve running agents. `readSkill` returns what an attachment carries: the `SKILL.md` body after the frontmatter, absolute paths to the skill's other files in the pinned checkout, folder or machine path, and the source's pin as `commit`. It reads only connected, enabled sources (and `installed`) and never clones anything else. Every composer offers them through the **Skills** attachment source (`skills.attach`): the attached text is a header naming the skill, its source and short pin, then the body, then a `## Files in this skill` list.
+A skill handed to an agent that is already running, through that agent's composer, instead of through a pipeline phase. The skill is read from a connected Skill source. Nothing is copied into the worktree or installed globally. Pipeline phase extras serve new story agents. Attachments serve running agents. `readSkill` returns what an attachment carries: the `SKILL.md` body after the frontmatter, absolute paths to the skill's other files in the pinned checkout, folder or machine path, and the source's pin as `commit`. It reads only connected, enabled sources (and `installed`) and never clones anything else. Every composer offers them through the **Skills** attachment source (`skills.attach`): the attached text is a header naming the skill, its source and short pin, then the body, then a `## Files in this skill` list.
 
 _Avoid_: skill injection, skill upload.
 

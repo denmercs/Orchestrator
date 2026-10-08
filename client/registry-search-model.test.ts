@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { RegistryHit } from "../shared/belt";
+import type { RegistryHit } from "../shared/pipeline";
 import { installsLabel, rowState } from "./registry-search-model";
 
 const hit = (over: Partial<RegistryHit> = {}): RegistryHit => ({

@@ -3,7 +3,7 @@ import { appendFile, cp, mkdir, readdir, readFile, realpath, rm, stat } from "no
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { MACHINE_SOURCE, type CatalogSkill, type SkillRef, type SkillSource } from "../shared/belt";
+import { MACHINE_SOURCE, type CatalogSkill, type SkillRef, type SkillSource } from "../shared/pipeline";
 
 const run = promisify(execFile);
 const GIT_TIMEOUT_MS = 120_000;

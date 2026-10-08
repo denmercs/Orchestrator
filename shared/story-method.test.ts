@@ -274,6 +274,25 @@ test("Jira stories point at the ticket and file follow-ups as review findings", 
   assert.doesNotMatch(prompt, /Initiative "/);
 });
 
+test("an empty skills list leaves every step prompt exactly as it is without skills", () => {
+  for (const step of LOOP_STEPS) {
+    for (const round of [1, 2]) {
+      assert.equal(stepPrompt(step, story, { round, skills: [] }), stepPrompt(step, story, { round }), `${step} r${round}`);
+    }
+  }
+});
+
+test("skills are named on the line under the step head, with no slash commands", () => {
+  for (const step of LOOP_STEPS) {
+    const prompt = stepPrompt(step, story, { round: 1, skills: ["a", "b"] });
+    const lines = prompt.split("\n");
+    const at = lines.findIndex((line) => line.endsWith(`for story ${story.id} — ${story.title}.`));
+    assert.ok(at >= 0, `head missing for ${step}`);
+    assert.equal(lines[at + 1], "Also use these skills: a, b.", step);
+    assert.doesNotMatch(prompt, /\/ss-|(^|\s)\/[a-z][\w-]*(\s|$)/m, step);
+  }
+});
+
 test("markers round-trip through ## Status with a detail line", () => {
   const written = writeMarker(state(""), "pr-done\nhttps://github.com/o/r/pull/1");
   assert.deepEqual(readMarker(written), { marker: "pr-done", detail: "https://github.com/o/r/pull/1" });

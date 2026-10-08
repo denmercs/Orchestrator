@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
-import { MACHINE_SOURCE, type SkillSource } from "../shared/belt";
+import { MACHINE_SOURCE, type SkillSource } from "../shared/pipeline";
 import {
   addSource,
   installSkills,

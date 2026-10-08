@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { SkillSource } from "../shared/belt";
+import type { SkillSource } from "../shared/pipeline";
 import { sourceId } from "./skill-sources";
 import { searchSkillsSh } from "./skills-sh";
 

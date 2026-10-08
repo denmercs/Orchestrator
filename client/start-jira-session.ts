@@ -15,7 +15,7 @@ const PROJECT_HINTS: Record<string, string[]> = {
   QBUILD: ["qbuild", "quick builder", "quickbuilder"],
 };
 
-type StartBelt = (input: {
+type StartPipeline = (input: {
   workspaceId: string;
   key: string;
   title: string;
@@ -24,12 +24,12 @@ type StartBelt = (input: {
 
 type RegisterScope = (input: { cwd: string; scope: "jira" | "none" }) => Promise<{ ok: true }>;
 
-// With `startBelt`, stories run the Story belt (Plan first); epics always run the epic loop.
-// `registerScope` gives the session or epic loop the Jira server only. The belt scopes its own steps.
+// With `startPipeline`, stories run the Story pipeline (Plan first); epics always run the epic loop.
+// `registerScope` gives the session or epic loop the Jira server only. The pipeline scopes its own steps.
 export async function startJiraSession(
   paseo: PaseoApi,
   item: BoardItem,
-  startBelt?: StartBelt,
+  startPipeline?: StartPipeline,
   agentConfig?: AgentCreateConfig,
   registerScope?: RegisterScope,
 ) {
@@ -52,8 +52,8 @@ export async function startJiraSession(
     },
   });
   await workspace.setTitle(workspaceTitle(item, title));
-  if (startBelt && item.role !== "epic") {
-    const started = await startBelt({
+  if (startPipeline && item.role !== "epic") {
+    const started = await startPipeline({
       workspaceId: workspace.id,
       key: item.key,
       title: item.title,
