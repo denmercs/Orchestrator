@@ -163,7 +163,7 @@ function block(story: StoryFile, reason: string) {
 
 export function createInitiativeLoop(
   readConfig: () => Promise<LoopConfig>,
-  readAgentConfig: (api: PaseoApi) => Promise<AgentCreateConfig>,
+  readAgentConfig: (api: PaseoApi, step: LoopStep, loop: LoopConfig) => Promise<AgentCreateConfig>,
 ) {
   let paseo: PaseoApi | null = null;
   // Steps started by this process, so a repeated event can't start one twice before its label shows.
@@ -216,12 +216,12 @@ export function createInitiativeLoop(
       const ctx = storyContext(init, phaseDir, story);
       const base = extra.cycle ? `${STEP_LABELS[step]} ${extra.cycle.number}` : STEP_LABELS[step];
       const label = round > 1 ? `${base} r${round}` : base;
-      const config = await readAgentConfig(api);
+      const agentConfig = await readAgentConfig(api, step, config);
       // Story steps work from the story file and the worktree; none of them needs an MCP server.
       const agent = await withMcpScope(worktree, "none", () =>
         api.workspaces.ref(workspace).agents.create({
           title: `${MARK} ${story.id} · ${label} — ${ctx.title}`.slice(0, 60),
-          config,
+          config: agentConfig,
           prompt: stepPrompt(step, ctx, {
             round,
             failing: extra.failing,
