@@ -115,7 +115,7 @@ test("resumePrompt gives a cycle agent back its cycle and the plan", async () =>
 
   assert.ok(prompt);
   assert.match(prompt, /^Implement cycle 2 for story S1 — Demo story\.$/m);
-  assert.match(prompt, /## This step: Cycle 2 only\n- \[ \] Cycle 2 — Warns/);
+  assert.match(prompt, /## Cycle 2 only\n- \[ \] Cycle 2 — Warns/);
   assert.match(prompt, /Change server\/meter\.ts\./);
   assert.ok(prompt.endsWith(`\n\n${RESUME_LINE}`));
 });

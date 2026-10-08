@@ -9,7 +9,9 @@ import {
   readSection,
   stepPrompt,
   writeMarker,
+  type Cycle,
   type LoopStep,
+  type StepExtra,
   type StoryContext,
 } from "./story-method";
 
@@ -135,30 +137,72 @@ test("two stories share a step prompt up to the story head", () => {
     branch: "feature/s42-export",
     base: "origin/release-7",
   };
-  const prefix = (step: LoopStep, s: StoryContext, round: number) => {
-    const prompt = stepPrompt(step, s, { round });
+  // Story-specific step data: each story gets its own cycle, plan and failing checks.
+  const data = new Map<StoryContext, { cycle: Cycle; plan: string; failing: string }>([
+    [
+      story,
+      {
+        cycle: readCycles(state("- [ ] Cycle 2 — Rank: test order → sort"))[0],
+        plan: "Change src/search.ts and src/search.test.ts.",
+        failing: "- lint: src/search.ts unused import",
+      },
+    ],
+    [
+      other,
+      {
+        cycle: readCycles(state("- [ ] Cycle 5 — CSV: test columns → write csv"))[0],
+        plan: "Change src/export.ts.",
+        failing: "- unit: export.test.ts columns out of order",
+      },
+    ],
+  ]);
+  type Extra = (s: StoryContext, round: number) => StepExtra;
+  const plain: Extra = (_s, round) => ({ round });
+  const cases: [string, LoopStep, RegExp, Extra][] = [
+    ["plan", "plan", /## This step: plan/, plain],
+    ["review", "review", /## This step: review/, plain],
+    ["pr", "pr", /## This step: open the pull request/, plain],
+    ["implement", "implement", /## This step: (implement the story|fix the review findings)/, plain],
+    [
+      "implement cycle",
+      "implement",
+      /## This step: one implement cycle/,
+      (s, round) => ({ round, cycle: data.get(s)!.cycle, plan: data.get(s)!.plan }),
+    ],
+    ["fix", "fix", /## This step: fix the failing CI checks/, (s, round) => ({ round, failing: data.get(s)!.failing })],
+  ];
+  const prefix = (step: LoopStep, s: StoryContext, extra: StepExtra) => {
+    const prompt = stepPrompt(step, s, extra);
     const at = prompt.indexOf(`for story ${s.id}`);
-    assert.ok(at > 0, `head missing for ${step} ${s.id} r${round}`);
+    assert.ok(at > 0, `head missing for ${step} ${s.id} r${extra.round}`);
     return prompt.slice(0, prompt.lastIndexOf("\n", at) + 1);
   };
-  const steps: [LoopStep, RegExp][] = [
-    ["plan", /## This step: plan/],
-    ["review", /## This step: review/],
-    ["pr", /## This step: open the pull request/],
-  ];
-  for (const [step, heading] of steps) {
+  for (const [name, step, heading, extra] of cases) {
     for (const round of [1, 2]) {
-      const a = prefix(step, story, round);
-      assert.match(a, /## Rules for every step/, `${step} r${round} prefix`);
-      assert.match(a, heading, `${step} r${round} prefix`);
-      assert.equal(a, prefix(step, other, round), `${step} r${round}`);
+      const a = prefix(step, story, extra(story, round));
+      assert.match(a, /## Rules for every step/, `${name} r${round} prefix`);
+      assert.match(a, heading, `${name} r${round} prefix`);
+      assert.equal(a, prefix(step, other, extra(other, round)), `${name} r${round}`);
       for (const s of [story, other]) {
-        for (const value of [s.id, s.title, s.body, s.branch, s.base, s.storiesDir!, s.phaseTitle!]) {
-          assert.ok(!prefix(step, s, round).includes(value), `${step} r${round} prefix holds ${value}`);
+        const { cycle, plan, failing } = data.get(s)!;
+        const values = [s.id, s.title, s.body, s.branch, s.base, s.storiesDir!, s.phaseTitle!, cycle.line, plan, failing];
+        for (const value of values) {
+          assert.ok(!prefix(step, s, extra(s, round)).includes(value), `${name} r${round} prefix holds ${value}`);
         }
       }
     }
   }
+});
+
+test("a cycle's line and plan, and fix's failing checks, come after the head", () => {
+  const cycle = readCycles(state("- [ ] Cycle 2 — B: b"))[0];
+  const implement = stepPrompt("implement", story, { round: 1, cycle, plan: "Change src/search.ts." });
+  const head = implement.indexOf("for story S1");
+  assert.ok(implement.indexOf("\n## Cycle 2 only\n- [ ] Cycle 2 — B: b\n") > head, "cycle after the head");
+  assert.ok(implement.indexOf("Change src/search.ts.") > head, "plan after the head");
+  const fix = stepPrompt("fix", story, { round: 1, failing: "- lint: broken" });
+  assert.ok(fix.indexOf("\n## Failing checks\n") > fix.indexOf("for story S1"), "failing checks after the head");
+  assert.ok(fix.indexOf("- lint: broken") > fix.indexOf("\n## Failing checks\n"), "failing list under its heading");
 });
 
 test("review points at the base under Where it sits; pr carries the exact commands after the head", () => {

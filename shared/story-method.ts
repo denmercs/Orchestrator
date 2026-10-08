@@ -135,21 +135,14 @@ export function stepPrompt(step: LoopStep, story: StoryContext, extra: StepExtra
   const jira = Boolean(story.ticketUrl) && !story.body.trim();
   // Text shared by every story at this step comes first, so the provider can cache it across agents.
   // STEPS get no story; story values go after the head, in STEP_DATA and context().
-  const data = STEP_DATA[step]?.(story) ?? "";
+  const data = STEP_DATA[step]?.(story, extra) ?? "";
   return [FRESH, "", RULES(story), "", STEPS[step](extra, jira), "", head, skills, "", data, "", context(story)]
     .filter((line, i, all) => line !== "" || all[i - 1] !== "")
     .join("\n");
 }
 
-function implementCycle(cycle: Cycle, plan: string | undefined) {
-  const planLines = (plan ?? "").trim().split("\n");
-  const planText = planLines.slice(0, PLAN_LINES).join("\n") + (planLines.length > PLAN_LINES ? "\n…" : "");
-  return `## This step: Cycle ${cycle.number} only
-${cycle.line}
-
-The plan, from \`## Plan\`:
-${planText || "_(empty — read ## Plan in the state file)_"}
-
+const IMPLEMENT_CYCLE = `## This step: one implement cycle
+Work the one cycle under \`## Cycle N only\` below the story head, from the plan pasted there.
 1. Write this cycle's test. Run it and confirm it fails for the reason you expect.
 2. Make the smallest production change that passes it. Do not weaken the test.
 3. Revert the production change, confirm the test fails again, restore it, confirm it passes.
@@ -158,6 +151,15 @@ ${planText || "_(empty — read ## Plan in the state file)_"}
 Work only this cycle; a fresh agent takes the next one. Then set \`## Status\` to \`${MARKERS.implementDone}\`.
 If you cannot go on (a missing decision, broken tooling, a dependency that isn't there), set it to
 \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
+
+function cycleData(cycle: Cycle, plan: string | undefined) {
+  const planLines = (plan ?? "").trim().split("\n");
+  const planText = planLines.slice(0, PLAN_LINES).join("\n") + (planLines.length > PLAN_LINES ? "\n…" : "");
+  return `## Cycle ${cycle.number} only
+${cycle.line}
+
+The plan, from \`## Plan\`:
+${planText || "_(empty — read ## Plan in the state file)_"}`;
 }
 
 const STEPS: Record<LoopStep, (extra: StepExtra, jira: boolean) => string> = {
@@ -176,9 +178,9 @@ const STEPS: Record<LoopStep, (extra: StepExtra, jira: boolean) => string> = {
    rewrite the plan as they push back.
 7. Only when they explicitly approve, set \`## Status\` to \`${MARKERS.planDone}\`. Waiting for them is expected.`,
 
-  implement: ({ round, cycle, plan }) => {
+  implement: ({ round, cycle }) => {
     if (cycle) {
-      return implementCycle(cycle, plan);
+      return IMPLEMENT_CYCLE;
     }
     if (round > 1) {
       return `## This step: fix the review findings
@@ -222,10 +224,8 @@ If there are no findings that must be fixed, set \`## Status\` to \`${MARKERS.re
 3. Set \`## Status\` to \`${MARKERS.prDone}\` with the PR URL on the next line.
 This step may push. Do not wait for CI and do not merge.`,
 
-  fix: ({ round, failing }) => `## This step: fix the failing CI checks (attempt ${round})
-These checks failed on the PR's latest commit:
-
-${failing ?? "(see the PR's checks)"}
+  fix: ({ round }) => `## This step: fix the failing CI checks (attempt ${round})
+The checks that failed on the PR's latest commit are under \`## Failing checks\` below the story head.
 
 1. Reproduce each failure locally with the repo's own command where you can.
 2. Fix the cause, not the check. Do not skip, disable or weaken tests or lint rules.
@@ -235,7 +235,10 @@ on the line after \`${MARKERS.fixDone}\`.`,
 };
 
 // Story-specific data a step needs, placed after the head so it does not break the shared prefix.
-const STEP_DATA: Partial<Record<LoopStep, (story: StoryContext) => string>> = {
+const STEP_DATA: Partial<Record<LoopStep, (story: StoryContext, extra: StepExtra) => string>> = {
+  implement: (_story, { cycle, plan }) => (cycle ? cycleData(cycle, plan) : ""),
+  fix: (_story, { failing }) => `## Failing checks
+${failing ?? "(see the PR's checks)"}`,
   pr: (story) => `## PR commands
 - Push: \`git push -u origin ${story.branch}\`
 - Open: \`gh pr create --base ${story.base.replace(/^origin\//, "")} --head ${story.branch} --title "${story.id}: ${story.title.replace(/"/g, "'")}" --body-file .harness/pr-body.md\``,
