@@ -74,7 +74,9 @@ function turn(id: string, timeline: Item[] = []): TurnEnded {
 }
 
 test("onTurnEnded: one turn end writes one turn row with provider and step", async () => {
-  const { port, rows } = fakePort({ a1: agent(40_000, { "loop-step": "implement", "loop-story": "S2" }) });
+  const { port, rows } = fakePort({
+    a1: agent(40_000, { "loop-step": "implement", "loop-story": "S2", "loop-initiative": "telemetry" }),
+  });
   await createContextWatch(port).onTurnEnded(turn("a1"));
 
   assert.deepEqual(rows, [
@@ -89,13 +91,19 @@ test("onTurnEnded: one turn end writes one turn row with provider and step", asy
       model: null,
       cycle: null,
       story: "S2",
+      initiative: "telemetry",
     },
   ]);
 });
 
-test("onTurnEnded: a turn row carries the agent's model and its loop cycle and story", async () => {
+test("onTurnEnded: a turn row carries the agent's model and its loop cycle, story and initiative", async () => {
   const { port, rows } = fakePort({
-    a1: agent(40_000, { "loop-step": "implement", "loop-cycle": "2", "loop-story": "S6" }, ["compact"], "opus"),
+    a1: agent(
+      40_000,
+      { "loop-step": "implement", "loop-cycle": "2", "loop-story": "S6", "loop-initiative": "skills" },
+      ["compact"],
+      "opus",
+    ),
     a2: agent(40_000),
   });
   const watch = createContextWatch(port);
@@ -103,10 +111,10 @@ test("onTurnEnded: a turn row carries the agent's model and its loop cycle and s
   await watch.onTurnEnded(turn("a2"));
 
   assert.deepEqual(
-    rows.map((r) => [r.agentId, r.model, r.cycle, r.story]),
+    rows.map((r) => [r.agentId, r.model, r.cycle, r.story, r.initiative]),
     [
-      ["a1", "opus", 2, "S6"],
-      ["a2", null, null, null],
+      ["a1", "opus", 2, "S6", "skills"],
+      ["a2", null, null, null, null],
     ],
   );
 });

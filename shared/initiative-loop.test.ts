@@ -7,9 +7,17 @@ const emptyProfiles = { plan: "", implement: "", review: "", fix: "" };
 test("loop settings default every step profile to empty (Auto)", () => {
   assert.deepEqual(DEFAULT_LOOP_CONFIG.profiles, emptyProfiles);
   assert.deepEqual(PROFILE_STEPS, ["plan", "implement", "review", "fix"]);
+  assert.equal(DEFAULT_LOOP_CONFIG.subagentCycles, true);
 });
 
 test("stored loop settings without profiles or maxRetries still parse, with the defaults", () => {
   const parsed = initiativeLoopSettings.schema.parse({ parallel: 2, reviewRounds: 3, maxFixes: 3 });
-  assert.deepEqual(parsed, { parallel: 2, reviewRounds: 3, maxFixes: 3, maxRetries: 2, profiles: emptyProfiles });
+  assert.deepEqual(parsed, {
+    parallel: 2,
+    reviewRounds: 3,
+    maxFixes: 3,
+    maxRetries: 2,
+    profiles: emptyProfiles,
+    subagentCycles: true,
+  });
 });

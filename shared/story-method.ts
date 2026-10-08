@@ -4,8 +4,10 @@
 // writes. The prompts name no skills or slash commands, so they work the same for every provider
 // (Claude, Cursor, Kiro). Edit here to change how every story is delivered.
 //
-// Implement runs one fresh agent per cycle, so no agent carries a whole story's context. Committing,
-// pushing and opening the PR are done by the plugin, not by an agent.
+// Implement runs one fresh agent per cycle, so no agent carries a whole story's context; or, given the
+// story's unticked `cycles`, one parent agent that runs each cycle in a subagent (or itself, one at a time,
+// where the provider has no subagents). Committing, pushing and opening the PR are done by the plugin,
+// not by an agent.
 
 import { LOOP_STEPS, STEP_LABELS, type LoopStep } from "./initiative-loop";
 
@@ -49,6 +51,8 @@ export type StepExtra = {
   // Implement: the one cycle this agent works, and the plan it works from.
   cycle?: Cycle;
   plan?: string;
+  // Implement parent: the cycles it runs in subagents. Only unticked ones are listed.
+  cycles?: Cycle[];
   // Extra skills the user picked for this step, named in the prompt with the path they were copied to.
   skills?: StepSkill[];
   // Existing-path entries in `## Plan` that aren't in the worktree.
@@ -178,14 +182,48 @@ Work only this cycle; a fresh agent takes the next one. Then set \`## Status\` t
 If you cannot go on (a missing decision, broken tooling, a dependency that isn't there), set it to
 \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
 
-function cycleData(cycle: Cycle, plan: string | undefined) {
+const IMPLEMENT_PARENT = `## This step: run the cycles in subagents
+The cycles to run are under \`## Cycles to run\` below the story head, in order, with the plan pasted there.
+1. Work the cycles one at a time, in order, never in parallel. For each, start a subagent and give it the
+   \`## Cycle brief\` below plus that cycle's line. Wait for its fail → pass report.
+2. When it reports the cycle done, tick its line in \`## Cycles\` (\`- [x]\`) and move on to the next cycle.
+3. If a subagent cannot go on, stop: set \`## Status\` to \`${MARKERS.implementBlocked}\` and put its reason on the
+   next line.
+If you can't start subagents, work the cycles yourself, one at a time, in the same order, following the brief.
+When every cycle is ticked, set \`## Status\` to \`${MARKERS.implementDone}\`.
+
+## Cycle brief
+Work the one cycle you were given, from \`## Plan\` in ${STATE}. The worktree may hold a half-finished cycle
+from an earlier agent; check what is already there before you start.
+1. Write this cycle's test. Run it and confirm it fails for the reason you expect.
+2. Make the smallest production change that passes it. Do not weaken the test.
+3. Revert the production change, confirm the test fails again, restore it, confirm it passes.
+4. Add one line to \`## Evidence\`: the command and the fail → pass result.
+Do not touch \`## Status\` or tick \`## Cycles\`; the parent does both. Report fail → pass, or why you
+cannot go on.`;
+
+function planData(plan: string | undefined) {
   const planLines = (plan ?? "").trim().split("\n");
   const planText = planLines.slice(0, PLAN_LINES).join("\n") + (planLines.length > PLAN_LINES ? "\n…" : "");
+  return `The plan, from \`## Plan\`:
+${planText || "_(empty — read ## Plan in the state file)_"}`;
+}
+
+function cyclesData(cycles: Cycle[], plan: string | undefined) {
+  return `## Cycles to run
+${cycles
+  .filter((cycle) => !cycle.done)
+  .map((cycle) => cycle.line)
+  .join("\n")}
+
+${planData(plan)}`;
+}
+
+function cycleData(cycle: Cycle, plan: string | undefined) {
   return `## Cycle ${cycle.number} only
 ${cycle.line}
 
-The plan, from \`## Plan\`:
-${planText || "_(empty — read ## Plan in the state file)_"}`;
+${planData(plan)}`;
 }
 
 const STEPS: Record<LoopStep, (extra: StepExtra, jira: boolean) => string> = {
@@ -208,9 +246,12 @@ const STEPS: Record<LoopStep, (extra: StepExtra, jira: boolean) => string> = {
    rewrite the plan as they push back.
 7. Only when they explicitly approve, set \`## Status\` to \`${MARKERS.planDone}\`. Waiting for them is expected.`,
 
-  implement: ({ round, cycle }) => {
+  implement: ({ round, cycle, cycles }) => {
     if (cycle) {
       return IMPLEMENT_CYCLE;
+    }
+    if (cycles?.length && round === 1) {
+      return IMPLEMENT_PARENT;
     }
     if (round > 1) {
       return `## This step: fix the review findings
@@ -266,7 +307,10 @@ on the line after \`${MARKERS.fixDone}\`.`,
 
 // Story-specific data a step needs, placed after the head so it does not break the shared prefix.
 const STEP_DATA: Partial<Record<LoopStep, (story: StoryContext, extra: StepExtra) => string>> = {
-  implement: (_story, { cycle, plan }) => (cycle ? cycleData(cycle, plan) : ""),
+  implement: (_story, { round, cycle, cycles, plan }) => {
+    if (cycle) return cycleData(cycle, plan);
+    return cycles?.length && round === 1 ? cyclesData(cycles, plan) : "";
+  },
   fix: (_story, { failing }) => `## Failing checks
 ${failing ?? "(see the PR's checks)"}`,
   pr: (story) => `## PR commands
@@ -321,10 +365,17 @@ export type AfterImplement =
   | { kind: "blocked"; reason: string };
 
 // What follows an Implement agent that wrote implement-done. `finished` is the cycle it was given,
-// or null for a whole-story or fix-findings agent. A cycle that was not ticked stops the loop, so a
-// confused agent can't make the plugin start the same cycle forever.
-export function afterImplement(state: string, finished: number | null): AfterImplement {
+// "all" for a parent that ran every cycle in subagents, or null for a whole-story or fix-findings
+// agent. A cycle that was not ticked stops the loop, so a confused agent can't make the plugin start
+// the same cycle forever.
+export function afterImplement(state: string, finished: number | "all" | null): AfterImplement {
   const cycles = readCycles(state);
+  if (finished === "all") {
+    const open = cycles.find((cycle) => !cycle.done);
+    return open
+      ? { kind: "blocked", reason: `Cycle ${open.number} was not ticked in ## Cycles when Implement finished.` }
+      : { kind: "review" };
+  }
   if (finished !== null) {
     const own = cycles.find((cycle) => cycle.number === finished);
     if (own && !own.done) {

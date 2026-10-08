@@ -44,6 +44,7 @@ test("summariseTelemetry counts recorded rows", async () => {
     reminded: 1,
     tokensAvoided: 120_000,
     byStep: {},
+    byStory: {},
   });
 });
 
@@ -64,6 +65,25 @@ test("summariseTelemetry totals turn rows per step", async () => {
   assert.deepEqual((await summariseTelemetry(null, file)).byStep, {
     plan: { turns: 2, tokens: 100_000, models: ["opus"] },
     implement: { turns: 3, tokens: 80_000, models: ["sonnet", "unknown"] },
+  });
+});
+
+test("summariseTelemetry totals turn rows per initiative and story", async () => {
+  const file = join(root, "by-story.jsonl");
+  const rows: TelemetryRow[] = [
+    row("2026-10-01T10:00:00.000Z", "a1", 40_000, "turn", { model: "opus", story: "S1", initiative: "telemetry" }),
+    row("2026-10-01T10:01:00.000Z", "a1", 60_000, "turn", { model: "sonnet", story: "S1", initiative: "telemetry" }),
+    row("2026-10-01T10:02:00.000Z", "a2", 30_000, "turn", { model: "haiku", story: "S1", initiative: "skills" }),
+    row("2026-10-01T10:03:00.000Z", "a3", 20_000, "turn", { story: "S1" }),
+    row("2026-10-01T10:04:00.000Z", "a4", 90_000, "turn", { model: "opus", initiative: "telemetry" }),
+    row("2026-10-01T10:05:00.000Z", "a1", 120_000, "warning", { level: "amber", story: "S1", initiative: "telemetry" }),
+  ];
+  for (const r of rows) await recordTelemetry(r, file);
+
+  assert.deepEqual((await summariseTelemetry(null, file)).byStory, {
+    "telemetry/S1": { turns: 2, tokens: 100_000, models: ["opus", "sonnet"] },
+    "skills/S1": { turns: 1, tokens: 30_000, models: ["haiku"] },
+    "unknown/S1": { turns: 1, tokens: 20_000, models: ["unknown"] },
   });
 });
 

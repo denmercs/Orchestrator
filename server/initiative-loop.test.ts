@@ -152,6 +152,23 @@ test("resumePrompt gives a cycle agent back its cycle and the plan", async () =>
   assert.ok(prompt.endsWith(`\n\n${RESUME_LINE}`));
 });
 
+test("resumePrompt gives a parent Implement agent back only the cycles still unticked", async () => {
+  const { worktree, labels } = fixture();
+  writeFileSync(
+    join(worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nimplement-running\n\n## Plan\nChange server/meter.ts.\n\n## Cycles\n- [x] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once\n- [ ] Cycle 3 — Resets: reset test → clear\n",
+    "utf8",
+  );
+  const prompt = await loop().resumePrompt({ ...labels, "loop-cycles": "subagents" });
+
+  assert.ok(prompt);
+  assert.match(prompt, /## This step: run the cycles in subagents/);
+  assert.match(prompt, /## Cycles to run\n- \[ \] Cycle 2 — Warns.*\n- \[ \] Cycle 3 — Resets/);
+  assert.doesNotMatch(prompt, /Cycle 1 — Reads/);
+  assert.match(prompt, /Change server\/meter\.ts\./);
+  assert.ok(prompt.endsWith(`\n\n${RESUME_LINE}`));
+});
+
 test("after a hand-over, the new agent's implement-done starts exactly one Review agent; a repeat turn end and a tick start none", async () => {
   const { story, worktree, labels } = fixture("a1");
   // The fresh compact archived a1; f1 carries the same loop labels.
@@ -251,6 +268,130 @@ function planDone() {
   return { ...fx, api, created, turnEnded };
 }
 
+test("plan-done with two unticked cycles starts one parent Implement agent; with subagentCycles off, the Cycle 1 agent", async () => {
+  const twoCycles =
+    "# S1 — Demo story\n\n## Status\nplan-done\n\n## Plan\nChange server/meter.ts.\n\n## Cycles\n- [ ] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once\n";
+  const parent = planDone();
+  writeFileSync(join(parent.worktree, ".harness", "state.md"), twoCycles, "utf8");
+
+  await loop().onTurnEnded(parent.api, parent.turnEnded("a1"));
+
+  assert.equal(parent.created.length, 1);
+  const [agent] = parent.created;
+  assert.equal(agent.labels["loop-step"], "implement");
+  assert.equal(agent.labels["loop-cycles"], "subagents");
+  assert.equal(agent.labels["loop-cycle"], undefined);
+  assert.match(agent.prompt ?? "", /## This step: run the cycles in subagents/);
+  assert.match(agent.prompt ?? "", /## Cycles to run\n- \[ \] Cycle 1 — Reads.*\n- \[ \] Cycle 2 — Warns/);
+  assert.equal(storyMeta(parent.story).cycles, "subagents");
+  assert.equal(storyMeta(parent.story).cycle, undefined);
+
+  const perCycle = planDone();
+  writeFileSync(join(perCycle.worktree, ".harness", "state.md"), twoCycles, "utf8");
+  const off = createInitiativeLoop(
+    async () => ({ ...DEFAULT_LOOP_CONFIG, subagentCycles: false }),
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+  );
+
+  await off.onTurnEnded(perCycle.api, perCycle.turnEnded("a1"));
+
+  assert.deepEqual(
+    perCycle.created.map((item) => [item.labels["loop-cycle"], item.labels["loop-cycles"]]),
+    [["1", undefined]],
+  );
+  assert.match(perCycle.created[0].prompt ?? "", /## Cycle 1 only/);
+  assert.equal(storyMeta(perCycle.story).cycles, undefined);
+});
+
+test("the parent's implement-done commits once and starts Review; with a cycle unticked the story blocks", async () => {
+  const finish = (cycles: string) => {
+    const fx = fixture("a1");
+    writeFrontmatter(fx.story, { cycles: "subagents" });
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: fx.worktree, encoding: "utf8" }).trim();
+    git("config", "user.email", "test@example.com");
+    git("config", "user.name", "Test");
+    writeFileSync(join(fx.worktree, "meter.ts"), "export const meter = 1;\n", "utf8");
+    writeFileSync(
+      join(fx.worktree, ".harness", "state.md"),
+      `# S1 — Demo story\n\n## Status\nimplement-done\n\n## Cycles\n${cycles}`,
+      "utf8",
+    );
+    const { api, created } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-cycles": "subagents" } }]);
+    const turnEnded = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
+      ReturnType<typeof loop>["onTurnEnded"]
+    >[1];
+    return { ...fx, api, created, turnEnded, git };
+  };
+
+  const done = finish("- [x] Cycle 1 — Reads: test → change\n- [x] Cycle 2 — Warns: warning test → warn once\n");
+  await loop().onTurnEnded(done.api, done.turnEnded);
+
+  assert.equal(done.git("log", "--format=%s"), "S1: Implement");
+  assert.deepEqual(
+    done.created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"]]),
+    [["review", "1"]],
+  );
+
+  const open = finish("- [x] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once\n");
+  await loop().onTurnEnded(open.api, open.turnEnded);
+
+  assert.equal(open.created.length, 0);
+  assert.equal(storyMeta(open.story).status, "blocked");
+  assert.match(storyMeta(open.story).blocked_reason ?? "", /Cycle 2/);
+});
+
+test("a per-cycle agent's implement-done with cycles left hands them to one parent Implement agent", async () => {
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { cycle: 1 });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: fx.worktree, encoding: "utf8" }).trim();
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  writeFileSync(join(fx.worktree, "meter.ts"), "export const meter = 1;\n", "utf8");
+  writeFileSync(
+    join(fx.worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nimplement-done\n\n## Cycles\n- [x] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once\n- [ ] Cycle 3 — Resets: reset test → reset\n",
+    "utf8",
+  );
+  const { api, created } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-cycle": "1" } }]);
+  const turnEnded = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
+    ReturnType<typeof loop>["onTurnEnded"]
+  >[1];
+
+  await loop().onTurnEnded(api, turnEnded);
+
+  assert.equal(git("log", "--format=%s"), "S1: Cycle 1 — Reads");
+  assert.deepEqual(
+    created.map((agent) => [agent.labels["loop-cycle"], agent.labels["loop-cycles"]]),
+    [[undefined, "subagents"]],
+  );
+  assert.match(created[0].prompt ?? "", /## Cycles to run\n- \[ \] Cycle 2 — Warns.*\n- \[ \] Cycle 3 — Resets/);
+  assert.equal(storyMeta(fx.story).cycles, "subagents");
+});
+
+test("an older Implement agent without the parent label doesn't move a story its parent owns", async () => {
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { cycles: "subagents", agent: "n9" });
+  writeFileSync(
+    join(fx.worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nimplement-done\n\n## Cycles\n- [x] Cycle 1 — Reads: test → change\n",
+    "utf8",
+  );
+  // a1 is a round-1 Implement agent from before the parent: same step, no cycle, no `loop-cycles`.
+  const { api, created } = fakePaseo([
+    { id: "a1", labels: fx.labels },
+    { id: "n9", labels: { ...fx.labels, "loop-cycles": "subagents" } },
+  ]);
+  const turnEnded = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
+    ReturnType<typeof loop>["onTurnEnded"]
+  >[1];
+
+  await loop().onTurnEnded(api, turnEnded);
+
+  assert.equal(created.length, 0);
+  assert.equal(storyMeta(fx.story).status, "implementing");
+});
+
 // A pipeline whose Implement phase has the tdd extra from a connected folder source.
 function tddPipeline() {
   const source = tddSource();
@@ -260,10 +401,11 @@ function tddPipeline() {
   return { phases, sources: [source] };
 }
 
-// A loop that reads `pipeline` on each call, so a test can change it between steps.
+// A loop that reads `pipeline` on each call, so a test can change it between steps. One agent per
+// cycle, as these tests were written for.
 function tddLoop(pipeline = tddPipeline()) {
   return createInitiativeLoop(
-    async () => DEFAULT_LOOP_CONFIG,
+    async () => ({ ...DEFAULT_LOOP_CONFIG, subagentCycles: false }),
     async () => FALLBACK_AGENT_CONFIG,
     async () => pipeline,
   );
@@ -495,4 +637,27 @@ test("a permission request blocks the story and keeps its slot; answering it put
     [meta.status, meta.blocked_reason, meta.blocked_from, meta.waiting_on],
     ["implementing", undefined, undefined, undefined],
   );
+});
+
+test("a dead subagent-cycles parent comes back as a parent with only the open cycles", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  writeFrontmatter(story, { cycles: "subagents" });
+  writeFileSync(
+    join(worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nimplement-running\n\n## Cycles\n- [x] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once\n",
+    "utf8",
+  );
+  const { api, created } = fakePaseo([{ id: "a1", labels: { ...labels, "loop-cycles": "subagents" }, status: "closed" }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.deepEqual(
+    created.map((agent) => [agent.labels["loop-cycles"], agent.labels["loop-attempt"], agent.labels["loop-cycle"]]),
+    [["subagents", "1", undefined]],
+  );
+  assert.match(created[0].prompt ?? "", /Cycle 2 — Warns/);
+  assert.doesNotMatch(created[0].prompt ?? "", /Cycle 1 — Reads/);
+  assert.equal(storyMeta(story).cycles, "subagents");
 });
