@@ -173,7 +173,7 @@ export default function contribute(server: PluginServerContext) {
     contextPaseo = paseo;
     return contextWatch.sessions(agentIds);
   });
-  server.handle(contextSummaryRpc, ({ since }) => summariseTelemetry(since));
+  server.handle(contextSummaryRpc, ({ since, today }) => summariseTelemetry(since, undefined, today));
   const readPipeline = async () => {
     const values = await readPipelineValues();
     return values?.enabled ? values : null;

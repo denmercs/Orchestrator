@@ -45,6 +45,8 @@ test("summariseTelemetry counts recorded rows", async () => {
     tokensAvoided: 120_000,
     byStep: {},
     byStory: {},
+    spendToday: 0,
+    spendWeek: 0,
   });
 });
 
@@ -85,6 +87,33 @@ test("summariseTelemetry totals turn rows per initiative and story", async () =>
     "skills/S1": { turns: 1, tokens: 30_000, models: ["haiku"] },
     "unknown/S1": { turns: 1, tokens: 20_000, models: ["unknown"] },
   });
+});
+
+test("summariseTelemetry derives spend today and this week from cumulative session cost", async () => {
+  const file = join(root, "spend.jsonl");
+  const today = "2026-09-20T00:00:00.000Z";
+  const rows: TelemetryRow[] = [
+    // a3 spent only before the week: nothing counts.
+    row("2026-09-01T10:00:00.000Z", "a3", 10_000, "turn", { costUsd: 9 }),
+    // a1: 1.00 is the week baseline, 4.00 (last before today) the today baseline, 6.00 the last in both windows.
+    row("2026-09-10T10:00:00.000Z", "a1", 10_000, "turn", { costUsd: 1 }),
+    row("2026-09-15T10:00:00.000Z", "a1", 10_000, "turn", { costUsd: 3 }),
+    row("2026-09-19T23:59:59.999Z", "a1", 10_000, "turn", { costUsd: 4 }),
+    row(today, "a1", 10_000, "turn", { costUsd: 4.5 }),
+    row("2026-09-20T06:00:00.000Z", "a1", 10_000, "turn", { costUsd: 6 }),
+    // Pre-S10 shape and a provider with no cost: both skipped for spend.
+    row("2026-09-20T07:00:00.000Z", "a1", 10_000, "turn"),
+    row("2026-09-20T08:00:00.000Z", "a1", 10_000, "turn", { costUsd: null }),
+    // a2: no baseline before the week; its cost falls today, which clamps at 0.
+    row("2026-09-19T10:00:00.000Z", "a2", 10_000, "turn", { costUsd: 2 }),
+    row("2026-09-20T01:00:00.000Z", "a2", 10_000, "turn", { costUsd: 0.5 }),
+  ];
+  for (const r of rows) await recordTelemetry(r, file);
+
+  const summary = await summariseTelemetry("2026-09-20T05:00:00.000Z", file, today);
+  assert.equal(summary.spendToday, 2);
+  assert.equal(summary.spendWeek, 5.5);
+  assert.equal(summary.turns, 3);
 });
 
 test("summariseTelemetry drops rows before since", async () => {
@@ -134,4 +163,28 @@ test("summariseTelemetry counts rows from the rotated file and the current one",
   assert.equal(summary.turns, 3);
   assert.equal(summary.sessions, 2);
   assert.equal(summary.tokensAvoided, 120_000);
+});
+
+test("summariseTelemetry takes the spend baseline from the rotated file", async () => {
+  const file = join(root, "spend-rotated.jsonl");
+  const today = "2026-09-20T00:00:00.000Z";
+  const baseline = row("2026-09-19T10:00:00.000Z", "a1", 10_000, "turn", { costUsd: 3 });
+  await writeFile(join(root, "spend-rotated.1.jsonl"), `${JSON.stringify(baseline)}\n`);
+  await recordTelemetry(row("2026-09-20T06:00:00.000Z", "a1", 10_000, "turn", { costUsd: 5 }), file);
+
+  const summary = await summariseTelemetry(null, file, today);
+  assert.equal(summary.spendToday, 2);
+  assert.equal(summary.spendWeek, 5);
+});
+
+test("summariseTelemetry steps the week back whole days from the caller's today, whatever the server's zone", async () => {
+  const file = join(root, "spend-week.jsonl");
+  // US clocks fall back on 2026-11-01, inside this week; the caller's midnight is 05:00Z.
+  const today = "2026-11-05T05:00:00.000Z";
+  await recordTelemetry(row("2026-10-30T04:30:00.000Z", "a1", 10_000, "turn", { costUsd: 1 }), file);
+  await recordTelemetry(row("2026-11-05T06:00:00.000Z", "a1", 10_000, "turn", { costUsd: 4 }), file);
+
+  // Week start is 2026-10-30T05:00Z exactly, so the 04:30Z row is the baseline.
+  const summary = await summariseTelemetry(null, file, today);
+  assert.equal(summary.spendWeek, 3);
 });

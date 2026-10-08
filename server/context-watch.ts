@@ -25,6 +25,8 @@ export type WatchAgent = {
   labels: Record<string, string>;
   // Recorded for analysis only, never branched on.
   model: string | null;
+  // The session's cumulative cost so far (`lastUsage.totalCostUsd`); null when the provider reports none.
+  costUsd: number | null;
 };
 
 export type WatchPort = {
@@ -116,6 +118,7 @@ export function paseoPort(
         commands: listed && !listed.error ? listed.commands : [],
         labels: refreshed.agent.labels ?? {},
         model: refreshed.agent.model ?? null,
+        costUsd: refreshed.agent.lastUsage?.totalCostUsd ?? null,
       };
     },
     async send(agentId, text) {
@@ -206,6 +209,7 @@ export function createContextWatch(port: WatchPort) {
       cycle: rawCycle !== undefined && /^\d+$/.test(rawCycle) ? Number(rawCycle) : null,
       story: labels["loop-story"] ?? null,
       initiative: labels["loop-initiative"] ?? null,
+      costUsd: agent.costUsd,
     });
   }
 
