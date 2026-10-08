@@ -271,6 +271,7 @@ function PhaseCard({
         <>
           <View style={styles.rowWrap}>
             <Text style={styles.label}>Runs</Text>
+            <Text style={styles.muted}>Story pipeline only</Text>
             <Chip
               label={phase.runs ? `${phase.runs.name} · ${sourceLabel(values, phase.runs.source)} ▾` : "built-in step ▾"}
               active
@@ -299,7 +300,10 @@ function PhaseCard({
           ) : null}
 
           <View style={styles.gap6}>
-            <Text style={styles.label}>Also loads</Text>
+            <View style={styles.rowWrap}>
+              <Text style={styles.label}>Also loads</Text>
+              <Text style={styles.muted}>Story pipeline and initiative loop</Text>
+            </View>
             <View style={styles.chipRow}>
               {skills.extras.map((extra) => (
                 <Chip

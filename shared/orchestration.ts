@@ -398,6 +398,8 @@ export const epicStory = z.object({
   dependsOn: z.array(z.string()),
   blockedBy: z.string(),
   blockedReason: z.string(),
+  // Written by the initiative loop: the step's skill warnings, joined with " · ". Empty when none.
+  skillWarnings: z.string(),
   // Set when an agent filed this story while working on another.
   discoveredFrom: z.string(),
   pr: z.number().nullable(),

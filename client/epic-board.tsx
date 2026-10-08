@@ -866,6 +866,7 @@ function StoryDrawer({
           {story.status === "blocked" && story.blockedReason ? (
             <Text style={styles.reason}>{story.blockedReason}</Text>
           ) : null}
+          {story.skillWarnings ? <Text style={styles.reason}>Skill warnings: {story.skillWarnings}</Text> : null}
           {story.status === "awaiting-approval" ? (
             <Text style={styles.muted}>The plan is ready. Open its session to ask questions, push back, or approve it.</Text>
           ) : null}
