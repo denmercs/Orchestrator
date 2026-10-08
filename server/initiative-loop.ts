@@ -588,9 +588,10 @@ export function createInitiativeLoop(
           await finishFix(story);
           return;
         }
-        // Only the story's current step (and cycle) moves it on; an older session talking doesn't.
+        // Only the story's current step (and cycle, or parent) moves it on; an older session talking doesn't.
         if (labels["loop-step"] !== story.meta.step) return;
         if ((labels["loop-cycle"] ?? "") !== (story.meta.cycle ?? "")) return;
+        if ((labels["loop-cycles"] ?? "") !== (story.meta.cycles ?? "")) return;
         await reconcile(api, await readConfig(), init, phaseDir, story, true);
         await advance(api, await readConfig(), init);
       });

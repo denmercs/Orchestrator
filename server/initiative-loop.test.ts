@@ -330,6 +330,57 @@ test("the parent's implement-done commits once and starts Review; with a cycle u
   assert.match(storyMeta(open.story).blocked_reason ?? "", /Cycle 2/);
 });
 
+test("a per-cycle agent's implement-done with cycles left hands them to one parent Implement agent", async () => {
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { cycle: 1 });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: fx.worktree, encoding: "utf8" }).trim();
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  writeFileSync(join(fx.worktree, "meter.ts"), "export const meter = 1;\n", "utf8");
+  writeFileSync(
+    join(fx.worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nimplement-done\n\n## Cycles\n- [x] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once\n- [ ] Cycle 3 — Resets: reset test → reset\n",
+    "utf8",
+  );
+  const { api, created } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-cycle": "1" } }]);
+  const turnEnded = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
+    ReturnType<typeof loop>["onTurnEnded"]
+  >[1];
+
+  await loop().onTurnEnded(api, turnEnded);
+
+  assert.equal(git("log", "--format=%s"), "S1: Cycle 1 — Reads");
+  assert.deepEqual(
+    created.map((agent) => [agent.labels["loop-cycle"], agent.labels["loop-cycles"]]),
+    [[undefined, "subagents"]],
+  );
+  assert.match(created[0].prompt ?? "", /## Cycles to run\n- \[ \] Cycle 2 — Warns.*\n- \[ \] Cycle 3 — Resets/);
+  assert.equal(storyMeta(fx.story).cycles, "subagents");
+});
+
+test("an older Implement agent without the parent label doesn't move a story its parent owns", async () => {
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { cycles: "subagents", agent: "n9" });
+  writeFileSync(
+    join(fx.worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nimplement-done\n\n## Cycles\n- [x] Cycle 1 — Reads: test → change\n",
+    "utf8",
+  );
+  // a1 is a round-1 Implement agent from before the parent: same step, no cycle, no `loop-cycles`.
+  const { api, created } = fakePaseo([
+    { id: "a1", labels: fx.labels },
+    { id: "n9", labels: { ...fx.labels, "loop-cycles": "subagents" } },
+  ]);
+  const turnEnded = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
+    ReturnType<typeof loop>["onTurnEnded"]
+  >[1];
+
+  await loop().onTurnEnded(api, turnEnded);
+
+  assert.equal(created.length, 0);
+  assert.equal(storyMeta(fx.story).status, "implementing");
+});
+
 // A pipeline whose Implement phase has the tdd extra from a connected folder source.
 function tddPipeline() {
   const source = tddSource();
