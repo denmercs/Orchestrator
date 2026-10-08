@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -37,10 +38,12 @@ export function pickMcpServers(servers: Record<string, HostMcpServer>, scope: Mc
 }
 
 // Returned env/headers hold live credentials (API tokens, auth headers). Never log or return them over RPC.
-export async function readHostMcpServers(): Promise<Record<string, HostMcpServer>> {
+// Servers that ~/.claude.json scopes to a project attach only when `cwd` is inside that project.
+export async function readHostMcpServers(cwd?: string | null): Promise<Record<string, HostMcpServer>> {
+  const folders = cwd ? await agentFolders(cwd) : [];
   const servers: Record<string, HostMcpServer> = {};
-  for (const [name, raw] of await loadNamedMcpServers()) {
-    if (servers[name]) {
+  for (const { name, raw, project } of await loadNamedMcpServers()) {
+    if (servers[name] || (project && !isInsideProject(project, folders))) {
       continue;
     }
     const mapped = toPaseoMcpServer(raw);
@@ -53,7 +56,8 @@ export async function readHostMcpServers(): Promise<Record<string, HostMcpServer
 
 // Contains JIRA_API_TOKEN. Same rule as above.
 export async function readAtlassianMcpEnv(): Promise<Record<string, string | undefined>> {
-  for (const [name, raw] of await loadNamedMcpServers()) {
+  // Project scope is ignored here: Jira credentials count wherever they are defined.
+  for (const { name, raw } of await loadNamedMcpServers()) {
     if (!isAtlassianName(name) && !jiraEnvFromServer(raw).JIRA_API_TOKEN) {
       continue;
     }
@@ -65,8 +69,51 @@ export async function readAtlassianMcpEnv(): Promise<Record<string, string | und
   return {};
 }
 
-async function loadNamedMcpServers(): Promise<Array<[string, Record<string, unknown>]>> {
-  const found: Array<[string, Record<string, unknown>]> = [];
+// True when any of `folders` is `project` or sits under it. `/x/lifeway` does not contain
+// `/x/lifeway-discipleship`.
+export function isInsideProject(project: string, folders: string[]) {
+  const root = path.resolve(project);
+  return folders.some((folder) => {
+    const resolved = path.resolve(folder);
+    return resolved === root || resolved.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+  });
+}
+
+// For a linked worktree, the folder in the main checkout at the same relative spot as `cwd`.
+// Null for a plain checkout, or when the common dir is bare and has no checkout beside it.
+export function mainCheckoutPath(cwd: string, toplevel: string, commonDir: string): string | null {
+  const common = path.resolve(commonDir);
+  if (path.basename(common) !== ".git") {
+    return null;
+  }
+  const main = path.dirname(common);
+  const top = path.resolve(toplevel);
+  if (top === main) {
+    return null;
+  }
+  return path.join(main, path.relative(top, path.resolve(cwd)));
+}
+
+type NamedMcpServer = { name: string; raw: Record<string, unknown>; project?: string };
+
+// `cwd`, plus its spot in the main checkout when it is a git worktree. Any git failure means just `cwd`.
+function agentFolders(cwd: string): Promise<string[]> {
+  return new Promise((done) => {
+    execFile(
+      "git",
+      ["rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"],
+      { cwd, timeout: 5_000 },
+      (error, stdout) => {
+        const [commonDir, toplevel] = error ? [] : stdout.trim().split("\n");
+        const main = commonDir && toplevel ? mainCheckoutPath(cwd, toplevel, commonDir) : null;
+        done(main ? [cwd, main] : [cwd]);
+      },
+    );
+  });
+}
+
+async function loadNamedMcpServers(): Promise<NamedMcpServer[]> {
+  const found: NamedMcpServer[] = [];
   const seenFiles = new Set<string>();
   for (const file of await mcpConfigFiles()) {
     if (seenFiles.has(file)) {
@@ -77,7 +124,25 @@ async function loadNamedMcpServers(): Promise<Array<[string, Record<string, unkn
     if (parsed == null) {
       continue;
     }
-    found.push(...walkNamedMcpServers(parsed));
+    found.push(...(path.basename(file) === ".claude.json" ? walkClaudeJson(parsed) : walkAll(parsed)));
+  }
+  return found;
+}
+
+function walkAll(value: unknown, project?: string): NamedMcpServer[] {
+  return walkNamedMcpServers(value).map(([name, raw]) => (project ? { name, raw, project } : { name, raw }));
+}
+
+// Claude Code keeps per-project servers under `projects[<path>].mcpServers`; tag them with their path.
+function walkClaudeJson(value: unknown): NamedMcpServer[] {
+  const record = asRecord(value);
+  if (!record) {
+    return walkAll(value);
+  }
+  const { projects, ...rest } = record;
+  const found = walkAll(rest);
+  for (const [project, entry] of Object.entries(asRecord(projects) ?? {})) {
+    found.push(...walkAll(entry, project));
   }
   return found;
 }
