@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { pickLines } from "../shared/brief";
 
 // A story PR's merge state and CI, through `gh`, reduced to one state the initiative loop acts on.
 
@@ -100,13 +101,13 @@ export async function prStatus(cwd: string, pr: number | string): Promise<PrStat
   }
 }
 
-// The failed checks with the tail of each failed GitHub Actions log, for the Fix CI prompt.
+// The failed checks with the failures and summary of each failed GitHub Actions log, for the Fix CI prompt.
 export async function failureReport(cwd: string, failing: FailingCheck[]) {
   const runs = [...new Set(failing.map((check) => check.runId).filter((id): id is string => Boolean(id)))];
   const logs = await Promise.all(
     runs.slice(0, 3).map(async (runId) => {
       const log = await gh(["run", "view", runId, "--log-failed"], cwd, 60_000).catch(() => "");
-      return log ? `### Run ${runId} (failed steps, last lines)\n\`\`\`\n${log.slice(-4000)}\n\`\`\`` : "";
+      return log ? `### Run ${runId} (failed steps, brief)\n\`\`\`\n${briefCiLog(log)}\n\`\`\`` : "";
     }),
   );
   return [failing.map((check) => `- ${check.name}${check.url ? ` — ${check.url}` : ""}`).join("\n"), ...logs.filter(Boolean)].join(
@@ -123,4 +124,10 @@ export async function prForBranch(cwd: string, branch: string) {
   } catch {
     return null;
   }
+}
+
+// The lines of a `gh run view --log-failed` log worth showing, without gh's per-line prefix.
+export function briefCiLog(log: string) {
+  const lines = log.split("\n").map((line) => line.replace(/^[^\t\n]*\t[^\t\n]*\t\uFEFF?\d{4}-\d\d-\d\dT\S+Z ?/, ""));
+  return pickLines(lines.join("\n")).join("\n").slice(-4000);
 }

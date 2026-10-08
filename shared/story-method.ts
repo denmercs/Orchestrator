@@ -84,6 +84,7 @@ function context(story: StoryContext) {
     story.phaseLabel
       ? `- ${story.phaseLabel} — ${story.phaseTitle ?? ""}${story.architectureFile ? `: plan in ${story.architectureFile}` : ""}`
       : "",
+    story.storiesDir ? `- Stories folder: ${story.storiesDir}` : "",
     `- Branch ${story.branch || "(this worktree's branch)"}, cut from ${story.base}. This worktree is the story's only checkout.`,
   ].filter(Boolean);
   return [
@@ -107,18 +108,22 @@ function followUps(story: StoryContext) {
   Note it under \`## Review findings\` as "follow-up: <what and why>".`;
   }
   return `- Work found outside this story (a bug elsewhere, missing groundwork, a follow-up) is not done here. File it as a
-  new story file in ${story.storiesDir}/ named NN-<slug>.md (NN after the highest existing number) with
-  frontmatter \`id\` (next free id in the same style), \`title\`, \`status: todo\`, \`depends_on\` (only stories that
-  must merge first) and \`discovered_from: ${story.id}\`, and a short body saying what and why. At most three per
-  story; after that, note it under \`## Review findings\` instead.`;
+  new story file in the stories folder named under \`## Where it sits\`, named NN-<slug>.md (NN after the highest
+  existing number) with frontmatter \`id\` (next free id in the same style), \`title\`, \`status: todo\`,
+  \`depends_on\` (only stories that must merge first) and \`discovered_from\` set to this story's id, and a short
+  body saying what and why. At most three per story; after that, note it under \`## Review findings\` instead.`;
 }
+
+const FRESH = "You are a fresh agent for this step only, inside the Orchestrator story loop.";
 
 const RULES = (story: StoryContext) => `## Rules for every step
 - Work only in this worktree, on this story. Read AGENTS.md, CLAUDE.md, .cursor/rules, .kiro/steering and
   CONTRIBUTING.md when they exist, and follow the repo's own scripts for tests, lint and build.
 - ${STATE} is this story's working file. Keep its section headings; update only the sections your step owns.
 - Keep context small: start from the files named in \`## Plan\` instead of searching the whole repo, run the
-  narrowest test command that covers your work, and pipe long output through \`tail -n 60\`.
+  narrowest test command that covers your work, and run tests, lint and build through \`.harness/bin/brief\`
+  (for example \`.harness/bin/brief npm test\`). Its output is failures plus a summary; the full log is in
+  \`.harness/logs/\`.
 - End the step by replacing everything under \`## Status\` with your marker on its own line. The plugin reads
   that line when your turn ends and starts the next step in a fresh agent. Do not start the next step yourself.
 - Do not commit, push or merge. The plugin commits each finished step and opens the PR.
@@ -127,23 +132,19 @@ ${followUps(story)}
 
 export function stepPrompt(step: LoopStep, story: StoryContext, extra: StepExtra) {
   const label = extra.cycle ? `${STEP_LABELS[step]} cycle ${extra.cycle.number}` : STEP_LABELS[step];
-  const head = `${label} for story ${story.id} — ${story.title}${extra.round > 1 ? ` (round ${extra.round})` : ""}.
-You are a fresh agent for this step only, inside the Orchestrator story loop.`;
+  const head = `${label} for story ${story.id} — ${story.title}${extra.round > 1 ? ` (round ${extra.round})` : ""}.`;
   const skills = extra.skills?.length ? `Also use these skills: ${extra.skills.join(", ")}.` : "";
-  return [head, skills, "", STEPS[step](story, extra), "", RULES(story), "", context(story)]
+  const jira = Boolean(story.ticketUrl) && !story.body.trim();
+  // Text shared by every story at this step comes first, so the provider can cache it across agents.
+  // STEPS get no story; story values go after the head, in STEP_DATA and context().
+  const data = STEP_DATA[step]?.(story, extra) ?? "";
+  return [FRESH, "", RULES(story), "", STEPS[step](extra, jira), "", head, skills, "", data, "", context(story)]
     .filter((line, i, all) => line !== "" || all[i - 1] !== "")
     .join("\n");
 }
 
-function implementCycle(cycle: Cycle, plan: string | undefined) {
-  const planLines = (plan ?? "").trim().split("\n");
-  const planText = planLines.slice(0, PLAN_LINES).join("\n") + (planLines.length > PLAN_LINES ? "\n…" : "");
-  return `## This step: Cycle ${cycle.number} only
-${cycle.line}
-
-The plan, from \`## Plan\`:
-${planText || "_(empty — read ## Plan in the state file)_"}
-
+const IMPLEMENT_CYCLE = `## This step: one implement cycle
+Work the one cycle under \`## Cycle N only\` below the story head, from the plan pasted there.
 1. Write this cycle's test. Run it and confirm it fails for the reason you expect.
 2. Make the smallest production change that passes it. Do not weaken the test.
 3. Revert the production change, confirm the test fails again, restore it, confirm it passes.
@@ -152,11 +153,20 @@ ${planText || "_(empty — read ## Plan in the state file)_"}
 Work only this cycle; a fresh agent takes the next one. Then set \`## Status\` to \`${MARKERS.implementDone}\`.
 If you cannot go on (a missing decision, broken tooling, a dependency that isn't there), set it to
 \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
+
+function cycleData(cycle: Cycle, plan: string | undefined) {
+  const planLines = (plan ?? "").trim().split("\n");
+  const planText = planLines.slice(0, PLAN_LINES).join("\n") + (planLines.length > PLAN_LINES ? "\n…" : "");
+  return `## Cycle ${cycle.number} only
+${cycle.line}
+
+The plan, from \`## Plan\`:
+${planText || "_(empty — read ## Plan in the state file)_"}`;
 }
 
-const STEPS: Record<LoopStep, (story: StoryContext, extra: StepExtra) => string> = {
-  plan: (story) => `## This step: plan the story, then wait for approval
-1. Read the story${story.ticketUrl && !story.body.trim() ? " (the Jira ticket and its acceptance criteria)" : ""}, its phase plan and the code it touches. Use real paths from this checkout.
+const STEPS: Record<LoopStep, (extra: StepExtra, jira: boolean) => string> = {
+  plan: (_extra, jira) => `## This step: plan the story, then wait for approval
+1. Read the story${jira ? " (the Jira ticket and its acceptance criteria)" : ""}, its phase plan and the code it touches. Use real paths from this checkout.
 2. Write \`## Plan\` in ${STATE}: the approach in a few lines, the files you expect to change, and how the
    story's acceptance will be checked. Later agents work from this section alone, so name the files.
 3. Write \`## Open decisions\`: each real choice as "question → recommended answer → what changes either way".
@@ -170,9 +180,9 @@ const STEPS: Record<LoopStep, (story: StoryContext, extra: StepExtra) => string>
    rewrite the plan as they push back.
 7. Only when they explicitly approve, set \`## Status\` to \`${MARKERS.planDone}\`. Waiting for them is expected.`,
 
-  implement: (_story, { round, cycle, plan }) => {
+  implement: ({ round, cycle }) => {
     if (cycle) {
-      return implementCycle(cycle, plan);
+      return IMPLEMENT_CYCLE;
     }
     if (round > 1) {
       return `## This step: fix the review findings
@@ -191,8 +201,9 @@ Then set \`## Status\` to \`${MARKERS.implementDone}\`.
 If you cannot go on, set it to \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
   },
 
-  review: (story) => `## This step: review the change as a fresh critic
-Review \`git diff ${story.base}...HEAD\` against the story, its acceptance, \`## Plan\` and \`## Cycles\`. Do not fix anything.
+  review: () => `## This step: review the change as a fresh critic
+Review the diff against the base branch named under \`## Where it sits\` (\`git diff <base>...HEAD\`): check it
+against the story, its acceptance, \`## Plan\` and \`## Cycles\`. Do not fix anything.
 Check:
 - Every acceptance check is met, and each cycle has a test that would fail without its change.
 - Correctness: edge cases, error paths, concurrency, data loss.
@@ -208,23 +219,31 @@ If there are no findings that must be fixed, set \`## Status\` to \`${MARKERS.re
 \`${MARKERS.reviewFailed}\`. The plugin opens the PR after a pass.`,
 
   // Kept for stories that were already at this step; new stories get their PR from the plugin.
-  pr: (story) => `## This step: open the pull request
-1. Push the branch: \`git push -u origin ${story.branch}\`.
-2. Open the PR: \`gh pr create --base ${story.base.replace(/^origin\//, "")} --head ${story.branch} --title "${story.id}: ${story.title.replace(/"/g, "'")}" --body-file .harness/pr-body.md\`.
+  pr: () => `## This step: open the pull request
+1. Push the branch with the push command under \`## PR commands\`.
+2. Open the PR with the \`gh pr create\` command under \`## PR commands\`.
    If a PR for the branch already exists, keep it.
 3. Set \`## Status\` to \`${MARKERS.prDone}\` with the PR URL on the next line.
 This step may push. Do not wait for CI and do not merge.`,
 
-  fix: (_story, { round, failing }) => `## This step: fix the failing CI checks (attempt ${round})
-These checks failed on the PR's latest commit:
-
-${failing ?? "(see the PR's checks)"}
+  fix: ({ round }) => `## This step: fix the failing CI checks (attempt ${round})
+The checks that failed on the PR's latest commit are under \`## Failing checks\` below the story head.
 
 1. Reproduce each failure locally with the repo's own command where you can.
 2. Fix the cause, not the check. Do not skip, disable or weaken tests or lint rules.
 3. Set \`## Status\` to \`${MARKERS.fixDone}\` with one line on what you changed. The plugin commits and pushes.
 If the failure is not caused by this branch (flaky infrastructure, a broken base branch), change nothing and say so
 on the line after \`${MARKERS.fixDone}\`.`,
+};
+
+// Story-specific data a step needs, placed after the head so it does not break the shared prefix.
+const STEP_DATA: Partial<Record<LoopStep, (story: StoryContext, extra: StepExtra) => string>> = {
+  implement: (_story, { cycle, plan }) => (cycle ? cycleData(cycle, plan) : ""),
+  fix: (_story, { failing }) => `## Failing checks
+${failing ?? "(see the PR's checks)"}`,
+  pr: (story) => `## PR commands
+- Push: \`git push -u origin ${story.branch}\`
+- Open: \`gh pr create --base ${story.base.replace(/^origin\//, "")} --head ${story.branch} --title "${story.id}: ${story.title.replace(/"/g, "'")}" --body-file .harness/pr-body.md\``,
 };
 
 // The first non-empty line under `## Status`, and the lines after it (a reason or a URL).

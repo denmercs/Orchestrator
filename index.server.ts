@@ -219,7 +219,7 @@ export default function contribute(server: PluginServerContext) {
     return listMergedPrs();
   });
   const offBeforeCreate = server.before("agent.create", async ({ request }) => {
-    const hostServers = pickMcpServers(await readHostMcpServers(), mcpScopeFor(request.config.cwd));
+    const hostServers = pickMcpServers(await readHostMcpServers(request.config.cwd), mcpScopeFor(request.config.cwd));
     if (Object.keys(hostServers).length === 0) {
       return;
     }

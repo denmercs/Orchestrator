@@ -8,6 +8,7 @@ import {
   formatTokens,
   pillMenu,
   pillView,
+  stepTiles,
   summaryTiles,
   usageChanged,
 } from "./context-pill-model";
@@ -123,6 +124,7 @@ test("summaryTiles: over threshold, warnings, taken vs ignored, auto, tokens avo
     ignored: 1,
     reminded: 1,
     tokensAvoided: 412_000,
+    byStep: {},
   });
   assert.deepEqual(tiles, [
     { label: "Sessions over threshold", value: "2" },
@@ -131,6 +133,46 @@ test("summaryTiles: over threshold, warnings, taken vs ignored, auto, tokens avo
     { label: "Auto-compacts", value: "4" },
     { label: "Tokens avoided", value: "412k" },
   ]);
+});
+
+const emptySummary = {
+  turns: 0,
+  sessions: 0,
+  sessionsOverThreshold: 0,
+  warnings: 0,
+  compactions: { native: 0, fresh: 0, inferred: 0 },
+  ignored: 0,
+  reminded: 0,
+  tokensAvoided: 0,
+  byStep: {},
+};
+
+test("stepTiles: loop order then the rest A-Z, tokens · turns · models", () => {
+  const tiles = stepTiles({
+    ...emptySummary,
+    byStep: {
+      zeta: { turns: 1, tokens: 950, models: ["unknown"] },
+      pr: { turns: 2, tokens: 40_000, models: ["haiku"] },
+      review: { turns: 3, tokens: 1_200_000, models: ["opus", "sonnet"] },
+      alpha: { turns: 4, tokens: 12_000, models: ["sonnet"] },
+      implement: { turns: 9, tokens: 956_000, models: ["sonnet"] },
+      plan: { turns: 5, tokens: 300_000, models: ["opus"] },
+      fix: { turns: 1, tokens: 80_000, models: ["sonnet"] },
+    },
+  });
+  assert.deepEqual(tiles, [
+    { label: "plan", value: "300k · 5 turns · opus" },
+    { label: "implement", value: "956k · 9 turns · sonnet" },
+    { label: "review", value: "1.2M · 3 turns · opus, sonnet" },
+    { label: "fix", value: "80k · 1 turn · sonnet" },
+    { label: "pr", value: "40k · 2 turns · haiku" },
+    { label: "alpha", value: "12k · 4 turns · sonnet" },
+    { label: "zeta", value: "950 · 1 turn · unknown" },
+  ]);
+});
+
+test("stepTiles: no steps gives no tiles", () => {
+  assert.deepEqual(stepTiles(emptySummary), []);
 });
 
 test("toastQueue: a level toasts again once a compaction re-arms it", () => {

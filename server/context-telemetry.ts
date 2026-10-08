@@ -45,6 +45,11 @@ export type TelemetryRow = {
   level?: "amber" | "red";
   // On `compact.*` rows: the context before the compact.
   preTokens?: number;
+  // Absent on rows written before S6. `model` is null when the agent runs its provider's default.
+  model?: string | null;
+  // From the `loop-cycle` and `loop-story` labels; null outside the loop.
+  cycle?: number | null;
+  story?: string | null;
 };
 
 // Appends go through one chain so concurrent turn ends never interleave a line.
@@ -88,7 +93,7 @@ async function readRows(file: string): Promise<TelemetryRow[]> {
 
 // Totals over rows with `at >= since` (every row when since is null), read from the rotated
 // file and the current one so totals survive a rotation. A session counts as over threshold
-// when it has a `warning` row.
+// when it has a `warning` row. `byStep` covers only `turn` rows with a step.
 export async function summariseTelemetry(
   since: string | null,
   file: string = TELEMETRY_FILE,
@@ -103,14 +108,24 @@ export async function summariseTelemetry(
     ignored: 0,
     reminded: 0,
     tokensAvoided: 0,
+    byStep: {},
   };
   const sessions = new Set<string>();
   const overThreshold = new Set<string>();
+  const stepModels = new Map<string, Set<string>>();
   for (const row of rows) {
     sessions.add(row.agentId);
     switch (row.event) {
       case "turn":
         summary.turns += 1;
+        if (row.step != null) {
+          const step = (summary.byStep[row.step] ??= { turns: 0, tokens: 0, models: [] });
+          step.turns += 1;
+          step.tokens += row.used ?? 0;
+          const models = stepModels.get(row.step) ?? new Set<string>();
+          models.add(row.model ?? "unknown");
+          stepModels.set(row.step, models);
+        }
         break;
       case "warning":
         summary.warnings += 1;
@@ -134,5 +149,6 @@ export async function summariseTelemetry(
   }
   summary.sessions = sessions.size;
   summary.sessionsOverThreshold = overThreshold.size;
+  for (const [step, models] of stepModels) summary.byStep[step].models = [...models].sort();
   return summary;
 }

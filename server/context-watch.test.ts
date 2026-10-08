@@ -55,11 +55,17 @@ function fakePort(agents: Record<string, WatchAgent>) {
   };
 }
 
-function agent(used: number | null, labels: Record<string, string> = {}, commands = ["compact"]): WatchAgent {
+function agent(
+  used: number | null,
+  labels: Record<string, string> = {},
+  commands = ["compact"],
+  model: string | null = null,
+): WatchAgent {
   return {
     usage: used === null ? null : { contextWindowUsedTokens: used, contextWindowMaxTokens: 200_000 },
     commands: commands.map((name) => ({ name })),
     labels,
+    model,
   };
 }
 
@@ -80,8 +86,50 @@ test("onTurnEnded: one turn end writes one turn row with provider and step", asy
       used: 40_000,
       max: 200_000,
       event: "turn",
+      model: null,
+      cycle: null,
+      story: "S2",
     },
   ]);
+});
+
+test("onTurnEnded: a turn row carries the agent's model and its loop cycle and story", async () => {
+  const { port, rows } = fakePort({
+    a1: agent(40_000, { "loop-step": "implement", "loop-cycle": "2", "loop-story": "S6" }, ["compact"], "opus"),
+    a2: agent(40_000),
+  });
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1"));
+  await watch.onTurnEnded(turn("a2"));
+
+  assert.deepEqual(
+    rows.map((r) => [r.agentId, r.model, r.cycle, r.story]),
+    [
+      ["a1", "opus", 2, "S6"],
+      ["a2", null, null, null],
+    ],
+  );
+});
+
+test("onTurnEnded: a loop-cycle label that is not all digits records a null cycle", async () => {
+  const { port, rows } = fakePort({
+    a1: agent(40_000, { "loop-cycle": "x" }),
+    a2: agent(40_000, { "loop-cycle": "" }),
+    a3: agent(40_000, { "loop-cycle": "0x10" }),
+  });
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1"));
+  await watch.onTurnEnded(turn("a2"));
+  await watch.onTurnEnded(turn("a3"));
+
+  assert.deepEqual(
+    rows.map((r) => [r.agentId, r.cycle]),
+    [
+      ["a1", null],
+      ["a2", null],
+      ["a3", null],
+    ],
+  );
 });
 
 test("onTurnEnded: crossing 100k on two turns writes a single warning row", async () => {
