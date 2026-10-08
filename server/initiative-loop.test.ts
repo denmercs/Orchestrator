@@ -254,14 +254,15 @@ function tddLoop() {
 }
 
 test("an Implement step copies its extras into the worktree and names them in the prompt", async () => {
-  const { worktree, api, created, turnEnded } = planDone();
+  const { story, worktree, api, created, turnEnded } = planDone();
   const initiative = tddLoop();
 
   await initiative.onTurnEnded(api, turnEnded("a1"));
 
   assert.deepEqual(created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-cycle"]]), [["implement", "1"]]);
   assert.ok(existsSync(join(worktree, ".claude", "skills", "tdd", "SKILL.md")), "expected .claude/skills/tdd/SKILL.md");
-  assert.ok(created[0].prompt?.includes("Also use these skills: tdd."));
+  assert.ok(created[0].prompt?.includes("Also use these skills: tdd (.agents/skills/tdd/SKILL.md)."), created[0].prompt);
+  assert.equal(storyMeta(story).step_skills, "tdd (.agents/skills/tdd/SKILL.md)");
 });
 
 test("a resumed Implement agent's prompt names its extras again", async () => {
@@ -284,6 +285,7 @@ test("a skill copy that throws doesn't stop the step; its error goes on the stor
 
   assert.deepEqual(created.map((agent) => agent.labels["loop-step"]), ["implement"]);
   assert.match(storyMeta(story).skill_warnings ?? "", /^skills: /);
+  assert.ok(created[0].prompt?.includes("Also use these skills: tdd."), created[0].prompt);
 });
 
 test("a skill warning doesn't stop the step; it goes on the story until a clean step start clears it", async () => {

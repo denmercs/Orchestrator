@@ -29,6 +29,7 @@ import {
   MARKERS,
   STEP_LABELS,
   afterImplement,
+  formatSkills,
   implementCommitMessage,
   readCycles,
   readMarker,
@@ -41,7 +42,7 @@ import {
   type StoryContext,
 } from "../shared/story-method";
 import { withMcpScope } from "./mcp-scope";
-import { installSkills } from "./skill-sources";
+import { installSkills, skillPaths } from "./skill-sources";
 import { commitStory, openStoryPr, pushStoryFix } from "./story-git";
 
 // The initiative loop, driven by Paseo events rather than a long-running process:
@@ -244,6 +245,7 @@ export function createInitiativeLoop(
       const extras = stepSkills(step, phases);
       warnings.push(...(await installSkills(worktree, extras, sources).catch((error) => [`skills: ${reason(error)}`])));
       for (const warning of warnings) console.warn("orchestrator: skills", story.id, warning);
+      const skills = await skillPaths(worktree, extras, sources);
       // Story steps work from the story file and the worktree; none of them needs an MCP server.
       const agent = await withMcpScope(worktree, "none", () =>
         api.workspaces.ref(workspace).agents.create({
@@ -255,7 +257,7 @@ export function createInitiativeLoop(
             cycle: extra.cycle,
             plan: readSection(state, "Plan"),
             missing: planMissing(step, state, worktree),
-            skills: extras.map((skill) => ({ name: skill.name })),
+            skills,
           }),
           labels,
         }),
@@ -267,6 +269,8 @@ export function createInitiativeLoop(
         blocked_reason: null,
         blocked_from: null,
         skill_warnings: warnings.join(" · ") || null,
+        // The first prompt's skills line, so a resumed agent gets the same one.
+        step_skills: formatSkills(skills) || null,
       });
       return agent.id;
     } catch (error) {
