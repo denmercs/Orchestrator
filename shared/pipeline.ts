@@ -290,7 +290,7 @@ export function phasePrompt(phase: Phase, ticket: Ticket, options: PhasePromptOp
       round: options.round ?? 1,
       cycle: options.cycle,
       plan: options.plan,
-      skills: names,
+      skills: names.map((name) => ({ name })),
     }),
   ];
   if (phase.id === "plan" && phase.then === "auto") {

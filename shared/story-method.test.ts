@@ -3,8 +3,10 @@ import { test } from "node:test";
 import {
   LOOP_STEPS,
   afterImplement,
+  formatSkills,
   implementCommitMessage,
   readCycles,
+  parseSkills,
   readMarker,
   readSection,
   stepPrompt,
@@ -267,7 +269,7 @@ test("Jira stories point at the ticket and file follow-ups as review findings", 
     phaseLabel: null,
     initiativeFile: null,
   };
-  const prompt = stepPrompt("plan", jira, { round: 1, skills: ["react-review"] });
+  const prompt = stepPrompt("plan", jira, { round: 1, skills: [{ name: "react-review" }] });
   assert.match(prompt, /Jira: https:\/\/example\.atlassian\.net\/browse\/KEY-1/);
   assert.match(prompt, /follow-up:/);
   assert.match(prompt, /Also use these skills: react-review\./);
@@ -284,7 +286,7 @@ test("an empty skills list leaves every step prompt exactly as it is without ski
 
 test("skills are named on the line under the step head, with no slash commands", () => {
   for (const step of LOOP_STEPS) {
-    const prompt = stepPrompt(step, story, { round: 1, skills: ["a", "b"] });
+    const prompt = stepPrompt(step, story, { round: 1, skills: [{ name: "a" }, { name: "b" }] });
     const lines = prompt.split("\n");
     const at = lines.findIndex((line) => line.endsWith(`for story ${story.id} — ${story.title}.`));
     assert.ok(at >= 0, `head missing for ${step}`);
@@ -297,4 +299,21 @@ test("markers round-trip through ## Status with a detail line", () => {
   const written = writeMarker(state(""), "pr-done\nhttps://github.com/o/r/pull/1");
   assert.deepEqual(readMarker(written), { marker: "pr-done", detail: "https://github.com/o/r/pull/1" });
   assert.match(written, /## Plan\nChange src/);
+});
+
+test("each skill with a copied path is named with that path, and one without is named alone", () => {
+  const skills = [{ name: "tdd", path: ".agents/skills/tdd/SKILL.md" }, { name: "ss-security-audit" }];
+  const prompt = stepPrompt("implement", story, { round: 1, skills });
+  assert.match(prompt, /^Also use these skills: tdd \(\.agents\/skills\/tdd\/SKILL\.md\), ss-security-audit\.$/m);
+});
+
+test("parseSkills reads back what formatSkills wrote", () => {
+  const skills = [
+    { name: "tdd", path: ".agents/skills/tdd/SKILL.md" },
+    { name: "ss-security-audit" },
+    { name: "review", path: ".claude/commands/review.md" },
+  ];
+  assert.equal(formatSkills(skills), "tdd (.agents/skills/tdd/SKILL.md), ss-security-audit, review (.claude/commands/review.md)");
+  assert.deepEqual(parseSkills(formatSkills(skills)), skills);
+  assert.deepEqual(parseSkills(""), []);
 });

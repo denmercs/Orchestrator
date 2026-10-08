@@ -255,7 +255,7 @@ export function createInitiativeLoop(
             cycle: extra.cycle,
             plan: readSection(state, "Plan"),
             missing: planMissing(step, state, worktree),
-            skills: extras.map((skill) => skill.name),
+            skills: extras.map((skill) => ({ name: skill.name })),
           }),
           labels,
         }),
@@ -531,7 +531,7 @@ export function createInitiativeLoop(
         cycle,
         plan: readSection(state, "Plan"),
         missing: found.story.meta.worktree ? planMissing(step, state, found.story.meta.worktree) : [],
-        skills: stepSkills(step, phases).map((skill) => skill.name),
+        skills: stepSkills(step, phases).map((skill) => ({ name: skill.name })),
       });
       return `${prompt}\n\n${RESUME_LINE}`;
     },
