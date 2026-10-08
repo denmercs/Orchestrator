@@ -257,8 +257,10 @@ test("an empty skills list leaves every step prompt exactly as it is without ski
 test("skills are named on the line under the step head, with no slash commands", () => {
   for (const step of LOOP_STEPS) {
     const prompt = stepPrompt(step, story, { round: 1, skills: ["a", "b"] });
-    const head = stepPrompt(step, story, { round: 1 }).split("\n").slice(0, 2);
-    assert.deepEqual(prompt.split("\n").slice(0, 3), [...head, "Also use these skills: a, b."], step);
+    const lines = prompt.split("\n");
+    const at = lines.findIndex((line) => line.endsWith(`for story ${story.id} — ${story.title}.`));
+    assert.ok(at >= 0, `head missing for ${step}`);
+    assert.equal(lines[at + 1], "Also use these skills: a, b.", step);
     assert.doesNotMatch(prompt, /\/ss-|(^|\s)\/[a-z][\w-]*(\s|$)/m, step);
   }
 });
