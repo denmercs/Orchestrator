@@ -63,7 +63,7 @@ function waitingOn(story: EpicStory, stories: EpicStory[] | undefined): string |
 
 function textOf(story: EpicStory, track: Track, stories: EpicStory[] | undefined): Text {
   const diagnose = track === "diagnose";
-  const pr = `PR #${story.pr ?? ""}`;
+  const pr = story.pr === null ? "PR" : `PR #${story.pr}`;
   switch (story.status) {
     case "todo": {
       if (story.ready) return { sub: "Ready to start", detail: "No blockers", cta: "Start agent" };

@@ -145,6 +145,11 @@ test("stepBar text: pr-open follows CI", () => {
   });
 });
 
+test("stepBar text: pr-open without a PR number says PR, not PR #", () => {
+  assert.equal(text({ status: "pr-open", ci: "pending" }).detail, "PR · CI running");
+  assert.equal(text({ status: "pr-open", ci: "green" }).detail, "PR passed Review and CI");
+});
+
 test("stepBar text: blocked shows the reason, or Blocked without one", () => {
   assert.deepEqual(text({ status: "blocked", blockedReason: "Needs a Jira key" }), {
     sub: "Stuck · no progress",
