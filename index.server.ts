@@ -65,7 +65,14 @@ import {
   upsertOrchestrationStandupNote,
 } from "./shared/orchestration";
 import { agentRunnerSettings } from "./shared/agent-runner";
-import { harnessSettings, jiraBoardSettings, mcpSettings, prodPulseSettings, standupSettings } from "./shared/settings";
+import {
+  dashboardSettings,
+  harnessSettings,
+  jiraBoardSettings,
+  mcpSettings,
+  prodPulseSettings,
+  standupSettings,
+} from "./shared/settings";
 import {
   addSkillSource,
   attachSkill,
@@ -80,6 +87,7 @@ import {
 
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(standupSettings);
+  server.registerSettings(dashboardSettings);
   const runnerSettings = server.registerSettings(agentRunnerSettings);
   const readRunnerProfileId = async () => {
     const state = await runnerSettings.read();
