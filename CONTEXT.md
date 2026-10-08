@@ -117,6 +117,32 @@ Each gate carries `board` (the board's selection key, `boardKey(board)`: `repo` 
 
 _Avoid_: blocker (for any gate), task, todo, action item.
 
+## Step bar
+
+The five-segment bar that shows where a story is: **Plan**, **Implement**, **Review**, **PR**, **CI watch**. Each segment is `done` (finished), `now` (running), `gate` (waiting on you) or `todo` (not reached). Steps before the current one are `done`, steps after it `todo`. With it come a node sub-label (`sub`), a panel line (`detail`) and a button label (`cta`, a label only).
+
+| status | bar | sub |
+|---|---|---|
+| `todo` | todo ×5 | "Ready to start" if `ready`, else "after S0" (first dependency not merged in the board) |
+| `planning` | now on Plan | "Planning" |
+| `awaiting-approval` | gate on Plan | "Plan awaiting approval" |
+| `implementing` | now on Implement | "Implementing" |
+| `reviewing` | now on Review (the loop's PR step also runs here) | "Reviewing" |
+| `pr-open`, CI pending, `""` or `none` | done ×4, now on CI watch | "CI running" |
+| `pr-open`, CI `failing` | done ×4, now on CI watch | "CI failing" |
+| `pr-open`, CI `green` | done ×4, gate on CI watch | "Ready to merge" |
+| `blocked` | gate on the `blockedFrom` step (Plan when empty or unknown) | "Stuck · no progress"; `detail` is the blocked reason or "Blocked" |
+| `merged` | done ×5 | "Merged #N", or "Merged" with no PR |
+| anything else | todo ×5 | the status text |
+
+- **Track**: `plan` or `diagnose`, which first step the story runs. On `diagnose` the first label is **Diagnose** instead of Plan, and the planning texts read "Diagnosing" / "Diagnosis awaiting approval". The bar itself is the same. It is only an argument for now: there is no `track` frontmatter.
+- **blockedFrom**: the status a blocked story was blocked from, read from its `blocked_from` frontmatter (written by `block()` in `server/initiative-loop.ts`), `""` when unset.
+- **Initiative badge**: one badge per board, first match wins: **Needs plan** (no stories, no plan), **Planning** (no stories, a plan), **Done** (every story merged), **Needs you** (any story with a gate), **In progress** (any story planning, implementing, reviewing or `pr-open`), **Ready** (any `ready` story), otherwise **In progress**. It uses `needsYou`, so it agrees with the gate queue.
+
+Code: `shared/story-steps.ts`, `stepBar(story, track, stories?)` (`stories` is the board, to name the dependency a todo story waits on) and `initiativeStatus(state)` (an `EpicBoardState`).
+
+_Avoid_: progress bar, pipeline, stepper (for the bar); stage, phase (for a step); status pill (for the initiative badge).
+
 ## Loop supervision
 
 How the initiative loop keeps a step moving with no agent watching it. Code: `supervise` and the turn-end and permission handlers in `server/initiative-loop.ts`. It covers the `plan`, `implement` and `review` steps while the story is `planning`, `implementing` or `reviewing` and its `.harness/state.md` marker is still `<step>-running` (or its worktree is gone). `awaiting-approval` waits on you and `pr-open` has its own watcher, so neither is supervised.
