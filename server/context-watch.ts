@@ -9,7 +9,7 @@ import {
   type Thresholds,
   type WarningMemory,
 } from "../shared/context-meter";
-import type { ContextAction } from "../shared/context";
+import type { ContextAction, ContextStatus } from "../shared/context";
 import { freshCompactor, keepList, nativeCompactor, type FreshPort } from "./compactor";
 import { excludeHarness } from "./harness-layout";
 import { recordTelemetry, type TelemetryEvent, type TelemetryRow } from "./context-telemetry";
@@ -162,6 +162,8 @@ export function createContextWatch(port: WatchPort) {
   // New sessions from a fresh compact → the old session's last `used`. Their first turn end writes
   // the `compact.fresh` row, so it has a real reading to count tokens avoided against.
   const pendingFresh = new Map<string, number | null>();
+  // Turn ends still being processed, so a status read waits for the warning they may write.
+  const turnEnds = new Map<string, Promise<void>>();
 
   async function startFresh(agentId: string, labels: Record<string, string>, used: number | null): Promise<ActResult> {
     if (handingOver.has(agentId)) return { ok: false, error: "That session is already starting fresh.", agentId: null };
@@ -198,44 +200,76 @@ export function createContextWatch(port: WatchPort) {
     });
   }
 
+  async function processTurnEnd(event: TurnEnded): Promise<void> {
+    const agentId = event.agent.id;
+    const agent = await port.readAgent(agentId);
+    if (!agent) return;
+    const reading = readContext(agent, await port.thresholds());
+    const state: SessionState = sessions.get(agentId) ?? {
+      provider: event.agent.provider,
+      reading: null,
+      memory: { warned: [], mode: "normal" },
+      cursor: null,
+    };
+    sessions.set(agentId, state);
+    const unseen = unseenItems(event.timeline, state.cursor);
+    const compaction = detectCompaction(state.reading, reading, unseen);
+    state.provider = event.agent.provider;
+    state.reading = reading;
+    state.cursor = event.timeline.length;
+
+    if (compaction) {
+      // Recorded here rather than when Compact is pressed: this sees the real preTokens and the
+      // smaller reading, and counts Claude's own auto-compacts the same way.
+      await record(agentId, state, agent.labels, `compact.${compaction.kind}`, {
+        ...(compaction.preTokens === null ? {} : { preTokens: compaction.preTokens }),
+      });
+      state.memory = { warned: [], mode: "normal" };
+    }
+    if (pendingFresh.has(agentId)) {
+      const preTokens = pendingFresh.get(agentId) ?? null;
+      pendingFresh.delete(agentId);
+      await record(agentId, state, agent.labels, "compact.fresh", preTokens === null ? {} : { preTokens });
+    }
+    await record(agentId, state, agent.labels, "turn");
+    const warning = nextWarning(state.memory, reading);
+    if (warning) {
+      state.memory.warned.push(warning.level);
+      await record(agentId, state, agent.labels, "warning", { level: warning.level });
+    }
+  }
+
   return {
     async onTurnEnded(event: TurnEnded): Promise<void> {
       const agentId = event.agent.id;
-      const agent = await port.readAgent(agentId);
-      if (!agent) return;
-      const reading = readContext(agent, await port.thresholds());
-      const state: SessionState = sessions.get(agentId) ?? {
-        provider: event.agent.provider,
-        reading: null,
-        memory: { warned: [], mode: "normal" },
-        cursor: null,
-      };
-      sessions.set(agentId, state);
-      const unseen = unseenItems(event.timeline, state.cursor);
-      const compaction = detectCompaction(state.reading, reading, unseen);
-      state.provider = event.agent.provider;
-      state.reading = reading;
-      state.cursor = event.timeline.length;
+      const done = processTurnEnd(event);
+      const tracked = done.catch(() => {});
+      turnEnds.set(agentId, tracked);
+      try {
+        await done;
+      } finally {
+        if (turnEnds.get(agentId) === tracked) turnEnds.delete(agentId);
+      }
+    },
 
-      if (compaction) {
-        // Recorded here rather than when Compact is pressed: this sees the real preTokens and the
-        // smaller reading, and counts Claude's own auto-compacts the same way.
-        await record(agentId, state, agent.labels, `compact.${compaction.kind}`, {
-          ...(compaction.preTokens === null ? {} : { preTokens: compaction.preTokens }),
-        });
-        state.memory = { warned: [], mode: "normal" };
-      }
-      if (pendingFresh.has(agentId)) {
-        const preTokens = pendingFresh.get(agentId) ?? null;
-        pendingFresh.delete(agentId);
-        await record(agentId, state, agent.labels, "compact.fresh", preTokens === null ? {} : { preTokens });
-      }
-      await record(agentId, state, agent.labels, "turn");
-      const warning = nextWarning(state.memory, reading);
-      if (warning) {
-        state.memory.warned.push(warning.level);
-        await record(agentId, state, agent.labels, "warning", { level: warning.level });
-      }
+    // Each session's pill status. A session the watch has seen gives its reading from the last
+    // turn end; one it has not is read now, with empty memory; a gone one is null.
+    async sessions(agentIds: readonly string[]): Promise<(ContextStatus | null)[]> {
+      const thresholds = await port.thresholds();
+      return Promise.all(
+        agentIds.map(async (agentId): Promise<ContextStatus | null> => {
+          await turnEnds.get(agentId);
+          const state = sessions.get(agentId);
+          let reading = state?.reading ?? null;
+          if (!reading) {
+            const agent = await port.readAgent(agentId);
+            if (!agent) return null;
+            reading = readContext(agent, thresholds);
+          }
+          const memory = state?.memory ?? { warned: [], mode: "normal" };
+          return { agentId, reading, warned: [...memory.warned], mode: memory.mode, red: thresholds.red };
+        }),
+      );
     },
 
     // A pill action on one session. Compact sends `/compact` for a native session; its
