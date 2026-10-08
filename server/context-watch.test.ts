@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { FreshPort } from "./compactor";
 import type { TelemetryRow } from "./context-telemetry";
 import { createContextWatch, type TurnEnded, type WatchAgent, type WatchPort } from "./context-watch";
 
@@ -9,6 +10,28 @@ type Item = TurnEnded["timeline"][number];
 function fakePort(agents: Record<string, WatchAgent>) {
   const rows: TelemetryRow[] = [];
   const sent: [string, string][] = [];
+  const fresh: string[] = [];
+  // The handoff turn waits on this, so a test can hold a fresh compact mid-way.
+  let handoffGate: Promise<void> = Promise.resolve();
+  const freshPort: FreshPort = {
+    session: async (id) =>
+      agents[id]
+        ? { workspaceId: "ws1", cwd: "/repo", config: { provider: "claude/opus" }, title: id, labels: agents[id].labels, running: false }
+        : null,
+    handoff: async (id) => {
+      fresh.push(`handoff ${id}`);
+      await handoffGate;
+    },
+    create: async (input) => {
+      fresh.push(`create ${input.labels["context-from"]}`);
+      return "f1";
+    },
+    archive: async (id) => {
+      fresh.push(`archive ${id}`);
+    },
+    loopPrompt: async () => null,
+    handOver: async () => undefined,
+  };
   const port: WatchPort = {
     readAgent: async (id) => agents[id] ?? null,
     send: async (id, text) => {
@@ -19,8 +42,17 @@ function fakePort(agents: Record<string, WatchAgent>) {
     },
     thresholds: async () => ({ amber: 100_000, red: 150_000 }),
     now: () => "2026-10-07T12:00:00.000Z",
+    fresh: freshPort,
   };
-  return { port, rows, sent };
+  return {
+    port,
+    rows,
+    sent,
+    fresh,
+    holdHandoff(gate: Promise<void>) {
+      handoffGate = gate;
+    },
+  };
 }
 
 function agent(used: number | null, labels: Record<string, string> = {}, commands = ["compact"]): WatchAgent {
@@ -207,17 +239,74 @@ test("act ignore: writes an ignore row and silences warnings", async () => {
   );
 });
 
-test("act fresh, or compact on a fresh-strategy session, is not available yet", async () => {
-  const { port, sent } = fakePort({ a1: agent(120_000), a2: agent(120_000, {}, ["review"]) });
+test("act compact on a session without /compact runs the fresh adapter", async () => {
+  const { port, sent, fresh } = fakePort({ a2: agent(120_000, {}, ["review"]) });
+  const result = await createContextWatch(port).act({ agentId: "a2", action: "compact" });
+
+  assert.deepEqual(result, { ok: true, error: null, agentId: "f1" });
+  assert.deepEqual(fresh, ["handoff a2", "create a2", "archive a2"]);
+  assert.deepEqual(sent, []);
+});
+
+test("act fresh on a native session runs the fresh adapter and returns the new id", async () => {
+  const { port, sent, fresh } = fakePort({ a1: agent(120_000) });
+  const result = await createContextWatch(port).act({ agentId: "a1", action: "fresh" });
+
+  assert.deepEqual(result, { ok: true, error: null, agentId: "f1" });
+  assert.deepEqual(fresh, ["handoff a1", "create a1", "archive a1"]);
+  assert.deepEqual(sent, []);
+});
+
+test("act fresh: a second press while the session is handing over is refused", async () => {
+  const { port, fresh, holdHandoff } = fakePort({ a1: agent(120_000) });
+  let release = () => {};
+  holdHandoff(new Promise<void>((done) => (release = done)));
   const watch = createContextWatch(port);
 
-  assert.deepEqual(await watch.act({ agentId: "a1", action: "fresh" }), {
+  const first = watch.act({ agentId: "a1", action: "fresh" });
+  const second = await watch.act({ agentId: "a1", action: "fresh" });
+  release();
+
+  assert.deepEqual(second, { ok: false, error: "That session is already starting fresh.", agentId: null });
+  assert.deepEqual(await first, { ok: true, error: null, agentId: "f1" });
+  assert.deepEqual(fresh, ["handoff a1", "create a1", "archive a1"]);
+});
+
+test("act fresh: a failed fresh compact returns its error", async () => {
+  const { port } = fakePort({ a1: agent(120_000) });
+  port.fresh.create = async () => {
+    throw new Error("create failed");
+  };
+
+  assert.deepEqual(await createContextWatch(port).act({ agentId: "a1", action: "fresh" }), {
     ok: false,
-    error: "Start fresh arrives in S3",
+    error: "create failed",
     agentId: null,
   });
-  assert.equal((await watch.act({ agentId: "a2", action: "compact" })).ok, false);
-  assert.deepEqual(sent, []);
+});
+
+test("the new session's first turn end writes compact.fresh with the old used as preTokens", async () => {
+  const agents: Record<string, WatchAgent> = { a1: agent(130_000, { "loop-step": "implement" }) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1"));
+  await watch.act({ agentId: "a1", action: "fresh" });
+  agents.f1 = agent(20_000, { "loop-step": "implement", "context-from": "a1" });
+  await watch.onTurnEnded(turn("f1", [user, reply]));
+  agents.f1 = agent(25_000, { "loop-step": "implement", "context-from": "a1" });
+  await watch.onTurnEnded(turn("f1", [user, reply, user, reply]));
+
+  assert.deepEqual(
+    rows.map((r) => [r.agentId, r.event, r.used, r.preTokens ?? r.level ?? null]),
+    [
+      ["a1", "turn", 130_000, null],
+      ["a1", "warning", 130_000, "amber"],
+      ["f1", "compact.fresh", 20_000, 130_000],
+      ["f1", "turn", 20_000, null],
+      ["f1", "turn", 25_000, null],
+    ],
+  );
+  assert.equal(rows[2].step, "implement");
 });
 
 test("act before any turn end still treats the first turn end as first sight", async () => {

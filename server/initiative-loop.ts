@@ -63,6 +63,9 @@ const STATUS_FOR: Record<LoopStep, string> = {
 
 const execFileAsync = promisify(execFile);
 
+// Ends a loop agent's prompt when a fresh compact restarts its step in a new session.
+export const RESUME_LINE = "Resume from `.harness/state.md`. An earlier session for this step ran out of context.";
+
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
 
 function readRegistry(): string[] {
@@ -370,6 +373,20 @@ export function createInitiativeLoop(
     return advance(api, config, init);
   }
 
+  // The story a loop agent's labels point at, or null when it is gone.
+  function labelledStory(labels: Record<string, string>) {
+    if (labels.kind !== KIND || !labels["loop-repo"] || !labels["loop-initiative"]) return null;
+    let init: Initiative;
+    try {
+      init = initiativeAt(labels["loop-repo"], labels["loop-initiative"]);
+    } catch {
+      return null;
+    }
+    const phaseDir = join(init.dir, PHASES_DIR, labels["loop-phase"] ?? "");
+    const story = readStoryFiles(phaseDir).find((item) => item.id === labels["loop-story"]);
+    return story ? { init, phaseDir, story } : null;
+  }
+
   return {
     rememberPaseo(next: PaseoApi) {
       paseo = next;
@@ -399,6 +416,25 @@ export function createInitiativeLoop(
         } catch (cause) {
           return { ok: false, error: cause instanceof Error ? cause.message : String(cause) };
         }
+      });
+    },
+
+    // A fresh compact's prompt for a loop agent: its step prompt rebuilt from the story files, plus
+    // the resume line. A Fix CI resume has no failure report; the prompt points at the PR's checks.
+    async resumePrompt(labels: Record<string, string>): Promise<string | null> {
+      const found = labelledStory(labels);
+      const step = labels["loop-step"] as LoopStep | undefined;
+      if (!found || !step || !(step in STEP_LABELS)) return null;
+      const ctx = storyContext(found.init, found.phaseDir, found.story);
+      return `${stepPrompt(step, ctx, { round: Number(labels["loop-round"]) || 1 })}\n\n${RESUME_LINE}`;
+    },
+
+    // After a fresh compact, the story's `agent:` follows the new session. Only when it still
+    // names the old one, so a step that already moved on is left alone.
+    handOver(labels: Record<string, string>, fromId: string, toId: string): Promise<void> {
+      return serial(async () => {
+        const found = labelledStory(labels);
+        if (found?.story.meta.agent === fromId) writeFrontmatter(found.story.path, { agent: toId });
       });
     },
 

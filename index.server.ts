@@ -127,6 +127,7 @@ export default function contribute(server: PluginServerContext) {
         const state = await context.read();
         return state.status === "ready" ? state.values : { amber: 100_000, red: 150_000 };
       },
+      initiativeLoop,
     ),
   );
   server.handle(contextAct, (input, { paseo }) => {
