@@ -118,7 +118,9 @@ const RULES = (story: StoryContext) => `## Rules for every step
   CONTRIBUTING.md when they exist, and follow the repo's own scripts for tests, lint and build.
 - ${STATE} is this story's working file. Keep its section headings; update only the sections your step owns.
 - Keep context small: start from the files named in \`## Plan\` instead of searching the whole repo, run the
-  narrowest test command that covers your work, and pipe long output through \`tail -n 60\`.
+  narrowest test command that covers your work, and run tests, lint and build through \`.harness/bin/brief\`
+  (for example \`.harness/bin/brief npm test\`). Its output is failures plus a summary; the full log is in
+  \`.harness/logs/\`.
 - End the step by replacing everything under \`## Status\` with your marker on its own line. The plugin reads
   that line when your turn ends and starts the next step in a fresh agent. Do not start the next step yourself.
 - Do not commit, push or merge. The plugin commits each finished step and opens the PR.
