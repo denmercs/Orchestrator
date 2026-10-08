@@ -43,3 +43,26 @@ test("loaded but empty sources count 0, not null", () => {
     pulse: 0,
   });
 });
+
+const allNull = { initiatives: null, today: null, todos: null, board: null, pulse: null };
+
+test("boards not loaded gives a null Initiatives count", () => {
+  assert.equal(tabCounts({ boards: null, sprintIssues: issues(5), pulse: pulse(2, 4) }).initiatives, null);
+});
+
+test("no sprint loaded gives a null Board count", () => {
+  assert.equal(tabCounts({ boards: boards(3), sprintIssues: null, pulse: pulse(2, 4) }).board, null);
+});
+
+test("pulse not loaded gives a null Pulse count", () => {
+  assert.equal(tabCounts({ boards: boards(3), sprintIssues: issues(5), pulse: null }).pulse, null);
+});
+
+test("pulse unavailable gives a null Pulse count even when it lists bugs", () => {
+  const unavailable = { ...pulse(2, 4), available: false };
+  assert.equal(tabCounts({ boards: boards(3), sprintIssues: issues(5), pulse: unavailable }).pulse, null);
+});
+
+test("with no source loaded, every count is null", () => {
+  assert.deepEqual(tabCounts({ boards: null, sprintIssues: null, pulse: null }), allNull);
+});
