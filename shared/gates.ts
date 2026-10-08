@@ -48,3 +48,6 @@ export function gatesOf(boards: EpicBoard[]): Gate[] {
 
 // The bell's label: how many gates are waiting on you.
 export const waitingLabel = (count: number) => (count === 0 ? "Nothing is waiting on you" : `${count} waiting on you`);
+
+// A gate row's accessibility label: what is waiting, then where.
+export const gateRowLabel = (gate: Gate) => `${gate.text}, ${gate.where}`;
