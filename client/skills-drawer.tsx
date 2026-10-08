@@ -107,25 +107,33 @@ function usePipeline(open: boolean) {
 }
 type Pipeline = ReturnType<typeof usePipeline>;
 
-export function SkillsButton({
+// Header trigger for the Skills drawer. The four dots stand for the belt's phases; all green for now.
+export function StoryPipelineButton({
   theme,
   pipelineOn,
+  open,
   onPress,
 }: {
   theme: Theme;
   pipelineOn: boolean;
+  open: boolean;
   onPress(): void;
 }) {
   const styles = useMemo(() => createStyles(theme, false), [theme]);
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Open skills and phases, Story pipeline ${pipelineOn ? "on" : "off"}`}
+      accessibilityState={{ expanded: open }}
+      accessibilityLabel={`Story pipeline, belt ${pipelineOn ? "on" : "off"}`}
       onPress={onPress}
-      style={styles.trigger}
+      style={[styles.pipeButton, open ? styles.pipeButtonOn : null]}
     >
-      <Text style={styles.triggerText}>Skills</Text>
-      <Text style={styles.triggerCount}>pipeline {pipelineOn ? "on" : "off"}</Text>
+      <View style={styles.pipeDots}>
+        {[0, 1, 2, 3].map((i) => (
+          <View key={i} style={styles.pipeDot} />
+        ))}
+      </View>
+      <Text style={styles.pipeButtonText}>Story pipeline</Text>
     </Pressable>
   );
 }
@@ -884,19 +892,21 @@ function createStyles(theme: Theme, compact: boolean) {
   const c = theme.colors;
   const pad = compact ? 16 : 20;
   return {
-    trigger: {
+    pipeButton: {
       flexDirection: "row" as const,
       alignItems: "center" as const,
       gap: 8,
+      height: 30,
       paddingHorizontal: 12,
-      paddingVertical: 10,
       borderWidth: 1,
       borderColor: c.border,
-      borderRadius: 12,
-      backgroundColor: c.surface1,
+      borderRadius: 7,
+      backgroundColor: "transparent",
     },
-    triggerText: { color: c.foreground, fontWeight: "600" as const },
-    triggerCount: { color: c.foregroundMuted, fontSize: 12 },
+    pipeButtonOn: { borderColor: c.accent, backgroundColor: c.surface2 },
+    pipeDots: { flexDirection: "row" as const, gap: 3 },
+    pipeDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.statusSuccess },
+    pipeButtonText: { color: c.foreground, fontSize: 12.5 },
     overlay: {
       // Above the dashboard header, which sits at zIndex 10 so its menus clear the tab body.
       zIndex: 20,
