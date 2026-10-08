@@ -63,3 +63,13 @@ export const harnessSettings = defineSettings({
     epic: z.string().default(""),
   }),
 });
+
+export const mcpSettings = defineSettings({
+  id: "mcp",
+  scope: "host",
+  version: 1,
+  schema: z.object({
+    // Host MCP server names never copied onto agents; Jira credential lookup still reads them.
+    mcpExclude: z.array(z.string()).default([]),
+  }),
+});
