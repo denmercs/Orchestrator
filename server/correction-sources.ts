@@ -11,7 +11,8 @@ const execFileAsync = promisify(execFile);
 
 export type Gh = (args: string[]) => Promise<string>;
 export type GitDate = (file: string) => Promise<string | null>;
-export type SourceOptions = { gh?: Gh; gitDate?: GitDate };
+// `warn` hears every source that could not be read, so the caller knows the read was partial.
+export type SourceOptions = { gh?: Gh; gitDate?: GitDate; warn?: (message: string) => void };
 
 type MergedPr = { number: number; headRefName: string; mergedAt: string; url: string };
 
@@ -27,10 +28,11 @@ const defaultGitDate = (root: string): GitDate => async (file) => {
   }
 };
 
-const json = async <T>(gh: Gh, args: string[], fallback: T): Promise<T> => {
+const json = async <T>(gh: Gh, args: string[], fallback: T, warn: (message: string) => void): Promise<T> => {
   try {
     return JSON.parse(await gh(args)) as T;
-  } catch {
+  } catch (error) {
+    warn(`gh ${args.slice(0, 2).join(" ")} failed: ${error instanceof Error ? error.message : String(error)}`);
     return fallback;
   }
 };
@@ -51,10 +53,12 @@ function storyFolders(root: string): string[] {
 export async function collectObservations(root: string, options: SourceOptions = {}): Promise<Observation[]> {
   const gh = options.gh ?? defaultGh(root);
   const gitDate = options.gitDate ?? defaultGitDate(root);
+  const warn = options.warn ?? (() => {});
   const prs = await json<MergedPr[]>(
     gh,
     ["pr", "list", "--state", "merged", "--json", "number,headRefName,mergedAt,url", "--limit", "200"],
     [],
+    warn,
   );
   const byNumber = new Map(prs.map((pr) => [pr.number, pr]));
   const byBranch = new Map(prs.map((pr) => [pr.headRefName, pr]));
@@ -73,10 +77,11 @@ export async function collectObservations(root: string, options: SourceOptions =
   const commentsByPr: Record<number, ReviewComment[]> = {};
   for (const pr of prs) {
     const [inline, view] = await Promise.all([
-      json<ReviewComment[]>(gh, ["api", `repos/{owner}/{repo}/pulls/${pr.number}/comments`], []),
-      json<{ reviews?: ReviewComment[] }>(gh, ["pr", "view", String(pr.number), "--json", "reviews"], {}),
+      // --paginate --slurp wraps the pages in one array, so flatten them.
+      json<(ReviewComment | ReviewComment[])[]>(gh, ["api", "--paginate", "--slurp", `repos/{owner}/{repo}/pulls/${pr.number}/comments`], [], warn),
+      json<{ reviews?: ReviewComment[] }>(gh, ["pr", "view", String(pr.number), "--json", "reviews"], {}, warn),
     ]);
-    commentsByPr[pr.number] = [...inline, ...(view.reviews ?? [])];
+    commentsByPr[pr.number] = [...inline.flat(), ...(view.reviews ?? [])];
   }
   return [...found, ...reviewObservations(prs, commentsByPr, storiesByBranch)];
 }

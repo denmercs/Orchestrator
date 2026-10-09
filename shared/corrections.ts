@@ -52,7 +52,7 @@ export function storyObservations(text: string, context: ObservationContext): Ob
 
 // Recorded `gh` JSON, trimmed to what we read. Inline comments (`gh api repos/{o}/{r}/pulls/N/comments`) carry
 // `created_at`, `html_url`, `path`, `line`; review bodies (`gh pr view N --json reviews`) carry `submittedAt`/`createdAt` and `url`.
-export type ReviewPr = { number: number; headRefName: string };
+export type ReviewPr = { number: number; headRefName: string; url?: string };
 export type ReviewComment = {
   body?: string | null;
   created_at?: string;
@@ -84,7 +84,7 @@ export function reviewObservations(
         source: "review-comment",
         story,
         date: comment.created_at ?? comment.submittedAt ?? comment.createdAt ?? "",
-        link: comment.html_url ?? comment.url ?? "",
+        link: comment.html_url ?? comment.url ?? pr.url ?? "",
         text,
       });
     }
@@ -97,7 +97,8 @@ export type AsOfOptions = { asOf?: string; excludeStory?: string };
 // Keeps observations dated at or before `asOf`, minus the excluded story. A date-only `asOf` ("2026-05-01") covers that whole day.
 export function observationsAsOf(observations: Observation[], options: AsOfOptions): Observation[] {
   const { asOf, excludeStory } = options;
-  const limit = asOf === undefined ? Infinity : Date.parse(asOf) + (/^\d{4}-\d{2}-\d{2}$/.test(asOf) ? 86_400_000 : 1);
+  if (asOf === undefined) return observations.filter((o) => o.story !== excludeStory);
+  const limit = Date.parse(asOf) + (/^\d{4}-\d{2}-\d{2}$/.test(asOf) ? 86_400_000 : 1);
   return observations.filter((o) => o.story !== excludeStory && Date.parse(o.date) < limit);
 }
 
@@ -129,6 +130,8 @@ export const PROMPT_VERSION = "v1";
 export const MODEL = "claude-haiku-4-5";
 export const BATCH_SIZE = 20;
 export const MAX_TOKENS = 2000;
+// The fixed instructions of the system prompt; the areas and phrase vocabulary are counted per batch.
+const SYSTEM_OVERHEAD_CHARS = 2000;
 // Haiku 4.5 prices, USD per token ($1 / $5 per million).
 export const INPUT_USD_PER_TOKEN = 1 / 1_000_000;
 export const OUTPUT_USD_PER_TOKEN = 5 / 1_000_000;
@@ -146,7 +149,9 @@ export type FileResult = { filed: Filing[]; cache: Record<string, Filing>; spent
 // Files observations in batches through `classify`. Cached ids are not re-sent. Before each batch, spent plus the worst case
 // (input chars / 4 at the input price, plus MAX_TOKENS at the output price) must stay within the cap, else the run stops with what it has.
 export async function fileObservations(observations: Observation[], options: FileOptions): Promise<FileResult> {
-  const { classify, costCap, areas, log, batchSize = BATCH_SIZE } = options;
+  const { classify, areas, log, batchSize = BATCH_SIZE } = options;
+  // A cap that is not a finite, non-negative number fails closed: nothing is spent.
+  const costCap = Number.isFinite(options.costCap) && options.costCap >= 0 && options.costCap !== Number.POSITIVE_INFINITY ? options.costCap : 0;
   const cache = { ...options.cache };
   const key = (id: string) => `${PROMPT_VERSION}:${MODEL}:${id}`;
   const areaIds = areas.map((a) => a.id);
@@ -163,7 +168,7 @@ export async function fileObservations(observations: Observation[], options: Fil
   let stopped: FileResult["stopped"] = null;
   for (let i = 0; i < pending.length; i += batchSize) {
     const batch = pending.slice(i, i + batchSize);
-    const chars = JSON.stringify(batch).length;
+    const chars = SYSTEM_OVERHEAD_CHARS + JSON.stringify({ batch, areas: areaIds, phrases }).length;
     const worst = (chars / 4) * INPUT_USD_PER_TOKEN + MAX_TOKENS * OUTPUT_USD_PER_TOKEN;
     if (spentUsd + worst > costCap) {
       log(`stopped at cap: spent $${spentUsd.toFixed(4)}, next batch could cost $${worst.toFixed(4)}`);
@@ -197,7 +202,7 @@ export async function fileObservations(observations: Observation[], options: Fil
 }
 
 const normalisePhrase = (phrase: string) => phrase.toLowerCase().trim().replace(/\s+/g, " ");
-const slugOf = (phrase: string) => phrase.replace(/[^a-z0-9]+/g, " ").trim().split(" ").slice(0, 6).join("-");
+const slugOf = (phrase: string) => phrase.replace(/[^a-z0-9]+/g, " ").trim().split(" ").slice(0, 6).join("-") || "correction";
 const unique = <T>(list: T[]) => [...new Set(list)];
 
 // One seeded `correction` note per (category, area, normalised phrase). Filings whose observation is unknown are skipped.

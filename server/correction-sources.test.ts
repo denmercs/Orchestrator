@@ -84,3 +84,52 @@ test("collectObservations survives a failing gh: story observations stay, review
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("collectObservations reports gh failures through warn and pages the inline comments", async () => {
+  const { root } = fixture();
+  try {
+    const warnings: string[] = [];
+    await collectObservations(root, {
+      gh: async () => {
+        throw new Error("gh: not logged in");
+      },
+      gitDate: async () => "2026-02-02T00:00:00Z",
+      warn: (m) => warnings.push(m),
+    });
+    assert.ok(warnings.length > 0 && warnings.every((m) => m.includes("not logged in")));
+
+    const seen: string[] = [];
+    const quiet: string[] = [];
+    await collectObservations(root, {
+      gh: async (args) => {
+        seen.push(args.join(" "));
+        return gh(args);
+      },
+      gitDate: async () => null,
+      warn: (m) => quiet.push(m),
+    });
+    assert.deepEqual(quiet, []);
+    const inline = seen.find((l) => l.startsWith("api") && l.includes("pulls/7/comments")) ?? "";
+    assert.match(inline, /--paginate/);
+    assert.match(inline, /--slurp|--jq/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("collectObservations links review bodies without a url to the PR", async () => {
+  const { root } = fixture();
+  try {
+    const obs = await collectObservations(root, {
+      gh: async (args) => {
+        const line = args.join(" ");
+        if (line.startsWith("pr view 7")) return JSON.stringify({ reviews: [{ body: "Please rename", submittedAt: "2026-02-20T00:00:00Z" }] });
+        return gh(args);
+      },
+      gitDate: async () => null,
+    });
+    assert.ok(obs.some((o) => o.source === "review-comment" && o.text === "Please rename" && o.link === "https://gh.test/pull/7"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

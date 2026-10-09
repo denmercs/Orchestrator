@@ -168,7 +168,8 @@ export type AnalyzeOptions = {
   excludeStory?: string;
   costCap?: number;
   classify?: Classify;
-  sources?: () => Promise<Observation[]>;
+  // `warn` reports a source that could not be read; the run then removes no stale corrections.
+  sources?: (warn: (message: string) => void) => Promise<Observation[]>;
   log?: (line: string) => void;
 };
 
@@ -200,7 +201,9 @@ const topCorrectionsOf = (summary: string) => /^## Top corrections\n[\s\S]*?(?=^
  */
 export async function analyze(root: string, opts: AnalyzeOptions = {}): Promise<AnalyzeResult> {
   const log = opts.log ?? (() => {});
-  const costCap = opts.costCap ?? DEFAULT_COST_CAP;
+  // A cap that is not a finite, non-negative number fails closed: nothing is spent.
+  const requested = opts.costCap ?? DEFAULT_COST_CAP;
+  const costCap = Number.isFinite(requested) && requested >= 0 ? requested : 0;
   log(`cost cap $${costCap.toFixed(2)}`);
   const memory = join(root, ".harness", "memory");
   const summaryFile = join(memory, "SUMMARY.md");
@@ -283,8 +286,13 @@ async function correctionsPass(
   }
 
   let all: Observation[];
+  let partial = false;
+  const warn = (message: string) => {
+    partial = true;
+    log(`corrections: ${message}`);
+  };
   try {
-    all = await (opts.sources ?? (() => collectObservations(root)))();
+    all = await (opts.sources ?? ((w) => collectObservations(root, { warn: w })))(warn);
   } catch (error) {
     log(`corrections skipped: could not read observations: ${error instanceof Error ? error.message : String(error)}`);
     return null;
@@ -323,9 +331,9 @@ async function correctionsPass(
     else result.skipped.push(id);
   }
 
-  // A partial run (cap or error) has not seen everything, so it removes nothing.
+  // A partial run (cap, error or an unreadable source) has not seen everything, so it removes nothing.
   const base = join(memory, "corrections");
-  if (filing.stopped === null && existsSync(base)) {
+  if (filing.stopped === null && !partial && existsSync(base)) {
     for (const category of readdirSync(base, { withFileTypes: true }).filter((e) => e.isDirectory())) {
       for (const f of readdirSync(join(base, category.name)).filter((n) => n.endsWith(".md")).sort()) {
         const id = `corrections/${category.name}/${f.slice(0, -3)}`;

@@ -39,3 +39,22 @@ test("run reports an error stop and defaults the cap to $3", async () => {
   assert.equal(lines[0], "cost cap $3.00");
   assert.match(lines.join("\n"), /stopped: error/);
 });
+
+test("parseArgs rejects a cap that is not a non-negative number, so the run can never go uncapped", () => {
+  for (const argv of [["--cap", "abc"], ["--cap"], ["--cap", "-1"], ["--cap", "Infinity"], ["--cap", ""]]) {
+    assert.throws(() => parseArgs(argv), /--cap/, argv.join(" "));
+  }
+  assert.equal(parseArgs(["--cap", "0"]).costCap, 0);
+});
+
+test("run prints a usage error and does not analyze on a bad cap", async () => {
+  const lines = [];
+  let analyzed = false;
+  const code = await run(["--cap", "abc"], { analyze: async () => { analyzed = true; }, log: (l) => lines.push(l), root: "/repo" }).then(
+    () => 0,
+    (e) => e.exitCode ?? 1,
+  );
+  assert.equal(analyzed, false);
+  assert.notEqual(code, 0);
+  assert.match(lines.join("\n"), /--cap/);
+});

@@ -247,3 +247,41 @@ test("analyze files corrections: seeded with counts, learned kept, stale removed
     done();
   }
 });
+
+test("analyze keeps stale seeded corrections when a source reports a partial read, and fails closed on a NaN cap", async () => {
+  const { dir, write, commit, done } = repo();
+  try {
+    write(".gitignore", ".harness/\n");
+    write("src/a.ts", "export const a = 1;\n");
+    commit("2024-01-10T12:00:00Z", "add a");
+    write(".harness/memory/corrections/testing/stale-one.md", "---\ntype: correction\nstatus: seeded\ncategory: testing\ncount: 1\n---\nstale\n");
+    const mem = join(dir, ".harness", "memory");
+    let calls = 0;
+    const classify: Classify = async () => {
+      calls++;
+      return { filings: [], costUsd: 0 };
+    };
+    const o: Observation = { id: "o1", source: "finding", story: "s1", date: "2024-01-05T00:00:00Z", link: "", text: "t" };
+
+    const lines: string[] = [];
+    const partial = await analyze(dir, {
+      classify,
+      sources: async (warn) => {
+        warn("gh failed: not logged in");
+        return [];
+      },
+      log: (l) => lines.push(l),
+    });
+    assert.ok(lines.some((l) => l.includes("gh failed: not logged in")));
+    assert.ok(existsSync(join(mem, "corrections/testing/stale-one.md")));
+    assert.deepEqual(partial.removed.filter((id) => id.startsWith("corrections/")), []);
+
+    const capLines: string[] = [];
+    const capped = await analyze(dir, { classify, sources: async () => [o], costCap: Number.NaN, log: (l) => capLines.push(l) });
+    assert.equal(calls, 0);
+    assert.equal(capLines[0], "cost cap $0.00");
+    assert.equal(capped.stopped, "cap");
+  } finally {
+    done();
+  }
+});

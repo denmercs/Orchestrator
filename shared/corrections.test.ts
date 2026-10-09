@@ -14,6 +14,7 @@ import {
   reviewObservations,
   storyObservations,
 } from "./corrections";
+import { noteId } from "./memory";
 import { emptyNote, readAreaNames, renderSummary } from "./repo-facts";
 import { appendOutcome } from "./story-outcome";
 
@@ -230,4 +231,47 @@ test("renderTopCorrections lists at most 10 corrections by count then id and kee
   const areas = [emptyNote("server", "area", "2026-05-01")];
   const summary = `${renderSummary(areas, { server: 1 }, new Map([["server", "backend"]]))}\n${section}`;
   assert.deepEqual([...readAreaNames(summary)], [["server", "backend"]]);
+});
+
+test("fileObservations fails closed on a non-finite cap, counts the system prompt in the worst case and keeps unparsable dates without asOf", async () => {
+  const o = (id: string): Observation => ({ id, source: "finding", story: "S1", date: "", link: "", text: "x" });
+  let calls = 0;
+  const classify: Classify = async () => {
+    calls++;
+    return { filings: [], costUsd: 0 };
+  };
+  for (const costCap of [Number.NaN, -1, Number.POSITIVE_INFINITY]) {
+    const logs: string[] = [];
+    const res = await fileObservations([o("a")], { cache: {}, classify, costCap, areas: [], log: (l) => logs.push(l) });
+    assert.equal(res.stopped, "cap");
+    assert.equal(logs[0], "cost cap $0.00");
+  }
+  assert.equal(calls, 0);
+
+  // a long vocabulary in the prompt is part of the worst case: a cap that fits the batch alone no longer fits
+  const cache: Record<string, Filing> = {};
+  const vocab = Array.from({ length: 400 }, (_, i) => `a rather long canonical phrase number ${i}`);
+  cache[`${PROMPT_VERSION}:${MODEL}:old`] = { id: "old", category: "types", area: null, phrase: "p" };
+  const small = await fileObservations([o("old"), o("a")], { cache, classify, costCap: 0.011, areas: [], log: () => {} });
+  assert.equal(small.stopped, null);
+  for (const [i, phrase] of vocab.entries()) cache[`${PROMPT_VERSION}:${MODEL}:v${i}`] = { id: `v${i}`, category: "types", area: null, phrase };
+  const big = await fileObservations([o("a"), ...vocab.map((_, i) => o(`v${i}`))], { cache, classify, costCap: 0.011, areas: [], log: () => {} });
+  assert.equal(big.stopped, "cap");
+
+  assert.equal(observationsAsOf([o("a")], {}).length, 1);
+  assert.equal(observationsAsOf([o("a")], { asOf: "2026-01-01" }).length, 0);
+});
+
+test("a phrase with no latin letters still gets a usable slug, and review bodies fall back to the PR url", () => {
+  const obs: Observation = { id: "abc123def456", source: "finding", story: "S1", date: "2026-01-01", link: "l", text: "t" };
+  const [note] = mergeCorrections([{ id: obs.id, category: "types", area: null, phrase: "!!! ???" }], new Map([[obs.id, obs]]));
+  assert.notEqual(note.slug, "");
+  assert.ok(noteId(note).endsWith(`/${note.slug}`) && !noteId(note).endsWith("/"));
+
+  const [review] = reviewObservations(
+    [{ number: 4, headRefName: "b", url: "https://gh.test/pull/4" }],
+    { 4: [{ body: "rename", submittedAt: "2026-01-01T00:00:00Z" }] },
+    {},
+  );
+  assert.equal(review.link, "https://gh.test/pull/4");
 });
