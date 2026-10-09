@@ -24,6 +24,7 @@ import { initiativeStatus, stepBar, type InitiativeBadge, type Segment as StepSe
 import { harnessSettings } from "../shared/settings";
 import { startInitiativeLoop, stopInitiativeLoop } from "../shared/initiative-loop";
 import { LoadingState } from "./loading-state";
+import { ParityPrototype } from "./parity-prototype";
 import { SessionLog } from "./session-log";
 import { SkeletonBar, SkeletonCards, SkeletonRows } from "./skeleton";
 import {
@@ -1026,6 +1027,8 @@ function StoryDrawerView({
   const tone = toneOf(story.status, theme);
   const neededBy = state.stories.filter((item) => item.dependsOn.includes(story.id));
   const prUrl = story.pr && state.repoUrl ? `${state.repoUrl}/pull/${story.pr}` : "";
+  // PROTOTYPE — wipe me with client/parity-prototype.tsx.
+  const [parityOpen, setParityOpen] = useState(false);
 
   return (
     <View style={styles.overlay}>
@@ -1112,6 +1115,7 @@ function StoryDrawerView({
           />
         </ScrollView>
       </View>
+      {parityOpen ? <ParityPrototype theme={theme} onClose={() => setParityOpen(false)} /> : null}
     </View>
   );
 }
