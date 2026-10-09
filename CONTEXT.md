@@ -176,7 +176,7 @@ _Avoid_: notifications, inbox, alert (for a context-meter warning).
 
 ## Needs-you queue
 
-The card at the top of the Initiatives tab that lists the current gates, shown only when there is at least one. A chip "NEEDS YOU · N", then one row per gate from `gateRow(gate)`: the story id as the tag, "<story title>: <gate text>", `where`, and the gate's actions. Plan: **Approve plan** (approve) and **Request changes** (changes, then the session opens; "No session to open" without an agent). Stuck: **Restart from handoff** (restart) and **Nudge** (nudge). Merge: **Review & merge** opens the PR (`${repoUrl}/pull/${pr}`, the gate's `prUrl`); no RPC. A row runs one action at a time with its buttons disabled; success refreshes the boards, failure toasts the error. Code: `NeedsYouQueue` in `client/needs-you.tsx`, rows from `gateRow` in `shared/gates.ts`.
+The card at the top of the Initiatives tab that lists the current gates, shown only when there is at least one. A chip "NEEDS YOU · N", then one row per gate from `gateRow(gate)`: the story id as the tag, "<story title>: <gate text>", `where`, and the gate's actions. Plan: **Approve plan** (approve) and **Request changes** (changes, then the session opens; "No session to open" without an agent). Stuck: **Restart from handoff** (restart) and **Nudge** (nudge). Merge: **Review & merge** opens the PR (`${repoUrl}/pull/${pr}`, the gate's `prUrl`); no RPC. A row runs one action at a time; its buttons stay disabled until the boards have re-read after it, so a gate can't be acted on twice. Failure toasts the error. Code: `NeedsYouQueue` in `client/needs-you.tsx`, rows from `gateRow` in `shared/gates.ts`.
 
 _Avoid_: inbox, approvals list.
 
@@ -190,7 +190,7 @@ The five numbers under the needs-you queue, from the epic boards, the gates and 
 - **Merged**: merged / total stories, summed over every board with state (each board holds its current phase). Sub "stories across initiatives".
 - **Spend today**: `$x.xx`, sub "of <budget> budget · $y.yy this week"; "—" until the summary loads or while it fails. Polled every 60 s from `orchestration.context.summary` with `today` = local midnight.
 
-The strip wraps on narrow layouts. Code: `statsOf` and `startOfDay` in `shared/stats-strip.ts`, `StatsStrip` and `useSpend` in `client/needs-you.tsx`.
+Running, Ready and Merged show "—" until the boards first load. Each stat has a coloured dot by its label (green, blue, amber, grey) as in the design. The strip wraps on narrow layouts. Code: `statsOf` and `startOfDay` in `shared/stats-strip.ts`, `StatsStrip` and `useSpend` in `client/needs-you.tsx`.
 
 **Budget**: the host setting `budget` (`budgetSettings`, version 1): `{ dailyBudgetUsd: 25, storyCapUsd: 5 }`. Display only for now: the strip shows today's spend against the daily budget, whole dollars when whole ("$25"). Nothing edits it and nothing enforces either number yet. Code: `shared/settings.ts`.
 

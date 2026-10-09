@@ -18,18 +18,25 @@ const money = (usd: number) => `$${usd.toFixed(2)}`;
 // Whole-dollar budgets read as "$25", others with cents.
 const budgetMoney = (usd: number) => (Number.isInteger(usd) ? `$${usd}` : money(usd));
 
-export function statsOf(input: { boards: EpicBoard[]; gates: Gate[]; spend: Spend | null; budget: Budget }): Stat[] {
-  const stories = input.boards.flatMap((board) => board.state?.stories ?? []);
+// `boards` is null until the first read lands; the board stats show "—" until then.
+export function statsOf(input: {
+  boards: EpicBoard[] | null;
+  gates: Gate[];
+  spend: Spend | null;
+  budget: Budget;
+}): Stat[] {
+  const stories = input.boards?.flatMap((board) => board.state?.stories ?? []) ?? [];
+  const count = (n: number) => (input.boards ? String(n) : "—");
   const running = stories.filter((story) => RUNNING.has(story.status)).length;
   const ready = stories.filter((story) => story.ready).length;
   const merged = stories.filter((story) => story.status === "merged").length;
   const gates = input.gates.length;
   const budget = `of ${budgetMoney(input.budget.dailyBudgetUsd)} budget`;
   return [
-    { label: "Running", value: String(running), sub: "agents working", tone: "default" },
-    { label: "Ready", value: String(ready), sub: "waiting to start", tone: "default" },
+    { label: "Running", value: count(running), sub: "agents working", tone: "default" },
+    { label: "Ready", value: count(ready), sub: "waiting to start", tone: "default" },
     { label: "Needs you", value: String(gates), sub: "agents paused at gates", tone: gates > 0 ? "warning" : "default" },
-    { label: "Merged", value: `${merged}/${stories.length}`, sub: "stories across initiatives", tone: "default" },
+    { label: "Merged", value: input.boards ? `${merged}/${stories.length}` : "—", sub: "stories across initiatives", tone: "default" },
     {
       label: "Spend today",
       value: input.spend ? money(input.spend.spendToday) : "—",

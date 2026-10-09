@@ -87,6 +87,15 @@ test("statsOf: no boards gives zero counts and 0/0 merged", () => {
   assert.equal(stats.Merged.value, "0/0");
 });
 
+test("statsOf: board stats are a dash until the boards load", () => {
+  const stats = byLabel(statsOf({ boards: null, gates: [], spend: SPEND, budget: BUDGET }));
+  assert.equal(stats.Running.value, "—");
+  assert.equal(stats.Ready.value, "—");
+  assert.equal(stats.Merged.value, "—");
+  assert.equal(stats["Needs you"].value, "0");
+  assert.equal(stats["Spend today"].value, "$6.85");
+});
+
 test("statsOf: Spend today is a dash while the summary is loading or failed", () => {
   const stats = byLabel(statsOf({ boards: BOARDS, gates: [], spend: null, budget: BUDGET }));
   assert.equal(stats["Spend today"].value, "—");

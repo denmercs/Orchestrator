@@ -14,7 +14,8 @@ type Theme = PluginSurfaceProps["theme"];
 const rowKey = (gate: Gate) => `${gate.board}\n${gate.storyId}`;
 
 // The needs-you queue at the top of the Initiatives tab: every gate, with the actions you can take on
-// it (d6). One action runs at a time per row; the row's buttons are disabled while it runs.
+// it (d6). One action runs at a time per row; the row's buttons stay disabled until the boards have
+// re-read after it, so an acted-on gate can't be sent twice before it leaves the queue.
 export function NeedsYouQueue({
   theme,
   compact,
@@ -26,7 +27,7 @@ export function NeedsYouQueue({
   compact: boolean;
   gates: Gate[];
   navigation: PluginSurfaceProps["navigation"];
-  onActed(): void;
+  onActed(): Promise<void>;
 }) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   const act = useRpc(gateAct);
@@ -61,7 +62,7 @@ export function NeedsYouQueue({
         if (result.agentId && navigation) navigation.openAgent({ agentId: result.agentId });
         else toast.show("No session to open");
       }
-      onActed();
+      await onActed();
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : "Could not act on the gate.");
     } finally {
@@ -157,7 +158,7 @@ export function StatsStrip({
 }: {
   theme: Theme;
   compact: boolean;
-  boards: EpicBoard[];
+  boards: EpicBoard[] | null;
   gates: Gate[];
 }) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
@@ -168,16 +169,30 @@ export function StatsStrip({
 
   return (
     <View style={styles.strip}>
-      {stats.map((stat) => (
-        <View key={stat.label} style={styles.stat}>
-          <Text style={styles.statLabel}>{stat.label.toUpperCase()}</Text>
+      {stats.map((stat, index) => (
+        <View key={stat.label} style={[styles.stat, index > 0 ? styles.statDivider : null]}>
+          <View style={styles.statLabelRow}>
+            <View style={[styles.dot, { backgroundColor: theme.colors[DOT[stat.label] ?? "foregroundMuted"] }]} />
+            <Text style={styles.statLabel}>{stat.label}</Text>
+          </View>
           <Text style={[styles.statValue, stat.tone === "warning" ? styles.warning : null]}>{stat.value}</Text>
-          <Text style={styles.statSub}>{stat.sub}</Text>
+          <Text style={styles.statSub} numberOfLines={1}>
+            {stat.sub}
+          </Text>
         </View>
       ))}
     </View>
   );
 }
+
+// The dot beside each stat's label, as in the design: green running, blue ready, amber gates.
+const DOT: Record<string, keyof Theme["colors"]> = {
+  Running: "statusSuccess",
+  Ready: "accent",
+  "Needs you": "statusWarning",
+  Merged: "border",
+  "Spend today": "foregroundMuted",
+};
 
 function createStyles(theme: Theme, compact: boolean) {
   const c = theme.colors;
@@ -230,16 +245,31 @@ function createStyles(theme: Theme, compact: boolean) {
     strip: {
       flexDirection: "row" as const,
       flexWrap: "wrap" as const,
-      gap: compact ? 10 : 16,
-      paddingVertical: 8,
-      borderTopWidth: 1,
-      borderBottomWidth: 1,
+      borderWidth: 1,
       borderColor: c.border,
+      borderRadius: 10,
+      backgroundColor: c.surface1,
+      overflow: "hidden" as const,
     },
-    stat: { minWidth: compact ? 120 : 140, flexGrow: 1, gap: 4 },
-    statLabel: { fontSize: 11, letterSpacing: 0.6, color: c.foregroundMuted },
-    statValue: { fontSize: compact ? 22 : 28, fontWeight: "500" as const, color: c.foreground },
-    statSub: { fontSize: 12, color: c.foregroundMuted },
+    stat: {
+      minWidth: compact ? 120 : 150,
+      flexGrow: 1,
+      flexBasis: 0,
+      gap: 4,
+      paddingVertical: compact ? 10 : 14,
+      paddingHorizontal: compact ? 12 : 18,
+    },
+    statDivider: { borderLeftWidth: 1, borderLeftColor: c.border },
+    statLabelRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 7 },
+    dot: { width: 7, height: 7, borderRadius: 3.5 },
+    statLabel: { fontSize: 12, color: c.foregroundMuted },
+    statValue: {
+      fontSize: 22,
+      fontWeight: "600" as const,
+      fontVariant: ["tabular-nums" as const],
+      color: c.foreground,
+    },
+    statSub: { fontSize: 11.5, color: c.foregroundMuted },
     warning: { color: c.statusWarning },
   };
 }

@@ -445,11 +445,11 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
               compact={layout.compact}
               gates={gates}
               navigation={navigation}
-              onActed={() => void epic.refresh()}
+              onActed={epic.refresh}
             />
           ) : null}
 
-          <StatsStrip theme={theme} compact={layout.compact} boards={epic.boards ?? []} gates={gates} />
+          <StatsStrip theme={theme} compact={layout.compact} boards={epic.boards} gates={gates} />
 
           {error ? <Text style={styles.danger}>{error}</Text> : null}
 
