@@ -54,3 +54,9 @@ test("a section followed by another section keeps its place", () => {
   const text = appendOutcome(`${story}\n## Outcome\n\n### Merged\n- x\n\n## Later\n\nz\n`, { kind: "blocked", reason: "r" });
   assert.match(text, /### Blocked\n- r\n\n## Later\n\nz\n$/);
 });
+
+test("no-change records Nothing to ship once", () => {
+  const text = appendOutcome(story, { kind: "no-change" });
+  assert.match(text, /### Nothing to ship\n- The branch had no commits over its base/);
+  assert.equal(appendOutcome(text, { kind: "no-change" }), text);
+});
