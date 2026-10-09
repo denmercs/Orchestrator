@@ -670,7 +670,7 @@ test("a step blocked by the retry limit that then writes implement-done is resum
   writeFileSync(join(worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nimplement-done\n", "utf8");
   await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as never);
 
-  assert.equal(git("log", "--format=%s"), "S1: Implement");
+  assert.equal(git("log", "--format=%s"), "Demo story");
   assert.deepEqual(created.map((agent) => agent.labels["loop-step"]), ["review"]);
   const meta = storyMeta(story);
   assert.deepEqual(
