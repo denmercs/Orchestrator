@@ -20,8 +20,8 @@ const ghReply = join(home, "gh-reply.json");
 process.env.GH_BIN = join(home, "gh");
 writeFileSync(process.env.GH_BIN, `#!/bin/sh\n[ -f "${ghReply}" ] && cat "${ghReply}" || exit 1\n`, "utf8");
 chmodSync(process.env.GH_BIN, 0o755);
-const ghPr = (state: string | null) => {
-  if (state) writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid: "abc" }), "utf8");
+const ghPr = (state: string | null, statusCheckRollup: unknown[] = []) => {
+  if (state) writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid: "abc", statusCheckRollup }), "utf8");
   else rmSync(ghReply, { force: true });
 };
 const { createInitiativeLoop, RESUME_LINE, RESTART_LINE, nudgePrompt } = await import("./initiative-loop");
@@ -1134,6 +1134,106 @@ test("reopen puts a blocked story back on blocked_from with the block fields cle
   await initiative.reopen(ref);
   await initiative.reopen({ ...ref, storyId: "S9" });
   assert.equal(readFileSync(story, "utf8"), noFrom);
+});
+
+// What the Review agent leaves in the worktree's state.md when it fails a round.
+const reviewFailed = (worktree: string) =>
+  writeFileSync(
+    join(worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nreview-failed\n\n## Review findings\n* server/x.ts:12 — wrong — fix it\n- shared/y.ts:3 — bad — fix too\n",
+    "utf8",
+  );
+const failingTest = { __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: "", completedAt: "2026-01-01T00:00:00Z" };
+const completed = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<ReturnType<typeof loop>["onTurnEnded"]>[1];
+
+test("a failed Review round is copied into the story file with review_rounds; at the limit it is recorded before the block", async () => {
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { step: "review" });
+  reviewFailed(fx.worktree);
+  const { api, created } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "review" } }]);
+
+  await loop().onTurnEnded(api, completed);
+
+  const text = readFileSync(fx.story, "utf8");
+  assert.match(text, /### Review round 1\n- server\/x\.ts:12 — wrong — fix it\n- shared\/y\.ts:3 — bad — fix too\n/);
+  assert.equal(storyMeta(fx.story).review_rounds, "1");
+  assert.deepEqual(created.map((agent) => agent.labels["loop-round"]), ["2"]);
+
+  const last = fixture("a1");
+  writeFrontmatter(last.story, { step: "review", round: DEFAULT_LOOP_CONFIG.reviewRounds });
+  reviewFailed(last.worktree);
+  const again = fakePaseo([{ id: "a1", labels: { ...last.labels, "loop-step": "review" } }]);
+  await loop().onTurnEnded(again.api, completed);
+  const limit = readFileSync(last.story, "utf8");
+  assert.equal(storyMeta(last.story).status, "blocked");
+  assert.match(limit, new RegExp(`### Review round ${DEFAULT_LOOP_CONFIG.reviewRounds}\\n- server`));
+  assert.match(limit, /### Blocked\n- Review failed \d+ times/);
+});
+
+test("a PR with a failing check starts Fix CI and records the attempt and the check", async (t) => {
+  t.after(() => ghPr(null));
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { status: "pr-open", step: "pr", pr: 45 });
+  ghPr("OPEN", [failingTest]);
+  const { api, created } = fakePaseo([]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.deepEqual(created.map((agent) => agent.labels["loop-step"]), ["fix"]);
+  const meta = storyMeta(fx.story);
+  assert.deepEqual([meta.fix_attempts, meta.failed_checks, meta.fixed_sha], ["1", "test", "abc"]);
+  assert.match(readFileSync(fx.story, "utf8"), /### CI fix attempt 1\n- failing: test\n/);
+});
+
+test("block() records its reason in the story file; a permission wait does not", async () => {
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { step: "diagnose" });
+  writeFileSync(join(fx.worktree, ".harness", "state.md"), "# S1\n\n## Status\ndiagnose-blocked\nCannot reproduce on main.\n", "utf8");
+  const { api } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "diagnose" } }]);
+  await loop().onTurnEnded(api, completed);
+  assert.match(readFileSync(fx.story, "utf8"), /### Blocked\n- Cannot reproduce on main\.\n/);
+
+  const waiting = fixture("a1");
+  const second = fakePaseo([{ id: "a1", labels: waiting.labels }]);
+  await loop().onPermissionRequested(second.api, { agent: { id: "a1" }, request: { name: "Bash", title: "Run it" } } as never);
+  assert.equal(storyMeta(waiting.story).status, "blocked");
+  assert.doesNotMatch(readFileSync(waiting.story, "utf8"), /## Outcome/);
+});
+
+test("after merge and archive, the story file alone shows the rounds, findings, fix attempt and total", async (t) => {
+  t.after(() => ghPr(null));
+  const fx = fixture("a1");
+  const { api, created, archived } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "review" } }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+  writeFrontmatter(fx.story, { step: "review" });
+  reviewFailed(fx.worktree);
+  await initiative.onTurnEnded(api, completed);
+  assert.equal(created.length, 1);
+
+  // Review passes in round 2 and the PR opens: `round` goes back to 1.
+  writeFrontmatter(fx.story, { status: "pr-open", step: "pr", round: 1, pr: 45 });
+  ghPr("OPEN", [failingTest]);
+  await initiative.tick();
+  assert.equal(created.at(-1)?.labels["loop-step"], "fix");
+
+  writeFrontmatter(fx.story, { status: "pr-open", step: "pr" });
+  rmSync(fx.worktree, { recursive: true });
+  ghPr("MERGED");
+  await initiative.tick();
+
+  const text = readFileSync(fx.story, "utf8");
+  const meta = storyMeta(fx.story);
+  assert.deepEqual(
+    [meta.status, meta.review_rounds, meta.fix_attempts, meta.failed_checks],
+    ["merged", "1", "1", "test"],
+  );
+  assert.match(text, /### Review round 1\n- server\/x\.ts:12 — wrong — fix it/);
+  assert.match(text, /### CI fix attempt 1\n- failing: test\n/);
+  assert.match(text, /### Merged\n- 2 review rounds, 1 CI fix attempt\n$/);
+  assert.deepEqual(archived, ["ws1"]);
 });
 
 test("reopen gives a ci block a fresh fix budget, and puts a step block's marker back to running", async () => {
