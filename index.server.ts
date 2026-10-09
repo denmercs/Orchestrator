@@ -20,6 +20,8 @@ import { advancePipeline, closeMergedStories, startStory } from "./server/pipeli
 import { createLoopAdvance } from "./server/loop-advance";
 import { createInitiativeLoop } from "./server/initiative-loop";
 import { createContextWatch, paseoPort } from "./server/context-watch";
+import { createGateActions, loopGatePort } from "./server/gate-actions";
+import { gateAct } from "./shared/gates";
 import { summariseTelemetry } from "./server/context-telemetry";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc } from "./shared/context";
 import {
@@ -168,6 +170,11 @@ export default function contribute(server: PluginServerContext) {
   server.handle(contextAct, (input, { paseo }) => {
     contextPaseo = paseo;
     return contextWatch.act(input);
+  });
+  server.handle(gateAct, (input, { paseo }) => {
+    // Restart goes through the context watch's fresh adapter, which uses this handle.
+    contextPaseo = paseo;
+    return createGateActions(loopGatePort(initiativeLoop, paseo, contextWatch)).act(input);
   });
   server.handle(contextSessionsRpc, ({ agentIds }, { paseo }) => {
     contextPaseo = paseo;
