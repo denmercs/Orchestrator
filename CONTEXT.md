@@ -214,10 +214,16 @@ _Avoid_: KPI row, metrics (for the strip); quota, limit (for the budget).
 
 How much of each provider's plan is used, as the Paseo daemon reports it through `paseo.providers.listUsage()`: one line per provider under the stats strip's five stats, always Claude, Kiro, Cursor in that order (other providers the daemon reports are left out). Each line is the provider name, its plan label if any, then each window or balance as "Session 39% · resets in 3h 54m" or "Plan usage 814% · $569.46 of $70 · resets in 23d 4h". A balance's % is used / limit; with no limit only the amount shows. Coloured by the daemon's `tone` (danger red, warning amber).
 
-- **"unavailable"** when the daemon gives no entry for the provider, a status other than `available`, no number at all, or `listUsage()` itself rejects (an older daemon). Never an estimate. Kiro is "unavailable" for now: Paseo has no Kiro usage source (follow-up S24).
+- **"unavailable"** when the daemon gives no entry for the provider, a status other than `available`, no number at all, or `listUsage()` itself rejects (an older daemon). Never an estimate. Kiro comes from the plugin's own **Kiro usage source**, so it is "unavailable" only on a host without `registerUsageSource` (Paseo before 0.11.0) or when `kiro-cli` is missing or fails.
 - **"runs out in …"** only when the daemon gives `runsOutAt`; nothing is computed from our own spend.
 - **"—"** until the first call returns. A failed poll of the RPC keeps the last good lines.
 
 Polled every 60 s from `orchestration.usage.plan`. Distinct from **Budget**, which is our own spend setting. Code: `planUsageRpc`, `PLAN_PROVIDERS` and `planUsageRows` in `shared/plan-usage.ts`, `readPlanUsage` in `server/plan-usage.ts`, `usePlanUsage` and `StatsStrip` in `client/needs-you.tsx`.
 
 _Avoid_: quota, limit (as the name for this); usage limits.
+
+## Kiro usage source
+
+A `registerUsageSource` entry with `id: "kiro"` that the plugin registers itself, because Paseo ships no Kiro source. It runs `kiro-cli chat --no-interactive "/usage"` (no credits spent, about 4 s), strips ANSI, and reads the plan label and "Credits (used of limit …)" line into one `credits` balance whose `resetsAt` is local midnight of the reset date. The daemon's `listUsage()` uses the source id as `providerId`, which is how **Plan usage** finds the Kiro row. Anything it can't read becomes an `error` report, never a guess. Registered only when the host has `registerUsageSource`; remove it once Paseo ships its own Kiro source (a duplicate id makes registration throw). Code: `parseKiroUsage` and `kiroUsageSource` in `server/kiro-usage.ts`, registered in `contribute`.
+
+_Avoid_: Kiro quota.
