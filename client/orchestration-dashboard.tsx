@@ -86,8 +86,8 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const [jiraLoaded, setJiraLoaded] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [startingId, setStartingId] = useState<string | null>(null);
-  // Null while loading or on error; the branch then goes without an initials prefix.
-  const [initials, setInitials] = useState<string | null>(null);
+  // The initials request, so a Start before it answers waits for it. Null on error: no prefix.
+  const initials = useRef<Promise<string | null>>(Promise.resolve(null));
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const { pulse, loaded: pulseLoaded, refresh: refreshPulse } = useProdPulse();
   const epic = useEpicBoards();
@@ -272,9 +272,9 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   }, [refreshJiraBoards]);
 
   useEffect(() => {
-    loadInitials({}).then(
-      (result) => setInitials(result.initials),
-      () => setInitials(null),
+    initials.current = loadInitials({}).then(
+      (result) => result.initials,
+      () => null,
     );
   }, [loadInitials]);
 
@@ -384,7 +384,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         pipelineOn ? startPipeline : undefined,
         agentConfig,
         registerScope,
-        initials,
+        initials.current,
       );
       if (started.warnings.length > 0) {
         setSessionError(`Started, with warnings: ${started.warnings.join(" ")}`);

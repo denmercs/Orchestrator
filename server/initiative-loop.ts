@@ -333,6 +333,8 @@ export function createInitiativeLoop(
     let worktree = story.meta.worktree || "";
     const reusable = workspaceId ? await api.workspaces.ref(workspaceId).refresh().catch(() => null) : null;
     if (!reusable || !worktree || !existsSync(worktree)) {
+      // Saved first: if Paseo makes the branch and then fails, the retry reuses it instead of adding -2.
+      if (!story.meta.branch) writeFrontmatter(story.path, { branch });
       const { projects } = await api.projects.list().catch(() => ({ projects: [] as { projectId: string; projectRootPath: string }[] }));
       const project = projects.find((item) => resolve(item.projectRootPath) === init.root);
       const created = await api.workspaces.create({

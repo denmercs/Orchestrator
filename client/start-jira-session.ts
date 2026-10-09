@@ -27,14 +27,15 @@ type RegisterScope = (input: { cwd: string; scope: "jira" | "none" }) => Promise
 
 // With `startPipeline`, stories run the Story pipeline (Plan first); epics always run the epic loop.
 // `registerScope` gives the session or epic loop the Jira server only. The pipeline scopes its own steps.
-// `initials` prefix the branch (`dm/quick-1/...`); the worktree folder keeps its flat slug.
+// `initials` prefix the branch (`dm/quick-1/...`); the worktree folder keeps its flat slug. A pending
+// promise is awaited, so a Start before the initials load still gets them.
 export async function startJiraSession(
   paseo: PaseoApi,
   item: BoardItem,
   startPipeline?: StartPipeline,
   agentConfig?: AgentCreateConfig,
   registerScope?: RegisterScope,
-  initials: string | null = null,
+  initials: string | null | Promise<string | null> = null,
 ) {
   if (!item.key) {
     throw new Error("This card has no Jira key.");
@@ -49,7 +50,7 @@ export async function startJiraSession(
       projectId: project.projectId,
       cwd: project.projectRootPath,
       action: "branch-off",
-      branchName: branchName({ initials, key: item.key, title: item.title }),
+      branchName: branchName({ initials: await initials, key: item.key, title: item.title }),
       baseBranch: "origin/main",
       worktreeSlug: slug,
     },

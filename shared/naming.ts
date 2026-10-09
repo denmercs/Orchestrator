@@ -38,10 +38,15 @@ export const branchName = ({ initials, key, title }: { initials?: string | null;
 
 const SUBJECT_MAX = 72;
 
-// First non-empty line, minus a leading `S17:` / `ABC-123:` / `ABC-123 |`, cut at a word boundary.
+// First non-empty line, minus a list bullet, wrapping quotes and a leading `S17:` / `ABC-123:` / `ABC-123 |`,
+// cut at a word boundary.
 export const cleanSubject = (text: string): string | null => {
   const line = text.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
-  const subject = line.replace(/^(?:S\d+|[A-Z][A-Z0-9]*-\d+)\s*[:|]\s*/, "").trim();
+  const subject = line
+    .replace(/^[-*]\s+/, "")
+    .replace(/^(["'`])(.*)\1$/, "$2")
+    .replace(/^(?:S\d+|[A-Z][A-Z0-9]*-\d+)\s*[:|]\s*/, "")
+    .trim();
   if (subject.length <= SUBJECT_MAX) return subject || null;
   const space = subject.slice(0, SUBJECT_MAX + 1).lastIndexOf(" ");
   return subject.slice(0, space > 0 ? space : SUBJECT_MAX).trimEnd();

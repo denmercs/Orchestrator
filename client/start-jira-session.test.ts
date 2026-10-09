@@ -178,3 +178,20 @@ for (const [initials, branch] of [
     });
   });
 }
+
+test("a Start before the initials load waits for them instead of dropping the prefix", async () => {
+  const sources: unknown[] = [];
+  let resolve: (value: string | null) => void = () => {};
+  const pending = new Promise<string | null>((done) => (resolve = done));
+  const started = startJiraSession(
+    fakePaseo("/worktrees/quick-1", [], [], sources),
+    boardItem("story"),
+    undefined,
+    undefined,
+    undefined,
+    pending,
+  );
+  resolve("dm");
+  await started;
+  assert.partialDeepStrictEqual(sources[0], { branchName: "dm/quick-1/do-the-thing" });
+});

@@ -64,6 +64,13 @@ test("cleanSubject: strips a leading story id or Jira key", () => {
   assert.equal(cleanSubject("ABC-123 | Add search"), "Add search");
 });
 
+test("cleanSubject: strips a list bullet and wrapping quotes or backticks", () => {
+  assert.equal(cleanSubject("- Add search"), "Add search");
+  assert.equal(cleanSubject("* S17: Add search"), "Add search");
+  assert.equal(cleanSubject('"Add search"'), "Add search");
+  assert.equal(cleanSubject("`Add search`"), "Add search");
+});
+
 test("cleanSubject: cuts at a word boundary at 72 chars", () => {
   const text = "word ".repeat(20).trim(); // 99 chars
   const out = cleanSubject(text);

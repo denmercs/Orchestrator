@@ -838,3 +838,48 @@ test("a saved branch: still wins over the generated name", async () => {
   const { requested } = await startNewStory({ branch: "feature/kept" });
   assert.deepEqual(requested, ["feature/kept"]);
 });
+
+test("a start that fails after Paseo made the branch keeps that branch for the retry", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "loop-retry-")));
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  git("commit", "-q", "--allow-empty", "-m", "init");
+  const init = join(root, ".harness", "initiatives", "demo");
+  const phase = join(init, "phases", "1-meter");
+  mkdirSync(join(phase, "stories"), { recursive: true });
+  writeFileSync(join(init, "initiative.md"), "---\nloop: on\n---\n# Initiative: Demo\n", "utf8");
+  writeFileSync(join(phase, "phase.md"), "---\nphase: 1\ntitle: Meter\n---\n", "utf8");
+  const story = join(phase, "stories", "01-story.md");
+  writeFileSync(story, "---\nid: S1\ntitle: Add search\nstatus: todo\n---\n\n## Goal\n\nShip it.\n", "utf8");
+  const fake = fakePaseo([]);
+  const requested: string[] = [];
+  const api = fake.api as unknown as Record<string, unknown> & { workspaces: Record<string, unknown> };
+  api.projects = { list: async () => ({ projects: [] }) };
+  api.workspaces.create = async (input: { source: { branchName: string } }) => {
+    requested.push(input.source.branchName);
+    if (requested.length === 1) {
+      // Paseo branched off, then failed before reporting the workspace.
+      git("branch", input.source.branchName);
+      throw new Error("Paseo created the workspace but did not report its folder.");
+    }
+    const directory = join(root, "wt");
+    mkdirSync(directory, { recursive: true });
+    return { id: "ws-new", directory };
+  };
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+    async () => "dm",
+  );
+
+  await initiative.start(fake.api, { repo: root, initiative: "demo" });
+  assert.equal(storyMeta(story).status, "blocked");
+  writeFrontmatter(story, { status: "todo", blocked_reason: null });
+  await initiative.start(fake.api, { repo: root, initiative: "demo" });
+
+  assert.deepEqual(requested, ["dm/add-search", "dm/add-search"]);
+  assert.equal(storyMeta(story).branch, "dm/add-search");
+});
