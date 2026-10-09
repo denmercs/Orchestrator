@@ -31,6 +31,7 @@ import {
   MARKERS,
   STEP_LABELS,
   afterImplement,
+  afterReview,
   commitSubject,
   formatSkills,
   parseSkills,
@@ -420,10 +421,11 @@ export function createInitiativeLoop(
         else await next("review", round);
       } else if (marker === MARKERS.implementBlocked) block(story, detail || "Implement is blocked; open its session.");
     } else if (step === "review") {
-      if (marker === MARKERS.reviewDone && on) await openPr(init, phaseDir, story);
-      else if (marker === MARKERS.reviewFailed) {
-        if (round >= config.reviewRounds) block(story, `Review failed ${round} times; see ## Review findings in the worktree.`);
-        else await next("implement", round + 1);
+      if (marker === MARKERS.reviewDone || marker === MARKERS.reviewFailed) {
+        const after = afterReview(state, marker, round, config.reviewRounds);
+        if (after.kind === "fix") await next("implement", round + 1);
+        else if (after.kind === "blocked") block(story, after.reason);
+        else if (on) await openPr(init, phaseDir, story, after.unfixed);
       }
     } else if (step === "pr" && marker === MARKERS.prDone) {
       const pr = await prForBranch(meta.worktree, meta.branch ?? "");
@@ -451,12 +453,12 @@ export function createInitiativeLoop(
   }
 
   // Review passed: the plugin commits leftovers, pushes and opens the PR. No agent is needed for this.
-  async function openPr(init: Initiative, phaseDir: string, story: StoryFile) {
+  async function openPr(init: Initiative, phaseDir: string, story: StoryFile, unfixed: string[] = []) {
     const { meta } = story;
     if (!meta.worktree) return;
     const ctx = storyContext(init, phaseDir, story);
     try {
-      const pr = await openStoryPr(meta.worktree, { id: story.id, title: ctx.title, jira: false, branch: meta.branch ?? "", base: ctx.base });
+      const pr = await openStoryPr(meta.worktree, { id: story.id, title: ctx.title, jira: false, branch: meta.branch ?? "", base: ctx.base, unfixed });
       writeFileSync(stateFile(meta.worktree), writeMarker(readText(stateFile(meta.worktree)), `${MARKERS.prDone}\n${pr.url}`), "utf8");
       writeFrontmatter(story.path, { status: "pr-open", step: "pr", round: 1, cycle: null, agent: null, pr: pr.number, ci: "pending" });
     } catch (error) {

@@ -810,6 +810,33 @@ test("a dead subagent-cycles parent comes back as a parent with only the open cy
   assert.equal(storyMeta(story).cycles, "subagents");
 });
 
+test("review-done with only a non-blocking finding open starts a fix round; at the round limit a blocking one blocks", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  const reviewLabels = { ...labels, "loop-step": "review" };
+  writeFrontmatter(story, { status: "reviewing", step: "review", round: 1 });
+  const findings = (body: string) =>
+    writeFileSync(join(worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\nreview-done\n\n## Review findings\n${body}\n`, "utf8");
+  findings("- [x] blocking: a.ts:1 — off by one — use <=\n- [ ] non-blocking: b.ts:2 — unclear name — rename");
+  const { api, created } = fakePaseo([{ id: "a1", labels: reviewLabels }]);
+  const initiative = loop();
+
+  await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as never);
+
+  assert.deepEqual(created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"]]), [["implement", "2"]]);
+  assert.match(created[0].prompt ?? "", /fix the review findings/);
+
+  writeFrontmatter(story, { status: "reviewing", step: "review", round: DEFAULT_LOOP_CONFIG.reviewRounds, agent: "a2" });
+  findings("- [ ] blocking: a.ts:1 — still off by one — use <=");
+  const { api: later } = fakePaseo([{ id: "a2", labels: { ...reviewLabels, "loop-round": "3" } }]);
+  await initiative.onTurnEnded(later, { agent: { id: "a2" }, outcome: { kind: "completed" } } as never);
+
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(
+    storyMeta(story).blocked_reason,
+    `Review still has 1 blocking finding after ${DEFAULT_LOOP_CONFIG.reviewRounds} rounds; see ## Review findings in the worktree.`,
+  );
+});
+
 test("an open PR's failing head gets one Fix CI agent; a new failing head gets the next; past maxFixes it blocks", async (t) => {
   t.after(() => ghPr(null));
   const { story, labels } = fixture("a1");

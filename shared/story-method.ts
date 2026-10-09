@@ -211,6 +211,43 @@ from an earlier agent; check what is already there before you start.
 Do not touch \`## Status\` or tick \`## Cycles\`; the parent does both. Report fail → pass, or why you
 cannot go on.`;
 
+const REVIEW_CHECKS = `Check:
+- Every acceptance check is met, and each cycle has a test that would fail without its change.
+- Correctness: edge cases, error paths, concurrency, data loss.
+- Security: input validation, injection, auth and permission checks, secrets in code or logs, unsafe shell or
+  file paths, new dependencies.
+- The repo's own conventions, and nothing changed outside the story's scope.
+- The full test suite, lint and build pass (run them; keep only the summary and any failures).`;
+
+// The plugin reads the checklist, not the marker, to decide between a fix round and the PR (afterReview).
+const REVIEW_END = `Write \`## Preview\`: one line per app route or screen the story changes, "- <route> — what to look at", or
+\`none — <why>\` when nothing is visible.
+Write .harness/pr-body.md: a short Purpose, the Changes Made as bullets, and how it was tested.
+When the review is written, set \`## Status\` to \`${MARKERS.reviewDone}\`. The plugin reads the checklist: any
+unticked line goes to a fresh agent to fix, and when none is left the plugin opens the PR.`;
+
+const REVIEW = `## This step: review the change as a fresh critic
+Review the diff against the base branch named under \`## Where it sits\` (\`git diff <base>...HEAD\`): check it
+against the story, its acceptance, \`## Plan\` and \`## Cycles\`. Do not fix anything.
+${REVIEW_CHECKS}
+Replace what is under \`## Review findings\` with one checklist line per problem, keeping "follow-up:" lines:
+- \`- [ ] blocking: file:line — what is wrong — what would fix it\` when it is wrong: an acceptance check not met,
+  a bug, a security gap, a failing test, lint or build.
+- \`- [ ] non-blocking: file:line — what could be better — how\` when it works but should improve: naming,
+  readability, a missing edge-case test, a repo convention.
+${REVIEW_END}`;
+
+const REREVIEW = `## This step: re-review the change after the fixes
+\`## Review findings\` holds the last review's checklist; the fix agent ticked each line it fixed. Do not fix
+anything.
+1. For each ticked line, check the fix in the diff against the base branch named under \`## Where it sits\`
+   (\`git diff <base>...HEAD\`). If it isn't fixed, untick it and say why at the end of the line. A
+   "won't fix" line you disagree with is unticked too.
+2. Review the whole diff again. Add only new \`blocking:\` lines (\`- [ ] blocking: file:line — what is wrong — what
+   would fix it\`): something the fixes broke, or a real defect missed before. Do not add new non-blocking lines.
+${REVIEW_CHECKS}
+${REVIEW_END}`;
+
 function planData(plan: string | undefined) {
   const planLines = (plan ?? "").trim().split("\n");
   const planText = planLines.slice(0, PLAN_LINES).join("\n") + (planLines.length > PLAN_LINES ? "\n…" : "");
@@ -264,9 +301,11 @@ const STEPS: Record<LoopStep, (extra: StepExtra, jira: boolean) => string> = {
     }
     if (round > 1) {
       return `## This step: fix the review findings
-Review found problems. Fix every item under \`## Review findings\` (skip "follow-up:" lines), each with a test
-that fails before the fix, and add one line per fix to \`## Evidence\`. Do not work unticked cycles; fresh agents
-take those. Then set \`## Status\` to ${DONE}.
+Review found problems. Fix every unticked line under \`## Review findings\`, blocking and non-blocking (skip
+"follow-up:" lines). Give each fix to behaviour a test that fails before the fix, and add one line per fix to
+\`## Evidence\`. Tick each line you fixed (\`- [x]\`). If a non-blocking line is wrong, tick it and end it with
+"— won't fix: <why>"; the next review can reopen it. Do not work unticked cycles; fresh agents take those.
+Then set \`## Status\` to ${DONE}.
 If you cannot go on, set it to \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
     }
     // No checklist in ## Cycles: one agent does the whole change.
@@ -279,22 +318,7 @@ Then set \`## Status\` to ${DONE}.
 If you cannot go on, set it to \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
   },
 
-  review: () => `## This step: review the change as a fresh critic
-Review the diff against the base branch named under \`## Where it sits\` (\`git diff <base>...HEAD\`): check it
-against the story, its acceptance, \`## Plan\` and \`## Cycles\`. Do not fix anything.
-Check:
-- Every acceptance check is met, and each cycle has a test that would fail without its change.
-- Correctness: edge cases, error paths, concurrency, data loss.
-- Security: input validation, injection, auth and permission checks, secrets in code or logs, unsafe shell or
-  file paths, new dependencies.
-- The repo's own conventions, and nothing changed outside the story's scope.
-- The full test suite, lint and build pass (run them; keep only the summary and any failures).
-Write each problem under \`## Review findings\` as one line: file:line — what is wrong — what would fix it.
-Write \`## Preview\`: one line per app route or screen the story changes, "- <route> — what to look at", or
-\`none — <why>\` when nothing is visible.
-Write .harness/pr-body.md: a short Purpose, the Changes Made as bullets, and how it was tested.
-If there are no findings that must be fixed, set \`## Status\` to \`${MARKERS.reviewDone}\`; otherwise set it to
-\`${MARKERS.reviewFailed}\`. The plugin opens the PR after a pass.`,
+  review: ({ round }) => (round > 1 ? REREVIEW : REVIEW),
 
   // Kept for stories that were already at this step; new stories get their PR from the plugin.
   pr: () => `## This step: open the pull request
@@ -395,6 +419,52 @@ export function afterImplement(state: string, finished: number | "all" | null): 
   }
   const next = cycles.find((cycle) => !cycle.done);
   return next ? { kind: "cycle", cycle: next } : { kind: "review" };
+}
+
+export type Finding = { severity: "blocking" | "non-blocking"; done: boolean; text: string };
+
+// The checklist under `## Review findings`: `- [ ] blocking: …` and `- [ ] non-blocking: …` lines.
+// An untagged checklist line counts as blocking. "follow-up:" lines and prose are not findings.
+export function readFindings(state: string): Finding[] {
+  const findings: Finding[] = [];
+  for (const raw of readSection(state, "Review findings").split("\n")) {
+    const item = /^\s*[-*]\s*\[([ xX])\]\s*(.+)$/.exec(raw);
+    if (!item) continue;
+    const tagged = /^(blocking|non-blocking)\s*:\s*(.*)$/i.exec(item[2].trim());
+    findings.push({
+      severity: tagged?.[1].toLowerCase() === "non-blocking" ? "non-blocking" : "blocking",
+      done: item[1] !== " ",
+      text: (tagged ? tagged[2] : item[2]).trim(),
+    });
+  }
+  return findings;
+}
+
+export type AfterReview =
+  | { kind: "fix" }
+  | { kind: "pr"; unfixed: string[] }
+  | { kind: "blocked"; reason: string };
+
+// What follows a Review agent that wrote review-done (or review-failed). The checklist decides, not the
+// marker: any unticked finding, blocking or not, goes to a fresh fix agent until `maxRounds`. At the
+// limit, open blocking findings block the story and open non-blocking ones go into the PR as unfixed.
+// A review-failed with no checklist (a reviewer from before it) still gets a fix round.
+export function afterReview(state: string, marker: string, round: number, maxRounds: number): AfterReview {
+  const findings = readFindings(state);
+  const open = findings.filter((finding) => !finding.done);
+  const legacy = marker === MARKERS.reviewFailed && findings.length === 0;
+  if (!open.length && !legacy) return { kind: "pr", unfixed: [] };
+  if (round < maxRounds) return { kind: "fix" };
+  if (legacy) return { kind: "blocked", reason: `Review failed ${round} times; see ## Review findings in the worktree.` };
+  const blocking = open.filter((finding) => finding.severity === "blocking").length;
+  if (blocking) {
+    const noun = blocking === 1 ? "finding" : "findings";
+    return {
+      kind: "blocked",
+      reason: `Review still has ${blocking} blocking ${noun} after ${round} rounds; see ## Review findings in the worktree.`,
+    };
+  }
+  return { kind: "pr", unfixed: open.map((finding) => finding.text) };
 }
 
 // The commit subject a finished step wrote on the line after its marker, cleaned; else `fallback`.

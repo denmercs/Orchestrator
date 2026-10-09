@@ -20,6 +20,7 @@ import {
 import {
   MARKERS,
   afterImplement,
+  afterReview,
   commitSubject,
   readCycles,
   readMarker,
@@ -174,11 +175,12 @@ export async function advancePipeline(
     await commitStory(cwd, commitSubject(state, fallback));
     if (after.kind === "cycle") await start(phase("implement"), round, after.cycle);
     else await start(phase("review"), round);
-  } else if (phaseId === "review" && marker === MARKERS.reviewDone) {
-    await openPr(cwd, ticket);
-  } else if (phaseId === "review" && marker === MARKERS.reviewFailed) {
-    // Findings go back to a fresh Implement agent, up to the round limit; then wait for a human.
-    if (round < config.reviewRounds) await start(phase("implement"), round + 1);
+  } else if (phaseId === "review" && (marker === MARKERS.reviewDone || marker === MARKERS.reviewFailed)) {
+    // Open findings go back to a fresh Implement agent, up to the round limit; then blocking ones wait for you.
+    const after = afterReview(state, marker, round, config.reviewRounds);
+    if (after.kind === "fix") await start(phase("implement"), round + 1);
+    else if (after.kind === "blocked") setMarker(cwd, `review-blocked\n${after.reason}`);
+    else await openPr(cwd, ticket, after.unfixed);
   } else if (phaseId === FIX_CI.id && marker === MARKERS.fixDone) {
     await finishFix(cwd, state);
   }
@@ -238,7 +240,7 @@ export async function watchPipelinePrs(paseo: PaseoApi, readConfig: ReadConfig, 
 }
 
 // Review passed: Done is plain code. Commit leftovers, push, open the PR, then wait for the merge.
-async function openPr(cwd: string, ticket: Ticket) {
+async function openPr(cwd: string, ticket: Ticket, unfixed: string[] = []) {
   const dedupe = `${cwd}:${ticket.key}:pr`;
   if (started.has(dedupe)) {
     return;
@@ -246,7 +248,7 @@ async function openPr(cwd: string, ticket: Ticket) {
   started.add(dedupe);
   try {
     const branch = await currentBranch(cwd);
-    const pr = await openStoryPr(cwd, { id: ticket.key, title: ticket.title, jira: true, branch, base: BASE });
+    const pr = await openStoryPr(cwd, { id: ticket.key, title: ticket.title, jira: true, branch, base: BASE, unfixed });
     setMarker(cwd, `${MARKERS.prDone}\n${pr.url}`);
     if (readCi(cwd)?.pr !== pr.number) writeCi(cwd, { pr: pr.number, url: pr.url, fixedSha: null, attempts: 0 });
   } catch (error) {

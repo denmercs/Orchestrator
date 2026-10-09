@@ -3,10 +3,12 @@ import { test } from "node:test";
 import {
   LOOP_STEPS,
   afterImplement,
+  afterReview,
   commitSubject,
   formatSkills,
   readCycles,
   parseSkills,
+  readFindings,
   readMarker,
   readSection,
   stepPrompt,
@@ -96,6 +98,74 @@ test("a parent that ran every cycle moves on to review, else blocks on the first
   const after = afterImplement(state("- [x] Cycle 1 — A: a\n- [ ] Cycle 2 — B: b\n- [ ] Cycle 3 — C: c"), "all");
   assert.equal(after.kind, "blocked");
   assert.match(after.kind === "blocked" ? after.reason : "", /Cycle 2/);
+});
+
+const findings = (body: string) => `# S1 — Demo\n\n## Status\nreview-done\n\n## Review findings\n${body}\n\n## Preview\nnone\n`;
+
+test("readFindings reads the checklist: severity, done, text; follow-ups and plain lines are not findings", () => {
+  const text = findings(
+    [
+      "- [ ] blocking: src/a.ts:3 — drops the last row — use <=",
+      "- [x] non-blocking: src/b.ts:9 — unclear name — rename to rowCount",
+      "- [ ] src/c.ts:1 — untagged — counts as blocking",
+      "- [ ] Non-Blocking: src/d.ts:2 — any case",
+      "- follow-up: paging is slow elsewhere",
+      "Some prose the reviewer left.",
+    ].join("\n"),
+  );
+  assert.deepEqual(readFindings(text), [
+    { severity: "blocking", done: false, text: "src/a.ts:3 — drops the last row — use <=" },
+    { severity: "non-blocking", done: true, text: "src/b.ts:9 — unclear name — rename to rowCount" },
+    { severity: "blocking", done: false, text: "src/c.ts:1 — untagged — counts as blocking" },
+    { severity: "non-blocking", done: false, text: "src/d.ts:2 — any case" },
+  ]);
+});
+
+test("afterReview: an open finding of either severity goes back to a fix round; none opens the PR", () => {
+  const blocking = findings("- [ ] blocking: a — b — c");
+  const nonBlocking = findings("- [x] blocking: a — b — c\n- [ ] non-blocking: d — e — f");
+  const clean = findings("- [x] blocking: a — b — c\n- follow-up: later");
+  assert.deepEqual(afterReview(blocking, "review-done", 1, 3), { kind: "fix" });
+  assert.deepEqual(afterReview(nonBlocking, "review-done", 2, 3), { kind: "fix" });
+  assert.deepEqual(afterReview(clean, "review-done", 1, 3), { kind: "pr", unfixed: [] });
+  // The checklist decides, not the marker the reviewer picked.
+  assert.deepEqual(afterReview(clean, "review-failed", 1, 3), { kind: "pr", unfixed: [] });
+});
+
+test("afterReview at the round limit: blocking findings block; only non-blocking ones go to the PR as unfixed", () => {
+  assert.deepEqual(afterReview(findings("- [ ] blocking: a — b — c\n- [ ] non-blocking: d"), "review-done", 3, 3), {
+    kind: "blocked",
+    reason: "Review still has 1 blocking finding after 3 rounds; see ## Review findings in the worktree.",
+  });
+  assert.deepEqual(afterReview(findings("- [ ] non-blocking: d — e — f\n- [x] blocking: a"), "review-done", 3, 3), {
+    kind: "pr",
+    unfixed: ["d — e — f"],
+  });
+});
+
+test("afterReview: review-failed with no checklist (an older reviewer) still gets a fix round, then blocks", () => {
+  const legacy = findings("src/a.ts:3 — drops the last row — use <=");
+  assert.deepEqual(afterReview(legacy, "review-failed", 1, 3), { kind: "fix" });
+  assert.deepEqual(afterReview(legacy, "review-failed", 3, 3), {
+    kind: "blocked",
+    reason: "Review failed 3 times; see ## Review findings in the worktree.",
+  });
+  assert.deepEqual(afterReview(legacy, "review-done", 1, 3), { kind: "pr", unfixed: [] });
+});
+
+test("review prompts: round 1 asks for a tagged checklist; later rounds re-check ticked lines and add only blocking ones", () => {
+  const first = stepPrompt("review", story, { round: 1 });
+  assert.match(first, /- \[ \] blocking: file:line/);
+  assert.match(first, /- \[ \] non-blocking: file:line/);
+  assert.match(first, /set `## Status` to `review-done`/);
+  assert.doesNotMatch(first, /review-failed/);
+  const again = stepPrompt("review", story, { round: 2 });
+  assert.match(again, /re-review/);
+  assert.match(again, /untick it/);
+  assert.match(again, /Add only new `blocking:` lines/);
+  const fix = stepPrompt("implement", story, { round: 2 });
+  assert.match(fix, /blocking and non-blocking/);
+  assert.match(fix, /Tick each line you fixed/);
 });
 
 test("the commit subject is the cleaned line after the marker, else the fallback", () => {
@@ -220,7 +290,7 @@ test("two stories share a step prompt up to the story head", () => {
   const plain: Extra = (_s, round) => ({ round });
   const cases: [string, LoopStep, RegExp, Extra][] = [
     ["plan", "plan", /## This step: plan/, plain],
-    ["review", "review", /## This step: review/, plain],
+    ["review", "review", /## This step: (review|re-review)/, plain],
     ["pr", "pr", /## This step: open the pull request/, plain],
     ["implement", "implement", /## This step: (implement the story|fix the review findings)/, plain],
     [

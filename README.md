@@ -32,7 +32,7 @@ Plan ──you approve──► Implement ──► Review ──pass──► P
 
 - **Plan** waits for you. Question it, push back, or approve it.
 - **Implement** runs one fresh agent per checklist item, test-first. The plugin commits each one.
-- **Review** is a fresh critic that checks correctness, security, conventions and the full test gate.
+- **Review** is a fresh critic that checks correctness, security, conventions and the full test gate. It tags each finding blocking or non-blocking. The plugin sends any open finding, of either kind, to a fresh fix agent and reviews again. At the round limit, a blocking finding stops the story. Non-blocking ones that are left go into the PR body.
 - **PR and CI** need no agent. The plugin pushes, opens the PR and polls checks every 2 minutes. A red check starts a fresh Fix CI agent, and the plugin pushes its fix. The Board's Story pipeline watches its PRs the same way.
 - After a merge the next ready story starts. When a phase is done, the loop moves on to the next phase.
 

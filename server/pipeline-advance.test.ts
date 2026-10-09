@@ -101,7 +101,8 @@ function fakePaseo(live: Agent[]) {
 }
 
 const readCi = (cwd: string) => JSON.parse(readFileSync(join(cwd, ".harness", "ci.json"), "utf8"));
-const status = (cwd: string) => readFileSync(join(cwd, ".harness", "state.md"), "utf8").split("## Status\n")[1].trim();
+const status = (cwd: string) =>
+  readFileSync(join(cwd, ".harness", "state.md"), "utf8").split("## Status\n")[1].split("\n## ")[0].trim();
 
 test("a failing PR head gets one Fix CI agent with the failing checks; the same head on the next tick gets none", async () => {
   const { cwd, labels } = fixture();
@@ -161,4 +162,26 @@ test("a merged PR ends the watch; green and pending CI leave it running without 
   await watchPipelinePrs(api, readConfig, readAgentConfig);
   assert.equal(readCi(cwd).done, "merged");
   assert.deepEqual(created, []);
+});
+
+const reviewed = (cwd: string, body: string) =>
+  writeFileSync(join(cwd, ".harness", "state.md"), `# ABC-1 — Demo\n\n## Status\nreview-done\n\n## Review findings\n${body}\n`, "utf8");
+
+test("pipeline review-done with an open non-blocking finding starts Implement round 2; at the limit a blocking one writes review-blocked", async () => {
+  const { cwd, labels } = fixture();
+  const { api, created } = fakePaseo([{ id: "r1", cwd, workspaceId: "ws1", labels }]);
+  reviewed(cwd, "- [ ] non-blocking: b.ts:2 — unclear name — rename");
+
+  await advancePipeline(api, { agent: { id: "r1", cwd, workspaceId: "ws1" }, outcome: { kind: "completed" } } as never, readConfig, readAgentConfig);
+
+  assert.deepEqual(created.map((agent) => [agent.labels.phase, agent.labels.round]), [["implement", "2"]]);
+  assert.match(created[0].prompt ?? "", /fix the review findings/);
+
+  // Only the newest pipeline agent in a worktree moves the story on: here, the n1 the round above started.
+  const last = { ...labels, round: String(config.reviewRounds) };
+  const { api: later } = fakePaseo([{ id: "n1", cwd, workspaceId: "ws1", labels: last }]);
+  reviewed(cwd, "- [ ] blocking: a.ts:1 — off by one — use <=");
+  await advancePipeline(later, { agent: { id: "n1", cwd, workspaceId: "ws1" }, outcome: { kind: "completed" } } as never, readConfig, readAgentConfig);
+
+  assert.equal(status(cwd), `review-blocked\nReview still has 1 blocking finding after ${config.reviewRounds} rounds; see ## Review findings in the worktree.`);
 });
