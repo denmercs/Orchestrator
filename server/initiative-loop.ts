@@ -64,6 +64,7 @@ import { commitStory, openStoryPr, pushStoryFix } from "./story-git";
 
 type PaseoApi = PluginHandlerContext["paseo"];
 type StoryFile = ReturnType<typeof readStoryFiles>[number];
+type StoryRef = { repo: string; initiative: string; storyId: string };
 type Initiative = { root: string; slug: string; dir: string };
 
 const KIND = LOOP_AGENT_KIND;
@@ -609,6 +610,21 @@ export function createInitiativeLoop(
     return story ? { init, phaseDir, story } : null;
   }
 
+  // A story by its id in any phase of the initiative, or null when either isn't there.
+  function findStory(input: StoryRef) {
+    let init: Initiative;
+    try {
+      init = initiativeAt(input.repo, input.initiative);
+    } catch {
+      return null;
+    }
+    for (const phaseDir of phaseDirs(init)) {
+      const story = readStoryFiles(phaseDir).find((item) => item.id === input.storyId);
+      if (story) return story;
+    }
+    return null;
+  }
+
   return {
     rememberPaseo(next: PaseoApi) {
       paseo = next;
@@ -673,6 +689,32 @@ export function createInitiativeLoop(
       return serial(async () => {
         const found = labelledStory(labels);
         if (found?.story.meta.agent === fromId) writeFrontmatter(found.story.path, { agent: toId });
+      });
+    },
+
+    // A story's gate fields, from whichever phase holds it; null when the initiative or story isn't there.
+    gateStory(input: StoryRef) {
+      return serial(async () => {
+        const story = findStory(input);
+        if (!story) return null;
+        return { status: story.meta.status ?? "", agent: story.meta.agent || null, waitingOn: story.meta.waiting_on || null };
+      });
+    },
+
+    // A gate action got the agent going again: the story goes back to the step it blocked from, with
+    // its retries reset, so the marker flow and supervision pick it up. Only a blocked story that
+    // knows where it came from moves; anything else is left alone.
+    reopen(input: StoryRef): Promise<void> {
+      return serial(async () => {
+        const story = findStory(input);
+        if (story?.meta.status !== "blocked" || !story.meta.blocked_from) return;
+        writeFrontmatter(story.path, {
+          status: story.meta.blocked_from,
+          blocked_reason: null,
+          blocked_from: null,
+          stalled: null,
+          retries: null,
+        });
       });
     },
 
