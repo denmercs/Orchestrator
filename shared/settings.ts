@@ -65,6 +65,16 @@ export const harnessSettings = defineSettings({
   }),
 });
 
+export const gitSettings = defineSettings({
+  id: "git",
+  scope: "host",
+  version: 1,
+  schema: z.object({
+    // Branch prefix override (`dm/…`); empty reads the global git email, then the OS username.
+    branchInitials: z.string().default(""),
+  }),
+});
+
 export const mcpSettings = defineSettings({
   id: "mcp",
   scope: "host",

@@ -340,7 +340,7 @@ test("the parent's implement-done commits once and starts Review; with a cycle u
   const done = finish("- [x] Cycle 1 — Reads: test → change\n- [x] Cycle 2 — Warns: warning test → warn once\n");
   await loop().onTurnEnded(done.api, done.turnEnded);
 
-  assert.equal(done.git("log", "--format=%s"), "S1: Implement");
+  assert.equal(done.git("log", "--format=%s"), "Demo story");
   assert.deepEqual(
     done.created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"]]),
     [["review", "1"]],
@@ -373,13 +373,57 @@ test("a per-cycle agent's implement-done with cycles left hands them to one pare
 
   await loop().onTurnEnded(api, turnEnded);
 
-  assert.equal(git("log", "--format=%s"), "S1: Cycle 1 — Reads");
+  assert.equal(git("log", "--format=%s"), "Reads");
   assert.deepEqual(
     created.map((agent) => [agent.labels["loop-cycle"], agent.labels["loop-cycles"]]),
     [[undefined, "subagents"]],
   );
   assert.match(created[0].prompt ?? "", /## Cycles to run\n- \[ \] Cycle 2 — Warns.*\n- \[ \] Cycle 3 — Resets/);
   assert.equal(storyMeta(fx.story).cycles, "subagents");
+});
+
+// A finished step in a fresh worktree repo with `## Status` set to `status`; returns the worktree's last commit subject.
+async function commitAfter(step: string, status: string, frontmatter: Record<string, string | number | null>, labels: Record<string, string>) {
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, frontmatter);
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: fx.worktree, encoding: "utf8" }).trim();
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  // A bare origin the fix push can reach.
+  const origin = join(fx.root, "origin.git");
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  git("remote", "add", "origin", origin);
+  git("commit", "-q", "--allow-empty", "-m", "start");
+  git("push", "-q", "-u", "origin", "HEAD");
+  writeFileSync(join(fx.worktree, "meter.ts"), "export const meter = 1;\n", "utf8");
+  writeFileSync(
+    join(fx.worktree, ".harness", "state.md"),
+    `# S1 — Demo story\n\n## Status\n${status}\n\n## Cycles\n- [x] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once\n`,
+    "utf8",
+  );
+  const { api } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": step, ...labels } }]);
+  const turnEnded = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
+    ReturnType<typeof loop>["onTurnEnded"]
+  >[1];
+  await loop().onTurnEnded(api, turnEnded);
+  return { subject: git("log", "-1", "--format=%s"), meta: storyMeta(fx.story) };
+}
+
+test("a cycle's implement-done commits with the agent's subject, cleaned; without one, the cycle name", async () => {
+  const given = await commitAfter("implement", "implement-done\nS1: Read the meter from settings", { cycle: 1 }, { "loop-cycle": "1" });
+  assert.equal(given.subject, "Read the meter from settings");
+
+  const none = await commitAfter("implement", "implement-done", { cycle: 1 }, { "loop-cycle": "1" });
+  assert.equal(none.subject, "Reads");
+});
+
+test("a Fix CI agent's fix-done commits with its subject; without one, 'Fix failing CI checks'", async () => {
+  const given = await commitAfter("fix", "fix-done\nS1: Wait for the meter before reading it", { status: "pr-open", step: "pr" }, {});
+  assert.equal(given.subject, "Wait for the meter before reading it");
+  assert.equal(given.meta.status, "pr-open");
+
+  const none = await commitAfter("fix", "fix-done", { status: "pr-open", step: "pr" }, {});
+  assert.equal(none.subject, "Fix failing CI checks");
 });
 
 test("an older Implement agent without the parent label doesn't move a story its parent owns", async () => {
@@ -738,6 +782,106 @@ test("a step whose worktree is gone with no PR retries, then blocks past maxRetr
   assert.equal(storyMeta(story).status, "blocked");
   assert.equal(storyMeta(story).blocked_reason, "Its worktree is gone and feature/s1 has no PR.");
   assert.deepEqual(created, []);
+});
+
+// A repo with a todo story and the loop on; Start creates its workspace through a fake Paseo that
+// records the branch it was asked for.
+async function startNewStory(options: { branch?: string; existing?: string[] } = {}) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "loop-start-")));
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  git("commit", "-q", "--allow-empty", "-m", "init");
+  for (const name of options.existing ?? []) git("branch", name);
+  const init = join(root, ".harness", "initiatives", "demo");
+  const phase = join(init, "phases", "1-meter");
+  mkdirSync(join(phase, "stories"), { recursive: true });
+  writeFileSync(join(init, "initiative.md"), "---\nloop: on\n---\n# Initiative: Demo\n", "utf8");
+  writeFileSync(join(phase, "phase.md"), "---\nphase: 1\ntitle: Meter\n---\n", "utf8");
+  const story = join(phase, "stories", "01-story.md");
+  const saved = options.branch ? `branch: ${options.branch}\n` : "";
+  writeFileSync(story, `---\nid: S1\ntitle: Add search\nstatus: todo\n${saved}---\n\n## Goal\n\nShip it.\n`, "utf8");
+  const fake = fakePaseo([]);
+  const requested: string[] = [];
+  const api = fake.api as unknown as Record<string, unknown> & { workspaces: Record<string, unknown> };
+  api.projects = { list: async () => ({ projects: [] }) };
+  api.workspaces.create = async (input: { source: { branchName: string } }) => {
+    requested.push(input.source.branchName);
+    const directory = join(root, "wt");
+    mkdirSync(directory, { recursive: true });
+    return { id: "ws-new", directory };
+  };
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+    async () => "dm",
+  );
+  const result = await initiative.start(fake.api, { repo: root, initiative: "demo" });
+  assert.equal(result.error, null);
+  return { requested, meta: storyMeta(story) };
+}
+
+test("a new story's branch is <initials>/<title slug>", async () => {
+  const { requested, meta } = await startNewStory();
+  assert.deepEqual(requested, ["dm/add-search"]);
+  assert.equal(meta.branch, "dm/add-search");
+});
+
+test("a new story's branch gets -2 when that branch already exists", async () => {
+  const { requested } = await startNewStory({ existing: ["dm/add-search"] });
+  assert.deepEqual(requested, ["dm/add-search-2"]);
+});
+
+test("a saved branch: still wins over the generated name", async () => {
+  const { requested } = await startNewStory({ branch: "feature/kept" });
+  assert.deepEqual(requested, ["feature/kept"]);
+});
+
+test("a start that fails after Paseo made the branch keeps that branch for the retry", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "loop-retry-")));
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  git("commit", "-q", "--allow-empty", "-m", "init");
+  const init = join(root, ".harness", "initiatives", "demo");
+  const phase = join(init, "phases", "1-meter");
+  mkdirSync(join(phase, "stories"), { recursive: true });
+  writeFileSync(join(init, "initiative.md"), "---\nloop: on\n---\n# Initiative: Demo\n", "utf8");
+  writeFileSync(join(phase, "phase.md"), "---\nphase: 1\ntitle: Meter\n---\n", "utf8");
+  const story = join(phase, "stories", "01-story.md");
+  writeFileSync(story, "---\nid: S1\ntitle: Add search\nstatus: todo\n---\n\n## Goal\n\nShip it.\n", "utf8");
+  const fake = fakePaseo([]);
+  const requested: string[] = [];
+  const api = fake.api as unknown as Record<string, unknown> & { workspaces: Record<string, unknown> };
+  api.projects = { list: async () => ({ projects: [] }) };
+  api.workspaces.create = async (input: { source: { branchName: string } }) => {
+    requested.push(input.source.branchName);
+    if (requested.length === 1) {
+      // Paseo branched off, then failed before reporting the workspace.
+      git("branch", input.source.branchName);
+      throw new Error("Paseo created the workspace but did not report its folder.");
+    }
+    const directory = join(root, "wt");
+    mkdirSync(directory, { recursive: true });
+    return { id: "ws-new", directory };
+  };
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+    async () => "dm",
+  );
+
+  await initiative.start(fake.api, { repo: root, initiative: "demo" });
+  assert.equal(storyMeta(story).status, "blocked");
+  writeFrontmatter(story, { status: "todo", blocked_reason: null });
+  await initiative.start(fake.api, { repo: root, initiative: "demo" });
+
+  assert.deepEqual(requested, ["dm/add-search", "dm/add-search"]);
+  assert.equal(storyMeta(story).branch, "dm/add-search");
 });
 
 test("gateStory finds a story in any phase by its id, and is null when it isn't there", async () => {

@@ -140,7 +140,7 @@ export function buildStandupNote(date: string): string {
 }
 
 export function splitTicket(label: string): { key: string; title: string } {
-  const match = label.match(/^([A-Z][A-Z0-9]+-\d+)\s+[—–:-]\s+(.+)$/);
+  const match = label.match(/^([A-Z][A-Z0-9]+-\d+)\s+[—–:|-]\s+(.+)$/);
   if (match) {
     return { key: match[1], title: match[2] };
   }
