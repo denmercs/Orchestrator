@@ -426,9 +426,11 @@ export function renderSummary(areas: Note[], counts: Map<string, number> | Recor
 }
 
 // id -> name for every row of the area table; the header and separator rows are skipped.
+// Reading stops at the first `## ` heading, so sections appended after the table (Top corrections) are not areas.
 export function readAreaNames(text: string): Map<string, string> {
   const names = new Map<string, string>();
   for (const line of text.split("\n")) {
+    if (line.startsWith("## ")) break;
     if (!line.trim().startsWith("|")) continue;
     const [id, name] = rowCells(line);
     if (id === undefined || name === undefined || id === "" || name === "" || id === "id" || /^-+$/.test(id)) continue;

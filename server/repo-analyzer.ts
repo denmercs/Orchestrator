@@ -2,9 +2,14 @@ import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
+import { fileObservations, mergeCorrections, observationsAsOf, renderTopCorrections } from "../shared/corrections";
+import type { Classify, Filing, Observation } from "../shared/corrections";
 import { formatNote, noteId, parseNote, writeNote } from "../shared/memory";
+import type { Note } from "../shared/memory";
 import { readAreaNames, seedNotes } from "../shared/repo-facts";
 import type { Commit, Snapshot, SourceFile } from "../shared/repo-facts";
+import { defaultApiKey, haikuClassifier } from "./correction-classifier";
+import { collectObservations } from "./correction-sources";
 
 // Reads a repo as of one commit, never the working tree: uncommitted edits and later commits seed nothing.
 
@@ -149,22 +154,66 @@ export async function snapshot(root: string, opts: { asOf?: string } = {}): Prom
   };
 }
 
-export type AnalyzeResult = { written: string[]; removed: string[]; skipped: string[]; summary: string };
+export type AnalyzeResult = {
+  written: string[];
+  removed: string[];
+  skipped: string[];
+  summary: string;
+  spentUsd: number;
+  stopped: "cap" | "error" | null;
+};
+
+export type AnalyzeOptions = {
+  asOf?: string;
+  excludeStory?: string;
+  costCap?: number;
+  classify?: Classify;
+  // `warn` reports a source that could not be read; the run then removes no stale corrections.
+  sources?: (warn: (message: string) => void) => Promise<Observation[]>;
+  log?: (line: string) => void;
+};
+
+const DEFAULT_COST_CAP = 3;
+const CACHE_FILE = ["memory", ".cache", "filings.jsonl"];
+
+function readCache(file: string): Record<string, Filing> {
+  const cache: Record<string, Filing> = {};
+  if (!existsSync(file)) return cache;
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    try {
+      const { key, filing } = JSON.parse(line) as { key: string; filing: Filing };
+      if (key && filing) cache[key] = filing;
+    } catch {
+      // a torn line is just a cache miss
+    }
+  }
+  return cache;
+}
+
+const topCorrectionsOf = (summary: string) => /^## Top corrections\n[\s\S]*?(?=^## |(?![\s\S]))/m.exec(summary)?.[0] ?? "";
 
 /**
  * Seeds `.harness/memory` from the repo. Unchanged seeded notes are left byte for byte; a learned note at a produced
  * slug is never overwritten; seeded notes in areas/, decisions/ and notes/ that this run did not produce are removed.
- * `corrections/` is never touched. `costCap` is accepted and ignored.
+ * After the facts, a corrections pass files observations (cost cap first in the log), writes seeded `corrections/` notes,
+ * removes stale seeded ones (unless the run stopped early), and appends `## Top corrections` to SUMMARY.md.
+ * Without `classify` and without an API key the pass is skipped.
  */
-export async function analyze(root: string, opts: { asOf?: string; costCap?: number } = {}): Promise<AnalyzeResult> {
+export async function analyze(root: string, opts: AnalyzeOptions = {}): Promise<AnalyzeResult> {
+  const log = opts.log ?? (() => {});
+  // A cap that is not a finite, non-negative number fails closed: nothing is spent.
+  const requested = opts.costCap ?? DEFAULT_COST_CAP;
+  const costCap = Number.isFinite(requested) && requested >= 0 ? requested : 0;
+  log(`cost cap $${costCap.toFixed(2)}`);
   const memory = join(root, ".harness", "memory");
   const summaryFile = join(memory, "SUMMARY.md");
   const oldSummary = existsSync(summaryFile) ? readFileSync(summaryFile, "utf8") : "";
   const snap = await snapshot(root, { asOf: opts.asOf });
   snap.areaNames = readAreaNames(oldSummary);
-  const { notes, summary } = seedNotes(snap);
+  const { notes, summary: factsSummary } = seedNotes(snap);
+  let summary = factsSummary;
 
-  const result: AnalyzeResult = { written: [], removed: [], skipped: [], summary };
+  const result: AnalyzeResult = { written: [], removed: [], skipped: [], summary, spentUsd: 0, stopped: null };
   const produced = new Set<string>();
   for (const note of notes) {
     const id = noteId(note);
@@ -207,9 +256,97 @@ export async function analyze(root: string, opts: { asOf?: string; costCap?: num
     }
   }
 
+  const corrections = await correctionsPass(root, notes, opts, costCap, log, result);
+  summary = factsSummary + (corrections === null ? topCorrectionsOf(oldSummary) : `\n${renderTopCorrections(corrections)}`);
+  result.summary = summary;
   if (summary !== oldSummary) {
     mkdirSync(memory, { recursive: true });
     writeFileSync(summaryFile, summary);
   }
   return result;
+}
+
+// The corrections pass. Returns the correction notes produced, or null when the pass was skipped. Never throws on classifier failures.
+async function correctionsPass(
+  root: string,
+  areaNotes: Note[],
+  opts: AnalyzeOptions,
+  costCap: number,
+  log: (line: string) => void,
+  result: AnalyzeResult,
+): Promise<Note[] | null> {
+  const memory = join(root, ".harness", "memory");
+  let classify = opts.classify;
+  if (!classify) {
+    if (!(await defaultApiKey())) {
+      log("corrections skipped: no API key (set ANTHROPIC_API_KEY or the anthropic-api-key Keychain item)");
+      return null;
+    }
+    classify = haikuClassifier({ fetch: globalThis.fetch, apiKey: defaultApiKey });
+  }
+
+  let all: Observation[];
+  let partial = false;
+  const warn = (message: string) => {
+    partial = true;
+    log(`corrections: ${message}`);
+  };
+  try {
+    all = await (opts.sources ?? ((w) => collectObservations(root, { warn: w })))(warn);
+  } catch (error) {
+    log(`corrections skipped: could not read observations: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  const observations = observationsAsOf(all, { asOf: opts.asOf, excludeStory: opts.excludeStory });
+
+  const cacheFile = join(root, ".harness", ...CACHE_FILE);
+  const areas = areaNotes.filter((n) => n.type === "area").map((n) => ({ id: n.slug, globs: n.globs }));
+  // fileObservations logs the cap itself; analyze already did, first.
+  const filing = await fileObservations(observations, {
+    cache: readCache(cacheFile),
+    classify,
+    costCap,
+    areas,
+    log: (line) => {
+      if (!line.startsWith("cost cap ")) log(line);
+    },
+  });
+  result.spentUsd = filing.spentUsd;
+  result.stopped = filing.stopped;
+
+  const lines = Object.entries(filing.cache).map(([key, f]) => JSON.stringify({ key, filing: f }));
+  if (lines.length > 0 && lines.length !== Object.keys(readCache(cacheFile)).length) {
+    mkdirSync(join(memory, ".cache"), { recursive: true });
+    writeFileSync(cacheFile, `${lines.join("\n")}\n`);
+  }
+
+  const corrections = mergeCorrections(filing.filed, new Map(observations.map((o) => [o.id, o])));
+  const produced = new Set<string>();
+  for (const note of corrections) {
+    const id = noteId(note);
+    produced.add(id);
+    const file = join(memory, `${id}.md`);
+    if (existsSync(file) && readFileSync(file, "utf8") === formatNote(note)) result.skipped.push(id);
+    else if (writeNote(root, note, { seededOnly: true })) result.written.push(id);
+    else result.skipped.push(id);
+  }
+
+  // A partial run (cap, error or an unreadable source) has not seen everything, so it removes nothing.
+  const base = join(memory, "corrections");
+  if (filing.stopped === null && !partial && existsSync(base)) {
+    for (const category of readdirSync(base, { withFileTypes: true }).filter((e) => e.isDirectory())) {
+      for (const f of readdirSync(join(base, category.name)).filter((n) => n.endsWith(".md")).sort()) {
+        const id = `corrections/${category.name}/${f.slice(0, -3)}`;
+        if (produced.has(id)) continue;
+        try {
+          if (parseNote(readFileSync(join(base, category.name, f), "utf8"), f.slice(0, -3)).status !== "seeded") continue;
+        } catch {
+          continue;
+        }
+        rmSync(join(base, category.name, f));
+        result.removed.push(id);
+      }
+    }
+  }
+  return corrections;
 }
