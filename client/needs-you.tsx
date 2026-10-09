@@ -6,6 +6,13 @@ import { useToast } from "@getpaseo/plugin/client/react-native";
 import { contextSummaryRpc } from "../shared/context";
 import { gateAct, gateRow, type Gate, type GateRowAction } from "../shared/gates";
 import type { EpicBoard } from "../shared/orchestration";
+import {
+  PLAN_PROVIDERS,
+  planUsageRows,
+  planUsageRpc,
+  type PlanUsageMeter,
+  type PlanUsageResult,
+} from "../shared/plan-usage";
 import { budgetSettings } from "../shared/settings";
 import { startOfDay, statsOf, type Budget, type Spend } from "../shared/stats-strip";
 
@@ -149,7 +156,40 @@ function useSpend(): Spend | null {
   return spend;
 }
 
-// The stats strip under the queue (see CONTEXT.md, "Stats strip"): five numbers from statsOf.
+const PLAN_USAGE_POLL_MS = 60_000;
+
+// Plan usage from the daemon (see CONTEXT.md, "Plan usage"), polled every minute. Null until the first
+// call returns; a failed call keeps the last good result.
+function usePlanUsage(): PlanUsageResult | null {
+  const load = useRpc(planUsageRpc);
+  const [usage, setUsage] = useState<PlanUsageResult | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => {
+      load({})
+        .then((result) => {
+          if (active) setUsage(result);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    const timer = setInterval(refresh, PLAN_USAGE_POLL_MS);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [load]);
+
+  return usage;
+}
+
+// A meter's non-null phrases: "Session 39% · resets in 3h 54m".
+const meterText = (meter: PlanUsageMeter) =>
+  [meter.label, meter.percent, meter.amount, meter.resets, meter.runsOut].filter(Boolean).join(" · ");
+
+// The stats strip under the queue (see CONTEXT.md, "Stats strip"): five numbers from statsOf, then
+// the plan usage lines.
 export function StatsStrip({
   theme,
   compact,
@@ -166,6 +206,8 @@ export function StatsStrip({
   const spend = useSpend();
   const budget = settings.status === "ready" ? settings.values : DEFAULT_BUDGET;
   const stats = statsOf({ boards, gates, spend, budget });
+  const planUsage = usePlanUsage();
+  const planRows = planUsage ? planUsageRows(planUsage, new Date()) : null;
 
   return (
     <View style={styles.strip}>
@@ -181,6 +223,27 @@ export function StatsStrip({
           </Text>
         </View>
       ))}
+      <View style={styles.planUsage}>
+        <Text style={styles.statLabel}>Plan usage</Text>
+        {(planRows ?? PLAN_PROVIDERS.map(({ id, name }) => ({ provider: id, name, state: null }))).map((row) => (
+          <Text key={row.provider} style={styles.planLine}>
+            <Text style={styles.planName}>{row.name}</Text>
+            {row.state === "available" ? (
+              <>
+                {row.plan ? <Text style={styles.statSub}>{` ${row.plan}`}</Text> : null}
+                {row.meters.map((meter, index) => (
+                  <Text
+                    key={`${meter.label}-${index}`}
+                    style={meter.tone === "danger" ? styles.danger : meter.tone === "warning" ? styles.warning : null}
+                  >{`  ${meterText(meter)}`}</Text>
+                ))}
+              </>
+            ) : (
+              <Text style={styles.statSub}>{row.state === "unavailable" ? "  unavailable" : "  —"}</Text>
+            )}
+          </Text>
+        ))}
+      </View>
     </View>
   );
 }
@@ -271,5 +334,16 @@ function createStyles(theme: Theme, compact: boolean) {
     },
     statSub: { fontSize: 11.5, color: c.foregroundMuted },
     warning: { color: c.statusWarning },
+    danger: { color: c.statusDanger },
+    planUsage: {
+      width: "100%" as const,
+      gap: 4,
+      paddingVertical: compact ? 10 : 12,
+      paddingHorizontal: compact ? 12 : 18,
+      borderTopWidth: 1,
+      borderTopColor: c.border,
+    },
+    planLine: { fontSize: 12, color: c.foreground },
+    planName: { fontWeight: "600" as const },
   };
 }

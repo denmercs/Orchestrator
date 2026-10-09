@@ -26,6 +26,8 @@ import { createGateActions, loopGatePort } from "./server/gate-actions";
 import { gateAct } from "./shared/gates";
 import { readTelemetry, summariseTelemetry } from "./server/context-telemetry";
 import { loadStoryContext } from "./server/story-context";
+import { readPlanUsage } from "./server/plan-usage";
+import { planUsageRpc } from "./shared/plan-usage";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -189,6 +191,7 @@ export default function contribute(server: PluginServerContext) {
     return contextWatch.sessions(agentIds);
   });
   server.handle(contextSummaryRpc, ({ since, today }) => summariseTelemetry(since, undefined, today));
+  server.handle(planUsageRpc, (_input, { paseo }) => readPlanUsage(paseo));
   server.handle(storyContextRpc, (input, { paseo }) => {
     contextPaseo = paseo;
     return loadStoryContext(input, {

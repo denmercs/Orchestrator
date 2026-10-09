@@ -203,3 +203,15 @@ Running, Ready and Merged show "—" until the boards first load. Each stat has 
 **Budget**: the host setting `budget` (`budgetSettings`, version 1): `{ dailyBudgetUsd: 25, storyCapUsd: 5 }`. Display only for now: the strip shows today's spend against the daily budget, whole dollars when whole ("$25"), and the selected-story panel shows a story's cost against the story cap. Nothing edits it and nothing enforces either number yet. Code: `shared/settings.ts`.
 
 _Avoid_: KPI row, metrics (for the strip); quota, limit (for the budget).
+
+## Plan usage
+
+How much of each provider's plan is used, as the Paseo daemon reports it through `paseo.providers.listUsage()`: one line per provider under the stats strip's five stats, always Claude, Kiro, Cursor in that order (other providers the daemon reports are left out). Each line is the provider name, its plan label if any, then each window or balance as "Session 39% · resets in 3h 54m" or "Plan usage 814% · $569.46 of $70 · resets in 23d 4h". A balance's % is used / limit; with no limit only the amount shows. Coloured by the daemon's `tone` (danger red, warning amber).
+
+- **"unavailable"** when the daemon gives no entry for the provider, a status other than `available`, no number at all, or `listUsage()` itself rejects (an older daemon). Never an estimate. Kiro is "unavailable" for now: Paseo has no Kiro usage source (follow-up S24).
+- **"runs out in …"** only when the daemon gives `runsOutAt`; nothing is computed from our own spend.
+- **"—"** until the first call returns. A failed poll of the RPC keeps the last good lines.
+
+Polled every 60 s from `orchestration.usage.plan`. Distinct from **Budget**, which is our own spend setting. Code: `planUsageRpc`, `PLAN_PROVIDERS` and `planUsageRows` in `shared/plan-usage.ts`, `readPlanUsage` in `server/plan-usage.ts`, `usePlanUsage` and `StatsStrip` in `client/needs-you.tsx`.
+
+_Avoid_: quota, limit (as the name for this); usage limits.
