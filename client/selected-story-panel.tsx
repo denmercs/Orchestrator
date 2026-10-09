@@ -86,7 +86,7 @@ export function SelectedStoryPanel({
   const { ctx, reload } = useStoryContext(repo, state.initiativeSlug, story.id);
   const [busy, setBusy] = useState<"compact" | "fresh" | "start" | null>(null);
 
-  const bar = stepBar(story, "plan", state.stories);
+  const bar = stepBar(story, story.track, state.stories);
   const models = stepModels(
     loop.status === "ready" ? loop.values : DEFAULT_LOOP_CONFIG,
     profiles,

@@ -412,6 +412,8 @@ export const epicStory = z.object({
   agent: z.string(),
   // todo, every dependency merged, and not blocked.
   ready: z.boolean(),
+  // From frontmatter `track:`; anything but "diagnose" is "plan". Names the step bar's first label.
+  track: z.enum(["plan", "diagnose"]),
 });
 
 // A phase is stored by number (phases/<n>-<name>); people read it as "Phase <n>".

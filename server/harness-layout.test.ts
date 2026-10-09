@@ -36,3 +36,20 @@ test("readStories returns blocked_from as blockedFrom, empty when unset", () => 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("readStories returns track diagnose for track: diagnose frontmatter, plan otherwise", () => {
+  const dir = mkdtempSync(join(tmpdir(), "harness-layout-"));
+  try {
+    const stories = join(dir, "stories");
+    mkdirSync(stories);
+    writeFileSync(join(stories, "01-a.md"), "---\nid: S1\ntitle: A\nstatus: todo\ntrack: diagnose\n---\n");
+    writeFileSync(join(stories, "02-b.md"), "---\nid: S2\ntitle: B\nstatus: todo\n---\n");
+    writeFileSync(join(stories, "03-c.md"), "---\nid: S3\ntitle: C\nstatus: todo\ntrack: other\n---\n");
+    assert.deepEqual(
+      readStories(dir).map((story) => story.track),
+      ["diagnose", "plan", "plan"],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

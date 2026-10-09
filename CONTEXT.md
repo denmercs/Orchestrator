@@ -51,7 +51,7 @@ _Avoid_: add-ons, plugins, secondary skills.
 
 ## Loop step skills
 
-The skills an initiative loop step loads: the extras of the Skills drawer phase that the step maps to. plan → Plan, implement and fix → Implement, review → Review, pr → Done. Code: `LoopStep` in `shared/initiative-loop.ts` names the steps; the extras come from `Phase.extras`, with `required` ones added back through `phaseSkills`, as for the pipeline. They reach the loop agent by the Worktree copy into the story worktree, and the step prompt names them with "Also use these skills: …", left out when there are none. A ref that can't be found is a warning on the story, never a failed step.
+The skills an initiative loop step loads: the extras of the Skills drawer phase that the step maps to. plan and diagnose → Plan, implement and fix → Implement, review → Review, pr → Done. Code: `LoopStep` in `shared/initiative-loop.ts` names the steps; the extras come from `Phase.extras`, with `required` ones added back through `phaseSkills`, as for the pipeline. They reach the loop agent by the Worktree copy into the story worktree, and the step prompt names them with "Also use these skills: …", left out when there are none. A ref that can't be found is a warning on the story, never a failed step.
 
 `Phase.runs` is pipeline-only. The skill a phase runs carries its own `.harness/state.md` contract, which would fight the step prompt, so a loop step loads only the extras. The pipeline switch (`enabled`) does not affect loop step skills: they load whether the Story pipeline is on or off.
 
@@ -145,7 +145,7 @@ The five-segment bar that shows where a story is: **Plan**, **Implement**, **Rev
 | `merged` | done ×5 | "Merged #N", or "Merged" with no PR |
 | anything else | todo ×5 | the status text |
 
-- **Track**: `plan` or `diagnose`, which first step the story runs. On `diagnose` the first label is **Diagnose** instead of Plan, and the planning texts read "Diagnosing" / "Diagnosis awaiting approval". The bar itself is the same. It is only an argument for now: there is no `track` frontmatter.
+- **Track**: `plan` or `diagnose`, which first step the story runs. On `diagnose` the first label is **Diagnose** instead of Plan, and the planning texts read "Diagnosing" / "Diagnosis awaiting approval". The bar itself is the same. It comes from the story's `track:` frontmatter (`EpicStory.track`, read by `readStories`); anything other than `diagnose` is `plan`. See Diagnose track.
 - **blockedFrom**: the status a blocked story was blocked from, read from its `blocked_from` frontmatter (written by `block()` in `server/initiative-loop.ts`), `""` when unset.
 - **Context bar** (`$`): a second bar under a board node's step bar, shown only for a running or `blocked` story with an `agent` (`planning`, `implementing`, `reviewing`, `pr-open`, `blocked`). It fills to the session's context used / max, coloured by level (ok green, amber, red), with a red **act marker** at the red threshold / max. No reading (no used or max, gone agent, failed call) means no bar. Code: `contextAgents` and `nodeContext` in `client/epic-board-model.ts`, read through `contextSessionsRpc`.
 - **Initiative badge**: one badge per board, first match wins: **Needs plan** (no stories, no plan), **Planning** (no stories, a plan), **Done** (every story merged), **Needs you** (any story with a gate), **In progress** (any story planning, implementing, reviewing or `pr-open`), **Ready** (any `ready` story), otherwise **In progress**. It uses `needsYou`, so it agrees with the gate queue.
@@ -154,9 +154,17 @@ Code: `shared/story-steps.ts`, `stepBar(story, track, stories?)` (`stories` is t
 
 _Avoid_: progress bar, pipeline, stepper (for the bar); stage, phase (for a step); status pill (for the initiative badge).
 
+## Diagnose track
+
+The way a bug story starts: a Diagnose step instead of Plan. A story whose frontmatter says `track: diagnose` starts on the `diagnose` loop step (`startStory`). The bug's Jira key and link come from frontmatter `jira:` and `jira_url:` (`StoryContext.ticketKey`, `ticketUrl`), and the step prompt names both under `## Bug`. The Diagnose agent reproduces the bug, finds the cause, and writes `## Plan` and `## Cycles` into `.harness/state.md`, the first cycle a failing regression test. Then it sets `diagnose-done` without asking anyone.
+
+There is no gate. `reconcile` hands `diagnose-done` straight to Implement, as it does `plan-done`, so Implement, Review, PR and CI watch run unchanged and the story is never `awaiting-approval`. `diagnose-blocked` blocks the story with the reason on the next line. A turn that ends with neither marker is stalled and nudged by Loop supervision, since nobody is waiting on it. While it runs the story's status is `planning` (the first step of the bar, labelled **Diagnose**). Diagnose loads the Plan phase's extras (`STEP_PHASES.diagnose = "plan"`) and runs on the Plan step's profile, Opus when unset; it has no profile row of its own. Code: `STEPS.diagnose` and `MARKERS` in `shared/story-method.ts`, the diagnose branch of `reconcile` in `server/initiative-loop.ts`.
+
+_Avoid_: bugfix track, triage (for the track); diagnosing (as a status).
+
 ## Loop supervision
 
-How the initiative loop keeps a step moving with no agent watching it. Code: `supervise` and the turn-end and permission handlers in `server/initiative-loop.ts`. It covers the `plan`, `implement` and `review` steps while the story is `planning`, `implementing` or `reviewing` and its `.harness/state.md` marker is still `<step>-running` (or its worktree is gone). `awaiting-approval` waits on you and `pr-open` has its own watcher, so neither is supervised.
+How the initiative loop keeps a step moving with no agent watching it. Code: `supervise` and the turn-end and permission handlers in `server/initiative-loop.ts`. It covers the `plan`, `diagnose`, `implement` and `review` steps while the story is `planning`, `implementing` or `reviewing` and its `.harness/state.md` marker is still `<step>-running` (or its worktree is gone). `awaiting-approval` waits on you and `pr-open` has its own watcher, so neither is supervised.
 
 - **Stalled**: the story's current session ended a turn but its step isn't finished. Either the turn failed, or it completed without writing the step's marker. The turn end writes the reason to the story's `stalled:` frontmatter. The next tick sends that session a **nudge** (`nudgePrompt(reason)`). Leaving the nudge to the tick gives a rate limit or outage about two minutes to clear.
 - **Dead session**: the story's `agent:` is gone from Paseo, archived, `closed` or `error`. The tick starts a fresh session on the same step, round and cycle, labelled `loop-attempt: <n>`, whose prompt ends with `RESTART_LINE`. A subagent-cycles parent (`cycles: subagents`) comes back as a parent with only the cycles still open. If Paseo doesn't answer, the session is left alone and the tick tries again later.

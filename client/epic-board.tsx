@@ -477,13 +477,14 @@ function Legend({ theme, styles, compact }: { theme: Theme; styles: Styles; comp
   );
 }
 
-// A story's five-segment step bar (Plan, Implement, Review, PR, CI watch).
+// A story's five-segment step bar (Plan or Diagnose, Implement, Review, PR, CI watch).
 function StepBarView({ story, stories, theme, styles }: { story: EpicStory; stories: EpicStory[]; theme: Theme; styles: Styles }) {
+  const bar = stepBar(story, story.track, stories);
   return (
-    <View style={styles.barRow} accessibilityLabel="Phases: Plan · Implement · Review · PR · CI watch">
+    <View style={styles.barRow} accessibilityLabel={`Phases: ${bar.labels.join(" · ")}`}>
       <Text style={styles.barGlyph}>▸</Text>
       <View style={styles.segments}>
-        {stepBar(story, "plan", stories).segments.map((seg, i) => (
+        {bar.segments.map((seg, i) => (
           <View key={i} style={[styles.segment4, SEGMENT_STYLES[seg](theme)]} />
         ))}
       </View>
@@ -755,7 +756,7 @@ function InitiativePanel({
   const card = (item: EpicStory, at: { x: number; y: number } | undefined) => {
     const kind = nodeKind(item);
     const tone = kindTone(kind, theme);
-    const bar = stepBar(item, "plan", stories);
+    const bar = stepBar(item, item.track, stories);
     const ctx = item.agent ? nodeContext(context.get(item.agent) ?? null) : null;
     const isSelected = item.id === selected;
     return (
@@ -815,7 +816,7 @@ function InitiativePanel({
 
   const row = (item: EpicStory, index: number) => {
     const tone = toneOf(item.status, theme);
-    const bar = stepBar(item, "plan", stories);
+    const bar = stepBar(item, item.track, stories);
     return (
       <Pressable
         key={item.id}
