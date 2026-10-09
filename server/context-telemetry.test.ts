@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { recordTelemetry, summariseTelemetry, type TelemetryRow } from "./context-telemetry";
+import { readTelemetry, recordTelemetry, storyHistory, summariseTelemetry, type TelemetryRow } from "./context-telemetry";
 
 let root: string;
 
@@ -187,4 +187,62 @@ test("summariseTelemetry steps the week back whole days from the caller's today,
   // Week start is 2026-10-30T05:00Z exactly, so the 04:30Z row is the baseline.
   const summary = await summariseTelemetry(null, file, today);
   assert.equal(summary.spendWeek, 3);
+});
+
+test("readTelemetry reads the rotated file, then the current one", async () => {
+  const file = join(root, "read.jsonl");
+  await writeFile(join(root, "read.1.jsonl"), `${JSON.stringify(ROWS[0])}\n`);
+  await recordTelemetry(ROWS[1], file);
+
+  assert.deepEqual(await readTelemetry(file), [ROWS[0], ROWS[1]]);
+  assert.deepEqual(await readTelemetry(join(root, "missing.jsonl")), []);
+});
+
+const S11 = { initiative: "redesign", story: "S11" };
+
+test("storyHistory numbers sessions by fresh hand-offs since the story's last step change", () => {
+  const rows: TelemetryRow[] = [
+    row("2026-10-01T10:00:00.000Z", "p1", 50_000, "compact.fresh", { ...S11, step: "plan" }),
+    row("2026-10-01T10:01:00.000Z", "i1", 40_000, "turn", { ...S11, step: "implement", cycle: 1 }),
+    row("2026-10-01T10:02:00.000Z", "i1", 150_000, "compact.fresh", { ...S11, step: "implement", cycle: 1 }),
+    row("2026-10-01T10:03:00.000Z", "i2", 150_000, "compact.fresh", { ...S11, step: "implement", cycle: 1 }),
+    // Another cycle, another story, another initiative and a pre-S18 row: none count.
+    row("2026-10-01T10:04:00.000Z", "i3", 150_000, "compact.fresh", { ...S11, step: "implement", cycle: 2 }),
+    row("2026-10-01T10:05:00.000Z", "x1", 150_000, "compact.fresh", { ...S11, story: "S12", step: "implement", cycle: 1 }),
+    row("2026-10-01T10:06:00.000Z", "x2", 150_000, "compact.fresh", { ...S11, initiative: "other", step: "implement", cycle: 1 }),
+    row("2026-10-01T10:07:00.000Z", "x3", 150_000, "compact.fresh", { story: "S11", step: "implement", cycle: 1 }),
+  ];
+  const key = { ...S11, agentId: "i3", step: "implement", cycle: 1 };
+
+  assert.equal(storyHistory(rows, key).session, 3);
+  assert.equal(storyHistory(rows, { ...key, cycle: null }).session, 4);
+  assert.equal(storyHistory(rows, { ...key, step: "plan", cycle: null }).session, 1);
+
+  // A review in between, then a second round of implement: back to 1.
+  const later: TelemetryRow[] = [
+    ...rows,
+    row("2026-10-01T11:00:00.000Z", "r1", 30_000, "turn", { ...S11, step: "review" }),
+    row("2026-10-01T11:01:00.000Z", "i4", 30_000, "turn", { ...S11, step: "implement", cycle: 1 }),
+  ];
+  assert.equal(storyHistory(later, key).session, 1);
+});
+
+test("storyHistory counts the agent's compactions and its turns since the last one", () => {
+  const rows: TelemetryRow[] = [
+    row("2026-10-01T10:00:00.000Z", "a1", 40_000, "turn", { ...S11, step: "implement" }),
+    row("2026-10-01T10:01:00.000Z", "a1", 150_000, "compact.native", { ...S11, step: "implement" }),
+    row("2026-10-01T10:02:00.000Z", "a1", 30_000, "turn", { ...S11, step: "implement" }),
+    row("2026-10-01T10:03:00.000Z", "a1", 0, "turn", { ...S11, step: "implement", used: null }),
+    row("2026-10-01T10:04:00.000Z", "a1", 20_000, "compact.inferred", { ...S11, step: "implement" }),
+    row("2026-10-01T10:05:00.000Z", "a1", 25_000, "turn", { ...S11, step: "implement" }),
+    row("2026-10-01T10:05:30.000Z", "a1", 25_000, "warning", { ...S11, step: "implement", level: "amber" }),
+    row("2026-10-01T10:06:00.000Z", "a2", 99_000, "turn", { ...S11, step: "implement" }),
+    row("2026-10-01T10:06:30.000Z", "a2", 99_000, "compact.native", { ...S11, step: "implement" }),
+    row("2026-10-01T10:07:00.000Z", "a1", 35_000, "turn", { ...S11, step: "implement" }),
+  ];
+  const history = storyHistory(rows, { ...S11, agentId: "a1", step: "implement" });
+
+  assert.equal(history.compactions, 2);
+  assert.deepEqual(history.turns, [25_000, 35_000]);
+  assert.deepEqual(storyHistory(rows, { ...S11, agentId: "none", step: "implement" }), { session: 1, compactions: 0, turns: [] });
 });

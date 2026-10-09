@@ -116,7 +116,7 @@ function register(root: string) {
   writeFileSync(REGISTRY, JSON.stringify([...repos, root], null, 2), "utf8");
 }
 
-function initiativeAt(repo: string, slug: string): Initiative {
+export function initiativeAt(repo: string, slug: string): Initiative {
   const root = resolve(repo);
   if (!SLUG.test(slug)) throw new Error(`${slug} is not an initiative.`);
   const dir = join(initiativesDir(root), slug);
