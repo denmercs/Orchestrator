@@ -635,6 +635,25 @@ test("a step blocked by the retry limit that then writes implement-done is resum
   );
 });
 
+test("a retry-limit block stays blocked when state.md holds no answer from the step", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  writeFrontmatter(story, { retries: 2, stalled: "Its last turn failed: rate limited" });
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+  const reason = storyMeta(story).blocked_reason;
+  for (const status of ["", "something-else"]) {
+    writeFileSync(join(worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\n${status}\n`, "utf8");
+    await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as never);
+    await initiative.tick();
+
+    assert.deepEqual([sent, created], [[], []]);
+    assert.deepEqual([storyMeta(story).status, storyMeta(story).blocked_reason], ["blocked", reason], `marker "${status}"`);
+  }
+});
+
 test("a permission block with implement-done in state.md stays blocked through a turn end and a tick", async () => {
   const { story, worktree, labels } = fixture("a1");
   writeFrontmatter(story, { retries: 2, stalled: "Its last turn failed: rate limited" });

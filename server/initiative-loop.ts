@@ -78,6 +78,12 @@ const ACTIVE = new Set(["planning", "awaiting-approval", "implementing", "review
 // has its own watcher.
 const SUPERVISED = new Set(["planning", "implementing", "reviewing"]);
 const SUPERVISED_STEPS = new Set<string>(["plan", "implement", "review"]);
+// The markers a supervised step answers with; reconcile acts on each of them.
+const STEP_ANSWERS: Record<string, string[]> = {
+  plan: [MARKERS.planDone],
+  implement: [MARKERS.implementDone, MARKERS.implementBlocked],
+  review: [MARKERS.reviewDone, MARKERS.reviewFailed],
+};
 const PERMISSION = "permission";
 const STATUS_FOR: Record<LoopStep, string> = {
   plan: "planning",
@@ -422,8 +428,8 @@ export function createInitiativeLoop(
   function resumeLateAnswer(phaseDir: string, story: StoryFile) {
     const { meta } = story;
     if (meta.status !== "blocked" || meta.block_kind !== "retry-limit" || !meta.worktree) return story;
-    const state = readText(stateFile(meta.worktree));
-    if (!state || readMarker(state).marker === `${meta.step}-running`) return story;
+    const marker = readMarker(readText(stateFile(meta.worktree))).marker ?? "";
+    if (!STEP_ANSWERS[meta.step ?? ""]?.includes(marker)) return story;
     writeFrontmatter(story.path, {
       status: meta.blocked_from ?? null,
       blocked_reason: null,
