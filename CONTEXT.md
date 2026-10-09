@@ -234,3 +234,17 @@ _Avoid_: quota, limit (as the name for this); usage limits.
 A `registerUsageSource` entry with `id: "kiro"` that the plugin registers itself, because Paseo ships no Kiro source. It runs `kiro-cli chat --no-interactive "/usage"` (no credits spent, about 4 s), strips ANSI, and reads the plan label and "Credits (used of limit …)" line into one `credits` balance whose `resetsAt` is local midnight of the reset date. The daemon's `listUsage()` uses the source id as `providerId`, which is how **Plan usage** finds the Kiro row. Anything it can't read becomes an `error` report, never a guess. Registered only when the host has `registerUsageSource`; remove it once Paseo ships its own Kiro source (a duplicate id makes registration throw). Code: `parseKiroUsage` and `kiroUsageSource` in `server/kiro-usage.ts`, registered in `contribute`.
 
 _Avoid_: Kiro quota.
+
+## Memory
+
+What the harness has learned about a repo, kept as plain files in `.harness/memory/`. One **note** per file; the folder says what kind: `areas/<area>.md` (a part of the repo, with `globs` that match its files), `decisions/<slug>.md`, `notes/<slug>.md` (facts), `corrections/<category>/<slug>.md` (a known mistake with a `count` and `evidence`), plus `SUMMARY.md` at the root. A note's **id** is its path without `.md` (`decisions/no-provider-branches`); `area` holds just the area name and `learned_in` holds story ids.
+
+- **Frontmatter**: `type`, `steps` (empty = every step), `area`, `files`, `citations`, `verified_at`, `last_used`, `status`, and the typed links `learned_in`, `supports`, `supersedes`, `superseded_by`. Lists are block lists (`  - item`) or `[]`. Unknown keys, such as a human's `approved:`, are kept in order.
+- **Citation**: `path:from-to#hash`, where the hash is the first 8 hex chars of sha1 over the cited lines, each trimmed. A citation whose hash no longer matches the file is stale.
+- **Status**: `seeded` (written by the analyzer, ranked below learned notes), `active`, `unverified`, `superseded`, `expired`. A seeded-only write never overwrites a note that has moved past `seeded`.
+- **Backlinks**: worked out when memory is read from every `area`, `supports`, `supersedes` and `superseded_by` link. Never written to disk.
+- **Brief**: at most `cap` lines for one step and a set of paths: the matching area lines, then their facts and decisions (active before seeded), then their corrections by count. Facts and file pointers only; notes with no area, and `unverified`, `superseded` or `expired` notes, are left out.
+
+Code: `shared/memory.ts` (`parseNote`, `formatNote`, `notePath`, `writeNote`, `readMemory`, `briefFor`, citation helpers). Pure: no Paseo imports, no model.
+
+_Avoid_: knowledge base, lessons (for the folder).
