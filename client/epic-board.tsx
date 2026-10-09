@@ -18,24 +18,45 @@ import {
   type HarnessRepo,
   type HarnessTracker,
 } from "../shared/orchestration";
+import { contextSessionsRpc, type ContextStatus } from "../shared/context";
 import { needsYou } from "../shared/gates";
+import { initiativeStatus, stepBar, type InitiativeBadge, type Segment as StepSegment } from "../shared/story-steps";
 import { harnessSettings } from "../shared/settings";
 import { startInitiativeLoop, stopInitiativeLoop } from "../shared/initiative-loop";
 import { LoadingState } from "./loading-state";
 import { SessionLog } from "./session-log";
 import { SkeletonBar, SkeletonCards, SkeletonRows } from "./skeleton";
-import { boardKey, findSelected, pollDelay, showFold, toggleFold, type Selection } from "./epic-board-model";
+import {
+  boardKey,
+  contextAgents,
+  edgeTone,
+  emptyLine,
+  findSelected,
+  mergedProgress,
+  nodeContext,
+  nodeKind,
+  pollDelay,
+  sectionAction,
+  sectionLine,
+  sectionNote,
+  showFold,
+  toggleFold,
+  type EdgeTone,
+  type NodeContext,
+  type NodeKind,
+  type Selection,
+} from "./epic-board-model";
 
 // Every initiative's current phase (see server/harness-layout.ts) as its dependency graph: one
 // card per story, arrows from a dependency to the stories that need it. Initiatives are occasional
-// work; day-to-day epics come from Jira. Each graph starts open and folds to one line with Hide.
+// work; day-to-day epics come from Jira. Each graph starts open and folds to its header row.
 
 type Theme = PluginSurfaceProps["theme"];
 type Navigation = PluginSurfaceProps["navigation"];
 type Styles = ReturnType<typeof createStyles>;
 
-const W = 230;
-const H = 66;
+const W = 184;
+const H = 88;
 const GX = 72;
 const GY = 14;
 const P = 8;
@@ -61,44 +82,45 @@ function toneOf(status: string, theme: Theme) {
   return c.accent;
 }
 
-// What a story needs from you, as a short badge on its card.
-function badgeOf(story: EpicStory, theme: Theme): [string, string] | null {
-  if (story.status === "awaiting-approval") return ["Your turn", theme.colors.statusWarning];
-  if (story.status === "pr-open" && story.ci === "failing") return ["CI failing", theme.colors.statusDanger];
-  if (story.status === "pr-open") return ["Merge", theme.colors.statusSuccess];
-  if (story.status === "blocked") return ["Blocked", theme.colors.statusDanger];
-  if (story.ready) return ["Ready", theme.colors.accent];
-  return null;
+// Colours for the board's legend kinds, the step bar's segments, the $ bar's levels and the badge.
+// All from theme.colors so light and dark both work.
+function kindTone(kind: NodeKind, theme: Theme) {
+  const c = theme.colors;
+  if (kind === "merged" || kind === "ready") return c.statusSuccess;
+  if (kind === "needs-you") return c.statusWarning;
+  if (kind === "running") return c.accent;
+  return c.border;
 }
 
-function subline(story: EpicStory) {
-  if (story.status === "todo" && story.blockedBy) return `blocked by ${story.blockedBy}`;
-  if (story.status === "todo" && !story.ready && story.dependsOn.length) {
-    return `waiting on ${story.dependsOn.join(", ")}`;
-  }
-  return [
-    labelOf(story.status),
-    story.pr ? `#${story.pr}` : "",
-    story.status === "pr-open" && story.ci ? `CI ${story.ci}` : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
+const SEGMENT_STYLES: Record<StepSegment, (theme: Theme) => { backgroundColor: string; opacity?: number }> = {
+  done: (theme) => ({ backgroundColor: theme.colors.statusSuccess, opacity: 0.45 }),
+  now: (theme) => ({ backgroundColor: theme.colors.statusSuccess }),
+  gate: (theme) => ({ backgroundColor: theme.colors.statusWarning }),
+  todo: (theme) => ({ backgroundColor: theme.colors.border }),
+};
+
+function levelTone(level: NodeContext["level"], theme: Theme) {
+  const c = theme.colors;
+  if (level === "red") return c.statusDanger;
+  if (level === "amber") return c.statusWarning;
+  if (level === "ok") return c.statusSuccess;
+  return c.foregroundMuted;
 }
+
+const BADGE_TONES: Record<InitiativeBadge, (theme: Theme) => string> = {
+  "Needs plan": (theme) => theme.colors.foregroundMuted,
+  Planning: (theme) => theme.colors.statusWarning,
+  Done: (theme) => theme.colors.statusSuccess,
+  "Needs you": (theme) => theme.colors.statusWarning,
+  "In progress": (theme) => theme.colors.accent,
+  Ready: (theme) => theme.colors.accent,
+};
 
 function iconOf(story: EpicStory) {
   if (needsYou(story)) return "AlertCircle";
   if (story.status === "merged") return "CheckCircle";
   if (story.status === "todo") return "Circle";
   return "Loader";
-}
-
-// One line under a story's title in the phone list: what it is doing, or what it is waiting on.
-function contextOf(story: EpicStory) {
-  if (story.status === "awaiting-approval") return "Plan ready for your approval";
-  if (story.status === "blocked") return story.blockedReason || "Blocked";
-  if (story.status === "pr-open" && story.ci === "green") return `PR #${story.pr} ready to merge`;
-  if (story.status === "todo" && story.ready) return "Ready to start";
-  return subline(story);
 }
 
 type StoryGroup = { key: string; label: string; stories: EpicStory[] };
@@ -158,6 +180,12 @@ function layout(stories: EpicStory[]) {
 type Segment = { x: number; y: number; w: number; h: number; color: string; hot: boolean; failed: boolean };
 type Arrow = { x: number; y: number; color: string };
 
+const EDGE_COLORS: Record<EdgeTone, (theme: Theme) => string> = {
+  danger: (theme) => theme.colors.statusDanger,
+  success: (theme) => theme.colors.statusSuccess,
+  muted: (theme) => theme.colors.foregroundMuted,
+};
+
 // Elbow arrows built from plain views (no SVG in plugins): out of the dependency, down its
 // own channel in the gap, into the story. An arrow that skips a column runs along the gap
 // between rows so it never crosses a card.
@@ -187,16 +215,9 @@ function edgesFor(stories: EpicStory[], selected: string | null, theme: Theme) {
       const a = pos.get(dep);
       if (!a) continue;
       const hot = selected === story.id || selected === dep;
-      const done = byId.get(dep)?.status === "merged";
-      // Red when either end failed: the story it feeds is blocked, or the dependency holding it up is.
-      const failed = story.status === "blocked" || byId.get(dep)?.status === "blocked";
-      const color = hot
-        ? theme.colors.accent
-        : failed
-          ? theme.colors.statusDanger
-          : done
-            ? theme.colors.statusSuccess
-            : theme.colors.foregroundMuted;
+      const tone = edgeTone(story, byId.get(dep));
+      const failed = tone === "danger";
+      const color = hot ? theme.colors.accent : EDGE_COLORS[tone](theme);
       const lane = (row.get(dep) ?? 0) % 4;
       const x1 = a.x + W;
       const y1 = a.y + H / 2;
@@ -382,6 +403,7 @@ export function InitiativePanels({ epic, theme, compact, navigation }: ViewProps
           Couldn't refresh the initiatives, showing the last read: {error}
         </Text>
       ) : null}
+      <Legend theme={theme} styles={styles} compact={compact} />
       {boards.map((board) => {
         const key = boardKey(board);
         return (
@@ -401,6 +423,77 @@ export function InitiativePanels({ epic, theme, compact, navigation }: ViewProps
           />
         );
       })}
+    </View>
+  );
+}
+
+// What the node borders, step bar and $ bar mean. Compact has no arrows, so no arrow sentence.
+function Legend({ theme, styles, compact }: { theme: Theme; styles: Styles; compact: boolean }) {
+  const c = theme.colors;
+  const swatch = (label: string, kind: NodeKind) => (
+    <View key={label} style={styles.legendItem}>
+      <View
+        style={[
+          styles.legendSwatch,
+          { borderColor: kindTone(kind, theme) },
+          kind === "merged" ? { backgroundColor: kindTone(kind, theme) } : null,
+        ]}
+      />
+      <Text style={styles.hint}>{label}</Text>
+    </View>
+  );
+  return (
+    <View style={styles.legend}>
+      <Text style={styles.legendTitle}>Initiatives</Text>
+      {compact ? null : <Text style={styles.hint}>Arrows point from a dependency to the story that needs it</Text>}
+      <View style={styles.flex} />
+      {swatch("Merged", "merged")}
+      {swatch("Ready", "ready")}
+      {swatch("Running", "running")}
+      {swatch("Needs you", "needs-you")}
+      {swatch("Waiting", "waiting")}
+      <View style={styles.legendItem}>
+        <View style={styles.legendSegments}>
+          {(["done", "now", "todo"] as const).map((seg) => (
+            <View key={seg} style={[styles.legendSegment, SEGMENT_STYLES[seg](theme)]} />
+          ))}
+        </View>
+        <Text style={styles.hint}>▸ Phases</Text>
+      </View>
+      <View style={styles.legendItem}>
+        <Text style={[styles.hint, { color: c.statusWarning, fontWeight: "600" }]}>$</Text>
+        <Text style={styles.hint}>Context used</Text>
+      </View>
+    </View>
+  );
+}
+
+// A story's five-segment step bar (Plan, Implement, Review, PR, CI watch).
+function StepBarView({ story, stories, theme, styles }: { story: EpicStory; stories: EpicStory[]; theme: Theme; styles: Styles }) {
+  return (
+    <View style={styles.barRow} accessibilityLabel="Phases: Plan · Implement · Review · PR · CI watch">
+      <Text style={styles.barGlyph}>▸</Text>
+      <View style={styles.segments}>
+        {stepBar(story, "plan", stories).segments.map((seg, i) => (
+          <View key={i} style={[styles.segment4, SEGMENT_STYLES[seg](theme)]} />
+        ))}
+      </View>
+      <View style={styles.barEnd} />
+    </View>
+  );
+}
+
+// A running story's context: how full, coloured by level, with a red tick where it should act.
+function ContextBarView({ context, theme, styles }: { context: NodeContext; theme: Theme; styles: Styles }) {
+  const tone = levelTone(context.level, theme);
+  return (
+    <View style={styles.barRow} accessibilityLabel={`Context used ${context.label}`}>
+      <Text style={[styles.barGlyph, { color: tone, fontWeight: "600" }]}>$</Text>
+      <View style={styles.ctxTrack}>
+        <View style={[styles.ctxFill, { width: `${context.pct}%`, backgroundColor: tone }]} />
+        <View style={[styles.ctxAct, { left: `${context.act}%`, backgroundColor: theme.colors.statusDanger }]} />
+      </View>
+      <Text style={[styles.barEnd, styles.ctxLabel, { color: tone }]}>{context.label}</Text>
     </View>
   );
 }
@@ -426,7 +519,7 @@ export function StoryDrawer({ epic, theme, compact, navigation }: ViewProps) {
 }
 
 // One initiative's current phase as its dependency graph (or grouped list when compact), with its
-// loop and plan actions. Each panel folds on its own with Hide.
+// loop and plan actions. Each panel folds to its header row with the chevron.
 function InitiativePanel({
   board,
   theme,
@@ -458,6 +551,8 @@ function InitiativePanel({
   const refreshPlan = useRpc(refreshPhasePlanRpc);
   const startLoop = useRpc(startInitiativeLoop);
   const stopLoop = useRpc(stopInitiativeLoop);
+  const planArchitecture = useRpc(planHarnessPhaseRpc);
+  const loadContext = useRpc(contextSessionsRpc);
   const toast = useToast();
   const { repo, state, error } = board;
   const [busy, setBusy] = useState<string | null>(null);
@@ -465,6 +560,30 @@ function InitiativePanel({
   const [menuOpen, setMenuOpen] = useState(false);
   const [listView, setListView] = useState<"status" | "step">("status");
   const [mergedOpen, setMergedOpen] = useState(false);
+  const [context, setContext] = useState<ReadonlyMap<string, ContextStatus | null>>(() => new Map());
+
+  // The running stories' context, one batched call per board poll (each poll is a new `state`).
+  // A failed read leaves the $ bars off rather than showing stale numbers. A folded section shows
+  // no bars, so it asks for nothing.
+  const agentKey = state && !folded ? contextAgents(state.stories).join("\n") : "";
+  useEffect(() => {
+    if (!agentKey) {
+      setContext((current) => (current.size ? new Map() : current));
+      return;
+    }
+    let cancelled = false;
+    const agentIds = agentKey.split("\n");
+    loadContext({ agentIds })
+      .then((results) => {
+        if (!cancelled) setContext(new Map(agentIds.map((id, i) => [id, results[i] ?? null])));
+      })
+      .catch(() => {
+        if (!cancelled) setContext(new Map());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentKey, state, loadContext]);
 
   // Opens the plan in Paseo's browser (desktop app), in the repo's workspace; elsewhere in the
   // system browser. The page reloads itself as architecture.md changes.
@@ -550,6 +669,26 @@ function InitiativePanel({
     }
   }
 
+  // An empty initiative with no plan: start (or resume) its architecture session.
+  async function startPlanning() {
+    if (!planPhase || busy !== null) return;
+    setBusy("plan-phase:");
+    try {
+      const result = await planArchitecture({ repo, epic: planPhase });
+      if (!result.ok) {
+        toast.error(result.error ?? "Could not start the architecture session.");
+        return;
+      }
+      toast.show("Architecture session started.", { variant: "success" });
+      if (result.agentId && navigation) navigation.openAgent({ agentId: result.agentId });
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : "Could not start the architecture session.");
+    } finally {
+      setBusy(null);
+      onChanged();
+    }
+  }
+
   // Deleting removes the initiative's files for good (.harness is not in git); its panel goes away
   // on the next refresh.
   async function deleteInitiative() {
@@ -590,100 +729,84 @@ function InitiativePanel({
   }
 
   const stories = state.stories;
-  const merged = stories.filter((story) => story.status === "merged").length;
-  const left = stories.length - merged;
+  const progress = mergedProgress(stories);
+  const left = progress.total - progress.merged;
   const graph = edgesFor(stories, selected, theme);
-  const phase = [state.epic.id ? phaseLabel(state.epic.id) : "", state.epic.title].filter(Boolean).join(": ");
-  const working = stories.filter((item) => ["planning", "awaiting-approval", "implementing", "reviewing", "pr-open"].includes(item.status)).length;
   const initiative = state.initiative || "Initiative";
+  const badge = initiativeStatus(state);
+  const badgeTone = BADGE_TONES[badge](theme);
+  const note = sectionNote(state);
+  const empty = stories.length === 0;
 
-  if (folded) {
-    return (
-      <View style={[styles.panel, styles.folded]}>
-        <Text style={styles.foldedTitle}>Initiative</Text>
-        <Text style={[styles.muted, styles.flex]} numberOfLines={1}>
-          {initiative}  ·  {phase}  ·  {merged}/{stories.length} merged{state.loop === "on" ? "  ·  ▶ running" : ""}
-        </Text>
-        <Button label="Show" styles={styles} onPress={onToggleFold} />
-      </View>
-    );
-  }
-
-  const card = (item: EpicStory, absolute?: { x: number; y: number }) => {
-    const tone = toneOf(item.status, theme);
-    const badge = badgeOf(item, theme);
+  const card = (item: EpicStory, at: { x: number; y: number } | undefined) => {
+    const kind = nodeKind(item);
+    const tone = kindTone(kind, theme);
+    const bar = stepBar(item, "plan", stories);
+    const ctx = item.agent ? nodeContext(context.get(item.agent) ?? null) : null;
     const isSelected = item.id === selected;
-    const waiting = item.status === "todo" && !item.ready;
     return (
       <Pressable
         key={item.id}
         accessibilityRole="button"
         accessibilityState={{ selected: isSelected }}
-        accessibilityLabel={`${item.id}, ${item.title}, ${subline(item)}${badge ? `, ${badge[0]}` : ""}`}
+        accessibilityLabel={`${item.id}, ${item.title}, ${bar.sub}${ctx ? `, context ${ctx.label}` : ""}`}
         onPress={() => onSelect(isSelected ? null : item.id)}
         style={[
           styles.node,
-          { borderLeftColor: tone },
-          absolute ? { position: "absolute", left: absolute.x, top: absolute.y, width: W, height: H } : styles.nodeListed,
-          item.id === state.next.story ? { borderColor: tone } : null,
+          { borderColor: tone },
+          at ? { position: "absolute", left: at.x, top: at.y, width: W, height: H } : null,
           isSelected ? styles.nodeSelected : null,
-          waiting ? styles.nodeWaiting : null,
         ]}
       >
+        {kind === "merged" ? <View pointerEvents="none" style={[styles.nodeTint, { backgroundColor: tone }]} /> : null}
         <View style={styles.nodeTop}>
-          <Text style={styles.nodeId}>{item.id}</Text>
-          {badge ? (
-            <Text style={[styles.badge, { color: badge[1], borderColor: badge[1] }]}>{badge[0]}</Text>
-          ) : null}
+          <Text style={[styles.nodeId, styles.cardId, kind === "needs-you" ? { color: tone } : null]}>{item.id}</Text>
+          <Text style={[styles.nodeSub, styles.shrink, { color: kind === "needs-you" ? tone : theme.colors.foregroundMuted }]} numberOfLines={1}>
+            · {bar.sub}
+          </Text>
         </View>
-        <Text style={styles.nodeTitle} numberOfLines={1}>
+        <Text style={[styles.nodeTitle, styles.cardTitle, kind === "waiting" ? styles.mutedTitle : null]} numberOfLines={1}>
           {item.title}
         </Text>
-        <Text style={[styles.nodeSub, { color: tone }]} numberOfLines={1}>
-          {subline(item)}
-        </Text>
+        <StepBarView story={item} stories={stories} theme={theme} styles={styles} />
+        {ctx ? <ContextBarView context={ctx} theme={theme} styles={styles} /> : null}
       </Pressable>
     );
   };
 
   const planning = Boolean(state.plan && state.plan.status !== "agreed");
-  const chip: [string, string] | null =
-    state.loop === "on"
-      ? ["Running", theme.colors.accent]
-      : state.loop === "done"
-        ? ["Done", theme.colors.statusSuccess]
-        : planning
-          ? ["Planning", theme.colors.statusWarning]
-          : state.plan?.status === "agreed" && left > 0
-            ? ["Ready", theme.colors.accent]
-            : null;
   const canStart = state.loop === "off" && left > 0;
   // One obvious next step; everything else lives in the ⋯ menu.
+  const action = sectionAction(state, busy);
   const primary =
-    state.loop === "on"
-      ? { label: busy === "loop-stop:" ? "Stopping…" : "Stop", primary: false, onPress: () => void loopAction("stop") }
-      : canStart && !planning
-        ? { label: busy === "loop-start:" ? "Starting…" : "Start", primary: true, onPress: () => void loopAction("start") }
-        : state.plan
-          ? { label: busy === "plan-open:" ? "Opening…" : "View plan", primary: true, plan: true, onPress: () => void planAction("open") }
-          : null;
+    action?.kind === "stop"
+      ? { label: action.label, primary: false, onPress: () => void loopAction("stop") }
+      : action?.kind === "start"
+        ? { label: action.label, primary: true, onPress: () => void loopAction("start") }
+        : action?.kind === "plan"
+          ? { label: action.label, primary: true, plan: true, onPress: () => void planAction("open") }
+          : action?.kind === "start-planning"
+            ? { label: action.label, primary: true, onPress: () => void startPlanning() }
+            : null;
   const menu: MenuEntry[] = [
     ...(canStart && planning ? [{ label: "Start before planning is done", icon: "Play", onPress: () => void loopAction("start") }] : []),
     ...(state.plan && !(primary && "plan" in primary) ? [{ label: "View plan", icon: "FileText", onPress: () => void planAction("open") }] : []),
     ...(state.plan?.jira ? [{ label: "Refresh from Jira", icon: "RefreshCw", onPress: () => void planAction("jira") }] : []),
     { label: "Initiatives and phases", icon: "FolderOpen", onPress: onPicker },
-    { label: "Hide", icon: "EyeOff", onPress: onToggleFold },
     "separator",
     { label: "Delete initiative", icon: "Trash2", danger: true, onPress: () => setConfirmDelete(true) },
   ];
+  // An open empty section carries its button in the dashed box instead of the header.
+  const headerAction = primary && !(empty && !folded) ? primary : null;
 
   const row = (item: EpicStory, index: number) => {
     const tone = toneOf(item.status, theme);
+    const bar = stepBar(item, "plan", stories);
     return (
       <Pressable
         key={item.id}
         accessibilityRole="button"
-        accessibilityLabel={`${item.id}, ${item.title}, ${contextOf(item)}`}
+        accessibilityLabel={`${item.id}, ${item.title}, ${bar.sub}`}
         onPress={() => onSelect(item.id)}
         style={[styles.listRow, index > 0 ? styles.listRowDivider : null, item.status === "todo" && !item.ready ? styles.nodeWaiting : null]}
       >
@@ -696,8 +819,9 @@ function InitiativePanel({
             </Text>
           </View>
           <Text style={[styles.hint, needsYou(item) ? { color: tone } : null]} numberOfLines={1}>
-            {contextOf(item)}
+            {bar.sub}
           </Text>
+          <StepBarView story={item} stories={stories} theme={theme} styles={styles} />
         </View>
         <Icon name="ChevronRight" size={16} color={theme.colors.foregroundMuted} />
       </Pressable>
@@ -743,98 +867,113 @@ function InitiativePanel({
 
   return (
     <View style={styles.screenFill}>
-      <View style={styles.panel}>
-        <View style={styles.headRow}>
-          <View style={styles.headText}>
-            <View style={styles.titleRow}>
-              <Text style={[styles.panelTitle, styles.shrink]} numberOfLines={1}>
-                {initiative}
+      <View style={[styles.panel, styles.section]}>
+        <View style={styles.sectionHead}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: !folded }}
+            accessibilityLabel={`${initiative}, ${badge}, ${folded ? "show" : "hide"} stories`}
+            onPress={onToggleFold}
+            style={styles.sectionToggle}
+          >
+            <Icon name={folded ? "ChevronRight" : "ChevronDown"} size={16} color={theme.colors.foregroundMuted} />
+            <View style={styles.headText}>
+              <View style={styles.titleRow}>
+                <Text style={[styles.panelTitle, styles.shrink]} numberOfLines={1}>
+                  {initiative}
+                </Text>
+                <Text style={[styles.chip, { color: badgeTone, borderColor: badgeTone }]}>{badge}</Text>
+              </View>
+              <Text style={styles.muted} numberOfLines={1}>
+                {sectionLine(state)}
               </Text>
-              {chip ? <Text style={[styles.chip, { color: chip[1], borderColor: chip[1] }]}>{chip[0]}</Text> : null}
             </View>
-            <Text style={styles.muted} numberOfLines={2}>
-              {phase ? `${phase}  ·  ` : ""}
-              {state.tracker === "jira" ? "Jira" : "local"}  ·  {merged}/{stories.length} merged
-              {state.loop === "off" ? `  ·  Next: ${state.next.reason}` : ""}
+          </Pressable>
+          <View style={styles.progress}>
+            <Text style={styles.progressText}>
+              {progress.merged}/{progress.total} merged
             </Text>
+            <View style={styles.track}>
+              <View style={[styles.trackFill, { width: `${progress.pct}%`, backgroundColor: theme.colors.statusSuccess }]} />
+            </View>
           </View>
-          {primary ? (
-            <Button label={primary.label} primary={primary.primary} disabled={busy !== null} styles={styles} onPress={primary.onPress} />
+          {headerAction ? (
+            <Button
+              label={headerAction.label}
+              primary={headerAction.primary}
+              disabled={busy !== null}
+              styles={styles}
+              onPress={headerAction.onPress}
+            />
           ) : null}
           <IconButton icon="MoreHorizontal" label="More actions" theme={theme} styles={styles} onPress={() => setMenuOpen(true)} />
         </View>
-        <View style={styles.track}>
-          <View style={[styles.trackFill, { flex: merged, backgroundColor: theme.colors.statusSuccess }]} />
-          <View style={{ flex: Math.max(0, left) }} />
-        </View>
-        {error ? <Text style={styles.danger}>{error}</Text> : null}
-        {state.loop === "on" ? (
-          <View style={styles.previewBox}>
-            <Text style={styles.bannerText}>
-              Running {phase || "this phase"}: {working} in progress · {merged} merged · {left - working} waiting. Stop only keeps
-              new work from starting.
-            </Text>
-          </View>
-        ) : state.loop === "off" && state.plan?.status === "agreed" && left > 0 ? (
-          <View style={styles.previewBox}>
-            <Text style={styles.bannerText}>
-              Planning done. Start runs {initiative} phase by phase: each ready story gets its own worktree, and the rest follow
-              as their dependencies merge.
-            </Text>
-          </View>
-        ) : planning ? (
-          <Text style={styles.hint}>Planning in progress. Say "lock" in the architecture session when the plan is ready.</Text>
-        ) : null}
-        {state.plan?.warnings.length ? (
-          <Text style={styles.hint} numberOfLines={2}>
-            Plan gaps: {state.plan.warnings.join(" · ")}
-          </Text>
-        ) : null}
 
-        {compact ? (
-          <>
-            <Segmented<"status" | "step">
-              value={listView}
-              options={[
-                ["status", "By status"],
-                ["step", "By step"],
-              ]}
-              styles={styles}
-              onChange={setListView}
-            />
-            {list}
-          </>
-        ) : (
-          <>
-            <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.graphScroll}>
-              <View style={{ width: graph.width, height: graph.height }}>
-                {graph.segments.map((s, i) => (
-                  <View
-                    key={`s${i}`}
-                    pointerEvents="none"
-                    style={{
-                      position: "absolute",
-                      left: s.x,
-                      top: s.y,
-                      width: s.w,
-                      height: s.h,
-                      backgroundColor: s.color,
-                      opacity: s.hot || s.failed ? 1 : 0.75,
-                    }}
-                  />
-                ))}
-                {graph.arrows.map((a, i) => (
-                  <View
-                    key={`a${i}`}
-                    pointerEvents="none"
-                    style={[styles.arrowHead, { left: a.x, top: a.y - 5, borderLeftColor: a.color }]}
-                  />
-                ))}
-                {stories.map((item) => card(item, graph.pos.get(item.id)))}
+        {folded ? null : (
+          <View style={styles.sectionBody}>
+            {error ? <Text style={styles.danger}>{error}</Text> : null}
+            {note ? (
+              <View style={styles.noteRow}>
+                <View style={[styles.noteDot, { backgroundColor: theme.colors.statusWarning }]} />
+                <Text style={[styles.noteText, { color: theme.colors.statusWarning }]}>{note}</Text>
               </View>
-            </ScrollView>
-            <Text style={styles.hint}>Arrows go from a dependency to the stories that need it. Tap a story for its details.</Text>
-          </>
+            ) : null}
+            {state.plan?.warnings.length ? (
+              <Text style={styles.hint} numberOfLines={2}>
+                Plan gaps: {state.plan.warnings.join(" · ")}
+              </Text>
+            ) : null}
+
+            {empty ? (
+              <View style={styles.emptyBox}>
+                <Text style={[styles.muted, styles.shrink]}>{emptyLine(state)}</Text>
+                {primary ? (
+                  <Button label={primary.label} primary={primary.primary} disabled={busy !== null} styles={styles} onPress={primary.onPress} />
+                ) : null}
+              </View>
+            ) : compact ? (
+              <>
+                <Segmented<"status" | "step">
+                  value={listView}
+                  options={[
+                    ["status", "By status"],
+                    ["step", "By step"],
+                  ]}
+                  styles={styles}
+                  onChange={setListView}
+                />
+                {list}
+              </>
+            ) : (
+              <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.graphScroll}>
+                <View style={{ width: graph.width, height: graph.height }}>
+                  {graph.segments.map((s, i) => (
+                    <View
+                      key={`s${i}`}
+                      pointerEvents="none"
+                      style={{
+                        position: "absolute",
+                        left: s.x,
+                        top: s.y,
+                        width: s.w,
+                        height: s.h,
+                        backgroundColor: s.color,
+                        opacity: s.hot || s.failed ? 1 : 0.75,
+                      }}
+                    />
+                  ))}
+                  {graph.arrows.map((a, i) => (
+                    <View
+                      key={`a${i}`}
+                      pointerEvents="none"
+                      style={[styles.arrowHead, { left: a.x, top: a.y - 5, borderLeftColor: a.color }]}
+                    />
+                  ))}
+                  {stories.map((item) => card(item, graph.pos.get(item.id)))}
+                </View>
+              </ScrollView>
+            )}
+          </View>
         )}
       </View>
       <ActionMenu title={initiative} open={menuOpen} onOpenChange={setMenuOpen} items={menu} theme={theme} styles={styles} />
@@ -1440,26 +1579,77 @@ function createStyles(theme: Theme, compact: boolean) {
     bannerText: { color: c.foreground, fontSize: 12.5 },
     sectionLabel: { color: c.foregroundMuted, fontSize: 11, letterSpacing: 0.8, fontWeight: "600" as const },
     flex: { flex: 1 },
-    track: { flexDirection: "row" as const, height: 4, borderRadius: 2, overflow: "hidden" as const, backgroundColor: c.surface2 },
+    track: {
+      flexDirection: "row" as const,
+      alignSelf: "stretch" as const,
+      height: 4,
+      borderRadius: 2,
+      overflow: "hidden" as const,
+      backgroundColor: c.surface2,
+    },
     trackFill: { height: 4 },
     graphScroll: { paddingBottom: 4 },
+    // The legend line above the sections.
+    legend: { flexDirection: "row" as const, alignItems: "center" as const, flexWrap: "wrap" as const, columnGap: 16, rowGap: 6 },
+    legendTitle: { color: c.foreground, fontSize: 12, fontWeight: "600" as const },
+    legendItem: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
+    legendSwatch: { width: 8, height: 8, borderRadius: 2, borderWidth: 1.5 },
+    legendSegments: { flexDirection: "row" as const, gap: 2 },
+    legendSegment: { width: 6, height: 3 },
+    // One initiative: a header row that folds the section, then its body.
+    section: { gap: 14 },
+    sectionHead: { flexDirection: "row" as const, alignItems: "center" as const, flexWrap: "wrap" as const, columnGap: 14, rowGap: 10 },
+    sectionToggle: { flexDirection: "row" as const, alignItems: "center" as const, gap: 10, flexGrow: 1, flexBasis: 220, minWidth: 0 },
+    sectionBody: { gap: 14, paddingLeft: compact ? 0 : 26 },
+    progress: { alignItems: "flex-end" as const, gap: 6, width: compact ? undefined : 120, flexGrow: compact ? 1 : 0 },
+    progressText: { color: c.foregroundMuted, fontSize: 12, fontVariant: ["tabular-nums" as const] },
+    noteRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 10 },
+    noteDot: { width: 7, height: 7, borderRadius: 4 },
+    noteText: { flex: 1, fontSize: 12.5 },
+    emptyBox: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      justifyContent: "space-between" as const,
+      flexWrap: "wrap" as const,
+      gap: 12,
+      padding: 22,
+      borderWidth: 1,
+      borderStyle: "dashed" as const,
+      borderColor: c.border,
+      borderRadius: 8,
+    },
     node: {
       backgroundColor: c.surface0,
       borderWidth: 1,
       borderColor: c.border,
-      borderLeftWidth: 3,
-      borderRadius: 10,
-      paddingHorizontal: 12,
+      borderRadius: 7,
+      paddingHorizontal: 10,
+      paddingVertical: 9,
       justifyContent: "center" as const,
-      gap: 1,
+      gap: 5,
+      overflow: "hidden" as const,
     },
-    nodeListed: { paddingVertical: 10 },
-    nodeSelected: { borderColor: c.accent, borderWidth: 2, borderLeftWidth: 3 },
+    nodeTint: { position: "absolute" as const, top: 0, right: 0, bottom: 0, left: 0, opacity: 0.14 },
+    nodeSelected: { borderColor: c.accent, borderWidth: 2 },
     nodeWaiting: { opacity: 0.6 },
     nodeTop: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
     nodeId: { color: c.foregroundMuted, fontFamily: "monospace", fontSize: 12, fontWeight: "500" as const },
     nodeTitle: { color: c.foreground, fontSize: 13, fontWeight: "600" as const },
-    nodeSub: { fontSize: 11.5 },
+    // A graph node's id and title run smaller than the list's so its rows fit 184×88.
+    cardId: { fontSize: 10.5 },
+    cardTitle: { fontSize: 12, fontWeight: "400" as const },
+    mutedTitle: { color: c.foregroundMuted },
+    nodeSub: { fontSize: 10.5 },
+    // A node's step bar and $ bar share one grid: glyph, bar, label.
+    barRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
+    barGlyph: { width: 12, textAlign: "center" as const, color: c.foregroundMuted, fontSize: 10 },
+    barEnd: { width: 30 },
+    segments: { flex: 1, flexDirection: "row" as const, gap: 3 },
+    segment4: { flex: 1, height: 4, borderRadius: 2 },
+    ctxTrack: { flex: 1, height: 4, borderRadius: 2, backgroundColor: c.surface2 },
+    ctxFill: { position: "absolute" as const, left: 0, top: 0, bottom: 0, borderRadius: 2 },
+    ctxAct: { position: "absolute" as const, top: -2, bottom: -2, width: 1 },
+    ctxLabel: { fontSize: 10, textAlign: "right" as const, fontVariant: ["tabular-nums" as const] },
     badge: {
       marginLeft: "auto" as const,
       fontSize: 10.5,
