@@ -51,3 +51,29 @@ test("registers the plan usage RPC, which reads the daemon's provider usage", as
   const paseo = { providers: { listUsage: async () => ({ fetchedAt: "", providers: [] }) } };
   assert.deepEqual(await handler({}, { paseo }), { providers: [], error: null });
 });
+
+function usageSourceIds(host: Record<string, unknown>): string[] {
+  const ids: string[] = [];
+  const noop = () => undefined;
+  const server = new Proxy({} as PluginServerContext, {
+    get: (_target, key) => {
+      if (key === "registerUsageSource") {
+        return "registerUsageSource" in host ? (source: { id: string }) => ids.push(source.id) : undefined;
+      }
+      if (key === "registerSettings") {
+        return () => new Proxy({}, { get: (_t, k) => (k === "read" ? async () => ({ status: "loading" }) : noop) });
+      }
+      return noop;
+    },
+  });
+  contribute(server);
+  return ids;
+}
+
+test("registers the Kiro usage source when the host has registerUsageSource", () => {
+  assert.deepEqual(usageSourceIds({ registerUsageSource: true }), ["kiro"]);
+});
+
+test("still loads on a host without registerUsageSource", () => {
+  assert.deepEqual(usageSourceIds({}), []);
+});

@@ -28,6 +28,7 @@ import { createGateActions, loopGatePort } from "./server/gate-actions";
 import { gateAct } from "./shared/gates";
 import { readTelemetry, summariseTelemetry } from "./server/context-telemetry";
 import { loadStoryContext } from "./server/story-context";
+import { kiroUsageSource } from "./server/kiro-usage";
 import { readPlanUsage } from "./server/plan-usage";
 import { planUsageRpc } from "./shared/plan-usage";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, storyContextRpc } from "./shared/context";
@@ -98,6 +99,8 @@ import {
 } from "./shared/pipeline";
 
 export default function contribute(server: PluginServerContext) {
+  // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
+  server.registerUsageSource?.(kiroUsageSource());
   server.registerSettings(standupSettings);
   server.registerSettings(dashboardSettings);
   server.registerSettings(budgetSettings);

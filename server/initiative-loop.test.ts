@@ -8,6 +8,7 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { FALLBACK_AGENT_CONFIG } from "../shared/agent-runner";
 import { DEFAULT_PHASES, type SkillSource } from "../shared/pipeline";
+import { readMarker } from "../shared/story-method";
 import { frontmatter, writeFrontmatter } from "./harness-layout";
 import { sourceId } from "./skill-sources";
 
@@ -357,6 +358,7 @@ test("diagnose-blocked blocks the story with its reason", async () => {
   assert.equal(fx.created.length, 0);
   assert.equal(storyMeta(fx.story).status, "blocked");
   assert.equal(storyMeta(fx.story).blocked_reason, "Cannot reproduce on main.");
+  assert.equal(storyMeta(fx.story).block_kind, "step");
 });
 
 test("a Diagnose blocked by the retry limit that then writes diagnose-done is resumed and starts Implement", async () => {
@@ -404,6 +406,7 @@ test("the parent's implement-done commits once and starts Review; with a cycle u
   assert.equal(open.created.length, 0);
   assert.equal(storyMeta(open.story).status, "blocked");
   assert.match(storyMeta(open.story).blocked_reason ?? "", /Cycle 2/);
+  assert.equal(storyMeta(open.story).block_kind, "step");
 });
 
 test("a per-cycle agent's implement-done with cycles left hands them to one parent Implement agent", async () => {
@@ -899,6 +902,7 @@ test("a step whose worktree is gone with a closed PR blocks", async (t) => {
 
   assert.equal(storyMeta(story).status, "blocked");
   assert.equal(storyMeta(story).blocked_reason, "Its worktree is gone and PR #45 was closed without merging.");
+  assert.equal(storyMeta(story).block_kind, "pr");
 });
 
 test("a step whose worktree is gone with no PR retries, then blocks past maxRetries", async () => {
@@ -915,7 +919,41 @@ test("a step whose worktree is gone with no PR retries, then blocks past maxRetr
   await initiative.tick();
   assert.equal(storyMeta(story).status, "blocked");
   assert.equal(storyMeta(story).blocked_reason, "Its worktree is gone and feature/s1 has no PR.");
+  assert.equal(storyMeta(story).block_kind, "pr");
   assert.deepEqual(created, []);
+});
+
+test("each block site writes its kind: step for a blocked or failed step, ci for the fix limit, pr for a closed PR", async (t) => {
+  t.after(() => ghPr(null));
+  const marker = async (status: string, step: string, round: number) => {
+    const fx = fixture("a1");
+    writeFrontmatter(fx.story, { step, round, status: step === "review" ? "reviewing" : "implementing" });
+    writeFileSync(join(fx.worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\n${status}\n`, "utf8");
+    const labels = { ...fx.labels, "loop-step": step, "loop-round": String(round) };
+    const { api } = fakePaseo([{ id: "a1", labels }]);
+    await loop().onTurnEnded(api, ended("a1", { kind: "completed" }));
+    return storyMeta(fx.story);
+  };
+  const blocked = await marker("implement-blocked\nNeeds a key.", "implement", 1);
+  assert.deepEqual([blocked.status, blocked.block_kind], ["blocked", "step"]);
+  const failed = await marker("review-failed", "review", DEFAULT_LOOP_CONFIG.reviewRounds);
+  assert.deepEqual([failed.status, failed.block_kind], ["blocked", "step"]);
+
+  const watched = async (reply: Record<string, unknown>) => {
+    const fx = fixture("a1");
+    writeFrontmatter(fx.story, { status: "pr-open", step: "pr", pr: 45, ci: "failing", fix_attempts: DEFAULT_LOOP_CONFIG.maxFixes });
+    writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", headRefOid: "abc", ...reply }), "utf8");
+    const { api } = fakePaseo([]);
+    const initiative = loop();
+    initiative.rememberPaseo(api);
+    await initiative.tick();
+    return storyMeta(fx.story);
+  };
+  const failing = { __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: "", completedAt: "1" };
+  const ci = await watched({ state: "OPEN", statusCheckRollup: [failing] });
+  assert.deepEqual([ci.status, ci.block_kind], ["blocked", "ci"]);
+  const closed = await watched({ state: "CLOSED" });
+  assert.deepEqual([closed.status, closed.block_kind], ["blocked", "pr"]);
 });
 
 // A repo with a todo story and the loop on; Start creates its workspace through a fake Paseo that
@@ -1040,6 +1078,7 @@ test("a start that fails after Paseo made the branch keeps that branch for the r
 
   await initiative.start(fake.api, { repo: root, initiative: "demo" });
   assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(storyMeta(story).block_kind, "start");
   writeFrontmatter(story, { status: "todo", blocked_reason: null });
   await initiative.start(fake.api, { repo: root, initiative: "demo" });
 
@@ -1051,15 +1090,15 @@ test("gateStory finds a story in any phase by its id, and is null when it isn't 
   const { root } = fixture("a1");
   const later = join(root, ".harness", "initiatives", "demo", "phases", "2-later", "stories");
   mkdirSync(later, { recursive: true });
-  writeFileSync(join(later, "01-wait.md"), "---\nid: S2\ntitle: Wait\nstatus: blocked\nwaiting_on: permission\n---\n", "utf8");
+  writeFileSync(join(later, "01-wait.md"), "---\nid: S2\ntitle: Wait\nstatus: blocked\nwaiting_on: permission\nblock_kind: ci\n---\n", "utf8");
   const initiative = loop();
   const ref = (storyId: string, slug = "demo") => ({ repo: root, initiative: slug, storyId });
 
   assert.deepEqual(
     [await initiative.gateStory(ref("S1")), await initiative.gateStory(ref("S2"))],
     [
-      { status: "implementing", agent: "a1", waitingOn: null },
-      { status: "blocked", agent: null, waitingOn: "permission" },
+      { status: "implementing", agent: "a1", waitingOn: null, blockKind: null },
+      { status: "blocked", agent: null, waitingOn: "permission", blockKind: "ci" },
     ],
   );
   assert.deepEqual([await initiative.gateStory(ref("S9")), await initiative.gateStory(ref("S1", "nope"))], [null, null]);
@@ -1073,6 +1112,8 @@ test("reopen puts a blocked story back on blocked_from with the block fields cle
     blocked_from: "implementing",
     stalled: "Its last turn failed: boom",
     retries: 2,
+    block_kind: "retry-limit",
+    waiting_on: "permission",
   });
   const initiative = loop();
   const ref = { repo: root, initiative: "demo", storyId: "S1" };
@@ -1080,8 +1121,8 @@ test("reopen puts a blocked story back on blocked_from with the block fields cle
   await initiative.reopen(ref);
   const meta = storyMeta(story);
   assert.deepEqual(
-    [meta.status, meta.blocked_reason, meta.blocked_from, meta.stalled, meta.retries, meta.agent],
-    ["implementing", undefined, undefined, undefined, undefined, "a1"],
+    [meta.status, meta.blocked_reason, meta.blocked_from, meta.stalled, meta.retries, meta.block_kind, meta.waiting_on, meta.agent],
+    ["implementing", undefined, undefined, undefined, undefined, undefined, undefined, "a1"],
   );
 
   // Not blocked any more, or blocked with nowhere to go back to: nothing changes.
@@ -1193,4 +1234,119 @@ test("after merge and archive, the story file alone shows the rounds, findings, 
   assert.match(text, /### CI fix attempt 1\n- failing: test\n/);
   assert.match(text, /### Merged\n- 2 review rounds, 1 CI fix attempt\n$/);
   assert.deepEqual(archived, ["ws1"]);
+});
+
+test("reopen gives a ci block a fresh fix budget, and puts a step block's marker back to running", async () => {
+  const { root, worktree, story } = fixture("a1");
+  const initiative = loop();
+  const ref = { repo: root, initiative: "demo", storyId: "S1" };
+  const marker = () => readMarker(readFileSync(join(worktree, ".harness", "state.md"), "utf8")).marker;
+
+  writeFrontmatter(story, {
+    status: "blocked",
+    blocked_reason: "CI still failing after 2 fixes.",
+    blocked_from: "pr-open",
+    block_kind: "ci",
+    step: "pr",
+    fix_attempts: 2,
+    fixed_sha: "abc123",
+  });
+  await initiative.reopen(ref);
+  let meta = storyMeta(story);
+  assert.deepEqual(
+    [meta.status, meta.block_kind, meta.fix_attempts, meta.fixed_sha],
+    ["pr-open", undefined, undefined, undefined],
+  );
+
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nreview-failed\nStill broken.\n", "utf8");
+  writeFrontmatter(story, { status: "blocked", blocked_reason: "Review failed twice.", blocked_from: "reviewing", block_kind: "step", step: "review" });
+  await initiative.reopen(ref);
+  meta = storyMeta(story);
+  assert.deepEqual([meta.status, meta.block_kind, marker()], ["reviewing", undefined, "review-running"]);
+
+  // Any other kind leaves the marker alone.
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nreview-done\n", "utf8");
+  writeFrontmatter(story, { status: "blocked", blocked_reason: "Could not open the PR.", blocked_from: "reviewing", block_kind: "pr" });
+  await initiative.reopen(ref);
+  assert.deepEqual([storyMeta(story).status, marker()], ["reviewing", "review-done"]);
+});
+
+test("retryStep starts one fresh session for a blocked story's step, round and cycle, and clears the block", async () => {
+  const { root, worktree, story, labels } = fixture("a1");
+  writeFileSync(
+    join(worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Cycles\n\n- [x] Cycle 1 — First\n- [ ] Cycle 2 — Second\n\n## Status\nimplement-blocked\n",
+    "utf8",
+  );
+  writeFrontmatter(story, {
+    status: "blocked",
+    blocked_reason: "Implement: Its session is gone. Gave up after 2 retries.",
+    blocked_from: "implementing",
+    block_kind: "retry-limit",
+    waiting_on: "permission",
+    stalled: "Its last turn failed: boom",
+    retries: 2,
+    round: 2,
+    cycle: 2,
+  });
+  // The earlier session for the same step, round and cycle is closed, not gone.
+  const { api, created } = fakePaseo([
+    { id: "a1", labels: { ...labels, "loop-round": "2", "loop-cycle": "2" }, status: "closed" },
+  ]);
+  const initiative = loop();
+  const ref = { repo: root, initiative: "demo", storyId: "S1" };
+
+  const result = await initiative.retryStep(api, ref);
+
+  assert.deepEqual(result, { ok: true, error: null, agentId: "n1" });
+  assert.deepEqual(
+    created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"], agent.labels["loop-cycle"]]),
+    [["implement", "2", "2"]],
+  );
+  assert.ok(created[0].labels["loop-retry"], "a fresh retry carries a loop-retry label");
+  const meta = storyMeta(story);
+  assert.deepEqual(
+    [meta.status, meta.agent, meta.blocked_reason, meta.blocked_from, meta.block_kind, meta.waiting_on, meta.stalled],
+    ["implementing", "n1", undefined, undefined, undefined, undefined, undefined],
+  );
+  assert.equal(readMarker(readFileSync(join(worktree, ".harness", "state.md"), "utf8")).marker, "implement-running");
+});
+
+test("retryStep refuses a story that isn't blocked, has no step, or isn't there, and leaves it alone", async () => {
+  const { root, story } = fixture("a1");
+  const { api, created } = fakePaseo([]);
+  const initiative = loop();
+  const ref = { repo: root, initiative: "demo", storyId: "S1" };
+
+  const running = readFileSync(story, "utf8");
+  const notBlocked = await initiative.retryStep(api, ref);
+  assert.equal(notBlocked.ok, false);
+  assert.equal(notBlocked.agentId, null);
+  assert.equal(readFileSync(story, "utf8"), running);
+
+  writeFrontmatter(story, { status: "blocked", blocked_reason: "Could not start.", blocked_from: "todo", block_kind: "start", step: null });
+  const stepless = readFileSync(story, "utf8");
+  const noStep = await initiative.retryStep(api, ref);
+  assert.equal(noStep.ok, false);
+  assert.equal(readFileSync(story, "utf8"), stepless);
+
+  const missing = await initiative.retryStep(api, { ...ref, storyId: "S9" });
+  assert.equal(missing.ok, false);
+  assert.deepEqual(created, []);
+});
+
+test("closedPr gives a story's PR number while the PR is closed, and null once it isn't or there's none", async (t) => {
+  t.after(() => ghPr(null));
+  const { root, story } = fixture("a1");
+  writeFrontmatter(story, { status: "blocked", blocked_reason: "PR #45 was closed without merging.", blocked_from: "pr-open", block_kind: "pr", pr: 45 });
+  const initiative = loop();
+  const ref = { repo: root, initiative: "demo", storyId: "S1" };
+
+  ghPr("CLOSED");
+  assert.equal(await initiative.closedPr(ref), 45);
+  ghPr("OPEN");
+  assert.equal(await initiative.closedPr(ref), null);
+  ghPr(null);
+  assert.equal(await initiative.closedPr(ref), null);
+  assert.equal(await initiative.closedPr({ ...ref, storyId: "S9" }), null);
 });
