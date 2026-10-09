@@ -151,7 +151,7 @@ export type FileResult = { filed: Filing[]; cache: Record<string, Filing>; spent
 export async function fileObservations(observations: Observation[], options: FileOptions): Promise<FileResult> {
   const { classify, areas, log, batchSize = BATCH_SIZE } = options;
   // A cap that is not a finite, non-negative number fails closed: nothing is spent.
-  const costCap = Number.isFinite(options.costCap) && options.costCap >= 0 && options.costCap !== Number.POSITIVE_INFINITY ? options.costCap : 0;
+  const costCap = Number.isFinite(options.costCap) && options.costCap >= 0 ? options.costCap : 0;
   const cache = { ...options.cache };
   const key = (id: string) => `${PROMPT_VERSION}:${MODEL}:${id}`;
   const areaIds = areas.map((a) => a.id);
@@ -192,6 +192,9 @@ export async function fileObservations(observations: Observation[], options: Fil
         note(filing);
       }
     } catch (error) {
+      // A billed call can still fail (a 200 with unusable text); it reports its cost on the error.
+      const cost = (error as { costUsd?: unknown } | null)?.costUsd;
+      if (typeof cost === "number" && Number.isFinite(cost)) spentUsd += cost;
       log(`classify failed: ${error instanceof Error ? error.message : String(error)}`);
       stopped = "error";
       break;

@@ -8,7 +8,11 @@ export function parseArgs(argv) {
   const opts = { asOf: undefined, costCap: DEFAULT_CAP, excludeStory: undefined };
   for (let i = 0; i < argv.length; i++) {
     const value = argv[i + 1];
-    if (argv[i] === "--as-of") opts.asOf = value;
+    if (argv[i] === "--as-of") {
+      // An unparsable date would drop every observation and then remove every seeded correction as stale.
+      if (!value || Number.isNaN(Date.parse(value))) throw new Error(`--as-of needs a date, got "${value ?? ""}"`);
+      opts.asOf = value;
+    }
     else if (argv[i] === "--cap") {
       // An unparsable cap would silently mean "no cap", so refuse it.
       const cap = value === undefined || value.trim() === "" ? Number.NaN : Number(value);

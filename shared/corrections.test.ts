@@ -275,3 +275,13 @@ test("a phrase with no latin letters still gets a usable slug, and review bodies
   );
   assert.equal(review.link, "https://gh.test/pull/4");
 });
+
+test("fileObservations counts the cost a failed classify call reports", async () => {
+  const obs: Observation[] = [{ id: "o0", source: "finding", story: "S1", date: "2026-05-01", link: "", text: "note" }];
+  const classify: Classify = async () => {
+    throw Object.assign(new Error("bad reply"), { costUsd: 0.01 });
+  };
+  const result = await fileObservations(obs, { cache: {}, classify, costCap: 3, areas: [], log: () => {} });
+  assert.equal(result.stopped, "error");
+  assert.ok(Math.abs(result.spentUsd - 0.01) < 1e-9);
+});

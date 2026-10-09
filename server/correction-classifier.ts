@@ -57,13 +57,15 @@ export function haikuClassifier(options: HaikuOptions): Classify {
     const raw = await response.text();
     if (!response.ok) throw new Error(`Anthropic API returned ${response.status}: ${raw.slice(0, 300)}`);
 
-    let reply: { content?: { type?: string; text?: string }[]; usage?: { input_tokens?: number; output_tokens?: number } };
+    let reply: { content?: { type?: string; text?: string }[]; usage?: { input_tokens?: number; output_tokens?: number } } = {};
     let parsed: { filings?: unknown };
+    const cost = () => (reply.usage?.input_tokens ?? 0) * INPUT_USD_PER_TOKEN + (reply.usage?.output_tokens ?? 0) * OUTPUT_USD_PER_TOKEN;
     try {
       reply = JSON.parse(raw);
       parsed = JSON.parse(unfence(reply.content?.[0]?.text ?? ""));
     } catch {
-      throw new Error(`Anthropic reply was not valid JSON: ${raw.slice(0, 300)}`);
+      // The call was billed even though its text is unusable, so the error carries the cost.
+      throw Object.assign(new Error(`Anthropic reply was not valid JSON: ${raw.slice(0, 300)}`), { costUsd: cost() });
     }
     const list = Array.isArray(parsed.filings) ? parsed.filings : [];
     const filings = list.flatMap((entry: { id?: unknown; category?: unknown; area?: unknown; phrase?: unknown }) =>
@@ -71,7 +73,6 @@ export function haikuClassifier(options: HaikuOptions): Classify {
         ? [{ id: entry.id, category: String(entry.category ?? ""), area: typeof entry.area === "string" ? entry.area : null, phrase: entry.phrase }]
         : [],
     );
-    const costUsd = (reply.usage?.input_tokens ?? 0) * INPUT_USD_PER_TOKEN + (reply.usage?.output_tokens ?? 0) * OUTPUT_USD_PER_TOKEN;
-    return { filings, costUsd };
+    return { filings, costUsd: cost() };
   };
 }

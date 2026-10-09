@@ -86,3 +86,12 @@ test("unparseable JSON in the reply throws a clear error", async () => {
   const { fetch } = fakeFetch(ok("sorry, I cannot do that"));
   await assert.rejects(haikuClassifier({ fetch, apiKey: "k" })(batch, context), /not valid JSON/i);
 });
+
+test("a 200 reply with unparseable text still reports what it cost on the error", async () => {
+  const { fetch } = fakeFetch(ok("sorry, I cannot do that", { input_tokens: 1000, output_tokens: 200 }));
+  await assert.rejects(haikuClassifier({ fetch, apiKey: "k" })(batch, context), (error: Error & { costUsd?: number }) => {
+    assert.match(error.message, /not valid JSON/i);
+    assert.ok(Math.abs((error.costUsd ?? 0) - (1000 * INPUT_USD_PER_TOKEN + 200 * OUTPUT_USD_PER_TOKEN)) < 1e-12);
+    return true;
+  });
+});

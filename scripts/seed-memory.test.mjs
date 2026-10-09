@@ -58,3 +58,10 @@ test("run prints a usage error and does not analyze on a bad cap", async () => {
   assert.notEqual(code, 0);
   assert.match(lines.join("\n"), /--cap/);
 });
+
+test("parseArgs rejects an --as-of that is not a date, so a typo cannot drop every observation", () => {
+  for (const argv of [["--as-of", "nope"], ["--as-of"], ["--as-of", ""]]) {
+    assert.throws(() => parseArgs(argv), /--as-of/, argv.join(" "));
+  }
+  assert.equal(parseArgs(["--as-of", "2026-01-02"]).asOf, "2026-01-02");
+});
