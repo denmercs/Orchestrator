@@ -49,6 +49,7 @@ import { RunnerPicker } from "./runner-picker";
 import { SkillsDrawer, StoryPipelineButton } from "./skills-drawer";
 import { startJiraSession } from "./start-jira-session";
 import { StandupSection } from "./standup-section";
+import { StartInput } from "./start-input";
 import { useOrchestrationCatalog } from "./use-orchestration-catalog";
 
 export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurfaceProps) {
@@ -451,6 +452,13 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     case "initiatives":
       body = (
         <>
+          <StartInput
+            theme={theme}
+            compact={layout.compact}
+            navigation={navigation}
+            onStarted={epic.refresh}
+          />
+
           {gates.length > 0 ? (
             <NeedsYouQueue
               theme={theme}
