@@ -69,6 +69,7 @@ import {
 } from "./shared/orchestration";
 import { agentRunnerSettings } from "./shared/agent-runner";
 import {
+  budgetSettings,
   dashboardSettings,
   harnessSettings,
   jiraBoardSettings,
@@ -91,6 +92,7 @@ import {
 export default function contribute(server: PluginServerContext) {
   server.registerSettings(standupSettings);
   server.registerSettings(dashboardSettings);
+  server.registerSettings(budgetSettings);
   const runnerSettings = server.registerSettings(agentRunnerSettings);
   const readRunnerProfileId = async () => {
     const state = await runnerSettings.read();

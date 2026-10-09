@@ -472,7 +472,13 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
             </View>
           )}
 
-          <InitiativePanels epic={epic} theme={theme} compact={layout.compact} navigation={navigation} />
+          <InitiativePanels
+            epic={epic}
+            theme={theme}
+            compact={layout.compact}
+            navigation={navigation}
+            onEditPolicy={() => setSkillsOpen(true)}
+          />
         </>
       );
       break;

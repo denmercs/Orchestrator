@@ -50,18 +50,19 @@ function row(agentId: string, event: TelemetryRow["event"], used: number, extra:
 
 const ROWS: TelemetryRow[] = [
   row("a0", "turn", 50_000, { step: "plan", cycle: null }),
-  row("a1", "turn", 60_000),
+  row("a1", "turn", 60_000, { costUsd: 0.5 }),
   // a1 handed off fresh to a2 on the same step: session 2.
   row("a2", "compact.fresh", 20_000, { preTokens: 160_000 }),
   row("a2", "turn", 20_000),
   row("a2", "compact.native", 30_000, { preTokens: 140_000 }),
-  row("a2", "turn", 30_000),
-  row("a2", "turn", 40_000),
-  row("a2", "turn", 50_000),
+  // Costs are cumulative per session: a2's last one counts.
+  row("a2", "turn", 30_000, { costUsd: 0.25 }),
+  row("a2", "turn", 40_000, { costUsd: 0.75 }),
+  row("a2", "turn", 50_000, { costUsd: 1.25 }),
 ];
 
-function deps(session: LiveSession | null): StoryContextDeps {
-  return { live: live(session), rows: async () => ROWS, thresholds: async () => ({ amber: 100_000, red: 150_000 }) };
+function deps(session: LiveSession | null, rows: TelemetryRow[] = ROWS): StoryContextDeps {
+  return { live: live(session), rows: async () => rows, thresholds: async () => ({ amber: 100_000, red: 150_000 }) };
 }
 
 const SESSION: LiveSession = {
@@ -96,7 +97,14 @@ test("a live agent gives the panel, found across phases", async () => {
       act: { tokens: 150_000, percent: 75, word: "compact" },
     },
     split: { system: 10_000, conversation: 30_000, tool: 10_000 },
+    costUsd: 1.75,
   });
+});
+
+test("cost so far is null when no row of the story has a cost", async () => {
+  const rows = ROWS.map(({ costUsd: _cost, ...rest }) => rest);
+  const context = await loadStoryContext({ repo, initiative: "redesign", storyId: "S3" }, deps(SESSION, rows));
+  assert.equal(context?.costUsd, null);
 });
 
 test("a bad initiative slug throws", async () => {

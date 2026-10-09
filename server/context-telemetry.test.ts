@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { readTelemetry, recordTelemetry, storyHistory, summariseTelemetry, type TelemetryRow } from "./context-telemetry";
+import { readTelemetry, recordTelemetry, storyCost, storyHistory, summariseTelemetry, type TelemetryRow } from "./context-telemetry";
 
 let root: string;
 
@@ -245,4 +245,23 @@ test("storyHistory counts the agent's compactions and its turns since the last o
   assert.equal(history.compactions, 2);
   assert.deepEqual(history.turns, [25_000, 35_000]);
   assert.deepEqual(storyHistory(rows, { ...S11, agentId: "none", step: "implement" }), { session: 1, compactions: 0, turns: [] });
+});
+
+test("storyCost sums the last cost of each of the story's agents", () => {
+  const rows: TelemetryRow[] = [
+    row("2026-10-01T10:00:00.000Z", "p1", 40_000, "turn", { ...S11, step: "plan", costUsd: 0.5 }),
+    row("2026-10-01T10:01:00.000Z", "p1", 60_000, "turn", { ...S11, step: "plan", costUsd: 1.25 }),
+    row("2026-10-01T10:02:00.000Z", "i1", 30_000, "turn", { ...S11, step: "implement", costUsd: 2 }),
+    // Rows without a cost never replace the last one that had it.
+    row("2026-10-01T10:03:00.000Z", "i1", 35_000, "turn", { ...S11, step: "implement" }),
+    row("2026-10-01T10:04:00.000Z", "i1", 36_000, "turn", { ...S11, step: "implement", costUsd: null }),
+    // Another story, another initiative and a pre-S18 row: none count.
+    row("2026-10-01T10:05:00.000Z", "x1", 30_000, "turn", { ...S11, story: "S12", costUsd: 7 }),
+    row("2026-10-01T10:06:00.000Z", "x2", 30_000, "turn", { ...S11, initiative: "other", costUsd: 7 }),
+    row("2026-10-01T10:07:00.000Z", "x3", 30_000, "turn", { story: "S11", costUsd: 7 }),
+  ];
+
+  assert.equal(storyCost(rows, S11), 3.25);
+  assert.equal(storyCost(rows.slice(3, 5), S11), null);
+  assert.equal(storyCost([], S11), null);
 });
