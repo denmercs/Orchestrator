@@ -332,3 +332,53 @@ test("briefFor cuts at cap", () => {
   assert.equal(briefFor(memoryOf(notes, [harnessArea]), { step: "plan", paths: ["server/a.ts"] }).length, 15);
   assert.equal(briefFor(memoryOf(notes, [harnessArea]), { step: "plan", paths: ["server/a.ts"] }, 4).length, 4);
 });
+
+import { mkdirSync } from "node:fs";
+
+test("readMemory fills a correction's category from its folder", () => {
+  const root = tmp();
+  const dir = join(root, ".harness/memory/corrections/testing");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "no-cat.md"), formatNote(note({ type: "correction", slug: "no-cat", category: null })));
+  const memory = readMemory(root);
+  assert.deepEqual(memory.errors, []);
+  assert.equal(memory.notes[0].category, "testing");
+});
+
+test("readMemory reports a note whose type does not match its folder", () => {
+  const root = tmp();
+  mkdirSync(join(root, ".harness/memory/decisions"), { recursive: true });
+  writeFileSync(join(root, ".harness/memory/decisions/y.md"), formatNote(note({ type: "fact", slug: "y" })));
+  const memory = readMemory(root);
+  assert.deepEqual(memory.notes, []);
+  assert.deepEqual(memory.errors.map((e) => e.path), ["decisions/y.md"]);
+});
+
+test("readMemory ignores plain files directly in corrections/", () => {
+  const root = tmp();
+  mkdirSync(join(root, ".harness/memory/corrections"), { recursive: true });
+  writeFileSync(join(root, ".harness/memory/corrections/README.md"), "hello");
+  assert.deepEqual(readMemory(root).errors, []);
+});
+
+test("notePath and writeNote reject a slug or category that is not one path segment", () => {
+  const root = tmp();
+  assert.throws(() => writeNote(root, note({ type: "fact", slug: "../../../escaped" })), /slug/);
+  assert.throws(() => notePath({ type: "fact", slug: "a/b", category: null }), /slug/);
+  assert.throws(() => notePath({ type: "correction", slug: "x", category: ".." }), /category/);
+  assert.equal(existsSync(join(root, "escaped.md")), false);
+});
+
+test("only the matching type takes globs, category, count and evidence; others keep them in extra", () => {
+  const text = "---\ntype: fact\nsteps: []\narea:\nfiles: []\ncitations: []\nverified_at:\nlast_used:\nstatus: seeded\nlearned_in: []\nsupports: []\nsupersedes: []\nsuperseded_by: []\nglobs:\n  - a/**\ncount: 2\n---\nbody\n";
+  const n = parseNote(text, "f");
+  assert.deepEqual(n.extra, { globs: ["a/**"], count: "2" });
+  assert.equal(formatNote(n), text);
+});
+
+test("a value ending in --- does not close the frontmatter", () => {
+  const text = formatNote(note({ type: "fact", slug: "f", extra: { rule: "see above ---" }, body: "b\n" }));
+  const n = parseNote(text, "f");
+  assert.deepEqual(n.extra, { rule: "see above ---" });
+  assert.equal(n.body, "b\n");
+});

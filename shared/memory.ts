@@ -102,9 +102,9 @@ function formatField(key: string, value: Value | null): string {
 }
 
 export function parseNote(text: string, slug: string): Note {
-  const m = /^---\n([\s\S]*?)---\n([\s\S]*)$/.exec(text);
+  const m = /^---\n(?:([\s\S]*?\n))?---\n([\s\S]*)$/.exec(text);
   if (!m) throw new Error(`Note ${slug}: no frontmatter`);
-  const fields = parseFrontmatter(m[1].split("\n").slice(0, -1), slug);
+  const fields = parseFrontmatter((m[1] ?? "").split("\n").slice(0, -1), slug);
   const take = (key: string): Value | undefined => {
     const v = fields.get(key);
     fields.delete(key);
@@ -122,6 +122,8 @@ export function parseNote(text: string, slug: string): Note {
   if (!NOTE_TYPES.includes(type as NoteType)) throw new Error(`Note ${slug}: unknown type "${type}"`);
   const status = scalar("status");
   if (!NOTE_STATUSES.includes(status as NoteStatus)) throw new Error(`Note ${slug}: unknown status "${status}"`);
+  const isArea = type === "area";
+  const isCorrection = type === "correction";
   const note: Note = {
     slug,
     type: type as NoteType,
@@ -136,10 +138,10 @@ export function parseNote(text: string, slug: string): Note {
     supports: list("supports"),
     supersedes: list("supersedes"),
     superseded_by: list("superseded_by"),
-    globs: list("globs"),
-    category: scalar("category"),
-    count: Number(scalar("count") ?? 0) || 0,
-    evidence: list("evidence"),
+    globs: isArea ? list("globs") : [],
+    category: isCorrection ? scalar("category") : null,
+    count: isCorrection ? Number(scalar("count") ?? 0) || 0 : 0,
+    evidence: isCorrection ? list("evidence") : [],
     extra: {},
     body: m[2],
   };
@@ -173,8 +175,16 @@ export function formatNote(note: Note): string {
 
 const MEMORY_DIR = join(".harness", "memory");
 
+const SEGMENT = /^[A-Za-z0-9][\w.-]*$/;
+
+function segment(what: string, value: string): string {
+  if (!SEGMENT.test(value) || value.includes("..")) throw new Error(`Bad ${what} "${value}": expected one plain path segment`);
+  return value;
+}
+
 // Path of a note under `.harness/memory/`.
 export function notePath(note: Pick<Note, "type" | "slug" | "category">): string {
+  segment("slug", note.slug);
   switch (note.type) {
     case "area":
       return `areas/${note.slug}.md`;
@@ -184,7 +194,7 @@ export function notePath(note: Pick<Note, "type" | "slug" | "category">): string
       return `notes/${note.slug}.md`;
     case "correction":
       if (!note.category) throw new Error(`Note ${note.slug}: a correction needs a category`);
-      return `corrections/${note.category}/${note.slug}.md`;
+      return `corrections/${segment("category", note.category)}/${note.slug}.md`;
   }
 }
 
@@ -233,13 +243,17 @@ export function readMemory(root: string): Memory {
   const folders = ["areas", "decisions", "notes"];
   const corrections = join(dir, "corrections");
   if (existsSync(corrections)) {
-    for (const cat of readdirSync(corrections).sort()) folders.push(`corrections/${cat}`);
+    for (const d of readdirSync(corrections, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (d.isDirectory()) folders.push(`corrections/${d.name}`);
+    }
   }
   for (const folder of folders) {
     for (const file of listMarkdown(join(dir, folder))) {
       const path = `${folder}/${file}`;
       try {
         const note = parseNote(readFileSync(join(dir, path), "utf8"), file.slice(0, -3));
+        if (note.type === "correction" && !note.category) note.category = folder.slice("corrections/".length);
+        if (notePath(note) !== path) throw new Error(`Note ${note.slug}: a ${note.type} note does not belong in ${folder}/`);
         (note.type === "area" ? memory.areas : memory.notes).push(note);
       } catch (e) {
         memory.errors.push({ path, message: e instanceof Error ? e.message : String(e) });
