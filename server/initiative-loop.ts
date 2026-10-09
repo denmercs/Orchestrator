@@ -9,6 +9,7 @@ import { LOOP_AGENT_KIND, type LoopConfig } from "../shared/initiative-loop";
 import { branchName } from "../shared/naming";
 import { phaseLabel } from "../shared/orchestration";
 import { DEFAULT_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
+import { appendOutcome, type OutcomeEvent } from "../shared/story-outcome";
 import {
   PHASES_DIR,
   PHASE_FILE,
@@ -189,8 +190,17 @@ function storyContext(init: Initiative, phaseDir: string, story: StoryFile): Sto
 
 const stateFile = (worktree: string) => join(worktree, ".harness", "state.md");
 
+// Keeps what happened to a story in its own file (## Outcome and its counters), which outlives the worktree.
+function recordOutcome(story: StoryFile, event: OutcomeEvent) {
+  const text = readText(story.path);
+  const next = appendOutcome(text, event);
+  if (next !== text) writeFileSync(story.path, next, "utf8");
+}
+
 // `kind` names who blocked it, so the loop can tell its own give-up from the rest; the others clear it.
-function block(story: StoryFile, reason: string, kind?: "retry-limit") {
+// A permission wait is answered in the session, so it passes `record = false` and stays out of ## Outcome.
+function block(story: StoryFile, reason: string, kind?: "retry-limit", record = true) {
+  if (record) recordOutcome(story, { kind: "blocked", reason });
   writeFrontmatter(story.path, {
     status: "blocked",
     blocked_reason: reason,
@@ -428,6 +438,7 @@ export function createInitiativeLoop(
     } else if (step === "review") {
       if (marker === MARKERS.reviewDone && on) await openPr(init, phaseDir, story);
       else if (marker === MARKERS.reviewFailed) {
+        recordOutcome(story, { kind: "review-failed", round, findings: readSection(state, "Review findings").split("\n") });
         if (round >= config.reviewRounds) block(story, `Review failed ${round} times; see ## Review findings in the worktree.`);
         else await next("implement", round + 1);
       }
@@ -490,6 +501,7 @@ export function createInitiativeLoop(
     const pr = await prStatus(cwd, meta.pr || meta.branch || "");
     if (!pr) return;
     if (pr.state === "merged") {
+      recordOutcome(story, { kind: "merged" });
       writeFrontmatter(story.path, { status: "merged", ci: null, agent: null });
       if (meta.workspace) await api.workspaces.archive(meta.workspace).catch(() => undefined);
       refreshInitiativeIndex(init.dir);
@@ -507,7 +519,8 @@ export function createInitiativeLoop(
       block(story, `CI still failing after ${fixes} fix attempts: ${pr.failing.map((check) => check.name).join(", ")}`);
       return;
     }
-    writeFrontmatter(story.path, { fixed_sha: pr.headSha, fix_attempts: fixes + 1 });
+    recordOutcome(story, { kind: "fix", attempt: fixes + 1, checks: pr.failing.map((check) => check.name) });
+    writeFrontmatter(story.path, { fixed_sha: pr.headSha });
     const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
     await startStep(api, config, init, phaseDir, fresh, "fix", fixes + 1, { failing: await failureReport(cwd, pr.failing) });
   }
@@ -812,7 +825,7 @@ export function createInitiativeLoop(
       return serial(async () => {
         const found = labelledStory((await api.agents.ref(event.agent.id).refresh())?.agent.labels ?? {});
         if (!found || found.story.meta.agent !== event.agent.id || !SUPERVISED.has(found.story.meta.status ?? "")) return;
-        block(found.story, `Waiting on permission: ${event.request.title || event.request.name}. Answer it in the session.`);
+        block(found.story, `Waiting on permission: ${event.request.title || event.request.name}. Answer it in the session.`, undefined, false);
         writeFrontmatter(found.story.path, { waiting_on: PERMISSION });
       });
     },
