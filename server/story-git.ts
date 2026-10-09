@@ -57,10 +57,11 @@ export async function pushStoryFix(cwd: string, message: string) {
 
 export type OpenedPr = { number: number; url: string };
 
-// Commits leftovers, pushes the branch and opens the PR (or keeps the one already open).
+// Commits leftovers, pushes the branch and opens the PR (or keeps the one already open). `unfixed` is
+// the non-blocking review findings still open after the last review round; the body lists them.
 export async function openStoryPr(
   cwd: string,
-  input: { id: string; title: string; jira: boolean; branch: string; base: string },
+  input: { id: string; title: string; jira: boolean; branch: string; base: string; unfixed?: string[] },
 ): Promise<OpenedPr> {
   const base = input.base.replace(/^origin\//, "");
   if (!input.branch || input.branch === "HEAD" || input.branch === base) {
@@ -73,7 +74,11 @@ export async function openStoryPr(
     return existing;
   }
   const bodyFile = join(cwd, ".harness", "pr-body.md");
-  const body = existsSync(bodyFile) ? readFileSync(bodyFile, "utf8").trim() : "";
+  const written = existsSync(bodyFile) ? readFileSync(bodyFile, "utf8").trim() : "";
+  const unfixed = input.unfixed?.length
+    ? `## Not fixed in review (non-blocking)\n${input.unfixed.map((line) => `- ${line}`).join("\n")}`
+    : "";
+  const body = [written, unfixed].filter(Boolean).join("\n\n");
   const headline = prHeadline(input);
   await gh(
     [

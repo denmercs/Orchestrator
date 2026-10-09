@@ -16,7 +16,7 @@ import { startPhaseArchitect } from "./server/harness-architect";
 import { openPhasePlan, refreshPhasePlan } from "./server/phase-plan";
 import { stopPlanServer } from "./server/plan-server";
 import { createHarnessEpic, listHarness } from "./server/harness-layout";
-import { advancePipeline, closeMergedStories, startStory } from "./server/pipeline-advance";
+import { advancePipeline, closeMergedStories, startStory, watchPipelinePrs } from "./server/pipeline-advance";
 import { createLoopAdvance } from "./server/loop-advance";
 import { createInitiativeLoop } from "./server/initiative-loop";
 import { readBranchInitials } from "./server/git-identity";
@@ -288,8 +288,11 @@ export default function contribute(server: PluginServerContext) {
   const offWorkspaceCreated = server.on("workspace.created", ({ workspace }) => {
     scopeWorkerWorkspace(workspace);
   });
+  // The Story pipeline's CI watch runs on the tick, with the handle the last event gave.
+  let pipelinePaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     loop.rememberPaseo(paseo);
+    pipelinePaseo = paseo;
     void loop.onTurnEnded(event);
     void advancePipeline(paseo, event, readPipeline, readAgentConfig).catch((error) => {
       console.warn("orchestrator: pipeline advance failed", error);
@@ -308,6 +311,7 @@ export default function contribute(server: PluginServerContext) {
   const arm = (paseo: Parameters<typeof loop.rememberPaseo>[0]) => {
     loop.rememberPaseo(paseo);
     initiativeLoop.rememberPaseo(paseo);
+    pipelinePaseo = paseo;
   };
   const offSessionOpen = server.before("agent.session_open", (_input, { paseo }) => {
     arm(paseo);
@@ -330,6 +334,11 @@ export default function contribute(server: PluginServerContext) {
   const timer = setInterval(() => {
     void loop.pollMergedPrs();
     void initiativeLoop.tick();
+    if (pipelinePaseo) {
+      void watchPipelinePrs(pipelinePaseo, readPipeline, readAgentConfig).catch((error) => {
+        console.warn("orchestrator: pipeline CI watch failed", error);
+      });
+    }
   }, PR_POLL_MS);
   timer.unref?.();
   return () => {

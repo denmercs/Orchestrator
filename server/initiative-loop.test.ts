@@ -19,9 +19,18 @@ const ghReply = join(home, "gh-reply.json");
 process.env.GH_BIN = join(home, "gh");
 writeFileSync(process.env.GH_BIN, `#!/bin/sh\n[ -f "${ghReply}" ] && cat "${ghReply}" || exit 1\n`, "utf8");
 chmodSync(process.env.GH_BIN, 0o755);
-const ghPr = (state: string | null) => {
-  if (state) writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid: "abc" }), "utf8");
+const ghPr = (state: string | null, headRefOid = "abc", statusCheckRollup: unknown[] = []) => {
+  if (state) writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid, statusCheckRollup }), "utf8");
   else rmSync(ghReply, { force: true });
+};
+const failedCheck = {
+  __typename: "CheckRun",
+  name: "test",
+  workflowName: "CI",
+  status: "COMPLETED",
+  conclusion: "FAILURE",
+  detailsUrl: "https://gh/actions/runs/9/job/1",
+  completedAt: "2026-10-08T12:00:00Z",
 };
 const { createInitiativeLoop, RESUME_LINE, RESTART_LINE, nudgePrompt } = await import("./initiative-loop");
 
@@ -851,6 +860,61 @@ test("a dead subagent-cycles parent comes back as a parent with only the open cy
   assert.match(created[0].prompt ?? "", /Cycle 2 — Warns/);
   assert.doesNotMatch(created[0].prompt ?? "", /Cycle 1 — Reads/);
   assert.equal(storyMeta(story).cycles, "subagents");
+});
+
+test("review-done with only a non-blocking finding open starts a fix round; at the round limit a blocking one blocks", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  const reviewLabels = { ...labels, "loop-step": "review" };
+  writeFrontmatter(story, { status: "reviewing", step: "review", round: 1 });
+  const findings = (body: string) =>
+    writeFileSync(join(worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\nreview-done\n\n## Review findings\n${body}\n`, "utf8");
+  findings("- [x] blocking: a.ts:1 — off by one — use <=\n- [ ] non-blocking: b.ts:2 — unclear name — rename");
+  const { api, created } = fakePaseo([{ id: "a1", labels: reviewLabels }]);
+  const initiative = loop();
+
+  await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as never);
+
+  assert.deepEqual(created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"]]), [["implement", "2"]]);
+  assert.match(created[0].prompt ?? "", /fix the review findings/);
+
+  writeFrontmatter(story, { status: "reviewing", step: "review", round: DEFAULT_LOOP_CONFIG.reviewRounds, agent: "a2" });
+  findings("- [ ] blocking: a.ts:1 — still off by one — use <=");
+  const { api: later } = fakePaseo([{ id: "a2", labels: { ...reviewLabels, "loop-round": "3" } }]);
+  await initiative.onTurnEnded(later, { agent: { id: "a2" }, outcome: { kind: "completed" } } as never);
+
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(
+    storyMeta(story).blocked_reason,
+    `Review still has 1 blocking finding after ${DEFAULT_LOOP_CONFIG.reviewRounds} rounds; see ## Review findings in the worktree.`,
+  );
+});
+
+test("an open PR's failing head gets one Fix CI agent; a new failing head gets the next; past maxFixes it blocks", async (t) => {
+  t.after(() => ghPr(null));
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { status: "pr-open", step: "pr", agent: null, pr: 45, ci: "pending" });
+  const { api, created } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  ghPr("OPEN", "abc", [failedCheck]);
+  await initiative.tick();
+  await initiative.tick();
+  assert.deepEqual(created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"]]), [["fix", "1"]]);
+  assert.match(created[0].prompt ?? "", /CI \/ test/);
+  assert.deepEqual([storyMeta(story).ci, storyMeta(story).fixed_sha, storyMeta(story).fix_attempts], ["failing", "abc", "1"]);
+
+  writeFrontmatter(story, { fix_attempts: DEFAULT_LOOP_CONFIG.maxFixes - 1, status: "pr-open" });
+  ghPr("OPEN", "def", [failedCheck]);
+  await initiative.tick();
+  assert.equal(created.length, 2);
+  writeFrontmatter(story, { status: "pr-open" });
+
+  ghPr("OPEN", "ghi", [failedCheck]);
+  await initiative.tick();
+  assert.equal(created.length, 2);
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(storyMeta(story).blocked_reason, `CI still failing after ${DEFAULT_LOOP_CONFIG.maxFixes} fix attempts: CI / test`);
 });
 
 test("a step whose worktree is gone and whose PR merged is recorded merged and its workspace archived", async (t) => {

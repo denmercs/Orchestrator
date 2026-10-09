@@ -176,6 +176,30 @@ How the initiative loop keeps a step moving with no agent watching it. Code: `su
 
 _Avoid_: watchdog, heartbeat (for supervision); hung, frozen (for stalled).
 
+## Review findings
+
+The checklist a Review agent writes under `## Review findings` in `.harness/state.md`, and the plain-code decision the plugin makes from it. Code: `readFindings` and `afterReview` in `shared/story-method.ts`, used by both the initiative loop and the Story pipeline.
+
+- **Finding**: one checklist line, `- [ ] blocking: file:line — what is wrong — what would fix it` or `- [ ] non-blocking: …`. **Blocking** means it is wrong: an acceptance check not met, a bug, a security gap, a failing test, lint or build. **Non-blocking** means it works but should improve: naming, readability, a missing edge-case test, a repo convention. An untagged checklist line counts as blocking. "follow-up:" lines are not findings.
+- **Fix round**: the Implement step at round > 1. It fixes every unticked finding, blocking and non-blocking, and ticks each one. It may tick a non-blocking line it judges wrong with "— won't fix: <why>".
+- **Re-review**: Review at round > 1. It checks each ticked line, unticks any that isn't fixed, and adds only new blocking lines, so the rounds settle instead of finding new nits each time.
+- **Decision** (`afterReview`), on `review-done`: no unticked finding opens the PR. Otherwise a fix round, until `reviewRounds`. At the limit, an open blocking finding blocks the story (the pipeline writes `review-blocked`). Open non-blocking ones go to the PR as **unfixed**, listed under "Not fixed in review (non-blocking)" in its body (`openStoryPr`'s `unfixed`). The reviewer's marker doesn't choose; an older reviewer's `review-failed` with no checklist still gets a fix round.
+
+_Avoid_: nits, must-fix, severity levels beyond these two.
+
+## CI watch
+
+How a story PR's checks are followed until they pass, with no agent watching. Code: `ciAction` in `server/ci-watch.ts`, used by both the initiative loop (`watchPr`) and the Story pipeline (`watchPipelinePrs`), each on the 2-minute tick. `prStatus` in `server/pr-checks.ts` reads the PR; `ciAction` decides from it, the **CI watch record** (`fixedSha`, `attempts`) and the `maxFixes` setting:
+
+- **merged** or **closed**: the watch ends.
+- **wait**: CI is pending, green or has no checks, or the head that failed already has a Fix CI agent (`fixedSha` is the head).
+- **fix**: a failing head not tried yet starts a fresh **Fix CI** agent with the failure report (`failureReport`: the failed checks and their trimmed logs). Its `fix-done` makes the plugin commit and push, which gives CI a new head to check.
+- **give-up**: a new failing head after `maxFixes` attempts. The initiative loop blocks the story; the pipeline writes `ci-failed` and the reason to `## Status`.
+
+The initiative loop keeps the record in the story's frontmatter (`fixed_sha`, `fix_attempts`) and its `maxFixes` in the loop settings (default 3). The pipeline keeps it in the worktree's `.harness/ci.json` (`pr`, `url`, `fixedSha`, `attempts`, and `done` once the watch ends), written when the plugin opens the PR, and its `maxFixes` in the pipeline settings (default 3, on the drawer's Done row). Fix CI is not a drawer phase: its agent is labelled `phase: fix` and loads the Implement phase's extras.
+
+_Avoid_: CI babysitter, CI subscriber, retry (that is Loop supervision).
+
 ## Alerts bell
 
 The bell in the header that lists the current gates, one row per Gate, with a badge showing the gate count. Clicking a row opens that story on the epic board (`gate.board`, `gate.storyId`). Its alerts are gates and nothing else; context-meter warnings stay on the Context pill and are never in the bell.
