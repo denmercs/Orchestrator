@@ -4,7 +4,8 @@ export type OutcomeEvent =
   | { kind: "review-failed"; round: number; findings: string[] }
   | { kind: "fix"; attempt: number; checks: string[] }
   | { kind: "blocked"; reason: string }
-  | { kind: "merged" };
+  | { kind: "merged" }
+  | { kind: "no-change" };
 
 export type OutcomeEntry = { title: string; lines: string[] };
 export type Outcome = { reviewRounds: number; fixAttempts: number; failedChecks: string[]; entries: OutcomeEntry[] };
@@ -102,6 +103,10 @@ export function appendOutcome(text: string, event: OutcomeEvent): string {
       if (has("Merged")) return text;
       const rounds = plural(outcome.reviewRounds + 1, "review round");
       return addEntry(text, "Merged", [`- ${rounds}, ${plural(outcome.fixAttempts, "CI fix attempt")}`]);
+    }
+    case "no-change": {
+      if (has("Nothing to ship")) return text;
+      return addEntry(text, "Nothing to ship", ["- The branch had no commits over its base, so it closed without a PR."]);
     }
   }
 }

@@ -478,6 +478,13 @@ export function createInitiativeLoop(
     const ctx = storyContext(init, phaseDir, story);
     try {
       const pr = await openStoryPr(meta.worktree, { id: story.id, title: ctx.title, jira: false, branch: meta.branch ?? "", base: ctx.base });
+      // Nothing to ship: the work is already on the base, so the story is done and its dependents can go.
+      if (!pr) {
+        recordOutcome(story, { kind: "no-change" });
+        writeFrontmatter(story.path, { status: "merged", step: "pr", round: 1, cycle: null, agent: null, ci: null });
+        refreshInitiativeIndex(init.dir);
+        return;
+      }
       writeFileSync(stateFile(meta.worktree), writeMarker(readText(stateFile(meta.worktree)), `${MARKERS.prDone}\n${pr.url}`), "utf8");
       writeFrontmatter(story.path, { status: "pr-open", step: "pr", round: 1, cycle: null, agent: null, pr: pr.number, ci: "pending" });
     } catch (error) {

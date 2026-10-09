@@ -169,6 +169,7 @@ async function openPr(cwd: string, ticket: Ticket) {
   try {
     const branch = await currentBranch(cwd);
     const pr = await openStoryPr(cwd, { id: ticket.key, title: ticket.title, jira: true, branch, base: BASE });
+    if (!pr) throw new Error(`${branch} has no commits over ${BASE}; there is nothing to open a PR for.`);
     setMarker(cwd, `${MARKERS.prDone}\n${pr.url}`);
   } catch (error) {
     started.delete(dedupe);

@@ -481,6 +481,33 @@ test("a Fix CI agent's fix-done commits with its subject; without one, 'Fix fail
   assert.equal(none.subject, "Fix failing CI checks");
 });
 
+test("review-done on a branch with no commits over its base closes the story without a PR", async () => {
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { status: "reviewing", step: "review" });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: fx.worktree, encoding: "utf8" }).trim();
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  const origin = join(fx.root, "origin.git");
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  git("remote", "add", "origin", origin);
+  git("checkout", "-q", "-b", "main");
+  git("commit", "-q", "--allow-empty", "-m", "start");
+  git("push", "-q", "-u", "origin", "main");
+  git("checkout", "-q", "-b", "feature/s1");
+  writeFileSync(join(fx.worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nreview-done\n", "utf8");
+  const { api } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "review" } }]);
+  const turnEnded = { agent: { id: "a1" }, outcome: { kind: "completed" } } as unknown as Parameters<
+    ReturnType<typeof loop>["onTurnEnded"]
+  >[1];
+
+  await loop().onTurnEnded(api, turnEnded);
+
+  const meta = storyMeta(fx.story);
+  assert.deepEqual([meta.status, meta.pr, meta.blocked_reason], ["merged", undefined, undefined]);
+  assert.match(readFileSync(fx.story, "utf8"), /### Nothing to ship/);
+  assert.equal(git("ls-remote", "--heads", "origin", "feature/s1"), "");
+});
+
 test("an older Implement agent without the parent label doesn't move a story its parent owns", async () => {
   const fx = fixture("a1");
   writeFrontmatter(fx.story, { cycles: "subagents", agent: "n9" });

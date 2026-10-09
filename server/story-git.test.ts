@@ -165,6 +165,19 @@ test("an already-open PR is returned as it is, without creating another", async 
   }
 });
 
+test("a branch with no commits over its base opens no PR and pushes nothing", async () => {
+  const { dir, git, created, done } = prRepo();
+  try {
+    git("push", "-q", "origin", "HEAD:refs/heads/main");
+    git("fetch", "-q", "origin");
+    assert.equal(await openStoryPr(dir, { id: "S1", title: "Add search", jira: false, branch: "feature/s1", base: "origin/main" }), null);
+    assert.deepEqual(created(), []);
+    assert.equal(git("ls-remote", "--heads", "origin", "feature/s1"), "");
+  } finally {
+    done();
+  }
+});
+
 test("uniqueBranch adds -2, -3 when the name exists locally or on origin", async () => {
   const { dir, git, done } = repo();
   const remote = mkdtempSync(join(tmpdir(), "story-git-remote-"));

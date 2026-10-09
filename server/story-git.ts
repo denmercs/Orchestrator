@@ -57,16 +57,26 @@ export async function pushStoryFix(cwd: string, message: string) {
 
 export type OpenedPr = { number: number; url: string };
 
-// Commits leftovers, pushes the branch and opens the PR (or keeps the one already open).
+// How many commits HEAD has that `base` doesn't; null when `base` doesn't resolve here.
+async function commitsAhead(cwd: string, base: string) {
+  return git(cwd, ["rev-list", "--count", `${base}..HEAD`]).then(Number, () => null);
+}
+
+// Commits leftovers, pushes the branch and opens the PR (or keeps the one already open). Returns null,
+// without pushing, when the branch has no commits over its base: the work was already there, and gh
+// refuses a PR with no commits.
 export async function openStoryPr(
   cwd: string,
   input: { id: string; title: string; jira: boolean; branch: string; base: string },
-): Promise<OpenedPr> {
+): Promise<OpenedPr | null> {
   const base = input.base.replace(/^origin\//, "");
   if (!input.branch || input.branch === "HEAD" || input.branch === base) {
     throw new Error(`Refusing to open a PR from "${input.branch || "no branch"}".`);
   }
   await commitStory(cwd, "Commit remaining changes");
+  if ((await commitsAhead(cwd, input.base)) === 0) {
+    return null;
+  }
   await git(cwd, ["push", "-u", "origin", input.branch], 120_000);
   const existing = await prForBranch(cwd, input.branch);
   if (existing) {
