@@ -34,6 +34,8 @@ export type GatePort = {
   reopen(ref: StoryRef): Promise<void>;
   // The loop starts the story's step again in a fresh session; `agentId` in the result is that session.
   retryStep(ref: StoryRef): Promise<GateResult>;
+  // The story's PR number while that PR is closed; null when it isn't closed, or there is none.
+  closedPr(ref: StoryRef): Promise<number | null>;
 };
 
 // The gate each action belongs to: the status the story must still be at, and how a refusal names it.
@@ -54,6 +56,11 @@ export function createGateActions(port: GatePort) {
   // Retry a blocked story by its block kind: reopen only, or wake its agent (a message to an open
   // session, the loop's fresh step for an ended or unknown one).
   async function retry(ref: StoryRef, story: GateStory): Promise<GateResult> {
+    // A PR block whose PR is still closed would only block again on the next tick.
+    if (story.blockKind === "pr") {
+      const closed = await port.closedPr(ref);
+      if (closed !== null) return refuse(`PR #${closed} is still closed; reopen it on GitHub, then retry ${ref.storyId}.`);
+    }
     if ((story.blockKind && REOPEN_ONLY.has(story.blockKind)) || !story.agent) {
       await port.reopen(ref);
       return { ok: true, error: null, agentId: null };
@@ -62,8 +69,14 @@ export function createGateActions(port: GatePort) {
     if (story.waitingOn === "permission") {
       return refuse(`${ref.storyId} is waiting on a permission; answer it in the session.`);
     }
+    // Reopen first: it sets the step's marker back to running before the agent can write its own.
     await port.reopen(ref);
-    await port.send(story.agent, RETRY_MESSAGE);
+    try {
+      await port.send(story.agent, RETRY_MESSAGE);
+    } catch (cause) {
+      const why = cause instanceof Error ? cause.message : String(cause);
+      return { ok: false, error: `${ref.storyId} is unblocked, but its session didn't get the retry message: ${why}`, agentId: story.agent };
+    }
     return { ok: true, error: null, agentId: story.agent };
   }
 
@@ -111,6 +124,7 @@ type LoopFiles = {
   gateStory(ref: { repo: string; initiative: string; storyId: string }): Promise<GateStory | null>;
   reopen(ref: { repo: string; initiative: string; storyId: string }): Promise<void>;
   retryStep(api: PaseoApi, ref: { repo: string; initiative: string; storyId: string }): Promise<GateResult>;
+  closedPr(ref: { repo: string; initiative: string; storyId: string }): Promise<number | null>;
 };
 type FreshAct = { act(input: { agentId: string; action: "fresh" }): Promise<ActResult> };
 
@@ -152,6 +166,10 @@ export function loopGatePort(loop: LoopFiles, paseo: PaseoApi, contextWatch: Fre
     async retryStep({ board, storyId }) {
       const split = splitBoard(board);
       return split ? loop.retryStep(paseo, { ...split, storyId }) : refuse(`${storyId} is not on that board.`);
+    },
+    async closedPr({ board, storyId }) {
+      const split = splitBoard(board);
+      return split ? loop.closedPr({ ...split, storyId }) : null;
     },
   };
 }

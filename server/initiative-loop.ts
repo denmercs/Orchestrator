@@ -814,6 +814,16 @@ export function createInitiativeLoop(
       });
     },
 
+    // The story's PR number while that PR is closed, so Retry doesn't reopen a PR block that would
+    // block again; null when it's open, merged, unknown or there is none. gh runs outside the chain.
+    async closedPr(input: StoryRef): Promise<number | null> {
+      const found = await serial(async () => locateStory(input));
+      const target = found ? found.story.meta.pr || found.story.meta.branch : "";
+      if (!found || !target) return null;
+      const pr = await prStatus(found.init.root, target);
+      return pr?.state === "closed" ? pr.number : null;
+    },
+
     onTurnEnded(api: PaseoApi, event: { agent: PluginHookAgent; outcome: PluginTurnOutcome }) {
       paseo = api;
       // You stopped it: the loop leaves it to you.

@@ -1234,3 +1234,19 @@ test("retryStep refuses a story that isn't blocked, has no step, or isn't there,
   assert.equal(missing.ok, false);
   assert.deepEqual(created, []);
 });
+
+test("closedPr gives a story's PR number while the PR is closed, and null once it isn't or there's none", async (t) => {
+  t.after(() => ghPr(null));
+  const { root, story } = fixture("a1");
+  writeFrontmatter(story, { status: "blocked", blocked_reason: "PR #45 was closed without merging.", blocked_from: "pr-open", block_kind: "pr", pr: 45 });
+  const initiative = loop();
+  const ref = { repo: root, initiative: "demo", storyId: "S1" };
+
+  ghPr("CLOSED");
+  assert.equal(await initiative.closedPr(ref), 45);
+  ghPr("OPEN");
+  assert.equal(await initiative.closedPr(ref), null);
+  ghPr(null);
+  assert.equal(await initiative.closedPr(ref), null);
+  assert.equal(await initiative.closedPr({ ...ref, storyId: "S9" }), null);
+});

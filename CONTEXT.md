@@ -127,7 +127,8 @@ _Avoid_: blocker (for any gate), task, todo, action item.
 - **retry** (stuck): what it does depends on the story's `block_kind`, which every block writes:
   - `start` (could not start), `pr` (PR failed to open, closed, or missing), `ci` (CI fix limit or a failed fix push): reopen only, and the loop picks the story up again. `ci` also clears `fix_attempts` and `fixed_sha`.
   - `retry-limit`, `step` (implement-blocked, an unticked cycle after implement-done, the review-failed limit), or none (older blocks): session open → reopen, then send the retry message; session ended or gone → the loop starts the same step, round and cycle in a fresh session, whose id comes back. With no agent set, reopen only.
-  - Refused while an open session waits on a permission.
+  - Refused while an open session waits on a permission, and for a `pr` block whose PR is still closed (reopen it on GitHub first).
+  - If the retry message can't be sent, the story stays reopened and the error comes back.
 
   The retry button sits on a blocked story's inline panel and in its Details drawer.
 
