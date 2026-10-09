@@ -49,14 +49,19 @@ export const contextSummary = z.object({
   // The same totals per "<initiative>/<story>", over turn rows with a story ("unknown" initiative on
   // rows written before S18). Not shown on the card.
   byStory: z.record(z.string(), z.object({ turns: z.number(), tokens: z.number(), models: z.array(z.string()) })),
+  // Dollars spent since the start of today and over the last 7 calendar days, from each session's
+  // cumulative `costUsd`; ignores `since`. Raw, unrounded.
+  spendToday: z.number(),
+  spendWeek: z.number(),
 });
 
 export type ContextSummary = z.infer<typeof contextSummary>;
 
-// Telemetry totals for the dashboard card; `since` is an ISO time, or null for every row.
+// Telemetry totals for the dashboard card; `since` is an ISO time, or null for every row. `today`
+// is the ISO start of the caller's day for the spend windows; the server's local midnight without it.
 export const contextSummaryRpc = defineRpc({
   name: "orchestration.context.summary",
-  input: z.object({ since: z.string().nullable() }),
+  input: z.object({ since: z.string().nullable(), today: z.iso.datetime({ offset: true }).optional() }),
   output: contextSummary,
 });
 
@@ -83,4 +88,35 @@ export const contextSessionsRpc = defineRpc({
   name: "orchestration.context.sessions",
   input: z.object({ agentIds: z.array(z.string()) }),
   output: z.array(contextStatus.nullable()),
+});
+
+// The story context panel (see CONTEXT.md, "Story context"): the story's current session's
+// context, burn and markers. Tokens only, no dollars.
+export const storyContext = z.object({
+  agentId: z.string(),
+  step: z.string().nullable(),
+  used: z.number().nullable(),
+  max: z.number().nullable(),
+  percent: z.number().nullable(),
+  level: z.enum(["ok", "amber", "red", "unknown"]),
+  // 1 + fresh hand-offs on this step since the story last ran another step.
+  session: z.number(),
+  // The agent's native + inferred compactions.
+  compactions: z.number(),
+  burn: z.number().nullable(),
+  turnsToAct: z.union([z.number(), z.literal("now")]).nullable(),
+  markers: z.object({
+    warn: z.object({ tokens: z.number(), percent: z.number().nullable() }),
+    act: z.object({ tokens: z.number(), percent: z.number().nullable(), word: z.enum(["compact", "hand off"]) }),
+  }),
+  split: z.object({ system: z.number(), conversation: z.number(), tool: z.number() }).nullable(),
+});
+
+export type StoryContext = z.infer<typeof storyContext>;
+
+// null when the story has no `agent:` or Paseo says that agent is gone.
+export const storyContextRpc = defineRpc({
+  name: "orchestration.story.context",
+  input: z.object({ repo: z.string(), initiative: z.string(), storyId: z.string() }),
+  output: storyContext.nullable(),
 });

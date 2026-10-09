@@ -11,6 +11,7 @@ function story(id: string, fields: Partial<EpicStory> = {}): EpicStory {
     dependsOn: [],
     blockedBy: "",
     blockedReason: "",
+    blockedFrom: "",
     skillWarnings: "",
     discoveredFrom: "",
     pr: null,

@@ -52,6 +52,8 @@ export type TelemetryRow = {
   story?: string | null;
   // Absent on rows written before S18. Story ids repeat across initiatives, so this tells them apart.
   initiative?: string | null;
+  // The session's cumulative cost at this row; absent before S10, null when the provider reports none.
+  costUsd?: number | null;
 };
 
 // Appends go through one chain so concurrent turn ends never interleave a line.
@@ -93,14 +95,86 @@ async function readRows(file: string): Promise<TelemetryRow[]> {
   return rows;
 }
 
+// Every row, oldest first: the rotated file, then the current one.
+export async function readTelemetry(file: string = TELEMETRY_FILE): Promise<TelemetryRow[]> {
+  return [...(await readRows(rotatedFile(file))), ...(await readRows(file))];
+}
+
+export type StoryKey = {
+  initiative: string;
+  story: string;
+  agentId: string;
+  step: string | null;
+  cycle?: number | null;
+};
+
+export type StoryHistory = {
+  // 1 + the `compact.fresh` rows for this step (and cycle, when given) since the story last
+  // ran a different step, so a second round of a step starts again at 1.
+  session: number;
+  // The agent's `compact.native` + `compact.inferred` rows.
+  compactions: number;
+  // The agent's turn `used` values after its last `compact.*` row, oldest first.
+  turns: number[];
+};
+
+// Rows written before S18 have no initiative and never match a story.
+export function storyHistory(rows: TelemetryRow[], key: StoryKey): StoryHistory {
+  const story = rows.filter((row) => row.initiative === key.initiative && row.story === key.story);
+  let lastOtherStep = -1;
+  story.forEach((row, i) => {
+    if (row.step != null && row.step !== key.step) lastOtherStep = i;
+  });
+  const fresh = story
+    .slice(lastOtherStep + 1)
+    .filter((row) => row.event === "compact.fresh" && row.step === key.step && (key.cycle == null || row.cycle === key.cycle));
+
+  const agent = rows.filter((row) => row.agentId === key.agentId);
+  let compactions = 0;
+  let turns: number[] = [];
+  for (const row of agent) {
+    if (row.event.startsWith("compact.")) {
+      if (row.event !== "compact.fresh") compactions += 1;
+      turns = [];
+    } else if (row.event === "turn" && row.used != null) {
+      turns.push(row.used);
+    }
+  }
+  return { session: fresh.length + 1, compactions, turns };
+}
+
+function startOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+// Σ over agents of (last cost at or after `start` − last cost before it, 0 when none), clamped at 0
+// per agent. `rows` holds only rows with a cost; costs are cumulative per session.
+function spendSince(byAgent: Map<string, { at: string; costUsd: number }[]>, start: string): number {
+  let total = 0;
+  for (const costs of byAgent.values()) {
+    let baseline = 0;
+    let last: number | null = null;
+    for (const cost of costs) {
+      if (cost.at < start) baseline = cost.costUsd;
+      else last = cost.costUsd;
+    }
+    if (last !== null) total += Math.max(0, last - baseline);
+  }
+  return total;
+}
+
 // Totals over rows with `at >= since` (every row when since is null), read from the rotated
 // file and the current one so totals survive a rotation. A session counts as over threshold
 // when it has a `warning` row. `byStep` covers only `turn` rows with a step, `byStory` only those with a story.
+// Spend ignores `since`: it reads every row with a cost, from `today` (ISO start of today; the
+// server's local midnight when absent) and from the start of the day six days earlier.
 export async function summariseTelemetry(
   since: string | null,
   file: string = TELEMETRY_FILE,
+  today?: string,
 ): Promise<ContextSummary> {
-  const rows = [...(await readRows(rotatedFile(file))), ...(await readRows(file))].filter((row) => since === null || row.at >= since);
+  const allRows = await readTelemetry(file);
+  const rows = allRows.filter((row) => since === null || row.at >= since);
   const summary: ContextSummary = {
     turns: 0,
     sessions: 0,
@@ -112,6 +186,8 @@ export async function summariseTelemetry(
     tokensAvoided: 0,
     byStep: {},
     byStory: {},
+    spendToday: 0,
+    spendWeek: 0,
   };
   const sessions = new Set<string>();
   const overThreshold = new Set<string>();
@@ -164,5 +240,21 @@ export async function summariseTelemetry(
   summary.sessionsOverThreshold = overThreshold.size;
   for (const [step, models] of stepModels) summary.byStep[step].models = [...models].sort();
   for (const [key, models] of storyModels) summary.byStory[key].models = [...models].sort();
+
+  const costs = new Map<string, { at: string; costUsd: number }[]>();
+  for (const row of allRows) {
+    if (typeof row.costUsd !== "number") continue;
+    const agent = costs.get(row.agentId) ?? [];
+    agent.push({ at: row.at, costUsd: row.costUsd });
+    costs.set(row.agentId, agent);
+  }
+  for (const agent of costs.values()) agent.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  const dayStart = today === undefined ? startOfLocalDay(new Date()) : new Date(today);
+  const weekStart = new Date(dayStart);
+  // The caller's midnight steps back whole UTC days, so a DST change in the server's zone can't move it.
+  if (today === undefined) weekStart.setDate(weekStart.getDate() - 6);
+  else weekStart.setUTCDate(weekStart.getUTCDate() - 6);
+  summary.spendToday = spendSince(costs, dayStart.toISOString());
+  summary.spendWeek = spendSince(costs, weekStart.toISOString());
   return summary;
 }

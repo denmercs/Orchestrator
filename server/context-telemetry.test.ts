@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { recordTelemetry, summariseTelemetry, type TelemetryRow } from "./context-telemetry";
+import { readTelemetry, recordTelemetry, storyHistory, summariseTelemetry, type TelemetryRow } from "./context-telemetry";
 
 let root: string;
 
@@ -45,6 +45,8 @@ test("summariseTelemetry counts recorded rows", async () => {
     tokensAvoided: 120_000,
     byStep: {},
     byStory: {},
+    spendToday: 0,
+    spendWeek: 0,
   });
 });
 
@@ -85,6 +87,33 @@ test("summariseTelemetry totals turn rows per initiative and story", async () =>
     "skills/S1": { turns: 1, tokens: 30_000, models: ["haiku"] },
     "unknown/S1": { turns: 1, tokens: 20_000, models: ["unknown"] },
   });
+});
+
+test("summariseTelemetry derives spend today and this week from cumulative session cost", async () => {
+  const file = join(root, "spend.jsonl");
+  const today = "2026-09-20T00:00:00.000Z";
+  const rows: TelemetryRow[] = [
+    // a3 spent only before the week: nothing counts.
+    row("2026-09-01T10:00:00.000Z", "a3", 10_000, "turn", { costUsd: 9 }),
+    // a1: 1.00 is the week baseline, 4.00 (last before today) the today baseline, 6.00 the last in both windows.
+    row("2026-09-10T10:00:00.000Z", "a1", 10_000, "turn", { costUsd: 1 }),
+    row("2026-09-15T10:00:00.000Z", "a1", 10_000, "turn", { costUsd: 3 }),
+    row("2026-09-19T23:59:59.999Z", "a1", 10_000, "turn", { costUsd: 4 }),
+    row(today, "a1", 10_000, "turn", { costUsd: 4.5 }),
+    row("2026-09-20T06:00:00.000Z", "a1", 10_000, "turn", { costUsd: 6 }),
+    // Pre-S10 shape and a provider with no cost: both skipped for spend.
+    row("2026-09-20T07:00:00.000Z", "a1", 10_000, "turn"),
+    row("2026-09-20T08:00:00.000Z", "a1", 10_000, "turn", { costUsd: null }),
+    // a2: no baseline before the week; its cost falls today, which clamps at 0.
+    row("2026-09-19T10:00:00.000Z", "a2", 10_000, "turn", { costUsd: 2 }),
+    row("2026-09-20T01:00:00.000Z", "a2", 10_000, "turn", { costUsd: 0.5 }),
+  ];
+  for (const r of rows) await recordTelemetry(r, file);
+
+  const summary = await summariseTelemetry("2026-09-20T05:00:00.000Z", file, today);
+  assert.equal(summary.spendToday, 2);
+  assert.equal(summary.spendWeek, 5.5);
+  assert.equal(summary.turns, 3);
 });
 
 test("summariseTelemetry drops rows before since", async () => {
@@ -134,4 +163,86 @@ test("summariseTelemetry counts rows from the rotated file and the current one",
   assert.equal(summary.turns, 3);
   assert.equal(summary.sessions, 2);
   assert.equal(summary.tokensAvoided, 120_000);
+});
+
+test("summariseTelemetry takes the spend baseline from the rotated file", async () => {
+  const file = join(root, "spend-rotated.jsonl");
+  const today = "2026-09-20T00:00:00.000Z";
+  const baseline = row("2026-09-19T10:00:00.000Z", "a1", 10_000, "turn", { costUsd: 3 });
+  await writeFile(join(root, "spend-rotated.1.jsonl"), `${JSON.stringify(baseline)}\n`);
+  await recordTelemetry(row("2026-09-20T06:00:00.000Z", "a1", 10_000, "turn", { costUsd: 5 }), file);
+
+  const summary = await summariseTelemetry(null, file, today);
+  assert.equal(summary.spendToday, 2);
+  assert.equal(summary.spendWeek, 5);
+});
+
+test("summariseTelemetry steps the week back whole days from the caller's today, whatever the server's zone", async () => {
+  const file = join(root, "spend-week.jsonl");
+  // US clocks fall back on 2026-11-01, inside this week; the caller's midnight is 05:00Z.
+  const today = "2026-11-05T05:00:00.000Z";
+  await recordTelemetry(row("2026-10-30T04:30:00.000Z", "a1", 10_000, "turn", { costUsd: 1 }), file);
+  await recordTelemetry(row("2026-11-05T06:00:00.000Z", "a1", 10_000, "turn", { costUsd: 4 }), file);
+
+  // Week start is 2026-10-30T05:00Z exactly, so the 04:30Z row is the baseline.
+  const summary = await summariseTelemetry(null, file, today);
+  assert.equal(summary.spendWeek, 3);
+});
+
+test("readTelemetry reads the rotated file, then the current one", async () => {
+  const file = join(root, "read.jsonl");
+  await writeFile(join(root, "read.1.jsonl"), `${JSON.stringify(ROWS[0])}\n`);
+  await recordTelemetry(ROWS[1], file);
+
+  assert.deepEqual(await readTelemetry(file), [ROWS[0], ROWS[1]]);
+  assert.deepEqual(await readTelemetry(join(root, "missing.jsonl")), []);
+});
+
+const S11 = { initiative: "redesign", story: "S11" };
+
+test("storyHistory numbers sessions by fresh hand-offs since the story's last step change", () => {
+  const rows: TelemetryRow[] = [
+    row("2026-10-01T10:00:00.000Z", "p1", 50_000, "compact.fresh", { ...S11, step: "plan" }),
+    row("2026-10-01T10:01:00.000Z", "i1", 40_000, "turn", { ...S11, step: "implement", cycle: 1 }),
+    row("2026-10-01T10:02:00.000Z", "i1", 150_000, "compact.fresh", { ...S11, step: "implement", cycle: 1 }),
+    row("2026-10-01T10:03:00.000Z", "i2", 150_000, "compact.fresh", { ...S11, step: "implement", cycle: 1 }),
+    // Another cycle, another story, another initiative and a pre-S18 row: none count.
+    row("2026-10-01T10:04:00.000Z", "i3", 150_000, "compact.fresh", { ...S11, step: "implement", cycle: 2 }),
+    row("2026-10-01T10:05:00.000Z", "x1", 150_000, "compact.fresh", { ...S11, story: "S12", step: "implement", cycle: 1 }),
+    row("2026-10-01T10:06:00.000Z", "x2", 150_000, "compact.fresh", { ...S11, initiative: "other", step: "implement", cycle: 1 }),
+    row("2026-10-01T10:07:00.000Z", "x3", 150_000, "compact.fresh", { story: "S11", step: "implement", cycle: 1 }),
+  ];
+  const key = { ...S11, agentId: "i3", step: "implement", cycle: 1 };
+
+  assert.equal(storyHistory(rows, key).session, 3);
+  assert.equal(storyHistory(rows, { ...key, cycle: null }).session, 4);
+  assert.equal(storyHistory(rows, { ...key, step: "plan", cycle: null }).session, 1);
+
+  // A review in between, then a second round of implement: back to 1.
+  const later: TelemetryRow[] = [
+    ...rows,
+    row("2026-10-01T11:00:00.000Z", "r1", 30_000, "turn", { ...S11, step: "review" }),
+    row("2026-10-01T11:01:00.000Z", "i4", 30_000, "turn", { ...S11, step: "implement", cycle: 1 }),
+  ];
+  assert.equal(storyHistory(later, key).session, 1);
+});
+
+test("storyHistory counts the agent's compactions and its turns since the last one", () => {
+  const rows: TelemetryRow[] = [
+    row("2026-10-01T10:00:00.000Z", "a1", 40_000, "turn", { ...S11, step: "implement" }),
+    row("2026-10-01T10:01:00.000Z", "a1", 150_000, "compact.native", { ...S11, step: "implement" }),
+    row("2026-10-01T10:02:00.000Z", "a1", 30_000, "turn", { ...S11, step: "implement" }),
+    row("2026-10-01T10:03:00.000Z", "a1", 0, "turn", { ...S11, step: "implement", used: null }),
+    row("2026-10-01T10:04:00.000Z", "a1", 20_000, "compact.inferred", { ...S11, step: "implement" }),
+    row("2026-10-01T10:05:00.000Z", "a1", 25_000, "turn", { ...S11, step: "implement" }),
+    row("2026-10-01T10:05:30.000Z", "a1", 25_000, "warning", { ...S11, step: "implement", level: "amber" }),
+    row("2026-10-01T10:06:00.000Z", "a2", 99_000, "turn", { ...S11, step: "implement" }),
+    row("2026-10-01T10:06:30.000Z", "a2", 99_000, "compact.native", { ...S11, step: "implement" }),
+    row("2026-10-01T10:07:00.000Z", "a1", 35_000, "turn", { ...S11, step: "implement" }),
+  ];
+  const history = storyHistory(rows, { ...S11, agentId: "a1", step: "implement" });
+
+  assert.equal(history.compactions, 2);
+  assert.deepEqual(history.turns, [25_000, 35_000]);
+  assert.deepEqual(storyHistory(rows, { ...S11, agentId: "none", step: "implement" }), { session: 1, compactions: 0, turns: [] });
 });

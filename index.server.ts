@@ -22,8 +22,11 @@ import { createInitiativeLoop } from "./server/initiative-loop";
 import { readBranchInitials } from "./server/git-identity";
 import { getBranchInitials } from "./shared/naming";
 import { createContextWatch, paseoPort } from "./server/context-watch";
-import { summariseTelemetry } from "./server/context-telemetry";
-import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc } from "./shared/context";
+import { createGateActions, loopGatePort } from "./server/gate-actions";
+import { gateAct } from "./shared/gates";
+import { readTelemetry, summariseTelemetry } from "./server/context-telemetry";
+import { loadStoryContext } from "./server/story-context";
+import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
   initiativeLoopSettings,
@@ -165,25 +168,33 @@ export default function contribute(server: PluginServerContext) {
   });
   const context = server.registerSettings(contextSettings);
   let contextPaseo: Parameters<typeof loadRunnerConfig>[0] | null = null;
-  const contextWatch = createContextWatch(
-    paseoPort(
-      () => contextPaseo,
-      async () => {
-        const state = await context.read();
-        return state.status === "ready" ? state.values : { amber: 100_000, red: 150_000 };
-      },
-      initiativeLoop,
-    ),
-  );
+  const readThresholds = async () => {
+    const state = await context.read();
+    return state.status === "ready" ? state.values : { amber: 100_000, red: 150_000 };
+  };
+  const contextWatch = createContextWatch(paseoPort(() => contextPaseo, readThresholds, initiativeLoop));
   server.handle(contextAct, (input, { paseo }) => {
     contextPaseo = paseo;
     return contextWatch.act(input);
+  });
+  server.handle(gateAct, (input, { paseo }) => {
+    // Restart goes through the context watch's fresh adapter, which uses this handle.
+    contextPaseo = paseo;
+    return createGateActions(loopGatePort(initiativeLoop, paseo, contextWatch)).act(input);
   });
   server.handle(contextSessionsRpc, ({ agentIds }, { paseo }) => {
     contextPaseo = paseo;
     return contextWatch.sessions(agentIds);
   });
-  server.handle(contextSummaryRpc, ({ since }) => summariseTelemetry(since));
+  server.handle(contextSummaryRpc, ({ since, today }) => summariseTelemetry(since, undefined, today));
+  server.handle(storyContextRpc, (input, { paseo }) => {
+    contextPaseo = paseo;
+    return loadStoryContext(input, {
+      live: (agentId) => contextWatch.live(agentId),
+      rows: () => readTelemetry(),
+      thresholds: readThresholds,
+    });
+  });
   const readPipeline = async () => {
     const values = await readPipelineValues();
     return values?.enabled ? values : null;

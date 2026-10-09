@@ -136,6 +136,7 @@ export function readStories(epicDir: string): EpicStory[] {
       dependsOn,
       blockedBy,
       blockedReason: story.blocked_reason ?? "",
+      blockedFrom: story.blocked_from ?? "",
       skillWarnings: story.skill_warnings ?? "",
       discoveredFrom: story.discovered_from ?? "",
       pr: Number(story.pr) || null,

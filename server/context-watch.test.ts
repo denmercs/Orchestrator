@@ -60,12 +60,14 @@ function agent(
   labels: Record<string, string> = {},
   commands = ["compact"],
   model: string | null = null,
+  costUsd: number | null = null,
 ): WatchAgent {
   return {
     usage: used === null ? null : { contextWindowUsedTokens: used, contextWindowMaxTokens: 200_000 },
     commands: commands.map((name) => ({ name })),
     labels,
     model,
+    costUsd,
   };
 }
 
@@ -75,7 +77,13 @@ function turn(id: string, timeline: Item[] = []): TurnEnded {
 
 test("onTurnEnded: one turn end writes one turn row with provider and step", async () => {
   const { port, rows } = fakePort({
-    a1: agent(40_000, { "loop-step": "implement", "loop-story": "S2", "loop-initiative": "telemetry" }),
+    a1: agent(
+      40_000,
+      { "loop-step": "implement", "loop-story": "S2", "loop-initiative": "telemetry" },
+      ["compact"],
+      null,
+      0.42,
+    ),
   });
   await createContextWatch(port).onTurnEnded(turn("a1"));
 
@@ -92,8 +100,19 @@ test("onTurnEnded: one turn end writes one turn row with provider and step", asy
       cycle: null,
       story: "S2",
       initiative: "telemetry",
+      costUsd: 0.42,
     },
   ]);
+});
+
+test("onTurnEnded: a turn row's cost is null when the agent reports none", async () => {
+  const { port, rows } = fakePort({ a1: agent(40_000) });
+  await createContextWatch(port).onTurnEnded(turn("a1"));
+
+  assert.deepEqual(
+    rows.map((r) => [r.event, r.costUsd]),
+    [["turn", null]],
+  );
 });
 
 test("onTurnEnded: a turn row carries the agent's model and its loop cycle, story and initiative", async () => {
@@ -425,4 +444,90 @@ test("sessions: waits for that agent's in-flight turn end, so a new warning is n
   const [result] = await status;
   assert.deepEqual(result?.warned, ["amber"]);
   assert.equal(result?.reading.used, 120_000);
+});
+
+const tool = (output: string): Item => ({ type: "tool_call", status: "completed", detail: { type: "shell", output } });
+
+test("live: a seen agent's stored reading, its labels and split inputs from the first turn on", async () => {
+  const labels = { "loop-step": "implement", "loop-story": "S11" };
+  const agents = { a: agent(20_000, labels) };
+  const { port } = fakePort(agents);
+  const watch = createContextWatch(port);
+  // The first turn's tool output is inside the first reading, so it does not count as tool chars.
+  await watch.onTurnEnded(turn("a", [user, tool("x".repeat(400)), reply]));
+
+  assert.deepEqual(await watch.live("a"), {
+    agentId: "a",
+    reading: { used: 20_000, max: 200_000, level: "ok", capability: "full", strategy: "native" },
+    labels,
+    split: { system: 20_000, toolChars: 0 },
+  });
+
+  agents.a = agent(30_000, labels);
+  await watch.onTurnEnded(
+    turn("a", [user, tool("x".repeat(400)), reply, user, tool("y".repeat(100)), tool("z".repeat(50)), reply]),
+  );
+  agents.a = agent(35_000, labels);
+  await watch.onTurnEnded(
+    turn("a", [user, tool("x".repeat(400)), reply, user, tool("y".repeat(100)), tool("z".repeat(50)), reply, user, tool("w".repeat(10))]),
+  );
+  // The stored reading is from the last turn end, not a fresh read.
+  agents.a = agent(90_000, labels);
+
+  const live = await watch.live("a");
+  assert.equal(live?.reading.used, 35_000);
+  assert.deepEqual(live?.split, { system: 20_000, toolChars: 160 });
+});
+
+test("live: split goes null after a compaction and stays null", async () => {
+  const agents = { a: agent(120_000) };
+  const { port } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a", [user, reply]));
+  agents.a = agent(30_000);
+  await watch.onTurnEnded(turn("a", [user, reply, user, compacted]));
+  assert.equal((await watch.live("a"))?.split, null);
+
+  agents.a = agent(40_000);
+  await watch.onTurnEnded(turn("a", [user, reply, user, compacted, user, tool("x"), reply]));
+  assert.equal((await watch.live("a"))?.split, null);
+});
+
+test("live: split is null when the watch first sees a session after its first turn", async () => {
+  const agents = { a: agent(50_000) };
+  const { port } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a", [user, reply, user, reply]));
+  agents.a = agent(55_000);
+  await watch.onTurnEnded(turn("a", [user, reply, user, reply, user, tool("x"), reply]));
+
+  assert.equal((await watch.live("a"))?.split, null);
+});
+
+test("live: an unseen agent is read now with a null split; a gone one is null", async () => {
+  const agents: Record<string, WatchAgent> = { a: agent(40_000), new: agent(40_000, { "loop-step": "plan" }, []) };
+  const { port } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a", [user, reply]));
+  delete agents.a;
+
+  assert.deepEqual(await watch.live("new"), {
+    agentId: "new",
+    reading: { used: 40_000, max: 200_000, level: "ok", capability: "partial", strategy: "fresh" },
+    labels: { "loop-step": "plan" },
+    split: null,
+  });
+  assert.equal(await watch.live("a"), null);
+  assert.equal(await watch.live("gone"), null);
+});
+
+test("live: split goes null when the timeline is replaced by a shorter one", async () => {
+  const agents = { a: agent(20_000) };
+  const { port } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a", [user, reply]));
+  agents.a = agent(25_000);
+  await watch.onTurnEnded(turn("a", [user]));
+
+  assert.equal((await watch.live("a"))?.split, null);
 });

@@ -10,6 +10,7 @@ import {
   type WarningMemory,
 } from "../shared/context-meter";
 import type { ContextAction, ContextStatus } from "../shared/context";
+import { toolOutputChars, type SplitInput, type TimelineItem } from "../shared/context-panel";
 import { freshCompactor, keepList, nativeCompactor, type FreshPort } from "./compactor";
 import { excludeHarness } from "./harness-layout";
 import { recordTelemetry, type TelemetryEvent, type TelemetryRow } from "./context-telemetry";
@@ -25,6 +26,8 @@ export type WatchAgent = {
   labels: Record<string, string>;
   // Recorded for analysis only, never branched on.
   model: string | null;
+  // The session's cumulative cost so far (`lastUsage.totalCostUsd`); null when the provider reports none.
+  costUsd: number | null;
 };
 
 export type WatchPort = {
@@ -116,6 +119,7 @@ export function paseoPort(
         commands: listed && !listed.error ? listed.commands : [],
         labels: refreshed.agent.labels ?? {},
         model: refreshed.agent.model ?? null,
+        costUsd: refreshed.agent.lastUsage?.totalCostUsd ?? null,
       };
     },
     async send(agentId, text) {
@@ -131,7 +135,18 @@ export function paseoPort(
 export type TurnEnded = {
   agent: { id: string; provider: string };
   // The whole timeline so far.
-  timeline: readonly CompactionItem[];
+  timeline: readonly WatchItem[];
+};
+
+type WatchItem = CompactionItem & TimelineItem;
+
+// What the story context panel reads for one session (see CONTEXT.md, "Story context").
+export type LiveSession = {
+  agentId: string;
+  reading: ContextReading;
+  labels: Record<string, string>;
+  // null when the watch has no trustworthy split inputs for this session.
+  split: SplitInput | null;
 };
 
 export type ActResult = { ok: boolean; error: string | null; agentId: string | null };
@@ -142,12 +157,15 @@ type SessionState = {
   memory: WarningMemory;
   // Timeline length at the last turn end; items past it are unseen. null until a turn end.
   cursor: number | null;
+  // Split inputs: system is the session's first reading, toolChars the tool output characters of
+  // every later turn. null unless the watch saw the first turn, and from any compaction on.
+  split: { system: number; toolChars: number } | null;
 };
 
 // Items this turn end has not seen yet. On first sight (or when the timeline was replaced and
 // got shorter) only items after the last user message count, so a daemon restart does not
 // record old compactions again.
-function unseenItems(timeline: readonly CompactionItem[], cursor: number | null): readonly CompactionItem[] {
+function unseenItems(timeline: readonly WatchItem[], cursor: number | null): readonly WatchItem[] {
   if (cursor !== null && cursor <= timeline.length) return timeline.slice(cursor);
   let lastUser = -1;
   timeline.forEach((item, index) => {
@@ -206,6 +224,7 @@ export function createContextWatch(port: WatchPort) {
       cycle: rawCycle !== undefined && /^\d+$/.test(rawCycle) ? Number(rawCycle) : null,
       story: labels["loop-story"] ?? null,
       initiative: labels["loop-initiative"] ?? null,
+      costUsd: agent.costUsd,
     });
   }
 
@@ -219,10 +238,21 @@ export function createContextWatch(port: WatchPort) {
       reading: null,
       memory: { warned: [], mode: "normal" },
       cursor: null,
+      split: null,
     };
     sessions.set(agentId, state);
     const unseen = unseenItems(event.timeline, state.cursor);
     const compaction = detectCompaction(state.reading, reading, unseen);
+    if (state.cursor === null) {
+      // First sight: a timeline with at most one user message is the session's first turn, and
+      // its tool output is already inside the first reading.
+      const firstTurn = event.timeline.filter((item) => item.type === "user_message").length <= 1;
+      state.split = firstTurn && !compaction && reading.used !== null ? { system: reading.used, toolChars: 0 } : null;
+    } else if (compaction || state.cursor > event.timeline.length) {
+      state.split = null;
+    } else if (state.split) {
+      state.split.toolChars += toolOutputChars(unseen);
+    }
     state.provider = event.agent.provider;
     state.reading = reading;
     state.cursor = event.timeline.length;
@@ -281,6 +311,18 @@ export function createContextWatch(port: WatchPort) {
       );
     },
 
+    // One session's live state for the story context panel: the reading from its last turn end
+    // (read now when the watch has not seen it), its current labels and the split inputs. null
+    // when the agent is gone.
+    async live(agentId: string): Promise<LiveSession | null> {
+      await turnEnds.get(agentId);
+      const agent = await port.readAgent(agentId);
+      if (!agent) return null;
+      const state = sessions.get(agentId);
+      const reading = state?.reading ?? readContext(agent, await port.thresholds());
+      return { agentId, reading, labels: agent.labels, split: state?.split ? { ...state.split } : null };
+    },
+
     // A pill action on one session. Compact sends `/compact` for a native session; its
     // `compact.native` row is written by the next turn end. Start fresh, and Compact on a session
     // without `/compact`, hand over to a new agent and return its id.
@@ -300,6 +342,7 @@ export function createContextWatch(port: WatchPort) {
         reading,
         memory: { warned: [], mode: "normal" },
         cursor: null,
+        split: null,
       };
       sessions.set(agentId, state);
       state.memory.mode = action;

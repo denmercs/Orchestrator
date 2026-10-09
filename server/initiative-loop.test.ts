@@ -883,3 +883,51 @@ test("a start that fails after Paseo made the branch keeps that branch for the r
   assert.deepEqual(requested, ["dm/add-search", "dm/add-search"]);
   assert.equal(storyMeta(story).branch, "dm/add-search");
 });
+
+test("gateStory finds a story in any phase by its id, and is null when it isn't there", async () => {
+  const { root } = fixture("a1");
+  const later = join(root, ".harness", "initiatives", "demo", "phases", "2-later", "stories");
+  mkdirSync(later, { recursive: true });
+  writeFileSync(join(later, "01-wait.md"), "---\nid: S2\ntitle: Wait\nstatus: blocked\nwaiting_on: permission\n---\n", "utf8");
+  const initiative = loop();
+  const ref = (storyId: string, slug = "demo") => ({ repo: root, initiative: slug, storyId });
+
+  assert.deepEqual(
+    [await initiative.gateStory(ref("S1")), await initiative.gateStory(ref("S2"))],
+    [
+      { status: "implementing", agent: "a1", waitingOn: null },
+      { status: "blocked", agent: null, waitingOn: "permission" },
+    ],
+  );
+  assert.deepEqual([await initiative.gateStory(ref("S9")), await initiative.gateStory(ref("S1", "nope"))], [null, null]);
+});
+
+test("reopen puts a blocked story back on blocked_from with the block fields cleared; anything else is left alone", async () => {
+  const { root, story } = fixture("a1");
+  writeFrontmatter(story, {
+    status: "blocked",
+    blocked_reason: "Implement: stuck. Gave up after 2 retries.",
+    blocked_from: "implementing",
+    stalled: "Its last turn failed: boom",
+    retries: 2,
+  });
+  const initiative = loop();
+  const ref = { repo: root, initiative: "demo", storyId: "S1" };
+
+  await initiative.reopen(ref);
+  const meta = storyMeta(story);
+  assert.deepEqual(
+    [meta.status, meta.blocked_reason, meta.blocked_from, meta.stalled, meta.retries, meta.agent],
+    ["implementing", undefined, undefined, undefined, undefined, "a1"],
+  );
+
+  // Not blocked any more, or blocked with nowhere to go back to: nothing changes.
+  const reopened = readFileSync(story, "utf8");
+  await initiative.reopen(ref);
+  assert.equal(readFileSync(story, "utf8"), reopened);
+  writeFrontmatter(story, { status: "blocked", retries: 1 });
+  const noFrom = readFileSync(story, "utf8");
+  await initiative.reopen(ref);
+  await initiative.reopen({ ...ref, storyId: "S9" });
+  assert.equal(readFileSync(story, "utf8"), noFrom);
+});
