@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boardKey, gateRowLabel, gatesOf, needsYou, waitingLabel, type Gate } from "./gates";
+import { boardKey, gateRow, gateRowLabel, gatesOf, needsYou, waitingLabel, type Gate } from "./gates";
 import type { EpicBoard, EpicBoardState, EpicStory } from "./orchestration";
 
 function story(id: string, fields: Partial<EpicStory> = {}): EpicStory {
@@ -19,11 +19,19 @@ function story(id: string, fields: Partial<EpicStory> = {}): EpicStory {
     workspace: "",
     agent: "",
     ready: false,
+    track: "plan",
     ...fields,
   };
 }
 
-function board(repo: string, initiative: string, title: string, phase: string, stories: EpicStory[]): EpicBoard {
+function board(
+  repo: string,
+  initiative: string,
+  title: string,
+  phase: string,
+  stories: EpicStory[],
+  repoUrl = "",
+): EpicBoard {
   const state: EpicBoardState = {
     epic: { id: phase, title: "Header and tabs", dir: `phases/${phase}-header-and-tabs` },
     initiative: title,
@@ -32,7 +40,7 @@ function board(repo: string, initiative: string, title: string, phase: string, s
     plan: null,
     tracker: "local",
     next: { story: null, reason: "" },
-    repoUrl: "",
+    repoUrl,
     stories,
   };
   return { repo, initiative, state, error: null };
@@ -64,17 +72,45 @@ test("needsYou: plan awaiting approval, green PR and blocked wait on you; nothin
   );
 });
 
-test("gatesOf: one gate per gated story on a board, with kind, text, board and where", () => {
+test("gatesOf: one gate per gated story on a board, with kind, title, text, board, where and prUrl", () => {
   const where = "Orchestration Redesign · Phase 1";
   const key = "/repo\norchestration-redesign";
+  const gate = (kind: Gate["kind"], storyId: string, text: string): Gate => ({
+    kind,
+    board: key,
+    storyId,
+    title: `Story ${storyId}`,
+    text,
+    where,
+    prUrl: "",
+  });
   const expected: Gate[] = [
-    { kind: "plan", board: key, storyId: "S1", text: "Plan awaiting approval", where },
-    { kind: "merge", board: key, storyId: "S2", text: "PR #42 ready to merge", where },
-    { kind: "stuck", board: key, storyId: "S3", text: "Needs a Jira key", where },
-    { kind: "merge", board: key, storyId: "S9", text: "PR ready to merge", where },
-    { kind: "stuck", board: key, storyId: "S10", text: "Blocked", where },
+    gate("plan", "S1", "Plan awaiting approval"),
+    gate("merge", "S2", "PR #42 ready to merge"),
+    gate("stuck", "S3", "Needs a Jira key"),
+    gate("merge", "S9", "PR ready to merge"),
+    gate("stuck", "S10", "Blocked"),
   ];
   assert.deepEqual(gatesOf([BOARD]), expected);
+});
+
+test("gatesOf: a merge gate links its PR on the repo; no PR or no repoUrl gives no link", () => {
+  const url = "https://github.com/acme/repo";
+  const linked = board("/repo", "orchestration-redesign", "Orchestration Redesign", "1", STORIES, url);
+  assert.deepEqual(
+    gatesOf([linked]).map((gate) => [gate.storyId, gate.prUrl]),
+    [
+      ["S1", ""],
+      ["S2", "https://github.com/acme/repo/pull/42"],
+      ["S3", ""],
+      ["S9", ""],
+      ["S10", ""],
+    ],
+  );
+  assert.deepEqual(
+    gatesOf([BOARD]).map((gate) => gate.prUrl),
+    ["", "", "", "", ""],
+  );
 });
 
 test("gatesOf: a board with no state, or one that failed to load, has no gates", () => {
@@ -114,4 +150,33 @@ test("waitingLabel: nothing waiting, or a count of what waits on you", () => {
 test("gateRowLabel reads the gate text, then where it is", () => {
   const gate = { text: "Approve the plan", where: "Redesign · Phase 1 · S1" } as Gate;
   assert.equal(gateRowLabel(gate), "Approve the plan, Redesign · Phase 1 · S1");
+});
+
+test("gateRow: tag is the story id, text is the title then the gate text, and actions per kind", () => {
+  const base = { board: "repo\ninit", storyId: "S3", title: "Name loop step skills", where: "Redesign · Phase 1", prUrl: "" };
+
+  assert.deepEqual(gateRow({ ...base, kind: "plan", text: "Plan awaiting approval" }), {
+    tag: "S3",
+    text: "Name loop step skills: Plan awaiting approval",
+    where: "Redesign · Phase 1",
+    primary: { kind: "approve", label: "Approve plan" },
+    secondary: { kind: "changes", label: "Request changes" },
+  });
+
+  assert.deepEqual(gateRow({ ...base, kind: "stuck", text: "Tests keep failing" }), {
+    tag: "S3",
+    text: "Name loop step skills: Tests keep failing",
+    where: "Redesign · Phase 1",
+    primary: { kind: "restart", label: "Restart from handoff" },
+    secondary: { kind: "nudge", label: "Nudge" },
+  });
+
+  const url = "https://github.com/o/r/pull/7";
+  assert.deepEqual(gateRow({ ...base, kind: "merge", text: "PR #7 ready to merge", prUrl: url }), {
+    tag: "S3",
+    text: "Name loop step skills: PR #7 ready to merge",
+    where: "Redesign · Phase 1",
+    primary: { kind: "open-pr", label: "Review & merge", url },
+    secondary: null,
+  });
 });

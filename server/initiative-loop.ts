@@ -79,16 +79,18 @@ const ACTIVE = new Set(["planning", "awaiting-approval", "implementing", "review
 // The statuses whose step session the loop supervises. awaiting-approval waits on you and pr-open
 // has its own watcher.
 const SUPERVISED = new Set(["planning", "implementing", "reviewing"]);
-const SUPERVISED_STEPS = new Set<string>(["plan", "implement", "review"]);
+const SUPERVISED_STEPS = new Set<string>(["plan", "diagnose", "implement", "review"]);
 // The markers a supervised step answers with; reconcile acts on each of them.
 const STEP_ANSWERS: Record<string, string[]> = {
   plan: [MARKERS.planDone],
+  diagnose: [MARKERS.diagnoseDone, MARKERS.diagnoseBlocked],
   implement: [MARKERS.implementDone, MARKERS.implementBlocked],
   review: [MARKERS.reviewDone, MARKERS.reviewFailed],
 };
 const PERMISSION = "permission";
 const STATUS_FOR: Record<LoopStep, string> = {
   plan: "planning",
+  diagnose: "planning",
   implement: "implementing",
   review: "reviewing",
   pr: "reviewing",
@@ -171,7 +173,8 @@ function storyContext(init: Initiative, phaseDir: string, story: StoryFile): Sto
     id: story.id,
     title: story.meta.title || story.id,
     body: story.body,
-    ticketUrl: null,
+    ticketKey: story.meta.jira || null,
+    ticketUrl: story.meta.jira_url || null,
     storyFile: story.path,
     storiesDir: join(phaseDir, "stories"),
     phaseLabel: phaseLabel(meta.phase ?? ""),
@@ -336,7 +339,7 @@ export function createInitiativeLoop(
     }
   }
 
-  // Creates (or reuses) the story's worktree workspace and starts its Plan agent.
+  // Creates (or reuses) the story's worktree workspace and starts its first step: Diagnose on the diagnose track, else Plan.
   async function startStory(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile) {
     const base = story.meta.base || (await baseBranch(init));
     const branch =
@@ -373,7 +376,7 @@ export function createInitiativeLoop(
     writeFrontmatter(story.path, { branch, base, workspace: workspaceId, worktree });
     const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
     if (!existsSync(stateFile(worktree))) writeFileSync(stateFile(worktree), seedState(storyContext(init, phaseDir, fresh)), "utf8");
-    return startStep(api, config, init, phaseDir, fresh, "plan", 1);
+    return startStep(api, config, init, phaseDir, fresh, fresh.meta.track === "diagnose" ? "diagnose" : "plan", 1);
   }
 
   // Moves an in-flight story to its next step from the marker its current step wrote.
@@ -407,6 +410,10 @@ export function createInitiativeLoop(
       if (marker === MARKERS.planDone) await nextImplement(readCycles(state).find((cycle) => !cycle.done));
       // The planner ended its turn without approval: it is asking you.
       else if (turnEnded && meta.status === "planning") writeFrontmatter(story.path, { status: "awaiting-approval" });
+    } else if (step === "diagnose") {
+      // No gate: Diagnose hands its plan straight to Implement. A turn end without a marker is a stall.
+      if (marker === MARKERS.diagnoseDone) await nextImplement(readCycles(state).find((cycle) => !cycle.done));
+      else if (marker === MARKERS.diagnoseBlocked) block(story, detail || "Diagnose is blocked; open its session.", "step");
     } else if (step === "implement") {
       if (marker === MARKERS.implementDone) {
         // A parent that ran the cycles in subagents must have ticked them all.

@@ -64,6 +64,7 @@ export function resolveRunnerConfig(
 // Decision d1: Plan and Review default to an Opus profile, Implement and Fix CI to a Sonnet one.
 const STEP_TIER: Partial<Record<LoopStep, string>> = {
   plan: "opus",
+  diagnose: "opus",
   review: "opus",
   implement: "sonnet",
   fix: "sonnet",
@@ -79,7 +80,8 @@ export function profileForStep(
 ) {
   const runner = pickProfile(profiles, runnerProfileId);
   const tier = STEP_TIER[step];
-  const setId = step === "pr" ? "" : loop.profiles[step];
+  // Diagnose has no profile row of its own; it runs on Plan's.
+  const setId = step === "pr" ? "" : loop.profiles[step === "diagnose" ? "plan" : step];
   const provider = runner?.provider ?? FALLBACK_AGENT_CONFIG.provider;
   const profile =
     (setId ? pickProfile(profiles, setId) : null) ??

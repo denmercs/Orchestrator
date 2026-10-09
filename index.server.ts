@@ -9,6 +9,7 @@ import {
   loadJiraBoard,
   loadJiraPullRequests,
   moveIssueToColumn,
+  readIssueStatuses,
 } from "./server/jira";
 import { deleteInitiative, loadHarnessBoards } from "./server/harness-board";
 import { loadRunnerConfig, loadStepConfig } from "./server/agent-runner";
@@ -19,6 +20,7 @@ import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { advancePipeline, closeMergedStories, startStory } from "./server/pipeline-advance";
 import { createLoopAdvance } from "./server/loop-advance";
 import { createInitiativeLoop } from "./server/initiative-loop";
+import { startTicket } from "./server/ticket-start";
 import { readBranchInitials } from "./server/git-identity";
 import { getBranchInitials } from "./shared/naming";
 import { createContextWatch, paseoPort } from "./server/context-watch";
@@ -26,6 +28,8 @@ import { createGateActions, loopGatePort } from "./server/gate-actions";
 import { gateAct } from "./shared/gates";
 import { readTelemetry, summariseTelemetry } from "./server/context-telemetry";
 import { loadStoryContext } from "./server/story-context";
+import { readPlanUsage } from "./server/plan-usage";
+import { planUsageRpc } from "./shared/plan-usage";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -44,6 +48,7 @@ import { listParents, listSchedules } from "./server/orchestration";
 import { listFolders, listStandupTodos, saveStandupTodos, upsertStandupNote } from "./server/standup";
 import {
   createHarnessEpicRpc,
+  startTicketRpc,
   deleteEpicInitiative,
   detectOrchestrationObsidian,
   getDailyVerse,
@@ -162,6 +167,12 @@ export default function contribute(server: PluginServerContext) {
   );
   server.handle(startInitiativeLoop, (input, { paseo }) => initiativeLoop.start(paseo, input));
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
+  server.handle(startTicketRpc, (input, { paseo }) =>
+    startTicket(input, {
+      readIssue: async (key) => (await readIssueStatuses([key])).get(key),
+      startLoop: (loop) => initiativeLoop.start(paseo, loop),
+    }),
+  );
   server.handle(openPhasePlanRpc, openPhasePlan);
   server.handle(refreshPhasePlanRpc, refreshPhasePlan);
   server.handle(registerMcpScopeRpc, (input) => {
@@ -189,6 +200,7 @@ export default function contribute(server: PluginServerContext) {
     return contextWatch.sessions(agentIds);
   });
   server.handle(contextSummaryRpc, ({ since, today }) => summariseTelemetry(since, undefined, today));
+  server.handle(planUsageRpc, (_input, { paseo }) => readPlanUsage(paseo));
   server.handle(storyContextRpc, (input, { paseo }) => {
     contextPaseo = paseo;
     return loadStoryContext(input, {

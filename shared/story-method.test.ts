@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   LOOP_STEPS,
+  MARKERS,
   afterImplement,
   commitSubject,
   formatSkills,
@@ -21,6 +22,7 @@ const story: StoryContext = {
   id: "S1",
   title: "Add search",
   body: "Users can search.",
+  ticketKey: null,
   ticketUrl: null,
   storyFile: "/repo/.harness/initiatives/x/phases/1-p/stories/01-search.md",
   storiesDir: "/repo/.harness/initiatives/x/phases/1-p/stories",
@@ -317,11 +319,29 @@ test("the Plan step asks for the brief lines, and the rules start every step fro
   }
 });
 
+test("the Diagnose step reproduces the bug, plans the fix and hands off without waiting for approval", () => {
+  const bug = { ...story, ticketKey: "BUG-7", ticketUrl: "https://x.atlassian.net/browse/BUG-7" };
+  const prompt = stepPrompt("diagnose", bug, { round: 1 });
+  assert.match(prompt, /## This step: diagnose/);
+  assert.match(prompt, /[Rr]eproduce/);
+  assert.match(prompt, /find the cause/);
+  assert.match(prompt, /`## Plan`/);
+  assert.match(prompt, /`## Cycles`/);
+  assert.match(prompt, /first cycle is a failing regression test/);
+  assert.match(prompt, /set `## Status` to `diagnose-done` without waiting for approval/);
+  assert.match(prompt, /`diagnose-blocked`/);
+  assert.match(prompt, /BUG-7/);
+  assert.ok(prompt.includes("https://x.atlassian.net/browse/BUG-7"), "names the ticket url");
+  assert.equal(MARKERS.diagnoseDone, "diagnose-done");
+  assert.equal(MARKERS.diagnoseBlocked, "diagnose-blocked");
+});
+
 test("Jira stories point at the ticket and file follow-ups as review findings", () => {
   const jira: StoryContext = {
     ...story,
     id: "KEY-1",
     body: "",
+    ticketKey: "KEY-1",
     ticketUrl: "https://example.atlassian.net/browse/KEY-1",
     storyFile: null,
     storiesDir: null,

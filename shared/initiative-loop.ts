@@ -7,11 +7,12 @@ import { z } from "zod";
 // opens the PR and watches CI until you merge. The engine is server/initiative-loop.ts; the step
 // prompts are shared/story-method.ts.
 
-export const LOOP_STEPS = ["plan", "implement", "review", "pr", "fix"] as const;
+export const LOOP_STEPS = ["plan", "diagnose", "implement", "review", "pr", "fix"] as const;
 export type LoopStep = (typeof LOOP_STEPS)[number];
 
 export const STEP_LABELS: Record<LoopStep, string> = {
   plan: "Plan",
+  diagnose: "Diagnose",
   implement: "Implement",
   review: "Review",
   pr: "Open PR",
