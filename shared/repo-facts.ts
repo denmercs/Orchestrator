@@ -54,8 +54,22 @@ export function docDecisions(path: string, text: string, opts: DocOptions): Note
   const notes: Note[] = [];
   let fence: string | null = null;
   let inDecisions = false;
-  text.split("\n").forEach((line, i) => {
+  let comment = false;
+  const lines = text.split("\n");
+  // A leading frontmatter block is metadata, not a claim.
+  const body0 = lines[0]?.trim() === "---" ? lines.findIndex((l, i) => i > 0 && l.trim() === "---") : -1;
+  lines.forEach((line, i) => {
+    if (i <= body0) return;
     const trimmed = line.trim();
+    if (comment) {
+      if (trimmed.includes("-->")) comment = false;
+      return;
+    }
+    if (!fence && trimmed.startsWith("<!--")) {
+      comment = !trimmed.includes("-->");
+      return;
+    }
+    if (!fence && /^([-*_])(\s*\1){2,}$/.test(trimmed)) return;
     const marker = /^(```|~~~)/.exec(trimmed)?.[1];
     if (fence) {
       if (marker === fence) fence = null;
@@ -247,18 +261,26 @@ export function assignAreas(files: string[], terms: Note[], commits: Commit[], v
 
   const clusters = [...groups.values()].filter((m) => m.length > 1);
   const clustered = new Set(clusters.flat());
-  const clusterAreas = clusters.map((members) => {
+  // Analyzer ids are unique: a later area that kebabs to a taken or empty slug gets a suffix.
+  const taken = new Set(terms.map((t) => t.slug));
+  const unique = (slug: string, suffix: string, n: number): string => {
+    let id = slug === "" ? `${suffix}-${n}` : taken.has(slug) ? `${slug}-${suffix}` : slug;
+    for (let k = 2; taken.has(id); k++) id = `${slug === "" ? suffix : slug}-${suffix}-${k}`;
+    taken.add(id);
+    return id;
+  };
+  const clusterAreas = clusters.map((members, n) => {
     const prefix = sharedPrefix(members);
     const slug = prefix !== "" ? kebab(prefix, Infinity) : kebab(`${dirOf(members[0]) || "root"} ${stemOf(members[0])}`, Infinity);
-    const note = emptyNote(slug, "area", verifiedAt);
+    const note = emptyNote(unique(slug, "cluster", n + 1), "area", verifiedAt);
     note.globs = members;
     return note;
   });
 
   const folders = new Map<string, string>();
   for (const f of unclaimed) if (!clustered.has(f)) folders.set(f.includes("/") ? f.split("/")[0] : "root", f.includes("/") ? `${f.split("/")[0]}/**` : "*");
-  const folderAreas = [...folders.entries()].sort((x, y) => byPath(x[0], y[0])).map(([slug, glob]) => {
-    const note = emptyNote(kebab(slug, Infinity), "area", verifiedAt);
+  const folderAreas = [...folders.entries()].sort((x, y) => byPath(x[0], y[0])).map(([slug, glob], n) => {
+    const note = emptyNote(unique(kebab(slug, Infinity), "folder", n + 1), "area", verifiedAt);
     note.globs = [glob];
     return note;
   });

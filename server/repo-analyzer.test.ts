@@ -148,3 +148,39 @@ test("analyze writes seeded notes, is a no-op the second time, and leaves learne
     done();
   }
 });
+
+test("an approved seeded note survives a re-run byte for byte", async () => {
+  const { dir, write, commit, done } = repo();
+  try {
+    write(".gitignore", ".harness/\n");
+    write("CONTEXT.md", "# Ctx\n\n## Widget\nA widget lives in `src/a.ts`.\n");
+    write("src/a.ts", "export const a = 1;\n");
+    commit("2024-01-10T12:00:00Z", "add a");
+    const first = await analyze(dir);
+    const id = first.written.find((x) => x.startsWith("decisions/"))!;
+    const file = join(dir, ".harness", "memory", `${id}.md`);
+    const approved = readFileSync(file, "utf8").replace("---\n", "---\napproved: 2024-02-01\n").replace(/^---\napproved: 2024-02-01\n((?:.*\n)*?)---\n/, (_m, body) => `---\n${body}approved: 2024-02-01\n---\n`);
+    writeFileSync(file, approved);
+    const second = await analyze(dir);
+    assert.ok(second.skipped.includes(id));
+    assert.equal(readFileSync(file, "utf8"), approved);
+  } finally {
+    done();
+  }
+});
+
+test("analyze on a non-git directory throws and leaves memory untouched", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "repo-analyzer-nogit-"));
+  try {
+    mkdirSync(join(dir, ".harness", "memory", "decisions"), { recursive: true });
+    const note = join(dir, ".harness", "memory", "decisions", "x.md");
+    const summary = join(dir, ".harness", "memory", "SUMMARY.md");
+    writeFileSync(summary, "| id | name | globs | notes |\n|---|---|---|---|\n| a | b | c | 1 |\n");
+    writeFileSync(note, "---\ntype: decision\nstatus: seeded\n---\nbody\n");
+    await assert.rejects(analyze(dir));
+    assert.ok(existsSync(note));
+    assert.match(readFileSync(summary, "utf8"), /\| a \| b \|/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

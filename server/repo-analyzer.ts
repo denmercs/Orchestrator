@@ -130,8 +130,12 @@ function untrackedDocs(root: string, tracked: Set<string>, asOf?: string): Sourc
  */
 export async function snapshot(root: string, opts: { asOf?: string } = {}): Promise<Snapshot> {
   const { asOf } = opts;
-  const args = asOf === undefined ? ["rev-parse", "--verify", "-q", "HEAD"] : ["rev-list", "-1", "--first-parent", `--before=${asOf}`, "HEAD"];
-  const sha = await git(root, args).then((s) => s.trim(), () => "");
+  // Only "no such commit" means an empty repo; any other git failure (not a repo, bad asOf) propagates.
+  const head = await git(root, ["rev-parse", "--verify", "-q", "HEAD"]).then((s) => s.trim(), (e: { code?: number }) => {
+    if (e.code === 1) return "";
+    throw e;
+  });
+  const sha = head === "" || asOf === undefined ? head : (await git(root, ["rev-list", "-1", "--first-parent", `--before=${asOf}`, "HEAD"])).trim();
   if (sha === "") return { files: [], commits: [], harnessDocs: [], verifiedAt: asOf === undefined ? "1970-01-01" : utcDay(asOf) };
 
   const committed = (await git(root, ["show", "-s", "--format=%cI", sha])).trim();
@@ -166,7 +170,23 @@ export async function analyze(root: string, opts: { asOf?: string; costCap?: num
     const id = noteId(note);
     produced.add(id);
     const file = join(memory, `${id}.md`);
-    if (existsSync(file) && readFileSync(file, "utf8") === formatNote(note)) result.skipped.push(id);
+    // A human's `approved:` stays on a note whose text did not change; changed text is written fresh.
+    let current: string | null = null;
+    if (existsSync(file)) {
+      current = readFileSync(file, "utf8");
+      try {
+        const approved = parseNote(current, note.slug).extra.approved;
+        if (approved !== undefined && note.extra.approved === undefined) {
+          if (formatNote({ ...note, extra: { ...note.extra, approved } }) === current) {
+            result.skipped.push(id);
+            continue;
+          }
+        }
+      } catch {
+        // unreadable: writeNote leaves it alone
+      }
+    }
+    if (current === formatNote(note)) result.skipped.push(id);
     else if (writeNote(root, note, { seededOnly: true })) result.written.push(id);
     else result.skipped.push(id);
   }

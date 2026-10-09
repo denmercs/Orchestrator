@@ -292,3 +292,19 @@ test("seedNotes composes the cycles, applies area names and merges areas that sh
   assert.deepEqual([...readAreaNames(summary)], [["pill", "pill"], ["client", "ui"], ["root", "root"], ["server", "backend"], ["shared", "ui"]]);
   assert.deepEqual(seedNotes({ ...snapshot, areaNames: names }), { notes, summary });
 });
+
+test("docDecisions skips frontmatter, horizontal rules and HTML comments", () => {
+  const text = ["---", "status: accepted", "---", "", "Kept one.", "---", "<!-- a note -->", "<!--", "multi", "-->", "Kept two."].join("\n");
+  assert.deepEqual(docDecisions("adr.md", text, OPTS).map((n) => n.body), ["Kept one.", "Kept two."]);
+});
+
+test("assignAreas keeps area ids unique and non-empty", () => {
+  const files = ["server/a.ts", "server/b.ts", "___/x.ts", "___/y.ts"];
+  const [term] = termAreas("## Server\n`server/a.ts`\n", files, "2026-03-01");
+  const { areas, primaryArea } = assignAreas(files, [term], [], "2026-03-01");
+  const slugs = areas.map((a) => a.slug);
+  assert.equal(new Set(slugs).size, slugs.length);
+  assert.ok(slugs.every((s) => /^[a-z0-9]/.test(s)));
+  assert.equal(primaryArea("server/a.ts"), "server");
+  assert.notEqual(primaryArea("server/b.ts"), "server");
+});
