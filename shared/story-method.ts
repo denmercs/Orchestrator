@@ -17,6 +17,8 @@ export { LOOP_STEPS, STEP_LABELS, type LoopStep };
 // The marker each step writes as the first line under `## Status` in .harness/state.md.
 export const MARKERS = {
   planDone: "plan-done",
+  diagnoseDone: "diagnose-done",
+  diagnoseBlocked: "diagnose-blocked",
   implementDone: "implement-done",
   implementBlocked: "implement-blocked",
   reviewDone: "review-done",
@@ -30,6 +32,8 @@ export type StoryContext = {
   title: string;
   // Story file text for initiative stories; empty for Jira tickets, which the agent reads itself.
   body: string;
+  // The Jira key and link: a Jira ticket's own, or the bug a Diagnose story fixes.
+  ticketKey: string | null;
   ticketUrl: string | null;
   // Initiative stories only.
   storyFile: string | null;
@@ -255,6 +259,20 @@ const STEPS: Record<LoopStep, (extra: StepExtra, jira: boolean) => string> = {
    rewrite the plan as they push back.
 7. Only when they explicitly approve, set \`## Status\` to \`${MARKERS.planDone}\`. Waiting for them is expected.`,
 
+  diagnose: () => `## This step: diagnose the bug, then plan the fix
+The bug's Jira ticket is under \`## Bug\` below the story head.
+1. Read the ticket and the code it touches. Reproduce the bug: a failing test where you can, else exact steps.
+2. Then find the cause. Note what you ruled out on the way.
+3. Write \`## Plan\` in ${STATE}: the cause and the fix in a few lines, then the same labelled lines a plan has
+   (\`**Files:**\`, \`**Calls:**\`, \`**Commands:**\`, \`**Out of scope:**\`), then how the fix will be checked.
+4. Write \`## Cycles\` as test-first checklist lines,
+   \`- [ ] Cycle N — <name>: <failing test to write> → <smallest change that passes it>\`, each with its command.
+   The first cycle is a failing regression test that reproduces the bug.
+5. Do not write production code or tests.
+6. When both are written, set \`## Status\` to \`${MARKERS.diagnoseDone}\` without waiting for approval; Implement starts from your plan.
+If you cannot reproduce the bug or find its cause, set it to \`${MARKERS.diagnoseBlocked}\` and put the reason on
+the next line.`,
+
   implement: ({ round, cycle, cycles }) => {
     if (cycle) {
       return IMPLEMENT_CYCLE;
@@ -318,6 +336,8 @@ on the line after \`${MARKERS.fixDone}\`.`,
 
 // Story-specific data a step needs, placed after the head so it does not break the shared prefix.
 const STEP_DATA: Partial<Record<LoopStep, (story: StoryContext, extra: StepExtra) => string>> = {
+  diagnose: (story) => `## Bug
+${[story.ticketKey, story.ticketUrl].filter(Boolean).join(" — ") || "(no ticket; the story body describes the bug)"}`,
   implement: (_story, { round, cycle, cycles, plan }) => {
     if (cycle) return cycleData(cycle, plan);
     return cycles?.length && round === 1 ? cyclesData(cycles, plan) : "";

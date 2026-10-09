@@ -133,7 +133,7 @@ export function summaryTiles(summary: ContextSummary): SummaryTile[] {
   ];
 }
 
-const LOOP_STEPS = ["plan", "implement", "review", "fix", "pr"];
+const LOOP_STEPS = ["diagnose", "plan", "implement", "review", "fix", "pr"];
 
 // The card's "Context tokens per step" row: loop steps in run order, then any other step A–Z. Tokens are
 // summed context size at each turn end, not billed tokens.

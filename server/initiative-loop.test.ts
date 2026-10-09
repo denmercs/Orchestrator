@@ -317,6 +317,48 @@ test("plan-done with two unticked cycles starts one parent Implement agent; with
   assert.equal(storyMeta(perCycle.story).cycles, undefined);
 });
 
+// Fakes the turn end of the story's Diagnose agent a1 with `## Status` set to `status`.
+function diagnoseEnded(status: string) {
+  const fx = planDone();
+  writeFrontmatter(fx.story, { step: "diagnose" });
+  writeFileSync(
+    join(fx.worktree, ".harness", "state.md"),
+    `# S1 — Demo story\n\n## Status\n${status}\n\n## Cycles\n- [ ] Cycle 1 — Reproduces: failing regression test → fix\n`,
+    "utf8",
+  );
+  const { api, created } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "diagnose" } }]);
+  return { ...fx, api, created };
+}
+
+test("diagnose-done starts one Implement agent with no approval gate", async () => {
+  const fx = diagnoseEnded("diagnose-done");
+
+  await loop().onTurnEnded(fx.api, fx.turnEnded("a1"));
+
+  assert.deepEqual(fx.created.map((agent) => agent.labels["loop-step"]), ["implement"]);
+  assert.equal(storyMeta(fx.story).status, "implementing");
+});
+
+test("a Diagnose turn that ends without a marker is stalled, not awaiting approval", async () => {
+  const fx = diagnoseEnded("diagnose-running");
+
+  await loop().onTurnEnded(fx.api, fx.turnEnded("a1"));
+
+  assert.equal(fx.created.length, 0);
+  assert.equal(storyMeta(fx.story).status, "planning");
+  assert.equal(storyMeta(fx.story).stalled, "It ended its turn without writing the step's marker.");
+});
+
+test("diagnose-blocked blocks the story with its reason", async () => {
+  const fx = diagnoseEnded("diagnose-blocked\nCannot reproduce on main.");
+
+  await loop().onTurnEnded(fx.api, fx.turnEnded("a1"));
+
+  assert.equal(fx.created.length, 0);
+  assert.equal(storyMeta(fx.story).status, "blocked");
+  assert.equal(storyMeta(fx.story).blocked_reason, "Cannot reproduce on main.");
+});
+
 test("the parent's implement-done commits once and starts Review; with a cycle unticked the story blocks", async () => {
   const finish = (cycles: string) => {
     const fx = fixture("a1");
@@ -786,7 +828,7 @@ test("a step whose worktree is gone with no PR retries, then blocks past maxRetr
 
 // A repo with a todo story and the loop on; Start creates its workspace through a fake Paseo that
 // records the branch it was asked for.
-async function startNewStory(options: { branch?: string; existing?: string[] } = {}) {
+async function startNewStory(options: { branch?: string; existing?: string[]; frontmatter?: string } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "loop-start-")));
   const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
   git("init", "-q", "-b", "main");
@@ -801,7 +843,8 @@ async function startNewStory(options: { branch?: string; existing?: string[] } =
   writeFileSync(join(phase, "phase.md"), "---\nphase: 1\ntitle: Meter\n---\n", "utf8");
   const story = join(phase, "stories", "01-story.md");
   const saved = options.branch ? `branch: ${options.branch}\n` : "";
-  writeFileSync(story, `---\nid: S1\ntitle: Add search\nstatus: todo\n${saved}---\n\n## Goal\n\nShip it.\n`, "utf8");
+  const extra = options.frontmatter ?? "";
+  writeFileSync(story, `---\nid: S1\ntitle: Add search\nstatus: todo\n${saved}${extra}---\n\n## Goal\n\nShip it.\n`, "utf8");
   const fake = fakePaseo([]);
   const requested: string[] = [];
   const api = fake.api as unknown as Record<string, unknown> & { workspaces: Record<string, unknown> };
@@ -820,7 +863,7 @@ async function startNewStory(options: { branch?: string; existing?: string[] } =
   );
   const result = await initiative.start(fake.api, { repo: root, initiative: "demo" });
   assert.equal(result.error, null);
-  return { requested, meta: storyMeta(story) };
+  return { requested, meta: storyMeta(story), created: fake.created };
 }
 
 test("a new story's branch is <initials>/<title slug>", async () => {
@@ -832,6 +875,24 @@ test("a new story's branch is <initials>/<title slug>", async () => {
 test("a new story's branch gets -2 when that branch already exists", async () => {
   const { requested } = await startNewStory({ existing: ["dm/add-search"] });
   assert.deepEqual(requested, ["dm/add-search-2"]);
+});
+
+test("a track: diagnose story starts on Diagnose with its Jira key and link", async () => {
+  const url = "https://x.atlassian.net/browse/BUG-7";
+  const { created, meta } = await startNewStory({ frontmatter: `track: diagnose\njira: BUG-7\njira_url: ${url}\n` });
+  assert.equal(created.length, 1);
+  assert.equal(created[0].labels["loop-step"], "diagnose");
+  assert.match(created[0].title, /Diagnose/);
+  assert.equal(meta.status, "planning");
+  assert.equal(meta.step, "diagnose");
+  assert.ok(created[0].prompt?.includes("BUG-7"), created[0].prompt);
+  assert.ok(created[0].prompt?.includes(url), created[0].prompt);
+});
+
+test("a story without a track starts on Plan", async () => {
+  const { created } = await startNewStory();
+  assert.equal(created.length, 1);
+  assert.equal(created[0].labels["loop-step"], "plan");
 });
 
 test("a saved branch: still wins over the generated name", async () => {

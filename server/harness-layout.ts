@@ -144,6 +144,7 @@ export function readStories(epicDir: string): EpicStory[] {
       workspace: story.workspace ?? "",
       agent: story.agent ?? "",
       ready: status === "todo" && !blockedBy && dependsOn.every((id) => merged.has(id)),
+      track: story.track === "diagnose" ? ("diagnose" as const) : ("plan" as const),
     };
   });
 }

@@ -89,6 +89,12 @@ test("profileForStep: empty picks Opus for plan/review and Sonnet for implement/
   assert.equal(profileForStep(DEFAULT_LOOP_CONFIG, "fix", all, runner.id).profile, sonnet);
 });
 
+test("profileForStep: diagnose runs on the Plan setting, else Opus", () => {
+  const all = [runner, sonnet, opus];
+  assert.equal(profileForStep(loopWith({ plan: sonnet.id }), "diagnose", all, runner.id).profile, sonnet);
+  assert.equal(profileForStep(DEFAULT_LOOP_CONFIG, "diagnose", all, runner.id).profile, opus);
+});
+
 test("profileForStep: an unknown id falls back like empty", () => {
   const all = [runner, sonnet, opus];
   assert.equal(profileForStep(loopWith({ review: "missing" }), "review", all, runner.id).profile, opus);
