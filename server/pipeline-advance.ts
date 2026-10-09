@@ -17,7 +17,7 @@ import {
 import {
   MARKERS,
   afterImplement,
-  implementCommitMessage,
+  commitSubject,
   readCycles,
   readMarker,
   readSection,
@@ -147,7 +147,8 @@ export async function advancePipeline(
       return;
     }
     const cycle = finished === null ? null : (readCycles(state).find((item) => item.number === finished) ?? null);
-    await commitStory(cwd, implementCommitMessage(ticket.key, cycle, round));
+    const fallback = cycle ? cycle.name : round > 1 ? "Fix review findings" : ticket.title;
+    await commitStory(cwd, commitSubject(state, fallback));
     if (after.kind === "cycle") await start(phase("implement"), round, after.cycle);
     else await start(phase("review"), round);
   } else if (phaseId === "review" && marker === MARKERS.reviewDone) {
@@ -167,7 +168,7 @@ async function openPr(cwd: string, ticket: Ticket) {
   started.add(dedupe);
   try {
     const branch = await currentBranch(cwd);
-    const pr = await openStoryPr(cwd, { id: ticket.key, title: ticket.title, branch, base: BASE });
+    const pr = await openStoryPr(cwd, { id: ticket.key, title: ticket.title, jira: true, branch, base: BASE });
     setMarker(cwd, `${MARKERS.prDone}\n${pr.url}`);
   } catch (error) {
     started.delete(dedupe);

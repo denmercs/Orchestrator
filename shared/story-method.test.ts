@@ -3,8 +3,8 @@ import { test } from "node:test";
 import {
   LOOP_STEPS,
   afterImplement,
+  commitSubject,
   formatSkills,
-  implementCommitMessage,
   readCycles,
   parseSkills,
   readMarker,
@@ -98,11 +98,33 @@ test("a parent that ran every cycle moves on to review, else blocks on the first
   assert.match(after.kind === "blocked" ? after.reason : "", /Cycle 2/);
 });
 
-test("commit messages name the cycle, the fix round or the whole change", () => {
-  const cycle = readCycles(state("- [x] Cycle 3 — Rank: x"))[0];
-  assert.equal(implementCommitMessage("S1", cycle, 1), "S1: Cycle 3 — Rank");
-  assert.equal(implementCommitMessage("S1", null, 2), "S1: Fix review findings");
-  assert.equal(implementCommitMessage("S1", null, 1), "S1: Implement");
+test("the commit subject is the cleaned line after the marker, else the fallback", () => {
+  const status = (body: string) => `# S1 — Demo\n\n## Status\n${body}\n\n## Cycles\n- [x] Cycle 1 — A: a\n`;
+  assert.equal(commitSubject(status("implement-done\nLet Claude open PRs in this repo"), "A"), "Let Claude open PRs in this repo");
+  assert.equal(commitSubject(status("implement-done\nS17: Add search\nmore detail"), "A"), "Add search");
+  assert.equal(commitSubject(status("fix-done\nDCD-12 | Fix the lint error"), "A"), "Fix the lint error");
+  assert.equal(commitSubject(status("implement-done"), "Rank"), "Rank");
+  assert.equal(commitSubject(status("implement-done\nS17:"), "Rank"), "Rank");
+  assert.equal(commitSubject("no status here", "Fix review findings"), "Fix review findings");
+});
+
+test("implement and fix prompts ask for a plain commit subject after the marker", () => {
+  const text = state("- [x] Cycle 1 — A: a\n- [ ] Cycle 2 — B: b");
+  const cycles = readCycles(text);
+  const prompts = [
+    stepPrompt("implement", story, { round: 1, cycle: cycles[1] }),
+    stepPrompt("implement", story, { round: 1, cycles }),
+    stepPrompt("implement", story, { round: 1 }),
+    stepPrompt("implement", story, { round: 2 }),
+  ];
+  for (const prompt of prompts) {
+    assert.match(prompt, /`implement-done` and put the commit subject on the next line/);
+    assert.match(prompt, /imperative mood/);
+    assert.match(prompt, /under 72 characters, with no story id, no "Cycle N" and no `feat:` prefix/);
+  }
+  const fix = stepPrompt("fix", story, { round: 1, failing: "- lint: broken" });
+  assert.match(fix, /`fix-done` with one line on what you changed/);
+  assert.match(fix, /That line is the commit subject/);
 });
 
 test("a cycle prompt carries only that cycle and the plan", () => {
@@ -260,9 +282,11 @@ test("review points at the base under Where it sits; pr carries the exact comman
   assert.ok(commands > head, "PR commands come after the head");
   assert.ok(pr.includes("git push -u origin feature/s1"), "push line");
   assert.ok(
-    pr.includes('gh pr create --base main --head feature/s1 --title "S1: Add search" --body-file .harness/pr-body.md'),
+    pr.includes('gh pr create --base main --head feature/s1 --title "Add search" --body-file .harness/pr-body.md'),
     "gh pr create line",
   );
+  const jira = stepPrompt("pr", { ...story, id: "KEY-1", body: "", ticketUrl: "https://example.atlassian.net/browse/KEY-1" }, { round: 1 });
+  assert.ok(jira.includes('--title "KEY-1 | Add search"'), "Jira PR title");
 });
 
 test("missing Plan paths go in the story section, after the head and before Where it sits", () => {

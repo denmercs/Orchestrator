@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
 import type { AgentCreateConfig } from "../shared/agent-runner";
 import { LOOP_AGENT_KIND, type LoopConfig } from "../shared/initiative-loop";
+import { branchName } from "../shared/naming";
 import { phaseLabel } from "../shared/orchestration";
 import { DEFAULT_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import {
@@ -29,8 +30,8 @@ import {
   MARKERS,
   STEP_LABELS,
   afterImplement,
+  commitSubject,
   formatSkills,
-  implementCommitMessage,
   parseSkills,
   readCycles,
   readMarker,
@@ -44,7 +45,7 @@ import {
 } from "../shared/story-method";
 import { withMcpScope } from "./mcp-scope";
 import { installSkills, skillPaths } from "./skill-sources";
-import { commitStory, openStoryPr, pushStoryFix } from "./story-git";
+import { commitStory, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
 
 // The initiative loop, driven by Paseo events rather than a long-running process:
 //   Start            marks the initiative loop: on and starts every ready story of its active phase.
@@ -56,7 +57,8 @@ import { commitStory, openStoryPr, pushStoryFix } from "./story-git";
 //   supervision      keeps a step moving without an agent watching it. A failed turn, or a turn that
 //                    ends without the step's marker, marks the story `stalled` and the tick nudges that
 //                    session; a session that is gone, closed or errored is replaced by a fresh one. After
-//                    maxRetries the story blocks. A story whose worktree is gone goes to its branch's PR.
+//                    maxRetries the story blocks, and resumes if the step's marker arrives late. A story
+//                    whose worktree is gone goes to its branch's PR.
 //                    A permission request blocks the story until it's answered.
 //                    A turn you cancel is left alone.
 // The story files are the state: the loop writes status, branch, workspace, agent, pr and ci into
@@ -78,6 +80,12 @@ const ACTIVE = new Set(["planning", "awaiting-approval", "implementing", "review
 // has its own watcher.
 const SUPERVISED = new Set(["planning", "implementing", "reviewing"]);
 const SUPERVISED_STEPS = new Set<string>(["plan", "implement", "review"]);
+// The markers a supervised step answers with; reconcile acts on each of them.
+const STEP_ANSWERS: Record<string, string[]> = {
+  plan: [MARKERS.planDone],
+  implement: [MARKERS.implementDone, MARKERS.implementBlocked],
+  review: [MARKERS.reviewDone, MARKERS.reviewFailed],
+};
 const PERMISSION = "permission";
 const STATUS_FOR: Record<LoopStep, string> = {
   plan: "planning",
@@ -178,11 +186,13 @@ function storyContext(init: Initiative, phaseDir: string, story: StoryFile): Sto
 
 const stateFile = (worktree: string) => join(worktree, ".harness", "state.md");
 
-function block(story: StoryFile, reason: string) {
+// `kind` names who blocked it, so the loop can tell its own give-up from the rest; the others clear it.
+function block(story: StoryFile, reason: string, kind?: "retry-limit") {
   writeFrontmatter(story.path, {
     status: "blocked",
     blocked_reason: reason,
     blocked_from: story.meta.status ?? "todo",
+    block_kind: kind ?? null,
   });
 }
 
@@ -191,6 +201,8 @@ export function createInitiativeLoop(
   readAgentConfig: (api: PaseoApi, step: LoopStep, loop: LoopConfig) => Promise<AgentCreateConfig>,
   // The drawer's phases and skill sources: each step loads its phase's extras.
   readPipeline: () => Promise<{ phases: Phase[]; sources: SkillSource[] }>,
+  // The branch prefix (`dm`), or null for none.
+  readInitials: () => Promise<string | null> = async () => null,
 ) {
   let paseo: PaseoApi | null = null;
   // Steps started by this process, so a repeated event can't start one twice before its label shows.
@@ -305,6 +317,7 @@ export function createInitiativeLoop(
         agent: agent.id,
         blocked_reason: null,
         blocked_from: null,
+        block_kind: null,
         stalled: null,
         waiting_on: null,
         ...(extra.attempt ? {} : { retries: null }),
@@ -322,14 +335,17 @@ export function createInitiativeLoop(
   // Creates (or reuses) the story's worktree workspace and starts its Plan agent.
   async function startStory(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile) {
     const base = story.meta.base || (await baseBranch(init));
-    const phase = phaseMeta(phaseDir).phase ?? "";
-    const branch = story.meta.branch || `feature/${slugOf(`${phase}-${story.id}-${story.meta.title ?? ""}`)}`;
+    const branch =
+      story.meta.branch ||
+      (await uniqueBranch(init.root, branchName({ initials: await readInitials(), title: story.meta.title || story.id })));
     const title = `${MARK} ${story.id} — ${story.meta.title || story.id}`.slice(0, 60);
 
     let workspaceId = story.meta.workspace || "";
     let worktree = story.meta.worktree || "";
     const reusable = workspaceId ? await api.workspaces.ref(workspaceId).refresh().catch(() => null) : null;
     if (!reusable || !worktree || !existsSync(worktree)) {
+      // Saved first: if Paseo makes the branch and then fails, the retry reuses it instead of adding -2.
+      if (!story.meta.branch) writeFrontmatter(story.path, { branch });
       const { projects } = await api.projects.list().catch(() => ({ projects: [] as { projectId: string; projectRootPath: string }[] }));
       const project = projects.find((item) => resolve(item.projectRootPath) === init.root);
       const created = await api.workspaces.create({
@@ -357,7 +373,8 @@ export function createInitiativeLoop(
   }
 
   // Moves an in-flight story to its next step from the marker its current step wrote.
-  async function reconcile(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile, turnEnded: boolean) {
+  async function reconcile(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, given: StoryFile, turnEnded: boolean) {
+    const story = resumeLateAnswer(phaseDir, given);
     const { meta } = story;
     if (!meta.worktree || !ACTIVE.has(meta.status ?? "") || meta.status === "pr-open") return;
     const state = readText(stateFile(meta.worktree));
@@ -396,7 +413,8 @@ export function createInitiativeLoop(
           return;
         }
         const cycle = typeof finished === "number" ? (readCycles(state).find((item) => item.number === finished) ?? null) : null;
-        await commitStory(meta.worktree, implementCommitMessage(story.id, cycle, round));
+        const fallback = cycle ? cycle.name : round > 1 ? "Fix review findings" : story.meta.title || story.id;
+        await commitStory(meta.worktree, commitSubject(state, fallback));
         if (after.kind === "cycle") await (round === 1 ? nextImplement(after.cycle) : next("implement", round, after.cycle));
         else await next("review", round);
       } else if (marker === MARKERS.implementBlocked) block(story, detail || "Implement is blocked; open its session.");
@@ -413,13 +431,31 @@ export function createInitiativeLoop(
     }
   }
 
+  // The loop gave up on a step whose session was still working: once that step writes its answer,
+  // put the story back where it was so reconcile acts on it.
+  function resumeLateAnswer(phaseDir: string, story: StoryFile) {
+    const { meta } = story;
+    if (meta.status !== "blocked" || meta.block_kind !== "retry-limit" || !meta.worktree) return story;
+    const marker = readMarker(readText(stateFile(meta.worktree))).marker ?? "";
+    if (!STEP_ANSWERS[meta.step ?? ""]?.includes(marker)) return story;
+    writeFrontmatter(story.path, {
+      status: meta.blocked_from ?? null,
+      blocked_reason: null,
+      blocked_from: null,
+      retries: null,
+      stalled: null,
+      block_kind: null,
+    });
+    return readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
+  }
+
   // Review passed: the plugin commits leftovers, pushes and opens the PR. No agent is needed for this.
   async function openPr(init: Initiative, phaseDir: string, story: StoryFile) {
     const { meta } = story;
     if (!meta.worktree) return;
     const ctx = storyContext(init, phaseDir, story);
     try {
-      const pr = await openStoryPr(meta.worktree, { id: story.id, title: ctx.title, branch: meta.branch ?? "", base: ctx.base });
+      const pr = await openStoryPr(meta.worktree, { id: story.id, title: ctx.title, jira: false, branch: meta.branch ?? "", base: ctx.base });
       writeFileSync(stateFile(meta.worktree), writeMarker(readText(stateFile(meta.worktree)), `${MARKERS.prDone}\n${pr.url}`), "utf8");
       writeFrontmatter(story.path, { status: "pr-open", step: "pr", round: 1, cycle: null, agent: null, pr: pr.number, ci: "pending" });
     } catch (error) {
@@ -431,9 +467,10 @@ export function createInitiativeLoop(
   async function finishFix(story: StoryFile) {
     const { meta } = story;
     if (!meta.worktree || meta.status !== "pr-open") return;
-    if (readMarker(readText(stateFile(meta.worktree))).marker !== MARKERS.fixDone) return;
+    const state = readText(stateFile(meta.worktree));
+    if (readMarker(state).marker !== MARKERS.fixDone) return;
     try {
-      await pushStoryFix(meta.worktree, `${story.id}: Fix CI`);
+      await pushStoryFix(meta.worktree, commitSubject(state, "Fix failing CI checks"));
     } catch (error) {
       block(story, `Could not push the CI fix: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -536,7 +573,7 @@ export function createInitiativeLoop(
       : meta.stalled ?? "";
     const retries = Number(meta.retries) || 0;
     if (retries >= config.maxRetries) {
-      block(story, `${STEP_LABELS[step]}: ${why} Gave up after ${retries} ${retries === 1 ? "retry" : "retries"}.`);
+      block(story, `${STEP_LABELS[step]}: ${why} Gave up after ${retries} ${retries === 1 ? "retry" : "retries"}.`, "retry-limit");
       return;
     }
     writeFrontmatter(story.path, { retries: retries + 1, stalled: null });

@@ -25,6 +25,7 @@ import {
 import { tabCounts, type TabId } from "../shared/dashboard-tabs";
 import { gatesOf } from "../shared/gates";
 import { pipelineSettings, startPipelineStory } from "../shared/pipeline";
+import { getBranchInitials } from "../shared/naming";
 import { dashboardSettings, jiraBoardSettings } from "../shared/settings";
 import { PR_POLL_MS } from "../shared/timing";
 import {
@@ -65,6 +66,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const pipelineOn = pipeline.status === "ready" && pipeline.values.enabled;
   const startPipeline = useRpc(startPipelineStory);
   const registerScope = useRpc(registerMcpScopeRpc);
+  const loadInitials = useRpc(getBranchInitials);
   const defaultBoardId = boardSettings.status === "ready" ? boardSettings.values.defaultBoardId : "";
   const boardFilter = boardSettings.status === "ready" ? boardSettings.values.boardFilter : null;
   const [schedules, setSchedules] = useState<
@@ -84,6 +86,8 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const [jiraLoaded, setJiraLoaded] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [startingId, setStartingId] = useState<string | null>(null);
+  // The initials request, so a Start before it answers waits for it. Null on error: no prefix.
+  const initials = useRef<Promise<string | null>>(Promise.resolve(null));
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const { pulse, loaded: pulseLoaded, refresh: refreshPulse } = useProdPulse();
   const epic = useEpicBoards();
@@ -268,6 +272,13 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   }, [refreshJiraBoards]);
 
   useEffect(() => {
+    initials.current = loadInitials({}).then(
+      (result) => result.initials,
+      () => null,
+    );
+  }, [loadInitials]);
+
+  useEffect(() => {
     void refreshJira();
     const timer = setInterval(() => {
       void refreshJira();
@@ -373,6 +384,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         pipelineOn ? startPipeline : undefined,
         agentConfig,
         registerScope,
+        initials.current,
       );
       if (started.warnings.length > 0) {
         setSessionError(`Started, with warnings: ${started.warnings.join(" ")}`);
@@ -453,7 +465,13 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
 
           {error ? <Text style={styles.danger}>{error}</Text> : null}
 
-          <InitiativePanels epic={epic} theme={theme} compact={layout.compact} navigation={navigation} />
+          <InitiativePanels
+            epic={epic}
+            theme={theme}
+            compact={layout.compact}
+            navigation={navigation}
+            onEditPolicy={() => setSkillsOpen(true)}
+          />
         </>
       );
       break;

@@ -143,6 +143,20 @@ export function storyHistory(rows: TelemetryRow[], key: StoryKey): StoryHistory 
   return { session: fresh.length + 1, compactions, turns };
 }
 
+// Σ over the story's agents of each one's last `costUsd` (costs are cumulative per session);
+// null when none of its rows has a cost. Rows written before S18 have no initiative and never match.
+export function storyCost(rows: TelemetryRow[], key: { initiative: string; story: string }): number | null {
+  const last = new Map<string, number>();
+  for (const row of rows) {
+    if (row.initiative !== key.initiative || row.story !== key.story || typeof row.costUsd !== "number") continue;
+    last.set(row.agentId, row.costUsd);
+  }
+  if (last.size === 0) return null;
+  let total = 0;
+  for (const cost of last.values()) total += cost;
+  return total;
+}
+
 function startOfLocalDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }

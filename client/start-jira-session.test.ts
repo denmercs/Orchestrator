@@ -29,26 +29,40 @@ function boardItem(role: BoardItem["role"]): BoardItem {
   };
 }
 
-function fakePaseo(directory: string | null, calls: string[], prompts: string[] = []) {
+function fakePaseo(
+  directory: string | null,
+  calls: string[],
+  prompts: string[] = [],
+  sources: unknown[] = [],
+) {
   const paseo = {
     projects: {
       list: async () => ({
-        projects: [{ projectId: "p1", projectDisplayName: "quickpress", projectRootPath: "/repo" }],
+        projects: [
+          {
+            projectId: "p1",
+            projectDisplayName: "quickpress",
+            projectRootPath: "/repo",
+          },
+        ],
       }),
     },
     workspaces: {
-      create: async () => ({
-        id: "w1",
-        directory,
-        setTitle: async () => {},
-        agents: {
-          create: async (input: { prompt: string }) => {
-            calls.push("agents.create");
-            prompts.push(input.prompt);
-            return { id: "a1" };
+      create: async (input: { source: unknown }) => {
+        sources.push(input.source);
+        return {
+          id: "w1",
+          directory,
+          setTitle: async () => {},
+          agents: {
+            create: async (input: { prompt: string }) => {
+              calls.push("agents.create");
+              prompts.push(input.prompt);
+              return { id: "a1" };
+            },
           },
-        },
-      }),
+        };
+      },
     },
   };
   return paseo as unknown as StartArgs[0];
@@ -113,9 +127,18 @@ test("an unknown workspace folder skips registering and warns", async () => {
 
 test("the epic prompt titles each child workspace as a worker when it is created", async () => {
   const prompts: string[] = [];
-  await startJiraSession(fakePaseo("/worktrees/quick-1", [], prompts), boardItem("epic"));
-  assert.match(prompts[0] ?? "", new RegExp(`create_workspace.*title "${WORKER_MARK} <KEY> — <summary>"`));
-  assert.match(prompts[0] ?? "", /then immediately create the subagent in that workspace \(pass its workspaceId to create_agent\)/);
+  await startJiraSession(
+    fakePaseo("/worktrees/quick-1", [], prompts),
+    boardItem("epic"),
+  );
+  assert.match(
+    prompts[0] ?? "",
+    new RegExp(`create_workspace.*title "${WORKER_MARK} <KEY> — <summary>"`),
+  );
+  assert.match(
+    prompts[0] ?? "",
+    /then immediately create the subagent in that workspace \(pass its workspaceId to create_agent\)/,
+  );
 });
 
 test("a failed scope registration still creates the agent and warns", async () => {
@@ -130,5 +153,45 @@ test("a failed scope registration still creates the agent and warns", async () =
     },
   );
   assert.deepEqual(calls, ["agents.create"]);
-  assert.deepEqual(result.warnings, ["MCP scope not applied; this session gets every host server."]);
+  assert.deepEqual(result.warnings, [
+    "MCP scope not applied; this session gets every host server.",
+  ]);
+});
+
+for (const [initials, branch] of [
+  ["dm", "dm/quick-1/do-the-thing"],
+  [null, "quick-1/do-the-thing"],
+] as const) {
+  test(`the branch is ${branch} with initials ${initials}; the folder slug is unchanged`, async () => {
+    const sources: unknown[] = [];
+    await startJiraSession(
+      fakePaseo("/worktrees/quick-1", [], [], sources),
+      boardItem("story"),
+      undefined,
+      undefined,
+      undefined,
+      initials,
+    );
+    assert.partialDeepStrictEqual(sources[0], {
+      branchName: branch,
+      worktreeSlug: "quick-1-do-the-thing",
+    });
+  });
+}
+
+test("a Start before the initials load waits for them instead of dropping the prefix", async () => {
+  const sources: unknown[] = [];
+  let resolve: (value: string | null) => void = () => {};
+  const pending = new Promise<string | null>((done) => (resolve = done));
+  const started = startJiraSession(
+    fakePaseo("/worktrees/quick-1", [], [], sources),
+    boardItem("story"),
+    undefined,
+    undefined,
+    undefined,
+    pending,
+  );
+  resolve("dm");
+  await started;
+  assert.partialDeepStrictEqual(sources[0], { branchName: "dm/quick-1/do-the-thing" });
 });

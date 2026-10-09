@@ -110,6 +110,8 @@ export const storyContext = z.object({
     act: z.object({ tokens: z.number(), percent: z.number().nullable(), word: z.enum(["compact", "hand off"]) }),
   }),
   split: z.object({ system: z.number(), conversation: z.number(), tool: z.number() }).nullable(),
+  // Cost so far: Σ over the story's agents of each one's last cumulative `costUsd`; null with none.
+  costUsd: z.number().nullable(),
 });
 
 export type StoryContext = z.infer<typeof storyContext>;

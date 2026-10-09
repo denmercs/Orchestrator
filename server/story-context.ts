@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { Thresholds } from "../shared/context-meter";
 import type { StoryContext } from "../shared/context";
 import { contextPanel } from "../shared/context-panel";
-import { storyHistory, type TelemetryRow } from "./context-telemetry";
+import { storyCost, storyHistory, type TelemetryRow } from "./context-telemetry";
 import type { LiveSession } from "./context-watch";
 import { dirsIn, PHASES_DIR, readStoryFiles } from "./harness-layout";
 import { initiativeAt } from "./initiative-loop";
@@ -36,7 +36,8 @@ export async function loadStoryContext(input: StoryContextInput, deps: StoryCont
   if (!session) return null;
   const step = session.labels["loop-step"] ?? null;
   const rawCycle = session.labels["loop-cycle"];
-  const history = storyHistory(await deps.rows(), {
+  const rows = await deps.rows();
+  const history = storyHistory(rows, {
     initiative: input.initiative,
     story: input.storyId,
     agentId,
@@ -63,5 +64,6 @@ export async function loadStoryContext(input: StoryContextInput, deps: StoryCont
     turnsToAct: panel.turnsToAct,
     markers: panel.markers,
     split: panel.split,
+    costUsd: storyCost(rows, { initiative: input.initiative, story: input.storyId }),
   };
 }
