@@ -95,6 +95,54 @@ async function readRows(file: string): Promise<TelemetryRow[]> {
   return rows;
 }
 
+// Every row, oldest first: the rotated file, then the current one.
+export async function readTelemetry(file: string = TELEMETRY_FILE): Promise<TelemetryRow[]> {
+  return [...(await readRows(rotatedFile(file))), ...(await readRows(file))];
+}
+
+export type StoryKey = {
+  initiative: string;
+  story: string;
+  agentId: string;
+  step: string | null;
+  cycle?: number | null;
+};
+
+export type StoryHistory = {
+  // 1 + the `compact.fresh` rows for this step (and cycle, when given) since the story last
+  // ran a different step, so a second round of a step starts again at 1.
+  session: number;
+  // The agent's `compact.native` + `compact.inferred` rows.
+  compactions: number;
+  // The agent's turn `used` values after its last `compact.*` row, oldest first.
+  turns: number[];
+};
+
+// Rows written before S18 have no initiative and never match a story.
+export function storyHistory(rows: TelemetryRow[], key: StoryKey): StoryHistory {
+  const story = rows.filter((row) => row.initiative === key.initiative && row.story === key.story);
+  let lastOtherStep = -1;
+  story.forEach((row, i) => {
+    if (row.step != null && row.step !== key.step) lastOtherStep = i;
+  });
+  const fresh = story
+    .slice(lastOtherStep + 1)
+    .filter((row) => row.event === "compact.fresh" && row.step === key.step && (key.cycle == null || row.cycle === key.cycle));
+
+  const agent = rows.filter((row) => row.agentId === key.agentId);
+  let compactions = 0;
+  let turns: number[] = [];
+  for (const row of agent) {
+    if (row.event.startsWith("compact.")) {
+      if (row.event !== "compact.fresh") compactions += 1;
+      turns = [];
+    } else if (row.event === "turn" && row.used != null) {
+      turns.push(row.used);
+    }
+  }
+  return { session: fresh.length + 1, compactions, turns };
+}
+
 function startOfLocalDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
@@ -125,7 +173,7 @@ export async function summariseTelemetry(
   file: string = TELEMETRY_FILE,
   today?: string,
 ): Promise<ContextSummary> {
-  const allRows = [...(await readRows(rotatedFile(file))), ...(await readRows(file))];
+  const allRows = await readTelemetry(file);
   const rows = allRows.filter((row) => since === null || row.at >= since);
   const summary: ContextSummary = {
     turns: 0,

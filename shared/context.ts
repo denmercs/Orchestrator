@@ -89,3 +89,34 @@ export const contextSessionsRpc = defineRpc({
   input: z.object({ agentIds: z.array(z.string()) }),
   output: z.array(contextStatus.nullable()),
 });
+
+// The story context panel (see CONTEXT.md, "Story context"): the story's current session's
+// context, burn and markers. Tokens only, no dollars.
+export const storyContext = z.object({
+  agentId: z.string(),
+  step: z.string().nullable(),
+  used: z.number().nullable(),
+  max: z.number().nullable(),
+  percent: z.number().nullable(),
+  level: z.enum(["ok", "amber", "red", "unknown"]),
+  // 1 + fresh hand-offs on this step since the story last ran another step.
+  session: z.number(),
+  // The agent's native + inferred compactions.
+  compactions: z.number(),
+  burn: z.number().nullable(),
+  turnsToAct: z.union([z.number(), z.literal("now")]).nullable(),
+  markers: z.object({
+    warn: z.object({ tokens: z.number(), percent: z.number().nullable() }),
+    act: z.object({ tokens: z.number(), percent: z.number().nullable(), word: z.enum(["compact", "hand off"]) }),
+  }),
+  split: z.object({ system: z.number(), conversation: z.number(), tool: z.number() }).nullable(),
+});
+
+export type StoryContext = z.infer<typeof storyContext>;
+
+// null when the story has no `agent:` or Paseo says that agent is gone.
+export const storyContextRpc = defineRpc({
+  name: "orchestration.story.context",
+  input: z.object({ repo: z.string(), initiative: z.string(), storyId: z.string() }),
+  output: storyContext.nullable(),
+});
