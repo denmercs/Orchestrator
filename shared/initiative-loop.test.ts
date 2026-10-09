@@ -17,6 +17,8 @@ test("stored loop settings without profiles or maxRetries still parse, with the 
     reviewRounds: 3,
     maxFixes: 3,
     maxRetries: 2,
+    holdFrom: null,
+    holdUntil: null,
     profiles: emptyProfiles,
     subagentCycles: true,
   });
