@@ -273,7 +273,7 @@ export function readMemory(root: string): Memory {
 }
 
 // `**` crosses folders, `*` and `?` stay inside one. Node's `path.matchesGlob` is still experimental.
-function globToRegExp(glob: string): RegExp {
+export function globToRegExp(glob: string): RegExp {
   let re = "";
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];
