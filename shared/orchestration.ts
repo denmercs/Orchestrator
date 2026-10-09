@@ -513,6 +513,20 @@ export const createHarnessEpicRpc = defineRpc({
   }),
 });
 
+// Writes a one-story initiative for a Jira key in `repo` (reusing one already there) and starts
+// its loop. `track` is "diagnose" for a Bug, else "plan".
+export const startTicketRpc = defineRpc({
+  name: "orchestration.start-ticket",
+  input: z.object({ repo: z.string(), key: z.string() }),
+  output: z.object({
+    ok: z.boolean(),
+    error: z.string().nullable(),
+    initiative: z.string().nullable(),
+    track: z.enum(["plan", "diagnose"]).nullable(),
+    agentId: z.string().nullable(),
+  }),
+});
+
 // Starts the architecture session for an existing phase (repo-relative epic folder).
 export const planHarnessPhaseRpc = defineRpc({
   name: "orchestration.harness-plan-phase",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BoardItem } from "./board-model";
-import { WORKER_MARK, startJiraSession } from "./start-jira-session";
+import { WORKER_MARK, repoForKey, startJiraSession } from "./start-jira-session";
 
 type StartArgs = Parameters<typeof startJiraSession>;
 
@@ -194,4 +194,25 @@ test("a Start before the initials load waits for them instead of dropping the pr
   resolve("dm");
   await started;
   assert.partialDeepStrictEqual(sources[0], { branchName: "dm/quick-1/do-the-thing" });
+});
+
+type ProjectList = Parameters<typeof repoForKey>[0];
+
+const listedProjects = {
+  projects: [
+    { projectId: "p0", projectDisplayName: "orchestrator", projectRootPath: "/repos/orchestrator" },
+    { projectId: "p1", projectDisplayName: "quickpress", projectRootPath: "/repos/quickpress" },
+  ],
+} as unknown as ProjectList;
+
+test("a QUICK key resolves to the quickpress project's root path", () => {
+  assert.equal(repoForKey(listedProjects, "QUICK-12", "/repos/harness"), "/repos/quickpress");
+});
+
+test("an unknown prefix falls back to the given harness repo", () => {
+  assert.equal(repoForKey(listedProjects, "NOPE-3", "/repos/harness"), "/repos/harness");
+});
+
+test("no match and no fallback gives null", () => {
+  assert.equal(repoForKey(listedProjects, "NOPE-3", null), null);
 });

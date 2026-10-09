@@ -182,6 +182,12 @@ The bell in the header that lists the current gates, one row per Gate, with a ba
 
 _Avoid_: notifications, inbox, alert (for a context-meter warning).
 
+## Start input
+
+The input at the top of the Initiatives tab. As you type, `routeStart` decides the route and a pill shows it: a bare Jira key (any case) or a URL holding one is **Jira ticket · track from issue type** (green); anything else is **New initiative → Architecture** (blue); blank shows no pill and disables Start. The hint line under it is always shown. Start (or Enter) on a Jira key picks the repo from the key's prefix (`repoForKey`, else the harness repo; neither toasts "No repo for <PREFIX>") and calls `orchestration.start-ticket`, which writes or reuses a one-story `<key>-<slug>` initiative and starts its loop (Bug → Diagnose, else Plan). Anything else calls `orchestration.harness-create-epic` on the harness repo with the text as the initiative and phase title. On success the input clears, the started agent opens and the boards re-read; failures toast. Code: `StartInput` in `client/start-input.tsx`, `routeStart`/`detectLabel`/`START_HINTS` in `shared/start-route.ts`, `startTicket` in `server/ticket-start.ts`.
+
+_Avoid_: omnibox, command bar.
+
 ## Needs-you queue
 
 The card at the top of the Initiatives tab that lists the current gates, shown only when there is at least one. A chip "NEEDS YOU · N", then one row per gate from `gateRow(gate)`: the story id as the tag, "<story title>: <gate text>", `where`, and the gate's actions. Plan: **Approve plan** (approve) and **Request changes** (changes, then the session opens; "No session to open" without an agent). Stuck: **Restart from handoff** (restart) and **Nudge** (nudge). Merge: **Review & merge** opens the PR (`${repoUrl}/pull/${pr}`, the gate's `prUrl`); no RPC. A row runs one action at a time; its buttons stay disabled until the boards have re-read after it, so a gate can't be acted on twice. Failure toasts the error. Code: `NeedsYouQueue` in `client/needs-you.tsx`, rows from `gateRow` in `shared/gates.ts`.

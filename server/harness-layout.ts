@@ -308,3 +308,42 @@ export async function createHarnessEpic(input: {
     return { ok: false, error: cause instanceof Error ? cause.message : String(cause), epic: null };
   }
 }
+
+// A one-story initiative for a Jira ticket: `<key>-<summary slug>`, Phase 1, story S1 carrying the
+// ticket. Bugs take the Diagnose track. A ticket that already has an initiative reuses it as is.
+export async function createTicketInitiative(input: {
+  repo: string;
+  key: string;
+  summary: string;
+  url: string;
+  issueType: string;
+}) {
+  const track: "plan" | "diagnose" = input.issueType.trim().toLowerCase() === "bug" ? "diagnose" : "plan";
+  try {
+    const root = resolve(input.repo);
+    const key = input.key.trim().toUpperCase();
+    const existing = dirsIn(initiativesDir(root)).find((name) => name.startsWith(`${key.toLowerCase()}-`));
+    if (existing) return { ok: true, error: null, initiative: existing, track };
+
+    const summary = input.summary.replace(/\s+/g, " ").trim();
+    const created = await createHarnessEpic({
+      repo: root,
+      initiative: "",
+      initiativeTitle: `${key} — ${summary}`,
+      epicTitle: summary,
+      tracker: "local",
+    });
+    if (!created.ok || !created.epic) throw new Error(created.error ?? "Could not create the initiative.");
+    const epicDir = join(root, created.epic);
+    const initiative = relative(initiativesDir(root), join(epicDir, "..", "..")).split(sep).join("/");
+    writeFileSync(
+      join(epicDir, "stories", `01-${slugOf(summary)}.md`),
+      `---\nid: S1\ntitle: ${summary}\nstatus: todo\njira: ${key}\njira_url: ${input.url}\n${track === "diagnose" ? "track: diagnose\n" : ""}---\n\n# S1 — ${summary}\n\n${summary}\n\nJira: [${key}](${input.url})\n`,
+      "utf8",
+    );
+    refreshInitiativeIndex(join(initiativesDir(root), initiative));
+    return { ok: true, error: null, initiative, track };
+  } catch (cause) {
+    return { ok: false, error: cause instanceof Error ? cause.message : String(cause), initiative: null, track };
+  }
+}
