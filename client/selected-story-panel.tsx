@@ -5,6 +5,7 @@ import { openExternalUrl, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
 import { agentRunnerSettings } from "../shared/agent-runner";
 import { contextAct, storyContextRpc, type StoryContext } from "../shared/context";
+import { boardKey, gateAct } from "../shared/gates";
 import { DEFAULT_LOOP_CONFIG, initiativeLoopSettings, startInitiativeLoop } from "../shared/initiative-loop";
 import type { EpicBoardState, EpicStory } from "../shared/orchestration";
 import { budgetSettings } from "../shared/settings";
@@ -78,13 +79,14 @@ export function SelectedStoryPanel({
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   const toast = useToast();
   const act = useRpc(contextAct);
+  const gate = useRpc(gateAct);
   const startLoop = useRpc(startInitiativeLoop);
   const loop = useSettings(initiativeLoopSettings);
   const runner = useSettings(agentRunnerSettings);
   const budget = useSettings(budgetSettings);
   const profiles = useAgentProfiles();
   const { ctx, reload } = useStoryContext(repo, state.initiativeSlug, story.id);
-  const [busy, setBusy] = useState<"compact" | "fresh" | "start" | null>(null);
+  const [busy, setBusy] = useState<"compact" | "fresh" | "start" | "retry" | null>(null);
 
   const bar = stepBar(story, story.track, state.stories);
   const models = stepModels(
@@ -123,6 +125,23 @@ export function SelectedStoryPanel({
       else toast.show(result.started.length ? `Loop started: planning ${result.started.map((item) => item.story).join(", ")}.` : `Loop on. ${result.reason}.`, { variant: "success" });
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : "Could not start the loop.");
+    } finally {
+      setBusy(null);
+      onChanged();
+    }
+  }
+
+  // Retry a blocked story (see CONTEXT.md, "Gate action"), then re-read the boards.
+  async function retry() {
+    if (busy !== null) return;
+    setBusy("retry");
+    try {
+      const board = boardKey({ repo, initiative: state.initiativeSlug });
+      const result = await gate({ board, storyId: story.id, action: "retry" });
+      if (!result.ok) toast.error(result.error ?? "Could not retry.");
+      else toast.show(`Retrying ${story.id}.`, { variant: "success" });
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : "Could not retry.");
     } finally {
       setBusy(null);
       onChanged();
@@ -169,6 +188,9 @@ export function SelectedStoryPanel({
         <Text style={styles.muted} numberOfLines={1}>
           {bar.detail}
         </Text>
+        {story.status === "blocked" ? (
+          <SmallButton label={busy === "retry" ? "Retrying…" : "Retry"} disabled={busy !== null} styles={styles} onPress={() => void retry()} />
+        ) : null}
         {cta ? <SmallButton label={ctaLabel} primary disabled={busy !== null} styles={styles} onPress={runCta} /> : null}
         <SmallButton label="Details" styles={styles} onPress={onDetails} />
       </View>
