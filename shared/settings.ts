@@ -84,3 +84,14 @@ export const dashboardSettings = defineSettings({
     tab: z.enum(TAB_IDS).default("initiatives").catch("initiatives"),
   }),
 });
+
+export const budgetSettings = defineSettings({
+  id: "budget",
+  scope: "host",
+  version: 1,
+  schema: z.object({
+    // Display only for now: the stats strip shows spend against these; nothing enforces them yet.
+    dailyBudgetUsd: z.number().default(25),
+    storyCapUsd: z.number().default(5),
+  }),
+});

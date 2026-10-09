@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dashboardSettings, mcpSettings } from "./settings";
+import { budgetSettings, dashboardSettings, mcpSettings } from "./settings";
 
 test("mcp settings default to excluding nothing", () => {
   assert.deepEqual(mcpSettings.schema.parse({}), { mcpExclude: [] });
@@ -27,4 +27,21 @@ test("dashboard settings keep a valid stored tab", () => {
 
 test("dashboard settings fall back to initiatives for an unknown tab", () => {
   assert.deepEqual(dashboardSettings.schema.parse({ tab: "bogus" }), { tab: "initiatives" });
+});
+
+test("budget settings are host-scoped at version 1", () => {
+  assert.equal(budgetSettings.id, "budget");
+  assert.equal(budgetSettings.scope, "host");
+  assert.equal(budgetSettings.version, 1);
+});
+
+test("budget settings default to a $25 daily budget and a $5 story cap", () => {
+  assert.deepEqual(budgetSettings.schema.parse({}), { dailyBudgetUsd: 25, storyCapUsd: 5 });
+});
+
+test("budget settings keep given values", () => {
+  assert.deepEqual(budgetSettings.schema.parse({ dailyBudgetUsd: 40, storyCapUsd: 7.5 }), {
+    dailyBudgetUsd: 40,
+    storyCapUsd: 7.5,
+  });
 });
