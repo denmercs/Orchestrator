@@ -359,6 +359,16 @@ test("diagnose-blocked blocks the story with its reason", async () => {
   assert.equal(storyMeta(fx.story).blocked_reason, "Cannot reproduce on main.");
 });
 
+test("a Diagnose blocked by the retry limit that then writes diagnose-done is resumed and starts Implement", async () => {
+  const fx = diagnoseEnded("diagnose-done");
+  writeFrontmatter(fx.story, { status: "blocked", blocked_from: "planning", block_kind: "retry-limit", retries: 2 });
+
+  await loop().onTurnEnded(fx.api, fx.turnEnded("a1"));
+
+  assert.deepEqual(fx.created.map((agent) => agent.labels["loop-step"]), ["implement"]);
+  assert.deepEqual([storyMeta(fx.story).status, storyMeta(fx.story).block_kind], ["implementing", undefined]);
+});
+
 test("the parent's implement-done commits once and starts Review; with a cycle unticked the story blocks", async () => {
   const finish = (cycles: string) => {
     const fx = fixture("a1");
@@ -689,6 +699,88 @@ test("past maxRetries the story blocks with the reason instead of retrying", asy
   assert.equal(storyMeta(story).status, "blocked");
   assert.equal(storyMeta(story).blocked_reason, "Implement: Its session failed: provider crashed. Gave up after 2 retries.");
   assert.equal(storyMeta(story).blocked_from, "implementing");
+});
+
+test("a step blocked by the retry limit that then writes implement-done is resumed, committed and moved to Review", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  writeFrontmatter(story, { retries: 2, stalled: "Its last turn failed: rate limited" });
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+  assert.deepEqual([sent, created], [[], []]);
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(storyMeta(story).blocked_reason, "Implement: Its last turn failed: rate limited Gave up after 2 retries.");
+  assert.equal(storyMeta(story).block_kind, "retry-limit");
+
+  // The session was still working: its answer lands after the loop gave up.
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: worktree, encoding: "utf8" }).trim();
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  writeFileSync(join(worktree, "meter.ts"), "export const meter = 1;\n", "utf8");
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nimplement-done\n", "utf8");
+  await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as never);
+
+  assert.equal(git("log", "--format=%s"), "Demo story");
+  assert.deepEqual(created.map((agent) => agent.labels["loop-step"]), ["review"]);
+  const meta = storyMeta(story);
+  assert.deepEqual(
+    [meta.status, meta.blocked_reason, meta.blocked_from, meta.retries, meta.stalled, meta.block_kind],
+    ["reviewing", undefined, undefined, undefined, undefined, undefined],
+  );
+});
+
+test("a retry-limit block stays blocked when state.md holds no answer from the step", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  writeFrontmatter(story, { retries: 2, stalled: "Its last turn failed: rate limited" });
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+  const reason = storyMeta(story).blocked_reason;
+  for (const status of ["", "something-else"]) {
+    writeFileSync(join(worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\n${status}\n`, "utf8");
+    await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as never);
+    await initiative.tick();
+
+    assert.deepEqual([sent, created], [[], []]);
+    assert.deepEqual([storyMeta(story).status, storyMeta(story).blocked_reason], ["blocked", reason], `marker "${status}"`);
+  }
+});
+
+test("a permission block with implement-done in state.md stays blocked through a turn end and a tick", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  writeFrontmatter(story, { retries: 2, stalled: "Its last turn failed: rate limited" });
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  // First a retry-limit block, then reset by hand with its kind left behind.
+  await initiative.tick();
+  assert.equal(storyMeta(story).block_kind, "retry-limit");
+  writeFrontmatter(story, { status: "implementing", blocked_reason: null, blocked_from: null, retries: null, stalled: null });
+
+  const request = { name: "Bash", title: "Run npm install" };
+  await initiative.onPermissionRequested(api, { agent: { id: "a1" }, request } as never);
+  const reason = "Waiting on permission: Run npm install. Answer it in the session.";
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(storyMeta(story).blocked_reason, reason);
+  assert.equal(storyMeta(story).block_kind, undefined, "a permission block clears the retry-limit kind");
+
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: worktree, encoding: "utf8" }).trim();
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  writeFileSync(join(worktree, "meter.ts"), "export const meter = 1;\n", "utf8");
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nimplement-done\n", "utf8");
+  await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as never);
+  await initiative.tick();
+
+  assert.equal(git("rev-list", "--all"), "", "nothing was committed");
+  assert.deepEqual([sent, created], [[], []]);
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(storyMeta(story).blocked_reason, reason);
 });
 
 test("a running session, or a Paseo that doesn't answer, is left alone", async () => {
