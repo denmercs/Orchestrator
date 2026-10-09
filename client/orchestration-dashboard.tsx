@@ -37,7 +37,6 @@ import {
   groupJiraEpics,
 } from "./board-model";
 import { AlertsBell } from "./alerts-bell";
-import { ContextCard } from "./context-card";
 import { DashboardHeader, TabBar } from "./dashboard-shell";
 import { InitiativePanels, StoryDrawer, useEpicBoards } from "./epic-board";
 import { LoadingState } from "./loading-state";
@@ -45,6 +44,7 @@ import { Skeleton, SkeletonBar, SkeletonCards } from "./skeleton";
 import { ProdPulsePanel, ProdPulseSkeleton, useProdPulse } from "./prod-pulse-panel";
 import { pulseTabState } from "./prod-pulse-model";
 import { LoopProfilesToggle, LoopStepProfiles } from "./loop-step-profiles";
+import { NeedsYouQueue, StatsStrip } from "./needs-you";
 import { RunnerPicker } from "./runner-picker";
 import { SkillsDrawer, StoryPipelineButton } from "./skills-drawer";
 import { startJiraSession } from "./start-jira-session";
@@ -53,7 +53,7 @@ import { useOrchestrationCatalog } from "./use-orchestration-catalog";
 
 export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurfaceProps) {
   const paseo = usePaseo();
-  const { agents, workspaces, error, loading } = useOrchestrationCatalog();
+  const { agents, workspaces, error } = useOrchestrationCatalog();
   const listSchedules = useRpc(listOrchestrationSchedules);
   const listParents = useRpc(listOrchestrationParents);
   const loadJiraBoard = useRpc(getJiraBoard);
@@ -451,38 +451,19 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     case "initiatives":
       body = (
         <>
-          <ContextCard theme={theme} />
+          {gates.length > 0 ? (
+            <NeedsYouQueue
+              theme={theme}
+              compact={layout.compact}
+              gates={gates}
+              navigation={navigation}
+              onActed={epic.refresh}
+            />
+          ) : null}
+
+          <StatsStrip theme={theme} compact={layout.compact} boards={epic.boards} gates={gates} />
 
           {error ? <Text style={styles.danger}>{error}</Text> : null}
-
-          {loading ? (
-            <StatsSkeleton styles={styles} theme={theme} compact={layout.compact} />
-          ) : (
-            <View style={styles.stats}>
-              <ProgressStat
-                label="PROGRESS"
-                value={`${board.inProgress}/${board.total || 0}`}
-                hint={board.hasJira ? `${board.total} on the board` : `${board.total} active agents`}
-                ratio={board.total ? board.inProgress / board.total : 0}
-                styles={styles}
-                theme={theme}
-              />
-              <CountStat label="IN PROGRESS" value={board.inProgress} hint="running" styles={styles} />
-              <CountStat
-                label="READY TO START"
-                value={board.readyToStart}
-                hint="waiting on dependencies"
-                styles={styles}
-              />
-              <CountStat
-                label="BLOCKED"
-                value={board.blockedCount}
-                hint="for the loop"
-                valueColor={theme.colors.statusDanger}
-                styles={styles}
-              />
-            </View>
-          )}
 
           <InitiativePanels
             epic={epic}
@@ -1193,88 +1174,6 @@ function Draggable({
   );
 }
 
-function ProgressStat({
-  label,
-  value,
-  hint,
-  ratio,
-  styles,
-  theme,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  ratio: number;
-  styles: ReturnType<typeof createStyles>;
-  theme: PluginSurfaceProps["theme"];
-}) {
-  return (
-    <View style={styles.stat}>
-      <Text style={styles.statLabel}>{label}</Text>
-      <Text style={styles.statValue}>{value}</Text>
-      <View style={styles.barTrack}>
-        <View
-          style={[
-            styles.barFill,
-            {
-              width: `${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%`,
-              backgroundColor: theme.colors.statusSuccess,
-            },
-          ]}
-        />
-      </View>
-      <Text style={styles.statHint}>{hint}</Text>
-    </View>
-  );
-}
-
-function CountStat({
-  label,
-  value,
-  hint,
-  valueColor,
-  styles,
-}: {
-  label: string;
-  value: number;
-  hint: string;
-  valueColor?: string;
-  styles: ReturnType<typeof createStyles>;
-}) {
-  return (
-    <View style={styles.stat}>
-      <Text style={styles.statLabel}>{label}</Text>
-      <Text style={[styles.statValue, valueColor ? { color: valueColor } : null]}>{value}</Text>
-      <Text style={styles.statHint}>{hint}</Text>
-    </View>
-  );
-}
-
-// The four stat tiles' shape while the catalog's first load runs: label, value, hint.
-function StatsSkeleton({
-  styles,
-  theme,
-  compact,
-}: {
-  styles: ReturnType<typeof createStyles>;
-  theme: PluginSurfaceProps["theme"];
-  compact: boolean;
-}) {
-  return (
-    <Skeleton>
-      <View style={styles.stats}>
-        {Array.from({ length: 4 }, (_, i) => (
-          <View key={i} style={styles.stat}>
-            <SkeletonBar theme={theme} width="50%" height={10} />
-            <SkeletonBar theme={theme} width="35%" height={compact ? 22 : 28} />
-            <SkeletonBar theme={theme} width="70%" height={10} />
-          </View>
-        ))}
-      </View>
-    </Skeleton>
-  );
-}
-
 const PREVIEW_LIMIT = 5;
 
 function PreviewList<T>({
@@ -1534,49 +1433,6 @@ function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
     pickerOptionMeta: {
       color: theme.colors.foregroundMuted,
       fontSize: 12,
-    },
-    stats: {
-      flexDirection: "row" as const,
-      flexWrap: "wrap" as const,
-      gap: compact ? 10 : 16,
-      paddingVertical: 8,
-      borderTopWidth: 1,
-      borderBottomWidth: 1,
-      borderColor: theme.colors.border,
-    },
-    stat: {
-      minWidth: compact ? 120 : 160,
-      flexGrow: 1,
-      gap: 4,
-    },
-    statLabel: {
-      color: theme.colors.foregroundMuted,
-      fontSize: 11,
-      letterSpacing: 0.6,
-    },
-    statValue: {
-      color: theme.colors.foreground,
-      fontSize: compact ? 22 : 28,
-      fontWeight: "500" as const,
-    },
-    statHint: {
-      color: theme.colors.foregroundMuted,
-      fontSize: 12,
-    },
-    barTrack: {
-      height: 3,
-      borderRadius: 2,
-      backgroundColor: theme.colors.surface2,
-      overflow: "hidden" as const,
-    },
-    barFill: {
-      height: 3,
-      borderRadius: 2,
-    },
-    blockedBarFill: {
-      height: 3,
-      borderRadius: 2,
-      backgroundColor: theme.colors.statusDanger,
     },
     panel: {
       alignSelf: "stretch" as const,
