@@ -828,7 +828,9 @@ test("a step whose worktree is gone with no PR retries, then blocks past maxRetr
 
 // A repo with a todo story and the loop on; Start creates its workspace through a fake Paseo that
 // records the branch it was asked for.
-async function startNewStory(options: { branch?: string; existing?: string[]; frontmatter?: string } = {}) {
+async function startNewStory(
+  options: { branch?: string; existing?: string[]; frontmatter?: string; pipeline?: Parameters<typeof createInitiativeLoop>[2] } = {},
+) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "loop-start-")));
   const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
   git("init", "-q", "-b", "main");
@@ -858,7 +860,7 @@ async function startNewStory(options: { branch?: string; existing?: string[]; fr
   const initiative = createInitiativeLoop(
     async () => DEFAULT_LOOP_CONFIG,
     async () => FALLBACK_AGENT_CONFIG,
-    noExtras,
+    options.pipeline ?? noExtras,
     async () => "dm",
   );
   const result = await initiative.start(fake.api, { repo: root, initiative: "demo" });
@@ -877,9 +879,16 @@ test("a new story's branch gets -2 when that branch already exists", async () =>
   assert.deepEqual(requested, ["dm/add-search-2"]);
 });
 
-test("a track: diagnose story starts on Diagnose with its Jira key and link", async () => {
+test("a track: diagnose story starts on Diagnose with its Jira key and link and the Plan phase's extras", async () => {
   const url = "https://x.atlassian.net/browse/BUG-7";
-  const { created, meta } = await startNewStory({ frontmatter: `track: diagnose\njira: BUG-7\njira_url: ${url}\n` });
+  const source = tddSource();
+  const phases = DEFAULT_PHASES.map((phase) =>
+    phase.id === "plan" ? { ...phase, extras: [{ name: "tdd", source: source.id }] } : phase,
+  );
+  const { created, meta } = await startNewStory({
+    frontmatter: `track: diagnose\njira: BUG-7\njira_url: ${url}\n`,
+    pipeline: async () => ({ phases, sources: [source] }),
+  });
   assert.equal(created.length, 1);
   assert.equal(created[0].labels["loop-step"], "diagnose");
   assert.match(created[0].title, /Diagnose/);
@@ -887,6 +896,7 @@ test("a track: diagnose story starts on Diagnose with its Jira key and link", as
   assert.equal(meta.step, "diagnose");
   assert.ok(created[0].prompt?.includes("BUG-7"), created[0].prompt);
   assert.ok(created[0].prompt?.includes(url), created[0].prompt);
+  assert.ok(created[0].prompt?.includes("Also use these skills: tdd"), created[0].prompt);
 });
 
 test("a story without a track starts on Plan", async () => {
