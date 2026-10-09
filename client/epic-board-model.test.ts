@@ -1,7 +1,25 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { ContextStatus } from "../shared/context";
 import type { EpicBoard, EpicBoardState, EpicStory } from "../shared/orchestration";
-import { IDLE_POLL_MS, POLL_MS, boardKey, findSelected, pollDelay, showFold, toggleFold } from "./epic-board-model";
+import {
+  IDLE_POLL_MS,
+  POLL_MS,
+  boardKey,
+  contextAgents,
+  edgeTone,
+  emptyLine,
+  findSelected,
+  mergedProgress,
+  nodeContext,
+  nodeKind,
+  pollDelay,
+  sectionAction,
+  sectionLine,
+  sectionNote,
+  showFold,
+  toggleFold,
+} from "./epic-board-model";
 
 function board(state: Partial<EpicBoardState> | null, rest: Partial<EpicBoard> = {}): EpicBoard {
   return {
@@ -91,4 +109,116 @@ test("findSelected is null when nothing matches", () => {
   assert.equal(findSelected([one], { board: "/repo\nnope", story: "S1" }), null);
   assert.equal(findSelected([one], { board: boardKey(one), story: "S9" }), null);
   assert.equal(findSelected([empty], { board: boardKey(empty), story: "S1" }), null);
+});
+
+function at(status: string, rest: Partial<EpicStory> = {}): EpicStory {
+  return { ...story("S1"), status, ci: "", pr: null, ready: false, ...rest } as EpicStory;
+}
+
+test("nodeKind sorts a story into the legend's five kinds", () => {
+  assert.equal(nodeKind(at("merged")), "merged");
+  assert.equal(nodeKind(at("awaiting-approval")), "needs-you");
+  assert.equal(nodeKind(at("blocked")), "needs-you");
+  assert.equal(nodeKind(at("pr-open", { ci: "green" })), "needs-you");
+  assert.equal(nodeKind(at("implementing")), "running");
+  assert.equal(nodeKind(at("todo", { ready: true })), "ready");
+  assert.equal(nodeKind(at("todo", { ready: false })), "waiting");
+});
+
+test("mergedProgress counts merged stories as a whole percent", () => {
+  const stories = [at("merged"), at("merged"), at("implementing"), at("todo"), at("blocked")];
+  assert.deepEqual(mergedProgress(stories), { merged: 2, total: 5, pct: 40 });
+  assert.deepEqual(mergedProgress([]), { merged: 0, total: 0, pct: 0 });
+});
+
+const state = (rest: Partial<EpicBoardState> = {}) => board(rest).state as EpicBoardState;
+
+test("sectionLine reads phase label, title and tracker word", () => {
+  assert.equal(sectionLine(state({ epic: { id: "1", title: "Foundations", dir: "" } })), "Phase 1: Foundations · local");
+  assert.equal(sectionLine(state({ epic: { id: "2", title: "Board", dir: "" }, tracker: "jira" })), "Phase 2: Board · Jira");
+  assert.equal(sectionLine(state({ epic: { id: "", title: "Loose", dir: "" } })), "Loose · local");
+});
+
+test("sectionAction picks the header's one next step", () => {
+  const two = [at("merged"), at("todo", { ready: true })];
+  assert.deepEqual(sectionAction(state({ loop: "on", stories: two }), null), { kind: "stop", label: "Stop" });
+  assert.deepEqual(sectionAction(state({ stories: two }), null), { kind: "start", label: "Start" });
+  const draft = { warnings: [], jira: false, status: "draft" };
+  assert.deepEqual(sectionAction(state({ stories: two, plan: draft }), null), { kind: "plan", label: "View plan" });
+  assert.deepEqual(sectionAction(state({ stories: [], plan: null }), null), { kind: "start-planning", label: "Start planning" });
+  assert.deepEqual(sectionAction(state({ stories: [], plan: draft }), null), { kind: "plan", label: "View plan" });
+  assert.deepEqual(sectionAction(state({ stories: [at("merged")] }), null), { kind: "plan", label: "View plan" });
+  assert.equal(sectionAction(state({ stories: [at("merged")], plan: null }), null), null);
+});
+
+test("sectionAction shows a busy label while its action runs", () => {
+  const two = [at("todo", { ready: true })];
+  assert.equal(sectionAction(state({ loop: "on", stories: two }), "loop-stop:")?.label, "Stopping…");
+  assert.equal(sectionAction(state({ stories: two }), "loop-start:")?.label, "Starting…");
+  assert.equal(sectionAction(state({ stories: [at("merged")] }), "plan-open:")?.label, "Opening…");
+  assert.equal(sectionAction(state({ stories: [], plan: null }), "plan-phase:")?.label, "Starting…");
+  assert.equal(sectionAction(state({ stories: two }), "delete:")?.label, "Start");
+});
+
+test("contextAgents lists the agents of running and blocked stories", () => {
+  const stories = [
+    at("planning", { agent: "a1" }),
+    at("implementing", { agent: "a2" }),
+    at("reviewing", { agent: "a3" }),
+    at("pr-open", { agent: "a4" }),
+    at("blocked", { agent: "a5" }),
+    at("merged", { agent: "m" }),
+    at("todo", { agent: "t" }),
+    at("awaiting-approval", { agent: "w" }),
+    at("implementing", { agent: "" }),
+  ];
+  assert.deepEqual(contextAgents(stories), ["a1", "a2", "a3", "a4", "a5"]);
+});
+
+function status(used: number | null, max: number | null, rest: Partial<ContextStatus["reading"]> = {}): ContextStatus {
+  return {
+    agentId: "a1",
+    reading: { used, max, level: "amber", capability: "full", strategy: "native", ...rest },
+    warned: [],
+    mode: "normal",
+    red: 150_000,
+  };
+}
+
+test("nodeContext turns a reading into the node's $ bar", () => {
+  assert.deepEqual(nodeContext(status(124_000, 200_000)), { pct: 62, level: "amber", act: 75, label: "62%" });
+  assert.equal(nodeContext(status(300_000, 200_000, { level: "red" }))?.pct, 100);
+  assert.equal(nodeContext(status(null, 200_000)), null);
+  assert.equal(nodeContext(status(124_000, null)), null);
+  assert.equal(nodeContext(null), null);
+});
+
+test("edgeTone colours an arrow by its two ends", () => {
+  assert.equal(edgeTone(at("todo"), at("merged")), "success");
+  assert.equal(edgeTone(at("blocked"), at("merged")), "danger");
+  assert.equal(edgeTone(at("todo"), at("blocked")), "danger");
+  assert.equal(edgeTone(at("todo"), at("implementing")), "muted");
+  assert.equal(edgeTone(at("todo"), undefined), "muted");
+});
+
+test("emptyLine asks for a plan, or says one is being written", () => {
+  assert.equal(emptyLine(state({ stories: [], plan: null })), "No stories yet. Plan this initiative to break it into stories.");
+  const draft = { warnings: [], jira: false, status: "draft" };
+  assert.equal(emptyLine(state({ stories: [], plan: draft })), "Planning in progress. Stories appear once the plan is locked.");
+});
+
+test("sectionNote keeps the loop and plan banners as one amber line", () => {
+  const stories = [at("merged"), at("implementing"), at("todo"), at("todo")];
+  assert.equal(
+    sectionNote(state({ loop: "on", stories })),
+    "Running Phase 1: Phase 1: 1 in progress · 1 merged · 2 waiting. Stop only keeps new work from starting.",
+  );
+  assert.equal(
+    sectionNote(state({ stories })),
+    "Planning done. Start runs Redesign phase by phase: each ready story gets its own worktree, and the rest follow as their dependencies merge.",
+  );
+  const draft = { warnings: [], jira: false, status: "draft" };
+  assert.equal(sectionNote(state({ stories, plan: draft })), 'Planning in progress. Say "lock" in the architecture session when the plan is ready.');
+  assert.equal(sectionNote(state({ stories: [], plan: draft })), null);
+  assert.equal(sectionNote(state({ stories: [at("merged")] })), null);
 });
