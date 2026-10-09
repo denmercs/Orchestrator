@@ -46,6 +46,7 @@ import {
 import { withMcpScope } from "./mcp-scope";
 import { installSkills, skillPaths } from "./skill-sources";
 import { commitStory, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
+import { inHoldWindow, usageLimitResumeAt } from "./usage-limit";
 
 // The initiative loop, driven by Paseo events rather than a long-running process:
 //   Start            marks the initiative loop: on and starts every ready story of its active phase.
@@ -59,6 +60,8 @@ import { commitStory, openStoryPr, pushStoryFix, uniqueBranch } from "./story-gi
 //                    session; a session that is gone, closed or errored is replaced by a fresh one. After
 //                    maxRetries the story blocks, and resumes if the step's marker arrives late. A story
 //                    whose worktree is gone goes to its branch's PR.
+//                    A failed turn that hit the plan's usage limit isn't a retry: the story is paused until
+//                    the reset time in the message (an hour on if it names none), then nudged.
 //                    A permission request blocks the story until it's answered.
 //                    A turn you cancel is left alone.
 // The story files are the state: the loop writes status, branch, workspace, agent, pr and ci into
@@ -319,6 +322,7 @@ export function createInitiativeLoop(
         blocked_from: null,
         block_kind: null,
         stalled: null,
+        paused_until: null,
         waiting_on: null,
         ...(extra.attempt ? {} : { retries: null }),
         skill_warnings: warnings.join(" · ") || null,
@@ -444,6 +448,7 @@ export function createInitiativeLoop(
       blocked_from: null,
       retries: null,
       stalled: null,
+      paused_until: null,
       block_kind: null,
     });
     return readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
@@ -515,8 +520,15 @@ export function createInitiativeLoop(
       return { started: startedNow, reason };
     }
     if (!phaseDir) return { started: startedNow, reason };
+    if (inHoldWindow(config.holdFrom, config.holdUntil, new Date())) {
+      return { started: startedNow, reason: `holding new stories from ${config.holdFrom}:00 to ${config.holdUntil}:00` };
+    }
     const merged = new Set(phaseDirs(init).flatMap((dir) => readStoryFiles(dir).filter(isMerged).map((story) => story.id)));
     const stories = readStoryFiles(phaseDir);
+    // A step stopped by the plan's usage limit says the next one would stop too.
+    if (stories.some((story) => Date.parse(story.meta.paused_until ?? "") > Date.now())) {
+      return { started: startedNow, reason: "paused until the usage limit resets" };
+    }
     // A story blocked on a permission request still has its session open, so it keeps its slot.
     const inFlight = stories.filter(
       (story) => ACTIVE.has(story.meta.status ?? "") || story.meta.waiting_on === PERMISSION,
@@ -557,6 +569,10 @@ export function createInitiativeLoop(
     const state = readText(stateFile(meta.worktree));
     // Any other marker is the step's own answer, and reconcile acts on it.
     if (readMarker(state).marker !== `${step}-running`) return;
+    // Stopped by the plan's usage limit: wait out the reset (and any hold), then nudge without counting a retry.
+    const pausedUntil = Date.parse(meta.paused_until ?? "");
+    const resuming = !Number.isNaN(pausedUntil);
+    if (resuming && (Date.now() < pausedUntil || inHoldWindow(config.holdFrom, config.holdUntil, new Date()))) return;
     const session = await api.agents
       .ref(meta.agent)
       .refresh()
@@ -565,18 +581,23 @@ export function createInitiativeLoop(
     if (session === undefined) return;
     if (session?.status === "running" || session?.status === "initializing") return;
     const dead = !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
-    if (!dead && !meta.stalled) return;
+    if (!dead && !meta.stalled && !resuming) return;
     const why = dead
       ? session?.lastError
         ? `Its session failed: ${session.lastError}.`
         : "Its session is gone."
-      : meta.stalled ?? "";
+      : meta.stalled || "The usage limit has reset.";
+    if (resuming && !dead) {
+      writeFrontmatter(story.path, { paused_until: null, stalled: null });
+      await api.agents.ref(meta.agent).send(nudgePrompt(why));
+      return;
+    }
     const retries = Number(meta.retries) || 0;
     if (retries >= config.maxRetries) {
       block(story, `${STEP_LABELS[step]}: ${why} Gave up after ${retries} ${retries === 1 ? "retry" : "retries"}.`, "retry-limit");
       return;
     }
-    writeFrontmatter(story.path, { retries: retries + 1, stalled: null });
+    writeFrontmatter(story.path, { retries: retries + 1, stalled: null, paused_until: null });
     if (!dead) {
       await api.agents.ref(meta.agent).send(nudgePrompt(why));
       return;
@@ -750,6 +771,7 @@ export function createInitiativeLoop(
           blocked_reason: null,
           blocked_from: null,
           stalled: null,
+          paused_until: null,
           retries: null,
         });
       });
@@ -775,10 +797,17 @@ export function createInitiativeLoop(
         if (labels["loop-step"] !== story.meta.step) return;
         if ((labels["loop-cycle"] ?? "") !== (story.meta.cycle ?? "")) return;
         if ((labels["loop-cycles"] ?? "") !== (story.meta.cycles ?? "")) return;
-        // A failed turn is retried by the tick, which gives a rate limit or outage time to clear.
+        // A failed turn is retried by the tick, which gives a rate limit or outage time to clear. One
+        // that hit the plan's usage limit waits for the reset instead, and isn't a retry.
         if (outcome.kind === "failed") {
           if (story.meta.agent === event.agent.id && SUPERVISED.has(story.meta.status ?? "")) {
-            writeFrontmatter(story.path, { stalled: `Its last turn failed: ${outcome.error.message}` });
+            const resumeAt = usageLimitResumeAt(outcome.error.message, new Date());
+            writeFrontmatter(
+              story.path,
+              resumeAt
+                ? { paused_until: resumeAt.toISOString(), stalled: null }
+                : { stalled: `Its last turn failed: ${outcome.error.message}` },
+            );
           }
           return;
         }

@@ -578,6 +578,100 @@ test("a failed turn marks the step stalled; the tick nudges that session once an
   assert.equal(storyMeta(story).status, "implementing");
 });
 
+const limitMessage = (resets: Date) => `Claude AI usage limit reached|${Math.floor(resets.getTime() / 1000)}`;
+
+test("a turn that hit the usage limit pauses the story until the reset: no nudge, no retry, no new story", async () => {
+  const { story, labels } = fixture("a1");
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+
+  await initiative.onTurnEnded(api, ended("a1", { kind: "failed", error: { message: limitMessage(new Date(Date.now() + 3_600_000)) } }));
+  assert.equal(storyMeta(story).stalled, undefined);
+  assert.ok(Date.parse(storyMeta(story).paused_until ?? "") > Date.now());
+
+  await initiative.tick();
+  await initiative.tick();
+
+  assert.deepEqual([sent, created], [[], []]);
+  assert.equal(storyMeta(story).retries, undefined);
+  assert.equal(storyMeta(story).status, "implementing");
+});
+
+test("once the reset has passed, the tick nudges the paused session without counting a retry", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { retries: 1, paused_until: new Date(Date.now() - 1000).toISOString() });
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+  await initiative.tick();
+
+  assert.deepEqual(sent, [{ id: "a1", text: nudgePrompt("The usage limit has reset.") }]);
+  assert.deepEqual(created, []);
+  assert.equal(storyMeta(story).paused_until, undefined);
+  assert.equal(storyMeta(story).retries, "1");
+});
+
+test("a paused story at maxRetries still resumes: the pause isn't a retry", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { retries: 2, paused_until: new Date(Date.now() - 1000).toISOString() });
+  const { api, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.equal(sent.length, 1);
+  assert.equal(storyMeta(story).status, "implementing");
+});
+
+test("a pause that ended inside the hold window waits for the window to close", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { paused_until: new Date(Date.now() - 1000).toISOString() });
+  const { api, sent } = fakePaseo([{ id: "a1", labels }]);
+  const hour = new Date().getHours();
+  const holding = createInitiativeLoop(
+    async () => ({ ...DEFAULT_LOOP_CONFIG, holdFrom: hour, holdUntil: (hour + 2) % 24 }),
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+  );
+  holding.rememberPaseo(api);
+
+  await holding.tick();
+  assert.deepEqual(sent, []);
+  assert.ok(storyMeta(story).paused_until);
+
+  const open = createInitiativeLoop(
+    async () => ({ ...DEFAULT_LOOP_CONFIG, holdFrom: (hour + 1) % 24, holdUntil: (hour + 2) % 24 }),
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+  );
+  open.rememberPaseo(api);
+  await open.tick();
+  assert.equal(sent.length, 1);
+});
+
+test("inside the hold window no new story starts, while a step already running is left alone", async () => {
+  const { story, labels } = fixture("a1");
+  const second = join(dirname(story), "02-next.md");
+  writeFileSync(second, "---\nid: S2\ntitle: Next\nstatus: todo\n---\n\n## Goal\n\nLater.\n", "utf8");
+  const { api, created } = fakePaseo([{ id: "a1", labels, status: "running" }]);
+  const hour = new Date().getHours();
+  const holding = createInitiativeLoop(
+    async () => ({ ...DEFAULT_LOOP_CONFIG, parallel: 2, holdFrom: hour, holdUntil: (hour + 2) % 24 }),
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+  );
+  holding.rememberPaseo(api);
+
+  await holding.tick();
+
+  assert.deepEqual(created, []);
+  assert.equal(storyMeta(second).status, "todo");
+  assert.equal(storyMeta(story).status, "implementing");
+});
+
 test("a turn that ends without the step's marker is nudged by the tick", async () => {
   const { story, labels } = fixture("a1");
   const { api, sent } = fakePaseo([{ id: "a1", labels }]);
@@ -670,7 +764,7 @@ test("a step blocked by the retry limit that then writes implement-done is resum
   writeFileSync(join(worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nimplement-done\n", "utf8");
   await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as never);
 
-  assert.equal(git("log", "--format=%s"), "S1: Implement");
+  assert.equal(git("log", "--format=%s"), "Demo story");
   assert.deepEqual(created.map((agent) => agent.labels["loop-step"]), ["review"]);
   const meta = storyMeta(story);
   assert.deepEqual(
