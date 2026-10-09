@@ -24,6 +24,7 @@ import { initiativeStatus, stepBar, type InitiativeBadge, type Segment as StepSe
 import { harnessSettings } from "../shared/settings";
 import { startInitiativeLoop, stopInitiativeLoop } from "../shared/initiative-loop";
 import { LoadingState } from "./loading-state";
+import { SelectedStoryPanel } from "./selected-story-panel";
 import { SessionLog } from "./session-log";
 import { SkeletonBar, SkeletonCards, SkeletonRows } from "./skeleton";
 import {
@@ -265,6 +266,9 @@ export type EpicBoards = {
   // Unfolds a panel and opens one of its stories, by keys (an alert names them without the board).
   reveal(board: string, story: string): void;
   refresh(): Promise<void>;
+  // Wide layouts show the selected story inline; its drawer opens only on Details.
+  details: boolean;
+  showDetails(open: boolean): void;
 };
 
 // The initiative boards as data: the latest read, polled, plus which story is open and which
@@ -278,6 +282,7 @@ export function useEpicBoards(): EpicBoards {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
+  const [details, setDetails] = useState(false);
 
   // Actions refresh on their own, so a slow older read can land after a newer one; only the
   // newest result is kept (a deleted initiative must not come back).
@@ -326,6 +331,7 @@ export function useEpicBoards(): EpicBoards {
 
   const select = useCallback((board: EpicBoard, story: string | null) => {
     setSelected(story ? { board: boardKey(board), story } : null);
+    if (!story) setDetails(false);
   }, []);
   const toggle = useCallback((board: EpicBoard) => {
     setFolded((current) => toggleFold(current, boardKey(board)));
@@ -335,13 +341,14 @@ export function useEpicBoards(): EpicBoards {
     setSelected({ board, story });
   }, []);
 
-  return { boards, error, selected, select, folded, toggleFold: toggle, reveal, refresh };
+  return { boards, error, selected, select, folded, toggleFold: toggle, reveal, refresh, details, showDetails: setDetails };
 }
 
 type ViewProps = { epic: EpicBoards; theme: Theme; compact: boolean; navigation: Navigation };
 
 // One panel per initiative, for the dashboard's scroll view, or the picker while choosing a phase.
-export function InitiativePanels({ epic, theme, compact, navigation }: ViewProps) {
+// `onEditPolicy` opens where the context policy is edited (the Story pipeline drawer).
+export function InitiativePanels({ epic, theme, compact, navigation, onEditPolicy }: ViewProps & { onEditPolicy?(): void }) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   const settings = useSettings(harnessSettings);
   const toast = useToast();
@@ -420,6 +427,8 @@ export function InitiativePanels({ epic, theme, compact, navigation }: ViewProps
             onSelect={(id) => epic.select(board, id)}
             onPicker={() => setEditing(true)}
             onChanged={() => void refresh()}
+            onDetails={() => epic.showDetails(true)}
+            onEditPolicy={onEditPolicy}
           />
         );
       })}
@@ -499,11 +508,11 @@ function ContextBarView({ context, theme, styles }: { context: NodeContext; them
 }
 
 // The selected story's drawer, mounted at the screen root so it covers the whole surface. Renders
-// nothing while no story is selected.
+// nothing while no story is selected; on wide layouts only once the inline panel's Details asks.
 export function StoryDrawer({ epic, theme, compact, navigation }: ViewProps) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   const open = findSelected(epic.boards, epic.selected);
-  if (!open?.board.state) return null;
+  if (!open?.board.state || (!compact && !epic.details)) return null;
   const { board, story } = open;
   return (
     <StoryDrawerView
@@ -511,7 +520,7 @@ export function StoryDrawer({ epic, theme, compact, navigation }: ViewProps) {
       state={open.board.state}
       theme={theme}
       styles={styles}
-      onClose={() => epic.select(board, null)}
+      onClose={() => (compact ? epic.select(board, null) : epic.showDetails(false))}
       onSelect={(id) => epic.select(board, id)}
       navigation={navigation}
     />
@@ -532,6 +541,8 @@ function InitiativePanel({
   onSelect,
   onPicker,
   onChanged,
+  onDetails,
+  onEditPolicy,
 }: {
   board: EpicBoard;
   theme: Theme;
@@ -544,6 +555,8 @@ function InitiativePanel({
   onSelect(id: string | null): void;
   onPicker(): void;
   onChanged(): void;
+  onDetails(): void;
+  onEditPolicy?(): void;
 }) {
   const removeInitiative = useRpc(deleteEpicInitiative);
   const openPlan = useRpc(openPhasePlanRpc);
@@ -733,6 +746,7 @@ function InitiativePanel({
   const left = progress.total - progress.merged;
   const graph = edgesFor(stories, selected, theme);
   const initiative = state.initiative || "Initiative";
+  const selectedStory = stories.find((item) => item.id === selected) ?? null;
   const badge = initiativeStatus(state);
   const badgeTone = BADGE_TONES[badge](theme);
   const note = sectionNote(state);
@@ -945,33 +959,48 @@ function InitiativePanel({
                 {list}
               </>
             ) : (
-              <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.graphScroll}>
-                <View style={{ width: graph.width, height: graph.height }}>
-                  {graph.segments.map((s, i) => (
-                    <View
-                      key={`s${i}`}
-                      pointerEvents="none"
-                      style={{
-                        position: "absolute",
-                        left: s.x,
-                        top: s.y,
-                        width: s.w,
-                        height: s.h,
-                        backgroundColor: s.color,
-                        opacity: s.hot || s.failed ? 1 : 0.75,
-                      }}
-                    />
-                  ))}
-                  {graph.arrows.map((a, i) => (
-                    <View
-                      key={`a${i}`}
-                      pointerEvents="none"
-                      style={[styles.arrowHead, { left: a.x, top: a.y - 5, borderLeftColor: a.color }]}
-                    />
-                  ))}
-                  {stories.map((item) => card(item, graph.pos.get(item.id)))}
-                </View>
-              </ScrollView>
+              <>
+                <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.graphScroll}>
+                  <View style={{ width: graph.width, height: graph.height }}>
+                    {graph.segments.map((s, i) => (
+                      <View
+                        key={`s${i}`}
+                        pointerEvents="none"
+                        style={{
+                          position: "absolute",
+                          left: s.x,
+                          top: s.y,
+                          width: s.w,
+                          height: s.h,
+                          backgroundColor: s.color,
+                          opacity: s.hot || s.failed ? 1 : 0.75,
+                        }}
+                      />
+                    ))}
+                    {graph.arrows.map((a, i) => (
+                      <View
+                        key={`a${i}`}
+                        pointerEvents="none"
+                        style={[styles.arrowHead, { left: a.x, top: a.y - 5, borderLeftColor: a.color }]}
+                      />
+                    ))}
+                    {stories.map((item) => card(item, graph.pos.get(item.id)))}
+                  </View>
+                </ScrollView>
+                {selectedStory ? (
+                  <SelectedStoryPanel
+                    repo={repo}
+                    state={state}
+                    story={selectedStory}
+                    theme={theme}
+                    compact={compact}
+                    navigation={navigation}
+                    onDetails={onDetails}
+                    onEditPolicy={onEditPolicy}
+                    onChanged={onChanged}
+                  />
+                ) : null}
+              </>
             )}
           </View>
         )}
