@@ -8,8 +8,8 @@ import { fileURLToPath } from "node:url";
 
 const HOME = homedir();
 export const TELEMETRY_FILE = join(HOME, ".orchestrator", "context-telemetry.jsonl");
-const AGENTS_DIR = join(HOME, ".paseo", "agents");
-const PROJECTS_DIR = join(HOME, ".claude", "projects");
+export const AGENTS_DIR = join(HOME, ".paseo", "agents");
+export const PROJECTS_DIR = join(HOME, ".claude", "projects");
 export const OUT_FILE = join(tmpdir(), "s11-agents.json");
 
 // S6's baseline window ends with the last row measured on 2026-10-08.
@@ -30,10 +30,10 @@ export function readTelemetry(file = TELEMETRY_FILE) {
   return existsSync(rotated) ? [...readJsonl(rotated), ...rows] : rows;
 }
 
-function indexAgentRecords() {
+export function indexAgentRecords(agentsDir = AGENTS_DIR) {
   const byId = new Map();
-  for (const dir of readdirSync(AGENTS_DIR)) {
-    const path = join(AGENTS_DIR, dir);
+  for (const dir of readdirSync(agentsDir)) {
+    const path = join(agentsDir, dir);
     if (!statSync(path).isDirectory()) continue;
     for (const f of readdirSync(path)) {
       if (!f.endsWith(".json")) continue;
@@ -50,12 +50,18 @@ function indexAgentRecords() {
 
 const projectSlug = (cwd) => cwd.replace(/[/.]/g, "-");
 
+export function transcriptPath(rec, projectsDir = PROJECTS_DIR) {
+  const cwd = rec?.cwd ?? null;
+  const sessionId = rec?.persistence?.sessionId ?? null;
+  return cwd && sessionId ? join(projectsDir, projectSlug(cwd), `${sessionId}.jsonl`) : null;
+}
+
 // One entry per API call (message id); the transcript repeats a message per content block, last one wins.
-function readCalls(file) {
+export function readCalls(file, cutoff = AFTER_END) {
   const calls = new Map();
   for (const e of readJsonl(file)) {
     const u = e.message?.usage;
-    if (e.type !== "assistant" || !u || !e.message.id || e.timestamp > AFTER_END) continue;
+    if (e.type !== "assistant" || !u || !e.message.id || e.timestamp > cutoff) continue;
     calls.set(e.message.id, {
       at: e.timestamp,
       model: e.message.model,
@@ -122,11 +128,11 @@ function phase2Tags(prompt, model) {
   };
 }
 
-function agentRecord(id, rec) {
+export function agentRecord(id, rec, { projectsDir = PROJECTS_DIR, cutoff = AFTER_END } = {}) {
   const labels = rec?.labels ?? {};
   const cwd = rec?.cwd ?? null;
   const sessionId = rec?.persistence?.sessionId ?? null;
-  const transcript = cwd && sessionId ? join(PROJECTS_DIR, projectSlug(cwd), `${sessionId}.jsonl`) : null;
+  const transcript = transcriptPath(rec, projectsDir);
   const hasTranscript = transcript ? existsSync(transcript) : false;
   const initiative = labels["loop-initiative"] ?? null;
   const model = rec?.config?.model ?? rec?.persistence?.metadata?.model ?? null;
@@ -140,14 +146,23 @@ function agentRecord(id, rec) {
     initiativeShort: initiative ? (SHORT[initiative] ?? initiative) : null,
     story: labels["loop-story"] ?? null,
     step: labels["loop-step"] ?? null,
+    repo: labels["loop-repo"] ?? null,
+    round: labels["loop-round"] != null ? Number(labels["loop-round"]) : null,
     cycle: labels["loop-cycle"] != null ? Number(labels["loop-cycle"]) : null,
     model,
     sessionId,
     transcript: hasTranscript ? transcript : null,
-    calls: hasTranscript ? readCalls(transcript) : [],
+    calls: hasTranscript ? readCalls(transcript, cutoff) : [],
     tags: hasTranscript ? phase2Tags(firstPrompt(transcript), model) : null,
     cycleText: hasTranscript && labels["loop-step"] === "implement" ? cycleText(transcript, labels["loop-cycle"]) ?? promptCycleLine(transcript) : null,
   };
+}
+
+// Every agent record with a loop-step label and loop-repo = repo, created at or before `until`; not limited to telemetry rows.
+export function loopAgents({ agentsDir = AGENTS_DIR, projectsDir = PROJECTS_DIR, repo, until = AFTER_END } = {}) {
+  return [...indexAgentRecords(agentsDir).values()]
+    .filter((r) => r.labels?.["loop-step"] && r.labels["loop-repo"] === repo && (!r.createdAt || r.createdAt <= until))
+    .map((r) => agentRecord(r.id, r, { projectsDir, cutoff: until }));
 }
 
 export function load() {
