@@ -66,6 +66,8 @@ const pipelineValues = z.object({
   enabled: z.boolean().default(false),
   phases: z.array(phase).default(DEFAULT_PHASES),
   reviewRounds: z.number().int().min(1).max(20).default(3),
+  // Fix CI attempts per story PR before the pipeline stops and leaves it to you.
+  maxFixes: z.number().int().min(1).max(20).default(3),
   closeOnMerge: z.boolean().default(true),
   sources: z.array(source).default([]),
 });
@@ -275,22 +277,29 @@ export type PhasePromptOptions = {
   plan?: string;
   branch?: string;
   base?: string;
+  // Fix CI: the failed checks and their log summaries.
+  failing?: string;
 };
 
 export const DONE_DESCRIPTION =
   "No agent. The plugin commits anything left, pushes the branch and opens the PR from .harness/pr-body.md, then waits for you to merge.";
 
+function skillNames(phase: Phase) {
+  const skills = phaseSkills(phase);
+  return [skills.runs?.name, ...skills.extras.map((e) => e.name)]
+    .filter((name): name is string => Boolean(name))
+    .map((name) => ({ name }));
+}
+
 export function phasePrompt(phase: Phase, ticket: Ticket, options: PhasePromptOptions = {}) {
   if (phase.id === "done") return DONE_DESCRIPTION;
-  const skills = phaseSkills(phase);
-  const names = [skills.runs?.name, ...skills.extras.map((e) => e.name)].filter((name): name is string => Boolean(name));
   const story = pipelineStory(ticket, options.branch, options.base);
   const lines = [
     stepPrompt(phase.id, story, {
       round: options.round ?? 1,
       cycle: options.cycle,
       plan: options.plan,
-      skills: names.map((name) => ({ name })),
+      skills: skillNames(phase),
     }),
   ];
   if (phase.id === "plan" && phase.then === "auto") {
@@ -300,6 +309,18 @@ export function phasePrompt(phase: Phase, ticket: Ticket, options: PhasePromptOp
     lines.push("", "Before writing your marker, summarise the result and wait for the user to say go.");
   }
   return lines.join("\n");
+}
+
+// Fix CI is not a drawer phase: the plugin starts it when a story PR's checks fail. Like the initiative
+// loop's Fix CI (STEP_PHASES), it loads the Implement phase's skills.
+export const FIX_CI = { id: "fix", label: "Fix CI" } as const;
+
+export function fixPrompt(implement: Phase, ticket: Ticket, options: PhasePromptOptions = {}) {
+  return stepPrompt("fix", pipelineStory(ticket, options.branch, options.base), {
+    round: options.round ?? 1,
+    failing: options.failing,
+    skills: skillNames(implement),
+  });
 }
 
 export function readStatus(stateMarkdown: string) {

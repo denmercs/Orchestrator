@@ -33,7 +33,7 @@ Plan ──you approve──► Implement ──► Review ──pass──► P
 - **Plan** waits for you. Question it, push back, or approve it.
 - **Implement** runs one fresh agent per checklist item, test-first. The plugin commits each one.
 - **Review** is a fresh critic that checks correctness, security, conventions and the full test gate.
-- **PR and CI** need no agent. The plugin pushes, opens the PR and polls checks every 2 minutes.
+- **PR and CI** need no agent. The plugin pushes, opens the PR and polls checks every 2 minutes. A red check starts a fresh Fix CI agent, and the plugin pushes its fix. The Board's Story pipeline watches its PRs the same way.
 - After a merge the next ready story starts. When a phase is done, the loop moves on to the next phase.
 
 If an agent stalls, dies or waits on a permission, the loop nudges it, restarts it or blocks the story with a reason. Work an agent finds outside its story becomes a new story. The agent doesn't do it in place.
@@ -92,6 +92,7 @@ Also planned: Kiro and Cursor as first-class providers.
 | Folder layout | `server/harness-layout.ts` |
 | Plan page rendering and serving | `server/plan-render.ts`, `server/plan-server.ts` |
 | Context meter and telemetry | `shared/context-meter.ts`, `server/context-watch.ts`, `server/context-telemetry.ts` |
+| CI watch (both loops) | `server/ci-watch.ts`, `server/pr-checks.ts` |
 | Gates and step bar | `shared/gates.ts`, `shared/story-steps.ts` |
 | Skills drawer and sources | `server/skill-sources.ts`, `shared/pipeline.ts` |
 

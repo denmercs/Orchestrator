@@ -19,9 +19,18 @@ const ghReply = join(home, "gh-reply.json");
 process.env.GH_BIN = join(home, "gh");
 writeFileSync(process.env.GH_BIN, `#!/bin/sh\n[ -f "${ghReply}" ] && cat "${ghReply}" || exit 1\n`, "utf8");
 chmodSync(process.env.GH_BIN, 0o755);
-const ghPr = (state: string | null) => {
-  if (state) writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid: "abc" }), "utf8");
+const ghPr = (state: string | null, headRefOid = "abc", statusCheckRollup: unknown[] = []) => {
+  if (state) writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid, statusCheckRollup }), "utf8");
   else rmSync(ghReply, { force: true });
+};
+const failedCheck = {
+  __typename: "CheckRun",
+  name: "test",
+  workflowName: "CI",
+  status: "COMPLETED",
+  conclusion: "FAILURE",
+  detailsUrl: "https://gh/actions/runs/9/job/1",
+  completedAt: "2026-10-08T12:00:00Z",
 };
 const { createInitiativeLoop, RESUME_LINE, RESTART_LINE, nudgePrompt } = await import("./initiative-loop");
 
@@ -799,6 +808,34 @@ test("a dead subagent-cycles parent comes back as a parent with only the open cy
   assert.match(created[0].prompt ?? "", /Cycle 2 — Warns/);
   assert.doesNotMatch(created[0].prompt ?? "", /Cycle 1 — Reads/);
   assert.equal(storyMeta(story).cycles, "subagents");
+});
+
+test("an open PR's failing head gets one Fix CI agent; a new failing head gets the next; past maxFixes it blocks", async (t) => {
+  t.after(() => ghPr(null));
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { status: "pr-open", step: "pr", agent: null, pr: 45, ci: "pending" });
+  const { api, created } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  ghPr("OPEN", "abc", [failedCheck]);
+  await initiative.tick();
+  await initiative.tick();
+  assert.deepEqual(created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"]]), [["fix", "1"]]);
+  assert.match(created[0].prompt ?? "", /CI \/ test/);
+  assert.deepEqual([storyMeta(story).ci, storyMeta(story).fixed_sha, storyMeta(story).fix_attempts], ["failing", "abc", "1"]);
+
+  writeFrontmatter(story, { fix_attempts: DEFAULT_LOOP_CONFIG.maxFixes - 1, status: "pr-open" });
+  ghPr("OPEN", "def", [failedCheck]);
+  await initiative.tick();
+  assert.equal(created.length, 2);
+  writeFrontmatter(story, { status: "pr-open" });
+
+  ghPr("OPEN", "ghi", [failedCheck]);
+  await initiative.tick();
+  assert.equal(created.length, 2);
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(storyMeta(story).blocked_reason, `CI still failing after ${DEFAULT_LOOP_CONFIG.maxFixes} fix attempts: CI / test`);
 });
 
 test("a step whose worktree is gone and whose PR merged is recorded merged and its workspace archived", async (t) => {

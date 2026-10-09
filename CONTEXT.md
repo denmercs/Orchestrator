@@ -169,6 +169,19 @@ How the initiative loop keeps a step moving with no agent watching it. Code: `su
 
 _Avoid_: watchdog, heartbeat (for supervision); hung, frozen (for stalled).
 
+## CI watch
+
+How a story PR's checks are followed until they pass, with no agent watching. Code: `ciAction` in `server/ci-watch.ts`, used by both the initiative loop (`watchPr`) and the Story pipeline (`watchPipelinePrs`), each on the 2-minute tick. `prStatus` in `server/pr-checks.ts` reads the PR; `ciAction` decides from it, the **CI watch record** (`fixedSha`, `attempts`) and the `maxFixes` setting:
+
+- **merged** or **closed**: the watch ends.
+- **wait**: CI is pending, green or has no checks, or the head that failed already has a Fix CI agent (`fixedSha` is the head).
+- **fix**: a failing head not tried yet starts a fresh **Fix CI** agent with the failure report (`failureReport`: the failed checks and their trimmed logs). Its `fix-done` makes the plugin commit and push, which gives CI a new head to check.
+- **give-up**: a new failing head after `maxFixes` attempts. The initiative loop blocks the story; the pipeline writes `ci-failed` and the reason to `## Status`.
+
+The initiative loop keeps the record in the story's frontmatter (`fixed_sha`, `fix_attempts`) and its `maxFixes` in the loop settings (default 3). The pipeline keeps it in the worktree's `.harness/ci.json` (`pr`, `url`, `fixedSha`, `attempts`, and `done` once the watch ends), written when the plugin opens the PR, and its `maxFixes` in the pipeline settings (default 3, on the drawer's Done row). Fix CI is not a drawer phase: its agent is labelled `phase: fix` and loads the Implement phase's extras.
+
+_Avoid_: CI babysitter, CI subscriber, retry (that is Loop supervision).
+
 ## Alerts bell
 
 The bell in the header that lists the current gates, one row per Gate, with a badge showing the gate count. Clicking a row opens that story on the epic board (`gate.board`, `gate.storyId`). Its alerts are gates and nothing else; context-meter warnings stay on the Context pill and are never in the bell.

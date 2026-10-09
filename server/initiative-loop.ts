@@ -24,6 +24,7 @@ import {
   slugOf,
 } from "./harness-layout";
 import { briefTag, installBrief } from "./brief-install";
+import { ciAction } from "./ci-watch";
 import { failureReport, prForBranch, prStatus } from "./pr-checks";
 import { missingPaths, planPaths } from "./plan-paths";
 import {
@@ -482,27 +483,26 @@ export function createInitiativeLoop(
     const cwd = meta.worktree && existsSync(meta.worktree) ? meta.worktree : init.root;
     const pr = await prStatus(cwd, meta.pr || meta.branch || "");
     if (!pr) return;
-    if (pr.state === "merged") {
+    const action = ciAction(pr, { fixedSha: meta.fixed_sha ?? null, attempts: Number(meta.fix_attempts) || 0 }, config.maxFixes);
+    if (action.kind === "merged") {
       writeFrontmatter(story.path, { status: "merged", ci: null, agent: null });
       if (meta.workspace) await api.workspaces.archive(meta.workspace).catch(() => undefined);
       refreshInitiativeIndex(init.dir);
       return;
     }
-    if (pr.state === "closed") {
+    if (action.kind === "closed") {
       block(story, `PR #${pr.number} was closed without merging.`);
       return;
     }
-    const ci = pr.state === "failing" ? "failing" : pr.state === "green" ? "green" : pr.state === "no-checks" ? "none" : "pending";
-    if (meta.ci !== ci) writeFrontmatter(story.path, { ci });
-    if (pr.state !== "failing" || meta.fixed_sha === pr.headSha || initiativeLoopState(init.dir) !== "on") return;
-    const fixes = Number(meta.fix_attempts) || 0;
-    if (fixes >= config.maxFixes) {
-      block(story, `CI still failing after ${fixes} fix attempts: ${pr.failing.map((check) => check.name).join(", ")}`);
+    if (meta.ci !== action.ci) writeFrontmatter(story.path, { ci: action.ci });
+    if (action.kind === "wait" || initiativeLoopState(init.dir) !== "on") return;
+    if (action.kind === "give-up") {
+      block(story, action.reason);
       return;
     }
-    writeFrontmatter(story.path, { fixed_sha: pr.headSha, fix_attempts: fixes + 1 });
+    writeFrontmatter(story.path, { fixed_sha: action.headSha, fix_attempts: action.attempt });
     const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
-    await startStep(api, config, init, phaseDir, fresh, "fix", fixes + 1, { failing: await failureReport(cwd, pr.failing) });
+    await startStep(api, config, init, phaseDir, fresh, "fix", action.attempt, { failing: await failureReport(cwd, pr.failing) });
   }
 
   // Fills free slots in the active phase with ready stories.
