@@ -265,3 +265,24 @@ test("storyCost sums the last cost of each of the story's agents", () => {
   assert.equal(storyCost(rows.slice(3, 5), S11), null);
   assert.equal(storyCost([], S11), null);
 });
+
+test("summariseTelemetry sums each agent's last explore per step and counts null as unknown", async () => {
+  const file = join(root, "explore.jsonl");
+  const count = (reads: number, files: number, chars: number, edited: boolean) => ({ reads, searches: 1, files, chars, edited });
+  const rows: TelemetryRow[] = [
+    row("2026-10-01T10:00:00.000Z", "a1", 1, "turn", { step: "plan", explore: count(2, 2, 100, false) }),
+    row("2026-10-01T10:01:00.000Z", "a1", 1, "turn", { step: "plan", explore: count(5, 3, 400, true) }),
+    row("2026-10-01T10:02:00.000Z", "a2", 1, "turn", { step: "plan", explore: count(1, 1, 50, false) }),
+    row("2026-10-01T10:03:00.000Z", "a3", 1, "turn", { step: "plan", explore: null }),
+    row("2026-10-01T10:04:00.000Z", "a4", 1, "turn", { step: "implement", explore: count(7, 6, 900, true) }),
+    row("2026-10-01T10:05:00.000Z", "a5", 1, "turn", { step: "review" }),
+    row("2026-10-01T10:06:00.000Z", "a2", 1, "warning", { step: "plan" }),
+  ];
+  for (const r of rows) await recordTelemetry(r, file);
+
+  const { byStep } = await summariseTelemetry(null, file);
+  assert.deepEqual(byStep.plan.explore, { agents: 2, reads: 6, searches: 2, files: 4, chars: 450, edited: 1, unknown: 1 });
+  assert.deepEqual(byStep.implement.explore, { agents: 1, reads: 7, searches: 1, files: 6, chars: 900, edited: 1, unknown: 0 });
+  // Rows written before S1 have no explore, so the step has none.
+  assert.equal("explore" in byStep.review, false);
+});

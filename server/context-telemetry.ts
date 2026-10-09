@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ContextSummary } from "../shared/context";
+import type { Explore } from "../shared/exploration";
 
 // Context telemetry (see CONTEXT.md, "Telemetry row"): one JSON line per event, read back as
 // totals for the dashboard card. `provider` is recorded for analysis only and never branched on.
@@ -54,6 +55,9 @@ export type TelemetryRow = {
   initiative?: string | null;
   // The session's cumulative cost at this row; absent before S10, null when the provider reports none.
   costUsd?: number | null;
+  // On `turn` rows of a loop step, from S1 on: what the step read before its first code edit, summed
+  // over the agent's turns so far. null when the watch lost the count (daemon restart mid-step).
+  explore?: Explore | null;
 };
 
 // Appends go through one chain so concurrent turn ends never interleave a line.
@@ -207,6 +211,8 @@ export async function summariseTelemetry(
   const overThreshold = new Set<string>();
   const stepModels = new Map<string, Set<string>>();
   const storyModels = new Map<string, Set<string>>();
+  // Per step, each agent's last `explore` (null when its count was lost).
+  const stepExplore = new Map<string, Map<string, Explore | null>>();
   for (const row of rows) {
     sessions.add(row.agentId);
     switch (row.event) {
@@ -219,6 +225,11 @@ export async function summariseTelemetry(
           const models = stepModels.get(row.step) ?? new Set<string>();
           models.add(row.model ?? "unknown");
           stepModels.set(row.step, models);
+          if (row.explore !== undefined) {
+            const agents = stepExplore.get(row.step) ?? new Map<string, Explore | null>();
+            agents.set(row.agentId, row.explore);
+            stepExplore.set(row.step, agents);
+          }
         }
         if (row.story != null) {
           const key = `${row.initiative ?? "unknown"}/${row.story}`;
@@ -253,6 +264,22 @@ export async function summariseTelemetry(
   summary.sessions = sessions.size;
   summary.sessionsOverThreshold = overThreshold.size;
   for (const [step, models] of stepModels) summary.byStep[step].models = [...models].sort();
+  for (const [step, agents] of stepExplore) {
+    const total = { agents: 0, reads: 0, searches: 0, files: 0, chars: 0, edited: 0, unknown: 0 };
+    for (const explore of agents.values()) {
+      if (explore === null) {
+        total.unknown += 1;
+        continue;
+      }
+      total.agents += 1;
+      total.reads += explore.reads;
+      total.searches += explore.searches;
+      total.files += explore.files;
+      total.chars += explore.chars;
+      if (explore.edited) total.edited += 1;
+    }
+    summary.byStep[step].explore = total;
+  }
   for (const [key, models] of storyModels) summary.byStory[key].models = [...models].sort();
 
   const costs = new Map<string, { at: string; costUsd: number }[]>();

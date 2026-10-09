@@ -45,7 +45,28 @@ export const contextSummary = z.object({
   tokensAvoided: z.number(),
   // Per loop step, over turn rows with a step: turns, Σ used (context tokens, not billed), and the
   // sorted distinct models ("unknown" when a row has none).
-  byStep: z.record(z.string(), z.object({ turns: z.number(), tokens: z.number(), models: z.array(z.string()) })),
+  // `explore` (S1) sums each agent's last exploration count for the step: `agents` with a count,
+  // `edited` the agents that reached a code edit, `unknown` the agents whose count was lost. Absent
+  // when no row of the step carries one.
+  byStep: z.record(
+    z.string(),
+    z.object({
+      turns: z.number(),
+      tokens: z.number(),
+      models: z.array(z.string()),
+      explore: z
+        .object({
+          agents: z.number(),
+          reads: z.number(),
+          searches: z.number(),
+          files: z.number(),
+          chars: z.number(),
+          edited: z.number(),
+          unknown: z.number(),
+        })
+        .optional(),
+    }),
+  ),
   // The same totals per "<initiative>/<story>", over turn rows with a story ("unknown" initiative on
   // rows written before S18). Not shown on the card.
   byStory: z.record(z.string(), z.object({ turns: z.number(), tokens: z.number(), models: z.array(z.string()) })),

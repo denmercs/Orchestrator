@@ -11,6 +11,7 @@ import {
 } from "../shared/context-meter";
 import type { ContextAction, ContextStatus } from "../shared/context";
 import { toolOutputChars, type SplitInput, type TimelineItem } from "../shared/context-panel";
+import { exploration, toolSteps, type Explore, type ToolItem, type ToolStep } from "../shared/exploration";
 import { freshCompactor, keepList, nativeCompactor, type FreshPort } from "./compactor";
 import { excludeHarness } from "./harness-layout";
 import { recordTelemetry, type TelemetryEvent, type TelemetryRow } from "./context-telemetry";
@@ -138,7 +139,7 @@ export type TurnEnded = {
   timeline: readonly WatchItem[];
 };
 
-type WatchItem = CompactionItem & TimelineItem;
+type WatchItem = CompactionItem & TimelineItem & ToolItem;
 
 // What the story context panel reads for one session (see CONTEXT.md, "Story context").
 export type LiveSession = {
@@ -160,6 +161,10 @@ type SessionState = {
   // Split inputs: system is the session's first reading, toolChars the tool output characters of
   // every later turn. null unless the watch saw the first turn, and from any compaction on.
   split: { system: number; toolChars: number } | null;
+  // The exploration count (see CONTEXT.md, "Telemetry row"): the steps seen so far, and the final
+  // count once an edit froze it. null when the watch lost the count (first sight mid-session, or
+  // the timeline was replaced), for the agent's life.
+  explore: { steps: ToolStep[]; frozen: Explore | null } | null;
 };
 
 // Items this turn end has not seen yet. On first sight (or when the timeline was replaced and
@@ -172,6 +177,13 @@ function unseenItems(timeline: readonly WatchItem[], cursor: number | null): rea
     if (item.type === "user_message") lastUser = index;
   });
   return timeline.slice(lastUser + 1);
+}
+
+// The count to write on a turn row: the frozen one, else the steps so far; null when lost.
+function runningCount(state: SessionState, step: string): Explore | null {
+  const { explore } = state;
+  if (!explore) return null;
+  return explore.frozen ?? exploration(explore.steps, { step });
 }
 
 export function createContextWatch(port: WatchPort) {
@@ -207,7 +219,7 @@ export function createContextWatch(port: WatchPort) {
     state: SessionState,
     agent: WatchAgent,
     event: TelemetryEvent,
-    extra: Pick<TelemetryRow, "level" | "preTokens"> = {},
+    extra: Pick<TelemetryRow, "level" | "preTokens" | "explore"> = {},
   ): Promise<void> {
     const { labels } = agent;
     const rawCycle = labels["loop-cycle"];
@@ -239,6 +251,7 @@ export function createContextWatch(port: WatchPort) {
       memory: { warned: [], mode: "normal" },
       cursor: null,
       split: null,
+      explore: null,
     };
     sessions.set(agentId, state);
     const unseen = unseenItems(event.timeline, state.cursor);
@@ -248,10 +261,21 @@ export function createContextWatch(port: WatchPort) {
       // its tool output is already inside the first reading.
       const firstTurn = event.timeline.filter((item) => item.type === "user_message").length <= 1;
       state.split = firstTurn && !compaction && reading.used !== null ? { system: reading.used, toolChars: 0 } : null;
+      state.explore = firstTurn ? { steps: [], frozen: null } : null;
     } else if (compaction || state.cursor > event.timeline.length) {
       state.split = null;
+      if (state.cursor > event.timeline.length) state.explore = null;
     } else if (state.split) {
       state.split.toolChars += toolOutputChars(unseen);
+    }
+    const { explore } = state;
+    if (explore && !explore.frozen) {
+      explore.steps.push(...toolSteps(unseen));
+      const count = exploration(explore.steps, { step: agent.labels["loop-step"] ?? null });
+      if (count.edited) {
+        explore.frozen = count;
+        explore.steps = [];
+      }
     }
     state.provider = event.agent.provider;
     state.reading = reading;
@@ -270,7 +294,10 @@ export function createContextWatch(port: WatchPort) {
       pendingFresh.delete(agentId);
       await record(agentId, state, agent, "compact.fresh", preTokens === null ? {} : { preTokens });
     }
-    await record(agentId, state, agent, "turn");
+    // Only a loop agent has an exploration count; null means the watch lost it.
+    const loopStep = agent.labels["loop-step"];
+    const counted = loopStep === undefined ? {} : { explore: runningCount(state, loopStep) };
+    await record(agentId, state, agent, "turn", counted);
     const warning = nextWarning(state.memory, reading);
     if (warning) {
       state.memory.warned.push(warning.level);
@@ -343,6 +370,7 @@ export function createContextWatch(port: WatchPort) {
         memory: { warned: [], mode: "normal" },
         cursor: null,
         split: null,
+        explore: null,
       };
       sessions.set(agentId, state);
       state.memory.mode = action;

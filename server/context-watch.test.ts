@@ -101,6 +101,7 @@ test("onTurnEnded: one turn end writes one turn row with provider and step", asy
       story: "S2",
       initiative: "telemetry",
       costUsd: 0.42,
+      explore: { reads: 0, searches: 0, files: 0, chars: 0, edited: false },
     },
   ]);
 });
@@ -530,4 +531,80 @@ test("live: split goes null when the timeline is replaced by a shorter one", asy
   await watch.onTurnEnded(turn("a", [user]));
 
   assert.equal((await watch.live("a"))?.split, null);
+});
+
+const readOf = (filePath: string, content: string): Item => ({
+  type: "tool_call",
+  status: "completed",
+  detail: { type: "read", filePath, content },
+});
+const editOf = (filePath: string): Item => ({
+  type: "tool_call",
+  status: "completed",
+  detail: { type: "edit", filePath, newString: "x" },
+});
+
+test("explore: a loop agent's count runs across turns, then freezes at its first code edit", async () => {
+  const agents = { a: agent(20_000, { "loop-step": "implement" }) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  const first = [user, readOf("a.ts", "12345")];
+  await watch.onTurnEnded(turn("a", first));
+  const second = [...first, readOf("b.ts", "123"), editOf("src/b.ts")];
+  await watch.onTurnEnded(turn("a", second));
+  await watch.onTurnEnded(turn("a", [...second, readOf("c.ts", "1234567890")]));
+
+  assert.deepEqual(
+    rows.filter((r) => r.event === "turn").map((r) => r.explore),
+    [
+      { reads: 1, searches: 0, files: 1, chars: 5, edited: false },
+      { reads: 2, searches: 0, files: 2, chars: 8, edited: true },
+      { reads: 2, searches: 0, files: 2, chars: 8, edited: true },
+    ],
+  );
+});
+
+test("explore: an agent without a loop-step label has no explore field, and neither do other events", async () => {
+  const agents = { a: agent(120_000), b: agent(120_000, { "loop-step": "plan" }) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a", [user, readOf("a.ts", "x")]));
+  await watch.onTurnEnded(turn("b", [user, readOf("a.ts", "x")]));
+
+  assert.equal("explore" in rows.find((r) => r.agentId === "a" && r.event === "turn")!, false);
+  assert.deepEqual(
+    rows.filter((r) => r.agentId === "b").map((r) => [r.event, "explore" in r]),
+    [
+      ["turn", true],
+      ["warning", false],
+    ],
+  );
+});
+
+test("explore: first sight mid-session records null from then on", async () => {
+  const agents = { a: agent(20_000, { "loop-step": "implement" }) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  const seen = [user, readOf("a.ts", "x"), reply, user, readOf("b.ts", "y")];
+  await watch.onTurnEnded(turn("a", seen));
+  await watch.onTurnEnded(turn("a", [...seen, readOf("c.ts", "z")]));
+
+  assert.deepEqual(
+    rows.filter((r) => r.event === "turn").map((r) => r.explore),
+    [null, null],
+  );
+});
+
+test("explore: a timeline replaced by a shorter one records null from then on", async () => {
+  const agents = { a: agent(20_000, { "loop-step": "implement" }) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a", [user, readOf("a.ts", "x"), readOf("b.ts", "y")]));
+  await watch.onTurnEnded(turn("a", [user]));
+  await watch.onTurnEnded(turn("a", [user, readOf("c.ts", "z")]));
+
+  assert.deepEqual(
+    rows.filter((r) => r.event === "turn").map((r) => r.explore),
+    [{ reads: 2, searches: 0, files: 2, chars: 2, edited: false }, null, null],
+  );
 });
