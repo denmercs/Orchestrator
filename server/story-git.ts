@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { prHeadline, prTitle } from "../shared/naming";
 import { gh, prForBranch } from "./pr-checks";
 
 // The mechanical git and GitHub steps of a story. These used to be agent steps; they never needed
@@ -16,6 +17,19 @@ async function git(cwd: string, args: string[], timeout = 60_000) {
 
 export async function currentBranch(cwd: string) {
   return git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+}
+
+// `name`, or `name-2`, `name-3`… when that branch already exists here or on origin.
+export async function uniqueBranch(cwd: string, name: string) {
+  const exists = async (ref: string) =>
+    git(cwd, ["show-ref", "--verify", "--quiet", ref]).then(
+      () => true,
+      () => false,
+    );
+  for (let n = 1; ; n++) {
+    const candidate = n === 1 ? name : `${name}-${n}`;
+    if (!(await exists(`refs/heads/${candidate}`)) && !(await exists(`refs/remotes/origin/${candidate}`))) return candidate;
+  }
 }
 
 // Commits everything the agent changed outside .harness/, the story's working folder. Returns false
@@ -46,13 +60,13 @@ export type OpenedPr = { number: number; url: string };
 // Commits leftovers, pushes the branch and opens the PR (or keeps the one already open).
 export async function openStoryPr(
   cwd: string,
-  input: { id: string; title: string; branch: string; base: string },
+  input: { id: string; title: string; jira: boolean; branch: string; base: string },
 ): Promise<OpenedPr> {
   const base = input.base.replace(/^origin\//, "");
   if (!input.branch || input.branch === "HEAD" || input.branch === base) {
     throw new Error(`Refusing to open a PR from "${input.branch || "no branch"}".`);
   }
-  await commitStory(cwd, `${input.id}: Remaining changes`);
+  await commitStory(cwd, "Commit remaining changes");
   await git(cwd, ["push", "-u", "origin", input.branch], 120_000);
   const existing = await prForBranch(cwd, input.branch);
   if (existing) {
@@ -60,6 +74,7 @@ export async function openStoryPr(
   }
   const bodyFile = join(cwd, ".harness", "pr-body.md");
   const body = existsSync(bodyFile) ? readFileSync(bodyFile, "utf8").trim() : "";
+  const headline = prHeadline(input);
   await gh(
     [
       "pr",
@@ -69,9 +84,9 @@ export async function openStoryPr(
       "--head",
       input.branch,
       "--title",
-      `${input.id}: ${input.title}`,
+      prTitle(input),
       "--body",
-      body || `${input.id}: ${input.title}`,
+      body ? `${headline}\n\n${body}` : headline,
     ],
     cwd,
     60_000,

@@ -19,6 +19,8 @@ import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { advancePipeline, closeMergedStories, startStory } from "./server/pipeline-advance";
 import { createLoopAdvance } from "./server/loop-advance";
 import { createInitiativeLoop } from "./server/initiative-loop";
+import { readBranchInitials } from "./server/git-identity";
+import { getBranchInitials } from "./shared/naming";
 import { createContextWatch, paseoPort } from "./server/context-watch";
 import { summariseTelemetry } from "./server/context-telemetry";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc } from "./shared/context";
@@ -67,6 +69,7 @@ import {
 import { agentRunnerSettings } from "./shared/agent-runner";
 import {
   dashboardSettings,
+  gitSettings,
   harnessSettings,
   jiraBoardSettings,
   mcpSettings,
@@ -107,6 +110,12 @@ export default function contribute(server: PluginServerContext) {
     const state = await mcp.read();
     return state.status === "ready" ? state.values.mcpExclude : [];
   };
+  const git = server.registerSettings(gitSettings);
+  const readInitials = async () => {
+    const state = await git.read();
+    return readBranchInitials(state.status === "ready" ? state.values.branchInitials : "");
+  };
+  server.handle(getBranchInitials, async () => ({ initials: await readInitials() }));
   server.handle(getEpicBoards, async ({ repos }, { paseo }) => {
     // The board polls every few seconds, so this keeps the loop's Paseo handle fresh for its timer.
     initiativeLoop.rememberPaseo(paseo);
@@ -144,6 +153,7 @@ export default function contribute(server: PluginServerContext) {
       const values = await readPipelineValues();
       return values ? { phases: values.phases, sources: values.sources } : { phases: DEFAULT_PHASES, sources: [] };
     },
+    readInitials,
   );
   server.handle(startInitiativeLoop, (input, { paseo }) => initiativeLoop.start(paseo, input));
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));

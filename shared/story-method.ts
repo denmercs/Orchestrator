@@ -10,6 +10,7 @@
 // not by an agent.
 
 import { LOOP_STEPS, STEP_LABELS, type LoopStep } from "./initiative-loop";
+import { cleanSubject, prTitle } from "./naming";
 
 export { LOOP_STEPS, STEP_LABELS, type LoopStep };
 
@@ -79,6 +80,11 @@ export function parseSkills(text: string): StepSkill[] {
 const STATE = ".harness/state.md";
 // The plan is pasted into each cycle prompt so the agent starts from it instead of re-exploring.
 const PLAN_LINES = 60;
+
+// How an Implement agent hands the plugin its commit subject: the line after the marker.
+const DONE = `\`${MARKERS.implementDone}\` and put the commit subject on the next line: one line in plain words,
+imperative mood (e.g. "Let Claude commit, push and open PRs in this repo"),
+under 72 characters, with no story id, no "Cycle N" and no \`feat:\` prefix`;
 
 // The story's working file in its worktree. The plugin seeds it; every step reads and updates it.
 export function seedState(story: StoryContext) {
@@ -158,11 +164,14 @@ const RULES = (story: StoryContext) => `## Rules for every step
 ${followUps(story)}
 - If the human messages you, answer and follow their direction, then finish this step.`;
 
+// A Jira ticket has a ticket URL and no story file text of its own.
+const isJira = (story: StoryContext) => Boolean(story.ticketUrl) && !story.body.trim();
+
 export function stepPrompt(step: LoopStep, story: StoryContext, extra: StepExtra) {
   const label = extra.cycle ? `${STEP_LABELS[step]} cycle ${extra.cycle.number}` : STEP_LABELS[step];
   const head = `${label} for story ${story.id} — ${story.title}${extra.round > 1 ? ` (round ${extra.round})` : ""}.`;
   const skills = extra.skills?.length ? `Also use these skills: ${formatSkills(extra.skills)}.` : "";
-  const jira = Boolean(story.ticketUrl) && !story.body.trim();
+  const jira = isJira(story);
   // Text shared by every story at this step comes first, so the provider can cache it across agents.
   // STEPS get no story; story values go after the head, in STEP_DATA and context().
   const data = STEP_DATA[step]?.(story, extra) ?? "";
@@ -178,7 +187,7 @@ Work the one cycle under \`## Cycle N only\` below the story head, from the plan
 3. Revert the production change, confirm the test fails again, restore it, confirm it passes.
 4. Tick this cycle's line in \`## Cycles\` (\`- [x]\`) and add one line to \`## Evidence\`: the command and the
    fail → pass result.
-Work only this cycle; a fresh agent takes the next one. Then set \`## Status\` to \`${MARKERS.implementDone}\`.
+Work only this cycle; a fresh agent takes the next one. Then set \`## Status\` to ${DONE}.
 If you cannot go on (a missing decision, broken tooling, a dependency that isn't there), set it to
 \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
 
@@ -190,7 +199,7 @@ The cycles to run are under \`## Cycles to run\` below the story head, in order,
 3. If a subagent cannot go on, stop: set \`## Status\` to \`${MARKERS.implementBlocked}\` and put its reason on the
    next line.
 If you can't start subagents, work the cycles yourself, one at a time, in the same order, following the brief.
-When every cycle is ticked, set \`## Status\` to \`${MARKERS.implementDone}\`.
+When every cycle is ticked, set \`## Status\` to ${DONE}.
 
 ## Cycle brief
 Work the one cycle you were given, from \`## Plan\` in ${STATE}. The worktree may hold a half-finished cycle
@@ -257,7 +266,7 @@ const STEPS: Record<LoopStep, (extra: StepExtra, jira: boolean) => string> = {
       return `## This step: fix the review findings
 Review found problems. Fix every item under \`## Review findings\` (skip "follow-up:" lines), each with a test
 that fails before the fix, and add one line per fix to \`## Evidence\`. Do not work unticked cycles; fresh agents
-take those. Then set \`## Status\` to \`${MARKERS.implementDone}\`.
+take those. Then set \`## Status\` to ${DONE}.
 If you cannot go on, set it to \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
     }
     // No checklist in ## Cycles: one agent does the whole change.
@@ -266,7 +275,7 @@ If you cannot go on, set it to \`${MARKERS.implementBlocked}\` and put the reaso
 1. Write a test, run it and confirm it fails for the reason you expect.
 2. Make the smallest production change that passes it. Do not weaken the test.
 3. Add a line to \`## Evidence\`: the command and the fail → pass result. Repeat until the story is done.
-Then set \`## Status\` to \`${MARKERS.implementDone}\`.
+Then set \`## Status\` to ${DONE}.
 If you cannot go on, set it to \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
   },
 
@@ -300,7 +309,9 @@ The checks that failed on the PR's latest commit are under \`## Failing checks\`
 
 1. Reproduce each failure locally with the repo's own command where you can.
 2. Fix the cause, not the check. Do not skip, disable or weaken tests or lint rules.
-3. Set \`## Status\` to \`${MARKERS.fixDone}\` with one line on what you changed. The plugin commits and pushes.
+3. Set \`## Status\` to \`${MARKERS.fixDone}\` with one line on what you changed.
+   That line is the commit subject: plain words, imperative mood, under 72 characters, no story id. The plugin
+   commits and pushes.
 If the failure is not caused by this branch (flaky infrastructure, a broken base branch), change nothing and say so
 on the line after \`${MARKERS.fixDone}\`.`,
 };
@@ -315,7 +326,7 @@ const STEP_DATA: Partial<Record<LoopStep, (story: StoryContext, extra: StepExtra
 ${failing ?? "(see the PR's checks)"}`,
   pr: (story) => `## PR commands
 - Push: \`git push -u origin ${story.branch}\`
-- Open: \`gh pr create --base ${story.base.replace(/^origin\//, "")} --head ${story.branch} --title "${story.id}: ${story.title.replace(/"/g, "'")}" --body-file .harness/pr-body.md\``,
+- Open: \`gh pr create --base ${story.base.replace(/^origin\//, "")} --head ${story.branch} --title "${prTitle({ ...story, jira: isJira(story) }).replace(/"/g, "'")}" --body-file .harness/pr-body.md\``,
 };
 
 // The first non-empty line under `## Status`, and the lines after it (a reason or a URL).
@@ -386,8 +397,11 @@ export function afterImplement(state: string, finished: number | "all" | null): 
   return next ? { kind: "cycle", cycle: next } : { kind: "review" };
 }
 
-// The commit message for a finished Implement agent.
-export function implementCommitMessage(id: string, cycle: Cycle | null, round: number) {
-  if (cycle) return `${id}: Cycle ${cycle.number} — ${cycle.name}`;
-  return round > 1 ? `${id}: Fix review findings` : `${id}: Implement`;
+// The commit subject a finished step wrote on the line after its marker, cleaned; else `fallback`.
+export function commitSubject(state: string, fallback: string) {
+  const line = readSection(state, "Status")
+    .split("\n")
+    .map((text) => text.trim())
+    .filter(Boolean)[1];
+  return (line && cleanSubject(line)) ?? fallback;
 }
