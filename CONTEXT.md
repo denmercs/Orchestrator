@@ -118,6 +118,15 @@ Each gate carries `board` (the board's selection key, `boardKey(board)`: `repo` 
 
 _Avoid_: blocker (for any gate), task, todo, action item.
 
+**Gate action**: acting on a story's gate from outside its session (`gateAct`, `orchestration.gates.act`, with the board key, story id and action). Four actions, each belonging to one gate:
+
+- **approve** (plan): sends "Approved. Go ahead." to the story's agent. Frontmatter is untouched; the planner's own `plan-done` moves the story on.
+- **changes** (plan): sends nothing and returns the agent id, so you can open the session and say what to change.
+- **nudge** (stuck): sends the nudge message, then reopens the story.
+- **restart** (stuck): Start fresh on the agent (the context watch's fresh adapter), then reopens the story; the new session's id comes back. The fresh adapter's own refusals pass through.
+
+Reopen puts the story back to `blocked_from` and clears `blocked_reason`, `blocked_from`, `stalled` and `retries`, so the loop's marker flow and supervision pick it up again. An action is refused, with nothing sent, when the story is not on that board, its status no longer matches the action's gate ("S12 is now implementing, not awaiting approval."), it is waiting on a permission (answer it in the session), or it has no live agent (none set, unknown, or archived; a closed or errored session counts too, except for restart, which can start fresh from one). There is no action for the merge gate. Code: `server/gate-actions.ts`.
+
 ## Step bar
 
 The five-segment bar that shows where a story is: **Plan**, **Implement**, **Review**, **PR**, **CI watch**. Each segment is `done` (finished), `now` (running), `gate` (waiting on you) or `todo` (not reached). Steps before the current one are `done`, steps after it `todo`. With it come a node sub-label (`sub`), a panel line (`detail`) and a button label (`cta`, a label only).
