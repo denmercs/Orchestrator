@@ -563,8 +563,9 @@ function InitiativePanel({
   const [context, setContext] = useState<ReadonlyMap<string, ContextStatus | null>>(() => new Map());
 
   // The running stories' context, one batched call per board poll (each poll is a new `state`).
-  // A failed read leaves the $ bars off rather than showing stale numbers.
-  const agentKey = state ? contextAgents(state.stories).join("\n") : "";
+  // A failed read leaves the $ bars off rather than showing stale numbers. A folded section shows
+  // no bars, so it asks for nothing.
+  const agentKey = state && !folded ? contextAgents(state.stories).join("\n") : "";
   useEffect(() => {
     if (!agentKey) {
       setContext((current) => (current.size ? new Map() : current));
@@ -759,12 +760,12 @@ function InitiativePanel({
       >
         {kind === "merged" ? <View pointerEvents="none" style={[styles.nodeTint, { backgroundColor: tone }]} /> : null}
         <View style={styles.nodeTop}>
-          <Text style={[styles.nodeId, kind === "needs-you" ? { color: tone } : null]}>{item.id}</Text>
+          <Text style={[styles.nodeId, styles.cardId, kind === "needs-you" ? { color: tone } : null]}>{item.id}</Text>
           <Text style={[styles.nodeSub, styles.shrink, { color: kind === "needs-you" ? tone : theme.colors.foregroundMuted }]} numberOfLines={1}>
             · {bar.sub}
           </Text>
         </View>
-        <Text style={[styles.nodeTitle, kind === "waiting" ? styles.mutedTitle : null]} numberOfLines={1}>
+        <Text style={[styles.nodeTitle, styles.cardTitle, kind === "waiting" ? styles.mutedTitle : null]} numberOfLines={1}>
           {item.title}
         </Text>
         <StepBarView story={item} stories={stories} theme={theme} styles={styles} />
@@ -1634,6 +1635,9 @@ function createStyles(theme: Theme, compact: boolean) {
     nodeTop: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
     nodeId: { color: c.foregroundMuted, fontFamily: "monospace", fontSize: 12, fontWeight: "500" as const },
     nodeTitle: { color: c.foreground, fontSize: 13, fontWeight: "600" as const },
+    // A graph node's id and title run smaller than the list's so its rows fit 184×88.
+    cardId: { fontSize: 10.5 },
+    cardTitle: { fontSize: 12, fontWeight: "400" as const },
     mutedTitle: { color: c.foregroundMuted },
     nodeSub: { fontSize: 10.5 },
     // A node's step bar and $ bar share one grid: glyph, bar, label.
