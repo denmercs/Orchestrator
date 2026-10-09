@@ -119,14 +119,20 @@ Each gate carries `board` (the board's selection key, `boardKey(board)`: `repo` 
 
 _Avoid_: blocker (for any gate), task, todo, action item.
 
-**Gate action**: acting on a story's gate from outside its session (`gateAct`, `orchestration.gates.act`, with the board key, story id and action). Four actions, each belonging to one gate:
+**Gate action**: acting on a story's gate from outside its session (`gateAct`, `orchestration.gates.act`, with the board key, story id and action). Five actions, each belonging to one gate:
 
 - **approve** (plan): sends "Approved. Go ahead." to the story's agent. Frontmatter is untouched; the planner's own `plan-done` moves the story on.
 - **changes** (plan): sends nothing and returns the agent id, so you can open the session and say what to change.
 - **nudge** (stuck): sends the nudge message, then reopens the story.
 - **restart** (stuck): Start fresh on the agent (the context watch's fresh adapter), then reopens the story; the new session's id comes back. The fresh adapter's own refusals pass through.
+- **retry** (stuck): what it does depends on the story's `block_kind`, which every block writes:
+  - `start` (could not start), `pr` (PR failed to open, closed, or missing), `ci` (CI fix limit or a failed fix push): reopen only, and the loop picks the story up again. `ci` also clears `fix_attempts` and `fixed_sha`.
+  - `retry-limit`, `step` (implement-blocked, an unticked cycle after implement-done, the review-failed limit), or none (older blocks): session open → reopen, then send the retry message; session ended or gone → the loop starts the same step, round and cycle in a fresh session, whose id comes back. With no agent set, reopen only.
+  - Refused while an open session waits on a permission.
 
-Reopen puts the story back to `blocked_from` and clears `blocked_reason`, `blocked_from`, `stalled` and `retries`, so the loop's marker flow and supervision pick it up again. An action is refused, with nothing sent, when the story is not on that board, its status no longer matches the action's gate ("S12 is now implementing, not awaiting approval."), it is waiting on a permission (answer it in the session), or it has no live agent (none set, unknown, or archived; a closed or errored session counts too, except for restart, which can start fresh from one). There is no action for the merge gate. Code: `server/gate-actions.ts`.
+  The retry button sits on a blocked story's inline panel and in its Details drawer.
+
+Reopen puts the story back to `blocked_from` and clears `blocked_reason`, `blocked_from`, `block_kind`, `waiting_on`, `stalled` and `retries` (a `step` block also sets its state.md marker back to `<step>-running`), so the loop's marker flow and supervision pick it up again. An action is refused, with nothing sent, when the story is not on that board, its status no longer matches the action's gate ("S12 is now implementing, not awaiting approval."), it is waiting on a permission (answer it in the session), or it has no live agent (none set, unknown, or archived; a closed or errored session counts too, except for restart, which can start fresh from one, and retry, which follows its own rules above). There is no action for the merge gate. Code: `server/gate-actions.ts`.
 
 ## Step bar
 

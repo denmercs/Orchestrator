@@ -5,6 +5,7 @@ import {
   createGateActions,
   loopGatePort,
   NUDGE_MESSAGE,
+  RETRY_MESSAGE,
   type GatePort,
   type GateResult,
   type GateStory,
@@ -19,12 +20,14 @@ function fakePort(
   live: string[] = [],
   freshResult: GateResult = { ok: true, error: null, agentId: "f1" },
   ended: string[] = [],
+  retryResult: GateResult = { ok: true, error: null, agentId: "r1" },
 ) {
   // Every port call in order, so a test can check what happened first.
   const calls: string[] = [];
   const sent: [string, string][] = [];
   const reopened: string[] = [];
   const fresh: string[] = [];
+  const retried: string[] = [];
   const port: GatePort = {
     story: async ({ storyId }) => stories[storyId] ?? null,
     session: async (agentId) => (live.includes(agentId) ? "open" : ended.includes(agentId) ? "ended" : null),
@@ -41,8 +44,13 @@ function fakePort(
       calls.push("reopen");
       reopened.push(storyId);
     },
+    retryStep: async ({ storyId }) => {
+      calls.push("retryStep");
+      retried.push(storyId);
+      return retryResult;
+    },
   };
-  return { port, sent, reopened, fresh, calls };
+  return { port, sent, reopened, fresh, retried, calls };
 }
 
 test("approve: an awaiting-approval story with a live agent is sent the approve message", async () => {
@@ -185,10 +193,97 @@ test("changes: an awaiting-approval story returns its agent id and nothing is se
   assert.deepEqual(calls, []);
 });
 
+// Retry reads the block kind: a start, PR or CI block has no agent to wake, so the story is only
+// reopened and the loop picks it up again.
+for (const blockKind of ["start", "pr", "ci"] as const) {
+  test(`retry: a ${blockKind} block is reopened only`, async () => {
+    const { port, calls } = fakePort({ S12: { status: "blocked", agent: "a1", waitingOn: null, blockKind } }, ["a1"]);
+    const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action: "retry" });
+    assert.deepEqual(result, { ok: true, error: null, agentId: null });
+    assert.deepEqual(calls, ["reopen"]);
+  });
+}
+
+for (const blockKind of ["retry-limit", "step", null] as const) {
+  test(`retry: a ${blockKind ?? "kind-less"} block with an open session is reopened, then told to carry on`, async () => {
+    const { port, sent, calls } = fakePort(
+      { S12: { status: "blocked", agent: "a1", waitingOn: null, blockKind } },
+      ["a1"],
+    );
+    const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action: "retry" });
+    assert.deepEqual(result, { ok: true, error: null, agentId: "a1" });
+    assert.deepEqual(calls, ["reopen", "send"]);
+    assert.deepEqual(sent, [["a1", RETRY_MESSAGE]]);
+    assert.equal(
+      RETRY_MESSAGE,
+      "The block on this step is cleared. Carry on from `.harness/state.md` and write the step's marker when you finish.",
+    );
+  });
+}
+
+// An ended or unknown session can't take a message: the loop starts the step again in a fresh session.
+for (const [name, ended] of [
+  ["ended", ["a1"]],
+  ["unknown", []],
+] as const) {
+  test(`retry: a step block whose session is ${name} starts the step again, with the new session's id`, async () => {
+    const { port, retried, calls } = fakePort(
+      { S12: { status: "blocked", agent: "a1", waitingOn: null, blockKind: "step" } },
+      [],
+      undefined,
+      [...ended],
+    );
+    const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action: "retry" });
+    assert.deepEqual(result, { ok: true, error: null, agentId: "r1" });
+    assert.deepEqual(retried, ["S12"]);
+    assert.deepEqual(calls, ["retryStep"]);
+  });
+}
+
+test("retry: a step block with no agent is reopened only", async () => {
+  const { port, calls } = fakePort({ S12: { status: "blocked", agent: null, waitingOn: null, blockKind: "step" } });
+  const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action: "retry" });
+  assert.deepEqual(result, { ok: true, error: null, agentId: null });
+  assert.deepEqual(calls, ["reopen"]);
+});
+
+test("refused: retry on a story that isn't blocked", async () => {
+  const { port, calls } = fakePort({ S12: { status: "implementing", agent: "a1", waitingOn: null, blockKind: null } }, [
+    "a1",
+  ]);
+  const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action: "retry" });
+  assert.deepEqual(result, { ok: false, error: "S12 is now implementing, not blocked.", agentId: null });
+  assert.deepEqual(calls, []);
+});
+
+test("refused: retry on a story waiting on a permission in an open session", async () => {
+  const { port, calls } = fakePort({ S12: { status: "blocked", agent: "a1", waitingOn: "permission", blockKind: null } }, [
+    "a1",
+  ]);
+  const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action: "retry" });
+  assert.deepEqual(result, { ok: false, error: "S12 is waiting on a permission; answer it in the session.", agentId: null });
+  assert.deepEqual(calls, []);
+});
+
+test("retry: a fresh step start that refuses returns its error unchanged", async () => {
+  const refusal = { ok: false, error: "S12 has no step to start again.", agentId: null };
+  const { port, calls } = fakePort(
+    { S12: { status: "blocked", agent: "a1", waitingOn: null, blockKind: "step" } },
+    [],
+    undefined,
+    ["a1"],
+    refusal,
+  );
+  const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action: "retry" });
+  assert.deepEqual(result, refusal);
+  assert.deepEqual(calls, ["retryStep"]);
+});
+
 // The real port against a fake loop and Paseo handle.
 function realPort(agents: Record<string, { status: string; archivedAt?: string } | Error>) {
   const looked: unknown[] = [];
   const reopened: unknown[] = [];
+  const retried: unknown[] = [];
   const sent: [string, string][] = [];
   const loop = {
     gateStory: async (ref: { repo: string; initiative: string; storyId: string }) => {
@@ -197,6 +292,10 @@ function realPort(agents: Record<string, { status: string; archivedAt?: string }
     },
     reopen: async (ref: { repo: string; initiative: string; storyId: string }) => {
       reopened.push(ref);
+    },
+    retryStep: async (api: unknown, ref: { repo: string; initiative: string; storyId: string }) => {
+      retried.push([api, ref]);
+      return { ok: true, error: null, agentId: "r1" };
     },
   };
   const paseo = {
@@ -215,7 +314,7 @@ function realPort(agents: Record<string, { status: string; archivedAt?: string }
   } as unknown as Parameters<typeof loopGatePort>[1];
   const contextWatch = { act: async () => ({ ok: true, error: null, agentId: "f1", kind: "fresh" }) };
   const port = loopGatePort(loop, paseo, contextWatch as unknown as Parameters<typeof loopGatePort>[2]);
-  return { port, looked, reopened, sent };
+  return { port, looked, reopened, retried, sent, paseo };
 }
 
 test("loopGatePort: the board key is split into repo and initiative for the loop", async () => {
@@ -225,6 +324,18 @@ test("loopGatePort: the board key is split into repo and initiative for the loop
   const ref = { repo: "/repo", initiative: "orchestration-redesign", storyId: "S12" };
   assert.deepEqual(looked, [ref]);
   assert.deepEqual(reopened, [ref]);
+});
+
+test("loopGatePort: retryStep hands the loop the Paseo handle and the split board key", async () => {
+  const { port, retried, paseo } = realPort({});
+  assert.deepEqual(await port.retryStep({ board: BOARD, storyId: "S12" }), { ok: true, error: null, agentId: "r1" });
+  assert.deepEqual(retried, [[paseo, { repo: "/repo", initiative: "orchestration-redesign", storyId: "S12" }]]);
+  assert.deepEqual(await port.retryStep({ board: "no-newline", storyId: "S12" }), {
+    ok: false,
+    error: "S12 is not on that board.",
+    agentId: null,
+  });
+  assert.equal(retried.length, 1);
 });
 
 for (const board of ["no-newline", "\ninitiative", "/repo\n"]) {

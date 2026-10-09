@@ -16,7 +16,7 @@ export type Gate = {
 };
 
 // A board's identity, even when its state failed to load.
-export const boardKey = (board: EpicBoard) => `${board.repo}\n${board.initiative}`;
+export const boardKey = (board: Pick<EpicBoard, "repo" | "initiative">) => `${board.repo}\n${board.initiative}`;
 
 function gateKind(story: EpicStory): GateKind | null {
   if (story.status === "awaiting-approval") return "plan";
@@ -55,12 +55,12 @@ export const waitingLabel = (count: number) => (count === 0 ? "Nothing is waitin
 export const gateRowLabel = (gate: Gate) => `${gate.text}, ${gate.where}`;
 
 // What you can do to a gate from outside the session: approve or request changes on a plan gate,
-// nudge or restart a stuck one (see CONTEXT.md, "Gate action").
-export const GATE_ACTIONS = ["approve", "changes", "nudge", "restart"] as const;
+// nudge, restart or retry a stuck one (see CONTEXT.md, "Gate action").
+export const GATE_ACTIONS = ["approve", "changes", "nudge", "restart", "retry"] as const;
 export type GateAction = (typeof GATE_ACTIONS)[number];
 
 // One gate action on a story. `board` is the board key (boardKey). `agentId` in the output is the
-// story's agent, or the new session after `restart`.
+// story's agent, the new session after `restart` or a fresh `retry`, or null after a reopen-only `retry`.
 export const gateAct = defineRpc({
   name: "orchestration.gates.act",
   input: z.object({ board: z.string(), storyId: z.string(), action: z.enum(GATE_ACTIONS) }),
