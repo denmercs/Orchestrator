@@ -15,11 +15,14 @@ export type GateStory = { status: string; agent: string | null; waitingOn: strin
 
 export type StoryRef = { board: string; storyId: string };
 
+// An agent's session as a gate action sees it: `open` takes messages, `ended` (closed or errored) can
+// only be started fresh, null is unknown or archived.
+export type AgentSession = "open" | "ended" | null;
+
 export type GatePort = {
   // The story on that board, or null when it isn't there.
   story(ref: StoryRef): Promise<GateStory | null>;
-  // Paseo knows the agent and it isn't archived.
-  isLive(agentId: string): Promise<boolean>;
+  session(agentId: string): Promise<AgentSession>;
   send(agentId: string, text: string): Promise<void>;
   // Start fresh on the agent; `agentId` in the result is the new session.
   startFresh(agentId: string): Promise<GateResult>;
@@ -48,7 +51,10 @@ export function createGateActions(port: GatePort) {
         return refuse(`${storyId} is waiting on a permission; answer it in the session.`);
       }
       const agentId = story.agent;
-      if (!agentId || !(await port.isLive(agentId))) return refuse(`${storyId} has no live agent.`);
+      const session = agentId ? await port.session(agentId) : null;
+      // Start fresh can carry on from an ended session; a message can't reach one.
+      const live = session === "open" || (session === "ended" && action === "restart");
+      if (!agentId || !live) return refuse(`${storyId} has no live agent.`);
       switch (action) {
         case "approve":
           await port.send(agentId, APPROVE_MESSAGE);
@@ -95,12 +101,13 @@ export function loopGatePort(loop: LoopFiles, paseo: PaseoApi, contextWatch: Fre
       const split = splitBoard(board);
       return split ? loop.gateStory({ ...split, storyId }) : null;
     },
-    async isLive(agentId) {
+    async session(agentId) {
       try {
-        const refreshed = await paseo.agents.ref(agentId).refresh();
-        return Boolean(refreshed && !refreshed.agent.archivedAt);
+        const agent = (await paseo.agents.ref(agentId).refresh())?.agent;
+        if (!agent || agent.archivedAt) return null;
+        return agent.status === "closed" || agent.status === "error" ? "ended" : "open";
       } catch {
-        return false;
+        return null;
       }
     },
     async send(agentId, text) {
