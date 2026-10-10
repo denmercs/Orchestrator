@@ -91,6 +91,49 @@ test("snapshotStories: ordered by mergedAt, then initiative, then id", () => {
   assert.deepEqual(out.map((f) => `${f.initiative}/${f.fm.id}`), ["z/S9", "a/S1", "a/S2", "z/S1"]);
 });
 
-test("render: stories intro says stories closed without a PR are left out", () => {
-  assert.match(render(data), /closed without a PR are left out/);
+const ids = (out) => out.map((f) => f.fm.id);
+
+test("snapshotStories: a no-PR story is kept or dropped by its merged_at", () => {
+  const out = snapshotStories([story("i", "S1", { merged_at: "2026-10-09T10:00:00.000Z" }), story("i", "S2", { merged_at: "2026-10-09T15:00:00.000Z" })], [], CUT);
+  assert.deepEqual(ids(out), ["S1"]);
+  assert.equal(out[0].pr, undefined);
+});
+
+test("snapshotStories: merged_at wins over the PR date in both directions", () => {
+  const prs = [
+    { number: 1, headRefName: "late", mergedAt: "2026-10-09T15:00:00Z" },
+    { number: 2, headRefName: "early", mergedAt: "2026-10-09T10:00:00Z" },
+  ];
+  const out = snapshotStories([
+    story("i", "S1", { branch: "late", merged_at: "2026-10-09T09:00:00.000Z" }),
+    story("i", "S2", { branch: "early", merged_at: "2026-10-09T16:00:00.000Z" }),
+  ], prs, CUT);
+  assert.deepEqual(ids(out), ["S1"]);
+  assert.equal(out[0].pr.number, 1);
+});
+
+test("snapshotStories: a merged_at inside the cutoff second but after it is dropped", () => {
+  assert.deepEqual(ids(snapshotStories([story("i", "S1", { merged_at: "2026-10-09T14:00:00.300Z" })], [], CUT)), []);
+});
+
+test("snapshotStories: a story with neither date is dropped", () => {
+  assert.deepEqual(ids(snapshotStories([story("i", "S1", { branch: "nope" })], [], CUT)), []);
+});
+
+test("snapshotStories: an unparseable merged_at falls back to the PR date", () => {
+  const prs = [{ number: 1, headRefName: "a", mergedAt: "2026-10-09T10:00:00Z" }];
+  assert.deepEqual(ids(snapshotStories([story("i", "S1", { branch: "a", merged_at: "garbage" }), story("i", "S2", { merged_at: "garbage" })], prs, CUT)), ["S1"]);
+});
+
+test("snapshotStories: ordered by close date across PR-dated and merged_at-dated stories", () => {
+  const prs = [{ number: 1, headRefName: "a", mergedAt: "2026-10-09T11:00:00Z" }];
+  const out = snapshotStories([story("i", "S1", { branch: "a" }), story("i", "S2", { merged_at: "2026-10-09T10:00:00.500Z" }), story("i", "S3", { merged_at: "2026-10-09T12:00:00.000Z" })], prs, CUT);
+  assert.deepEqual(ids(out), ["S2", "S1", "S3"]);
+});
+
+test("render: stories intro describes the merged_at dating rule", () => {
+  const text = render(data);
+  assert.match(text, /dated by its `merged_at`/);
+  assert.match(text, /neither are left out/);
+  assert.doesNotMatch(text, /closed without a PR are left out/);
 });

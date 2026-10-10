@@ -12,12 +12,12 @@ Typed calls and Bash commands classified as reads, searches or edits (S9); any e
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | plan | 56 | 909 | 1,148 | 729 | 3,038,008 | 36% | 829 | 3,076,709 |
 | implement | 118 | 642 | 742 | 547 | 2,293,515 | 78% | 1,133 | 2,836,446 |
-| review | 62 | 491 | 653 | 335 | 1,904,696 | 37% | 904 | 2,768,694 |
+| review | 62 | 493 | 655 | 335 | 1,906,448 | 37% | 911 | 2,778,534 |
 | pr | 12 | 67 | 57 | 36 | 179,189 | 17% | 119 | 213,336 |
 
 ## Review rounds and fix attempts per story
 
-Every story merged by a PR in this repo; stories closed without a PR are left out. Rounds come from Review agent labels and fixes from fix agents and CI-fix commit names; stories with no agent records show — for rounds.
+Every story closed by the cutoff, dated by its `merged_at` or else its PR's merge time; stories with neither are left out. Rounds come from Review agent labels and fixes from fix agents and CI-fix commit names; stories with no agent records show — for rounds.
 
 | Initiative | Story | Title | Agent records | Review rounds | Fix attempts |
 |---|---|---|---|---:|---:|
