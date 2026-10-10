@@ -137,3 +137,8 @@ test("render: stories intro describes the merged_at dating rule", () => {
   assert.match(text, /neither are left out/);
   assert.doesNotMatch(text, /closed without a PR are left out/);
 });
+
+test("snapshotStories: a merged_at without an ISO date and zone is treated as absent", () => {
+  const out = snapshotStories([story("i", "S1", { merged_at: "1" }), story("i", "S2", { merged_at: "2026-10-09T05:00:00" }), story("i", "S3", { merged_at: "2026-10-09T15:00:00+02:00" })], [], CUT);
+  assert.deepEqual(ids(out), ["S3"]);
+});

@@ -121,15 +121,18 @@ function storyFiles(repo) {
 }
 
 // Merged stories dated by their frontmatter `merged_at`, else by their PR's `mergedAt`, and kept when that date is at or
-// before the cutoff. Dates are compared as times: `merged_at` carries milliseconds, the cutoff and gh do not. A story
-// with neither date is left out.
+// before the cutoff. Dates are compared as times: `merged_at` carries milliseconds, the cutoff and gh do not. A
+// `merged_at` that is not an ISO time with a zone counts as absent, so the result never depends on the local timezone.
+// A story with neither date is left out.
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 export function snapshotStories(files, prs, cutoff = CUTOFF) {
   const prFor = (fm) => prs.find((p) => String(p.number) === fm.pr) ?? prs.find((p) => p.headRefName === fm.branch);
   const time = (iso) => Date.parse(iso ?? "");
   return files
     .map((f) => {
       const pr = prFor(f.fm);
-      return { ...f, pr, closedAt: Number.isNaN(time(f.fm.merged_at)) ? pr?.mergedAt : f.fm.merged_at };
+      const own = ISO_TIME.test(f.fm.merged_at ?? "") && !Number.isNaN(time(f.fm.merged_at));
+      return { ...f, pr, closedAt: own ? f.fm.merged_at : pr?.mergedAt };
     })
     .filter((f) => time(f.closedAt) <= time(cutoff))
     .sort((a, b) => time(a.closedAt) - time(b.closedAt) || byText(a.initiative, b.initiative) || byText(a.fm.id, b.fm.id));
