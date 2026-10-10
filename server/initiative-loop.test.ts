@@ -845,6 +845,30 @@ test("three brief runs failing the same test in one turn send one stuck nudge na
   assert.equal(meta.stalled, undefined);
 });
 
+test("a stuck nudge that can't be sent leaves the step stalled for the tick", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { idle_turns: 2 });
+  const { api } = fakePaseo([{ id: "a1", labels }]);
+  const failing = {
+    ...api,
+    agents: {
+      ...api.agents,
+      ref: (id: string) => ({
+        ...api.agents.ref(id),
+        send: async () => {
+          throw new Error("daemon gone");
+        },
+      }),
+    },
+  };
+
+  await stuckLoop().onTurnEnded(failing, ended("a1", { kind: "completed" }, [{ type: "user_message" }, readCall]));
+
+  const meta = storyMeta(story);
+  assert.equal(meta.stuck_nudged, undefined);
+  assert.equal(meta.stalled, "You look stuck: no file edits in 3 turns.");
+});
+
 test("still stuck on the next turn end blocks the story as a stuck gate", async () => {
   const { story, labels } = fixture("a1");
   writeFrontmatter(story, { idle_turns: 3, stuck_nudged: 1 });

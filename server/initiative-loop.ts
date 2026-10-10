@@ -961,9 +961,11 @@ export function createInitiativeLoop(
           if (evidence && after.meta.stuck_nudged) {
             block(after, `stuck: ${evidence}`, "stuck");
           } else if (evidence) {
-            writeFrontmatter(after.path, { stuck_nudged: 1 });
-            await api.agents.ref(event.agent.id).send(nudgePrompt(`You look stuck: ${evidence}.`));
-          } else if (!evidence) {
+            const why = `You look stuck: ${evidence}.`;
+            // Unsent, the session would sit idle with nothing for the tick to act on: stall it instead.
+            const sent = await api.agents.ref(event.agent.id).send(nudgePrompt(why)).then(() => true, () => false);
+            writeFrontmatter(after.path, sent ? { stuck_nudged: 1 } : { stalled: why });
+          } else {
             writeFrontmatter(after.path, { stalled: "It ended its turn without writing the step's marker." });
           }
         }

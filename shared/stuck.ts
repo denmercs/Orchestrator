@@ -3,13 +3,16 @@ import { exploration, toolSteps, type ToolItem } from "./exploration";
 // Each `.harness/bin/brief` shell run in a turn that printed a test summary (`# tests N` or
 // `ℹ tests N`), as the test names it failed. A passing run is []. Typecheck and lint runs have no
 // summary and are skipped, as are commands that don't go through brief. Names come from the
-// `not ok N - <name>` lines and the `✖ failing tests:` block that `pickLines` keeps.
+// `not ok N - <name>` lines and the `✖ failing tests:` block that `pickLines` keeps. A failing run
+// exits non-zero, which Claude reports as a failed tool call with the output on `error.content`.
 export function testRuns(items: readonly ToolItem[]): string[][] {
   const runs: string[][] = [];
   for (const item of items) {
     const detail = item.detail;
-    if (item.type !== "tool_call" || item.status !== "completed" || detail?.type !== "shell") continue;
-    const { command, output } = detail;
+    if (item.type !== "tool_call" || (item.status !== "completed" && item.status !== "failed") || detail?.type !== "shell") continue;
+    const command = detail.command;
+    const error = item.error as { content?: unknown } | null | undefined;
+    const output = typeof detail.output === "string" ? detail.output : error?.content;
     if (typeof command !== "string" || typeof output !== "string" || !command.includes(".harness/bin/brief")) continue;
     const lines = output.replace(/\x1b\[[0-9;]*m/g, "").split("\n");
     if (!lines.some((line) => /^(#|ℹ) tests \d+/.test(line))) continue;

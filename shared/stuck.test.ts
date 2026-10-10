@@ -16,6 +16,17 @@ test("testRuns reads failing names from the failing tests block", () => {
   assert.deepEqual(testRuns([brief(output)]), [["first one", "second one"]]);
 });
 
+test("testRuns reads a failing run whose tool call failed, from the error's content", () => {
+  // Claude marks a non-zero exit as a failed tool call and puts the output on `error.content`.
+  const item = {
+    type: "tool_call",
+    status: "failed",
+    detail: { type: "shell", command: ".harness/bin/brief npm test" },
+    error: { type: "tool_result", is_error: true, content: "Exit code 1\nbrief: exit 1\nnot ok 1 - parses a turn\n# tests 5\n# fail 1" },
+  } as ToolItem;
+  assert.deepEqual(testRuns([item]), [["parses a turn"]]);
+});
+
 test("testRuns gives [] for a passing run, one entry per run", () => {
   assert.deepEqual(testRuns([brief("# tests 5\n# pass 5\n# fail 0"), brief("ℹ tests 2\nℹ pass 2")]), [[], []]);
 });
