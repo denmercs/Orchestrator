@@ -1,11 +1,10 @@
 // One-off backfill of merged_at on merged story files. Never imported by server/, client/ or shared/.
 // Dry run by default; `--write` writes.
-import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loopAgents } from "../s11/load.mjs";
-import { ISO_TIME, storyFiles } from "./report.mjs";
+import { ISO_TIME, readEntries, run, storyFiles } from "./report.mjs";
 
 // Adds `merged_at: <iso>` as the last frontmatter line; null if the frontmatter already has one. Only the file top is read.
 export function withMergedAt(text, iso) {
@@ -41,9 +40,6 @@ export function pickMergedAt(fm, prs, agentAt) {
   return { at: null, source: null };
 }
 
-const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "pipe"], ...opts });
-const readEntries = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
-
 function main() {
   const write = process.argv.includes("--write");
   const here = dirname(fileURLToPath(import.meta.url));
@@ -67,7 +63,7 @@ function main() {
     console.log(`${name} → ${at} (${source})`);
     if (!write) continue;
     const next = withMergedAt(readFileSync(f.path, "utf8"), at);
-    if (next === null) { console.log(`  skipped, merged_at appeared meanwhile`); continue; }
+    if (next === null) { console.log(`  skipped, the file changed meanwhile (merged_at added or frontmatter gone)`); continue; }
     writeFileSync(f.path, next);
     written++;
   }

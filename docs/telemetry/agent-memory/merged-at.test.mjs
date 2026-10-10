@@ -1,4 +1,4 @@
-// withMergedAt(text, iso): appends merged_at as the last frontmatter line, or null when it is already there.
+// withMergedAt (frontmatter insert), agentClosedAt (latest agent time) and pickMergedAt (PR, then agent, then none).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { withMergedAt, agentClosedAt, pickMergedAt } from "./merged-at.mjs";

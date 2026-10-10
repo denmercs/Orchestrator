@@ -95,8 +95,8 @@ export const frontmatter = (text) => {
   return Object.fromEntries(block.split("\n").flatMap((l) => { const i = l.indexOf(":"); return i > 0 ? [[l.slice(0, i).trim(), l.slice(i + 1).trim()]] : []; }));
 };
 
-const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "pipe"], ...opts });
-const readEntries = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+export const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "pipe"], ...opts });
+export const readEntries = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
 
 export function storyFiles(repo) {
   const files = [];
