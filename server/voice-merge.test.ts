@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PrStatus } from "./pr-checks";
 import { handleVoiceRequest, createVoiceBridge } from "./voice-bridge";
-import { bodySummary, createVoiceMerge, haikuExplain, spokenReview, type MergePort, type PrFacts } from "./voice-merge";
+import { bodySummary, createVoiceMerge, claudeExplain, spokenReview, type MergePort, type PrFacts } from "./voice-merge";
 
 const pr: PrFacts = {
   number: 95,
@@ -121,14 +121,14 @@ test("the model's read of the diff replaces the body line when it has one", asyn
   assert.match((await voice.command("merge it")).said, /Say merge it on the phone/);
 });
 
-test("haikuExplain sends the diff and returns the spoken text, or null without a key", async () => {
-  let sent: { model?: string; messages?: { content: string }[] } = {};
-  const fetch = (async (_url: string, init: { body: string }) => {
-    sent = JSON.parse(init.body);
-    return new Response(JSON.stringify({ content: [{ type: "text", text: "It adds a merge command.\n Nothing looks off." }] }));
-  }) as unknown as typeof globalThis.fetch;
-  const text = await haikuExplain(pr, "+const x = 1;", { fetch, apiKey: async () => "k" });
+test("claudeExplain pipes the diff to the Claude CLI with no tools and returns its text", async () => {
+  let call: { args: string[]; input: string } = { args: [], input: "" };
+  const text = await claudeExplain(pr, "+const x = 1;", async (args, input) => {
+    call = { args, input };
+    return "It adds a merge command.\n Nothing looks off.\n";
+  });
   assert.equal(text, "It adds a merge command. Nothing looks off.");
-  assert.match(sent.messages?.[0]?.content ?? "", /Diff:\n\+const x = 1;/);
-  assert.equal(await haikuExplain(pr, "", { fetch, apiKey: async () => "" }), null);
+  assert.match(call.input, /Diff:\n\+const x = 1;/);
+  assert.deepEqual(call.args.slice(0, 5), ["-p", "--model", "haiku", "--tools", ""]);
+  assert.equal(await claudeExplain(pr, "", async () => "  "), null);
 });

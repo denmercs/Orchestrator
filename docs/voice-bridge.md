@@ -35,11 +35,11 @@ Replies:
 ## Merge by voice
 
 Say "merge it" (or "just merge it"). The bridge takes the PR for the branch of the session whose
-turn ended last. It checks for conflicts, CI, requested changes and drafts, and has Claude Haiku
-read the diff. Then it speaks the title, Haiku's two or three sentences on what the change does and
-anything that looks off, the size, and a verdict: "Looks good", or "I wouldn't merge it yet" and
-the reasons. Without an Anthropic key (`ANTHROPIC_API_KEY` or the `anthropic-api-key` Keychain item),
-or if the call fails, the first line of the PR body stands in. The diff goes to the Anthropic API. Say "confirm" within two minutes to merge it, or "no" to drop it.
+turn ended last. It checks for conflicts, CI, requested changes and drafts, and pipes the diff
+(`gh pr diff`) to the signed-in Claude Code CLI (`claude -p --model haiku`, no tools). Then it speaks
+the title, Haiku's two or three sentences on what the change does and anything that looks off, the
+size, and a verdict: "Looks good", or "I wouldn't merge it yet" and the reasons. If `claude` can't be
+found (set `CLAUDE_BIN` to its path) or the call fails, the first line of the PR body stands in. Say "confirm" within two minutes to merge it, or "no" to drop it.
 
 The merge uses a merge commit when the repo allows one, then squash, then rebase. It only merges
 the commit that was reviewed: if something is pushed after the review, GitHub refuses and you hear
@@ -65,7 +65,7 @@ Task **Voice command** (start it from a home screen shortcut or widget):
 
 1. Get Voice (timeout 8s).
 2. HTTP Request: POST `http://100.x.y.z:4777/voice/command`, same header, body
-   `{"text":"%gv_heard"}`, content type `application/json`. Set its timeout to 45 seconds: reading
+   `{"text":"%gv_heard"}`, content type `application/json`. Set its timeout to 60 seconds: reading
    the diff takes a few.
 3. Say `%http_data.said`.
 4. If `%http_data.listen` ~ true, Goto action 1.

@@ -1,5 +1,8 @@
-import { defaultApiKey } from "./correction-classifier";
-import { MODEL } from "./corrections";
+import { execFile } from "node:child_process";
+import { access, constants } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
+import { promisify } from "node:util";
 import { gh, prStatus, type PrStatus } from "./pr-checks";
 import { normalise } from "./voice-bridge";
 
@@ -148,7 +151,8 @@ async function mergeMethod(cwd: string): Promise<string> {
   return "--merge";
 }
 
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+const execFileAsync = promisify(execFile);
+
 // Enough diff for a summary; past this the model sees the head of it and is told so.
 const MAX_DIFF_CHARS = 60_000;
 
@@ -159,43 +163,81 @@ const EXPLAIN_PROMPT = [
   "If nothing looks off, end with: Nothing looks off.",
 ].join(" ");
 
-export async function haikuExplain(
-  facts: PrFacts,
-  diff: string,
-  options: { fetch?: typeof globalThis.fetch; apiKey?: () => Promise<string> } = {},
-): Promise<string | null> {
-  const key = await (options.apiKey ?? defaultApiKey)();
-  if (!key) return null;
-  const clipped = diff.length > MAX_DIFF_CHARS ? `${diff.slice(0, MAX_DIFF_CHARS)}\n[diff cut off here]` : diff;
-  const response = await (options.fetch ?? globalThis.fetch)(ANTHROPIC_URL, {
-    method: "POST",
-    headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 300,
-      system: EXPLAIN_PROMPT,
-      messages: [{ role: "user", content: `Title: ${facts.title}\n\nDescription:\n${facts.body}\n\nDiff:\n${clipped}` }],
-    }),
-    signal: AbortSignal.timeout(20_000),
+// Runs the Claude Code CLI with `input` on stdin and returns its stdout.
+export type RunClaude = (args: string[], input: string) => Promise<string>;
+
+const isExecutable = (path: string) =>
+  access(path, constants.X_OK).then(
+    () => true,
+    () => false,
+  );
+
+// CLAUDE_BIN, then PATH and the usual install spots: the daemon's PATH may not include an nvm or local install.
+async function findClaude(): Promise<string | null> {
+  if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
+  const dirs = [
+    ...(process.env.PATH ?? "").split(delimiter).filter(Boolean),
+    ...(process.env.NVM_BIN ? [process.env.NVM_BIN] : []),
+    join(homedir(), ".local", "bin"),
+    join(homedir(), ".claude", "local"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+  ];
+  for (const dir of dirs) {
+    const candidate = join(dir, "claude");
+    if (await isExecutable(candidate)) return candidate;
+  }
+  return null;
+}
+
+// Uses the signed-in Claude Code, so no API key. A temp dir keeps any project's CLAUDE.md out of it.
+const runClaude: RunClaude = async (args, input) => {
+  const binary = await findClaude();
+  if (!binary) throw new Error("claude CLI not found (set CLAUDE_BIN)");
+  return new Promise((resolve, reject) => {
+    const child = execFile(binary, args, { cwd: tmpdir(), timeout: 40_000, maxBuffer: 1024 * 1024 }, (error, stdout) =>
+      error ? reject(error) : resolve(stdout),
+    );
+    child.stdin?.end(input);
   });
-  if (!response.ok) throw new Error(`Anthropic API returned ${response.status}`);
-  const reply = (await response.json()) as { content?: { type?: string; text?: string }[] };
-  const text = reply.content?.find((block) => block.type === "text")?.text?.replace(/\s+/g, " ").trim();
+};
+
+export async function claudeExplain(facts: PrFacts, diff: string, run: RunClaude = runClaude): Promise<string | null> {
+  const clipped = diff.length > MAX_DIFF_CHARS ? `${diff.slice(0, MAX_DIFF_CHARS)}\n[diff cut off here]` : diff;
+  // No tools and no MCP servers: it only reads what it is given, and starts faster.
+  const args = ["-p", "--model", "haiku", "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", EXPLAIN_PROMPT];
+  const text = (await run(args, `Title: ${facts.title}\n\nDescription:\n${facts.body}\n\nDiff:\n${clipped}`))
+    .replace(/\s+/g, " ")
+    .trim();
   return text || null;
+}
+
+// "dm/voice-merge" for an upstream of "origin/dm/voice-merge", or null when there is none.
+async function upstreamBranch(cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--abbrev-ref", "@{u}"], { cwd, timeout: 5_000 });
+    return stdout.trim().replace(/^[^/]+\//, "") || null;
+  } catch {
+    return null;
+  }
 }
 
 export const ghMergePort: Omit<MergePort, "lastSession"> = {
   async pr(cwd) {
-    try {
-      return JSON.parse(await gh(["pr", "view", "--json", PR_FIELDS], cwd)) as PrFacts;
-    } catch {
-      return null;
+    // A renamed local branch no longer matches the PR's head, so fall back to the upstream's name.
+    for (const branch of [null, await upstreamBranch(cwd)]) {
+      try {
+        return JSON.parse(await gh(["pr", "view", ...(branch ? [branch] : []), "--json", PR_FIELDS], cwd)) as PrFacts;
+      } catch {
+        // Try the next name.
+      }
     }
+    return null;
   },
   checks: prStatus,
   async explain(cwd, facts) {
     const diff = await gh(["pr", "diff", String(facts.number)], cwd);
-    return haikuExplain(facts, diff);
+    return claudeExplain(facts, diff);
   },
   async merge(cwd, number, headSha) {
     // --match-head-commit: a push after the review makes GitHub refuse instead of merging unseen code.
