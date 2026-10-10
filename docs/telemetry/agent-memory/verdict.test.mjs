@@ -106,6 +106,7 @@ test("parseLabels: yes/no lines map to labelKey; unlabelled and other lines are 
     "# New findings",
     "- [x] yes — S3 r2 facts: a finding",
     "- [x] yes — a/S3 r2 facts: f",
+    "- [x] no — /S5 r1 none: empty initiative",
     "- [x] no — S3 r2 facts+corrections: has: colons: inside",
     "- [ ] yes / no — S3 r2 none: untouched",
     "- [ ] yes — S4 r1 none: unchecked box still labelled",
@@ -115,6 +116,7 @@ test("parseLabels: yes/no lines map to labelKey; unlabelled and other lines are 
   assert.deepEqual(got, {
     "|S3|2|facts|a finding": "yes",
     "a|S3|2|facts|f": "yes",
+    "|S5|1|none|empty initiative": "no",
     "|S3|2|facts+corrections|has: colons: inside": "no",
     "|S4|1|none|unchecked box still labelled": "yes",
   });

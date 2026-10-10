@@ -32,11 +32,11 @@ export function completeRounds(rows) {
 const sum = (rows, f) => rows.reduce((s, r) => s + f(r), 0);
 export const labelKey = (r, finding) => `${r.initiative ?? ""}|${r.story}|${r.round}|${r.arm}|${finding}`;
 
-// new-findings.md lines: `- [x] yes — <initiative>/S3 r2 facts: <finding>`; the `<initiative>/` is absent in older files and keys as ``. Untouched `yes / no` lines are omitted.
+// new-findings.md lines: `- [x] yes — <initiative>/S3 r2 facts: <finding>`; older files have no `<initiative>/` and key with an empty initiative. Untouched `yes / no` lines are omitted.
 export function parseLabels(text) {
   const labels = {};
   for (const line of text.split("\n")) {
-    const m = line.match(/^- \[[ xX]\] (yes|no) — (?:(\S+)\/)?(\S+) r(\d+) (none|facts\+corrections|facts): (.*)$/);
+    const m = line.match(/^- \[[ xX]\] (yes|no) — (?:(\S*)\/)?(\S+) r(\d+) (none|facts\+corrections|facts): (.*)$/);
     if (m) labels[labelKey({ initiative: m[2], story: m[3], round: Number(m[4]), arm: m[5] }, m[6])] = m[1];
   }
   return labels;
