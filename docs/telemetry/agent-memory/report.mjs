@@ -56,7 +56,7 @@ export function render(data) {
   out.push("");
 
   out.push("## Review rounds and fix attempts per story", "");
-  out.push("Every story merged by a PR in this repo; stories closed without a PR are left out. Rounds come from Review agent labels and fixes from fix agents and CI-fix commit names; stories with no agent records show — for rounds.", "");
+  out.push("Every story closed by the cutoff, dated by its `merged_at` or else its PR's merge time; stories with neither are left out. Rounds come from Review agent labels and fixes from fix agents and CI-fix commit names; stories with no agent records show — for rounds.", "");
   out.push("| Initiative | Story | Title | Agent records | Review rounds | Fix attempts |", "|---|---|---|---|---:|---:|");
   for (const s of stories) {
     out.push(`| ${cell(s.initiative)} | ${cell(s.id)} | ${cell(s.title)} | ${s.hasAgents ? "yes" : "no"} | ${s.hasAgents ? s.reviewRounds : "—"} | ${s.fixAttempts} |`);
@@ -120,14 +120,22 @@ function storyFiles(repo) {
   return files;
 }
 
-// Merged stories with their PR attached, kept only when that PR merged by the cutoff. A story with no matching PR
-// (closed as "Nothing to ship") has no date to check, so it is left out.
+// Merged stories dated by their frontmatter `merged_at`, else by their PR's `mergedAt`, and kept when that date is at or
+// before the cutoff. Dates are compared as times: `merged_at` carries milliseconds, the cutoff and gh do not. A
+// `merged_at` that is not an ISO time with a zone counts as absent, so the result never depends on the local timezone.
+// A story with neither date is left out.
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 export function snapshotStories(files, prs, cutoff = CUTOFF) {
   const prFor = (fm) => prs.find((p) => String(p.number) === fm.pr) ?? prs.find((p) => p.headRefName === fm.branch);
+  const time = (iso) => Date.parse(iso ?? "");
   return files
-    .map((f) => ({ ...f, pr: prFor(f.fm) }))
-    .filter((f) => f.pr && f.pr.mergedAt <= cutoff)
-    .sort((a, b) => byText(a.pr.mergedAt, b.pr.mergedAt) || byText(a.initiative, b.initiative) || byText(a.fm.id, b.fm.id));
+    .map((f) => {
+      const pr = prFor(f.fm);
+      const own = ISO_TIME.test(f.fm.merged_at ?? "") && !Number.isNaN(time(f.fm.merged_at));
+      return { ...f, pr, closedAt: own ? f.fm.merged_at : pr?.mergedAt };
+    })
+    .filter((f) => time(f.closedAt) <= time(cutoff))
+    .sort((a, b) => time(a.closedAt) - time(b.closedAt) || byText(a.initiative, b.initiative) || byText(a.fm.id, b.fm.id));
 }
 
 function main() {
@@ -172,7 +180,7 @@ function main() {
       const found = reviewFindings(entriesOf.get(a.id));
       if (found.marker === "review-failed" || found.findings.length) findingsByRound[a.round] = found.findings;
     }
-    const commits = commitsByPr.get(f.pr.number) ?? [];
+    const commits = (f.pr && commitsByPr.get(f.pr.number)) || [];
     const events = storyOutcome({ agents: mine, commits, findingsByRound });
     stories.push({
       initiative: f.initiative,
