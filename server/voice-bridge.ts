@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
+import type { VoiceMerge } from "./voice-merge";
 
 type AgentPermissionRequest = PluginLifecycleEvents["agent.permission_requested"]["request"];
 type AgentPermissionResponse = PluginLifecycleEvents["agent.permission_resolved"]["resolution"];
@@ -83,7 +84,7 @@ export function spokenAsk(agentTitle: string | null, request: AgentPermissionReq
   return `${who} wants: ${clip(what)}.${detail} ${prompt}`;
 }
 
-function normalise(reply: string): string {
+export function normalise(reply: string): string {
   return reply
     .toLowerCase()
     .replace(/[^a-z\s]/g, "")
@@ -156,11 +157,22 @@ function tokenMatches(header: string | undefined, token: string): boolean {
   return given.length === want.length && timingSafeEqual(given, want);
 }
 
+function parseBody(body: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    return parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 // GET /voice/next → the oldest ask, or 204. POST /voice/answer {id?, reply} → { said } to speak back.
+// POST /voice/command {text} → { said, listen }: "merge it" reviews the last session's PR, "confirm" merges it.
 export async function handleVoiceRequest(
   bridge: VoiceBridge,
   token: string,
   request: { method: string; path: string; authorization?: string; body: string },
+  merge?: VoiceMerge,
 ): Promise<VoiceHttpResult> {
   if (!token || !tokenMatches(request.authorization, token)) return { status: 401 };
   if (request.method === "GET" && request.path === "/voice/next") {
@@ -178,6 +190,12 @@ export async function handleVoiceRequest(
     const id = typeof parsed.id === "string" && parsed.id ? parsed.id : undefined;
     const result = await bridge.answer(parsed.reply, id);
     return result ? { status: 200, body: result } : { status: 404, body: { said: "Nothing is waiting." } };
+  }
+  if (merge && request.method === "POST" && request.path === "/voice/command") {
+    const parsed = parseBody(request.body);
+    if (!parsed) return { status: 400, body: { error: "Body must be JSON." } };
+    if (typeof parsed.text !== "string") return { status: 400, body: { error: "text is required." } };
+    return { status: 200, body: await merge.command(parsed.text) };
   }
   return { status: 404 };
 }
@@ -201,7 +219,10 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-export function startVoiceServer(bridge: VoiceBridge, options: { host: string; port: number; token: string }) {
+export function startVoiceServer(
+  bridge: VoiceBridge,
+  options: { host: string; port: number; token: string; merge?: VoiceMerge },
+) {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
       let result: VoiceHttpResult;
@@ -211,7 +232,7 @@ export function startVoiceServer(bridge: VoiceBridge, options: { host: string; p
           path: (req.url ?? "/").split("?")[0],
           authorization: req.headers.authorization,
           body: req.method === "POST" ? await readBody(req) : "",
-        });
+        }, options.merge);
       } catch (error) {
         console.warn("orchestrator: voice request failed", error instanceof Error ? error.message : error);
         result = { status: 500, body: { said: "Something went wrong." } };

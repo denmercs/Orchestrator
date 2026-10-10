@@ -37,6 +37,7 @@ import { startMemoryReplay } from "./shared/replay-rpc";
 import { join } from "node:path";
 import { readKeychainSecret } from "./server/keychain";
 import { createVoiceBridge, startVoiceServer, VOICE_PORT } from "./server/voice-bridge";
+import { createVoiceMerge, ghMergePort } from "./server/voice-merge";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -345,6 +346,9 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   const offWorkspaceCreated = server.on("workspace.created", ({ workspace }) => {
     scopeWorkerWorkspace(workspace);
   });
+  // The voice bridge's Paseo handle, and the agent whose turn ended last ("merge it" means its PR).
+  let voicePaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
+  let lastTurnAgent: string | null = null;
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     // A memory replay's agent is the runner's business only: the telemetry row first, then its result row.
     if (memoryReplay.pendingAgents().includes(event.agent.id)) {
@@ -365,6 +369,8 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
       return;
     }
     loop.rememberPaseo(paseo);
+    voicePaseo = paseo;
+    lastTurnAgent = event.agent.id;
     void loop.onTurnEnded(event);
     void advancePipeline(paseo, event, readPipeline, readAgentConfig).catch((error) => {
       console.warn("orchestrator: pipeline advance failed", error);
@@ -391,11 +397,18 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   const offAgentCreated = server.on("agent.created", (_event, { paseo }) => arm(paseo));
   // Voice bridge for a phone: on only when the Keychain holds a token. It binds to localhost unless
   // `orchestrator-voice-bind` names another address, such as the Mac's Tailscale IP.
-  let voicePaseo: Parameters<typeof arm>[0] | null = null;
   const voice = createVoiceBridge({
     respond: async (agentId, requestId, response) => {
       if (!voicePaseo) throw new Error("No Paseo session yet");
       await voicePaseo.agents.ref(agentId).respondToPermission({ requestId, response });
+    },
+  });
+  const voiceMerge = createVoiceMerge({
+    ...ghMergePort,
+    lastSession: async () => {
+      if (!voicePaseo || !lastTurnAgent) return null;
+      const refreshed = await voicePaseo.agents.ref(lastTurnAgent).refresh();
+      return refreshed ? { title: refreshed.agent.title, cwd: refreshed.agent.cwd } : null;
     },
   });
   let stopVoice: (() => Promise<void>) | null = null;
@@ -403,7 +416,7 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   void Promise.all([readKeychainSecret("orchestrator-voice-token"), readKeychainSecret("orchestrator-voice-bind")]).then(
     ([token, bind]) => {
       if (!token || voiceStopped) return;
-      stopVoice = startVoiceServer(voice, { host: bind || "127.0.0.1", port: VOICE_PORT, token });
+      stopVoice = startVoiceServer(voice, { host: bind || "127.0.0.1", port: VOICE_PORT, token, merge: voiceMerge });
     },
   );
   const offPermissionRequested = server.on("agent.permission_requested", (event, { paseo }) => {
