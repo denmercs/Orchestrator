@@ -40,7 +40,9 @@ export type ContextReading = {
 
 export function readContext(snapshot: ContextSnapshot, policy: MeterPolicy): ContextReading {
   const used = snapshot.usage?.contextWindowUsedTokens ?? null;
-  const max = snapshot.usage?.contextWindowMaxTokens ?? null;
+  // A window of 0 is no window: as a max it would make every reading red.
+  const reported = snapshot.usage?.contextWindowMaxTokens ?? null;
+  const max = reported !== null && reported > 0 ? reported : null;
   // Exact name match: `autocompact` and friends are not the native compact command.
   const hasCompact = snapshot.commands.some((command) => command.name === "compact");
   const thresholds = thresholdsFor(policy, max);

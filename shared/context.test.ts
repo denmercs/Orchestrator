@@ -34,6 +34,7 @@ test("context settings migrate v1 token counts to a default percent of 200k", ()
   assert.equal(migrate({ amber: 1, red: 900_000 }, 1).default.act, 100);
   assert.deepEqual(migrate("junk", 1), DEFAULT_CONTEXT_CONFIG);
   assert.deepEqual(migrate({ amber: "x" }, 1), DEFAULT_CONTEXT_CONFIG);
+  assert.deepEqual(migrate({ amber: 100_000, red: 150_000, autoCompact: "yes" }, 1).default, { warn: 50, act: 75, mode: "fresh" });
 });
 
 test("context.act accepts the five actions and rejects anything else", () => {

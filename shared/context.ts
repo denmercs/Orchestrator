@@ -44,8 +44,9 @@ export const contextSettings = defineSettings({
   schema: contextValues,
   migrate(values) {
     const row = values !== null && typeof values === "object" ? (values as Record<string, unknown>) : {};
+    // Only `autoCompact` carries over as is; a bad one falls back alone, keeping the migrated percents.
     const parsed = contextValues.safeParse({
-      ...row,
+      autoCompact: typeof row.autoCompact === "boolean" ? row.autoCompact : undefined,
       default: {
         warn: toPercent(row.amber, 70),
         act: toPercent(row.red, 85),

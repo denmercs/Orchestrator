@@ -80,6 +80,12 @@ test("thresholdsFor: tokens from the step's percent of max, or the fallback's of
   assert.deepEqual(thresholdsFor(policy, null), { amber: 100_000, red: 150_000 });
 });
 
+test("readContext: a max of 0 counts as missing, so it uses the fallback and is not red", () => {
+  const reading = readContext({ usage: { contextWindowUsedTokens: 120_000, contextWindowMaxTokens: 0 }, commands: [] }, THRESHOLDS);
+  assert.equal(reading.max, null);
+  assert.equal(reading.level, "amber");
+});
+
 test("readContext: /compact listed with usage is full and native", () => {
   assert.deepEqual(readContext(snapshot(120_000, ["compact"]), THRESHOLDS), {
     used: 120_000,
