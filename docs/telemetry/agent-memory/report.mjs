@@ -42,7 +42,7 @@ export function render(data) {
   );
 
   out.push("## Exploration per step", "");
-  out.push("Typed calls and classified Bash (reads, searches; edits end the count), as live telemetry rows count them. Totals over agents. Read chars include line-number prefixes. Bash calls are classified into reads, searches and edits the same way (S9); the shell columns separately count every Bash call before the first edit.", "");
+  out.push("Typed calls and Bash commands classified as reads, searches or edits (S9); any edit, typed or shell, ends the count, as live telemetry rows count them. Totals over agents. Read chars include line-number prefixes. The shell columns separately count every Bash call before the first typed edit.", "");
   out.push("| Step | Agents | Reads | Searches | Files | Chars | Reached an edit | Shell calls before first edit | Shell output chars |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|");
   const steps = [...new Set(withT.map((a) => a.step ?? "(none)"))].sort((a, b) => {
     const i = STEP_ORDER.indexOf(a), j = STEP_ORDER.indexOf(b);

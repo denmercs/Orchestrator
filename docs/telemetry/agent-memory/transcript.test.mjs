@@ -1,7 +1,7 @@
 // Parity: a Claude transcript and the equivalent Paseo timeline items give the same ToolStep[].
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toolSteps } from "../../../shared/exploration.ts";
+import { exploration, toolSteps } from "../../../shared/exploration.ts";
 import { transcriptSteps, shellBeforeEdit, calibration } from "./transcript.mjs";
 
 const use = (id, name, input) => ({ type: "assistant", message: { content: [{ type: "tool_use", id, name, input }] } });
@@ -127,4 +127,20 @@ test("transcriptSteps classifies Bash reads and searches like the live shell ite
   assert.deepEqual(steps, toolSteps(live));
   assert.deepEqual(steps.map((s) => s.kind), ["read", "search", "search"]);
   assert.equal(steps[2].chars, 0);
+});
+
+test("a Bash edit ends the transcript's exploration count but not shellBeforeEdit", () => {
+  const log = [
+    use("s1", "Bash", { command: "sed -n 1,5p /r/a.ts" }),
+    result("s1", "line one\n"),
+    use("s2", "Bash", { command: "sed -i s/1/2/ /r/a.ts" }),
+    result("s2", ""),
+    use("r1", "Read", { file_path: "/r/b.ts" }),
+    result("r1", "1\tb\n"),
+  ];
+  const seen = exploration(transcriptSteps(log), { step: "implement" });
+  assert.equal(seen.edited, true);
+  assert.equal(seen.reads, 1);
+  assert.equal(seen.chars, 9);
+  assert.deepEqual(shellBeforeEdit(log, { step: "implement" }), { calls: 2, chars: 9 });
 });
