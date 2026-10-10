@@ -1,4 +1,4 @@
-import type { PluginHandlerContext } from "@getpaseo/plugin/server";
+import type { PluginHandlerContext, PluginTurnOutcome } from "@getpaseo/plugin/server";
 import {
   detectCompaction,
   nextWarning,
@@ -135,6 +135,9 @@ export function paseoPort(
 
 export type TurnEnded = {
   agent: { id: string; provider: string };
+  // Paseo's id for the turn; null when the provider gives none.
+  turnId: string | null;
+  outcome: PluginTurnOutcome;
   // The whole timeline so far.
   timeline: readonly WatchItem[];
 };
@@ -158,6 +161,10 @@ type SessionState = {
   memory: WarningMemory;
   // Timeline length at the last turn end; items past it are unseen. null until a turn end.
   cursor: number | null;
+  // The `turnId` of the last turn end handled, so a repeat of it is skipped.
+  lastTurnId: string | null;
+  // The session's `costUsd` at its last turn end; null when unknown (first sight mid-session).
+  lastTurnCost: number | null;
   // Split inputs: system is the session's first reading, toolChars the tool output characters of
   // every later turn. null unless the watch saw the first turn, and from any compaction on.
   split: { system: number; toolChars: number } | null;
@@ -225,7 +232,7 @@ export function createContextWatch(port: WatchPort) {
     state: SessionState,
     agent: WatchAgent,
     event: TelemetryEvent,
-    extra: Pick<TelemetryRow, "level" | "preTokens" | "explore"> = {},
+    extra: Pick<TelemetryRow, "level" | "preTokens" | "explore" | "turnId" | "turnCostUsd"> = {},
   ): Promise<void> {
     const { labels } = agent;
     const rawCycle = labels["loop-cycle"];
@@ -248,6 +255,7 @@ export function createContextWatch(port: WatchPort) {
 
   async function processTurnEnd(event: TurnEnded): Promise<void> {
     const agentId = event.agent.id;
+    if (event.turnId !== null && sessions.get(agentId)?.lastTurnId === event.turnId) return;
     const agent = await port.readAgent(agentId);
     if (!agent) return;
     const reading = readContext(agent, await port.thresholds());
@@ -256,6 +264,8 @@ export function createContextWatch(port: WatchPort) {
       reading: null,
       memory: { warned: [], mode: "normal" },
       cursor: null,
+      lastTurnId: null,
+      lastTurnCost: null,
       split: null,
       explore: null,
     };
@@ -268,6 +278,7 @@ export function createContextWatch(port: WatchPort) {
       const firstTurn = event.timeline.filter((item) => item.type === "user_message").length <= 1;
       state.split = firstTurn && !compaction && reading.used !== null ? { system: reading.used, toolChars: 0 } : null;
       state.explore = firstTurn ? { steps: [], frozen: null } : null;
+      state.lastTurnCost = firstTurn ? 0 : null;
     } else if (compaction || state.cursor > event.timeline.length) {
       state.split = null;
       if (state.cursor > event.timeline.length) state.explore = null;
@@ -286,6 +297,7 @@ export function createContextWatch(port: WatchPort) {
     state.provider = event.agent.provider;
     state.reading = reading;
     state.cursor = event.timeline.length;
+    state.lastTurnId = event.turnId;
 
     if (compaction) {
       // Recorded here rather than when Compact is pressed: this sees the real preTokens and the
@@ -303,7 +315,16 @@ export function createContextWatch(port: WatchPort) {
     // Only a loop or replay agent has an exploration count; null means the watch lost it.
     const loopStep = countedStep(agent.labels);
     const counted = loopStep === undefined ? {} : { explore: runningCount(state, loopStep) };
-    await record(agentId, state, agent, "turn", counted);
+    // The cost of this turn alone; `costUsd` is the session's running total.
+    let turnCostUsd: number | null = null;
+    if (agent.costUsd !== null) {
+      if (state.lastTurnCost !== null) turnCostUsd = Math.max(0, agent.costUsd - state.lastTurnCost);
+      state.lastTurnCost = agent.costUsd;
+    }
+    // A canceled or failed turn is `turn.stopped`, so `turn` counts completed turns only while an agent whose
+    // last turn fails still has its cost (and its explore count) on a row.
+    const turnEvent = event.outcome.kind === "completed" ? "turn" : "turn.stopped";
+    await record(agentId, state, agent, turnEvent, { ...counted, turnId: event.turnId, turnCostUsd });
     const warning = nextWarning(state.memory, reading);
     if (warning) {
       state.memory.warned.push(warning.level);
@@ -314,7 +335,8 @@ export function createContextWatch(port: WatchPort) {
   return {
     async onTurnEnded(event: TurnEnded): Promise<void> {
       const agentId = event.agent.id;
-      const done = processTurnEnd(event);
+      // One at a time per agent: a second event for the same turn must see the first one's state.
+      const done = (turnEnds.get(agentId) ?? Promise.resolve()).then(() => processTurnEnd(event));
       const tracked = done.catch(() => {});
       turnEnds.set(agentId, tracked);
       try {
@@ -375,6 +397,8 @@ export function createContextWatch(port: WatchPort) {
         reading,
         memory: { warned: [], mode: "normal" },
         cursor: null,
+        lastTurnId: null,
+        lastTurnCost: null,
         split: null,
         explore: null,
       };
