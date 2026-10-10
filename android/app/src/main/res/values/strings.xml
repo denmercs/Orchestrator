@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Jarvis</string>
+    <string name="service_description">Taps Paseo\'s "Enable Voice mode" button when you open Jarvis. It only reads Paseo\'s screen, and only for a few seconds after you open Jarvis.</string>
+    <string name="enable_service">Turn on Jarvis under Installed apps, then open Jarvis again.</string>
+    <string name="no_paseo">Paseo isn\'t installed.</string>
+</resources>
