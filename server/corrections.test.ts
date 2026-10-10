@@ -16,7 +16,7 @@ import {
 } from "./corrections";
 import { noteId } from "./memory";
 import { emptyNote, readAreaNames, renderSummary } from "./repo-facts";
-import { appendOutcome } from "./story-outcome";
+import { appendOutcome } from "../shared/story-outcome";
 
 const base = "---\nid: S3\ntitle: Thing\nstatus: done\n---\n\n## Goal\n\nDo it.\n";
 const text = [

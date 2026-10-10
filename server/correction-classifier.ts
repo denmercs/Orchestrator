@@ -5,8 +5,8 @@ import {
   MAX_TOKENS,
   MODEL,
   OUTPUT_USD_PER_TOKEN,
-} from "../shared/corrections";
-import { CORRECTION_CATEGORIES } from "../shared/memory";
+} from "./corrections";
+import { CORRECTION_CATEGORIES } from "./memory";
 import { readKeychainSecret } from "./keychain";
 
 const URL = "https://api.anthropic.com/v1/messages";

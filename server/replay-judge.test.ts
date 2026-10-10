@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { INPUT_USD_PER_TOKEN, MODEL, OUTPUT_USD_PER_TOKEN } from "../shared/corrections";
+import { INPUT_USD_PER_TOKEN, MODEL, OUTPUT_USD_PER_TOKEN } from "./corrections";
 import { haikuJudge } from "./replay-judge";
 
 const recorded = ["missing test for parse", "uses any in the loader"];

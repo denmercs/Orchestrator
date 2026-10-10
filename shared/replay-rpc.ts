@@ -1,4 +1,4 @@
-// The memory-replay RPC. Imported by the client bundle, so it must not import ./memory or any node: module.
+// The memory-replay RPC. Imported by the client bundle, so it must stay free of node: modules and of server/ code.
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 

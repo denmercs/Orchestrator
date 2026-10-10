@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { AgentCreateConfig } from "../shared/agent-runner";
-import type { CorpusRow } from "../shared/replay";
+import type { CorpusRow } from "./replay";
 import { installBrief } from "./brief-install";
 import { readTelemetry, type TelemetryRow } from "./context-telemetry";
 import { defaultApiKey } from "./correction-classifier";

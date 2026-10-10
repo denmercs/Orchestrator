@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { INPUT_USD_PER_TOKEN, MAX_TOKENS, MODEL, OUTPUT_USD_PER_TOKEN, type Observation } from "../shared/corrections";
-import { CORRECTION_CATEGORIES } from "../shared/memory";
+import { INPUT_USD_PER_TOKEN, MAX_TOKENS, MODEL, OUTPUT_USD_PER_TOKEN, type Observation } from "./corrections";
+import { CORRECTION_CATEGORIES } from "./memory";
 import { haikuClassifier } from "./correction-classifier";
 
 const obs = (id: string, text: string): Observation => ({ id, source: "finding", story: "S1", date: "2026-01-01", link: "l", text });
