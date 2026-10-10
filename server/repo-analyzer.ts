@@ -166,6 +166,8 @@ export type AnalyzeResult = {
 export type AnalyzeOptions = {
   asOf?: string;
   excludeStory?: string;
+  // Where `.harness/memory` is written. The repo (git history, old notes, filings cache) is still read from `root`.
+  memoryRoot?: string;
   costCap?: number;
   classify?: Classify;
   // `warn` reports a source that could not be read; the run then removes no stale corrections.
@@ -205,7 +207,8 @@ export async function analyze(root: string, opts: AnalyzeOptions = {}): Promise<
   const requested = opts.costCap ?? DEFAULT_COST_CAP;
   const costCap = Number.isFinite(requested) && requested >= 0 ? requested : 0;
   log(`cost cap $${costCap.toFixed(2)}`);
-  const memory = join(root, ".harness", "memory");
+  const outRoot = opts.memoryRoot ?? root;
+  const memory = join(outRoot, ".harness", "memory");
   const summaryFile = join(memory, "SUMMARY.md");
   const oldSummary = existsSync(summaryFile) ? readFileSync(summaryFile, "utf8") : "";
   const snap = await snapshot(root, { asOf: opts.asOf });
@@ -236,7 +239,7 @@ export async function analyze(root: string, opts: AnalyzeOptions = {}): Promise<
       }
     }
     if (current === formatNote(note)) result.skipped.push(id);
-    else if (writeNote(root, note, { seededOnly: true })) result.written.push(id);
+    else if (writeNote(outRoot, note, { seededOnly: true })) result.written.push(id);
     else result.skipped.push(id);
   }
 
@@ -256,7 +259,7 @@ export async function analyze(root: string, opts: AnalyzeOptions = {}): Promise<
     }
   }
 
-  const corrections = await correctionsPass(root, notes, opts, costCap, log, result);
+  const corrections = await correctionsPass(root, outRoot, notes, opts, costCap, log, result);
   summary = factsSummary + (corrections === null ? topCorrectionsOf(oldSummary) : `\n${renderTopCorrections(corrections)}`);
   result.summary = summary;
   if (summary !== oldSummary) {
@@ -269,13 +272,14 @@ export async function analyze(root: string, opts: AnalyzeOptions = {}): Promise<
 // The corrections pass. Returns the correction notes produced, or null when the pass was skipped. Never throws on classifier failures.
 async function correctionsPass(
   root: string,
+  outRoot: string,
   areaNotes: Note[],
   opts: AnalyzeOptions,
   costCap: number,
   log: (line: string) => void,
   result: AnalyzeResult,
 ): Promise<Note[] | null> {
-  const memory = join(root, ".harness", "memory");
+  const memory = join(outRoot, ".harness", "memory");
   let classify = opts.classify;
   if (!classify) {
     if (!(await defaultApiKey())) {
@@ -299,11 +303,12 @@ async function correctionsPass(
   }
   const observations = observationsAsOf(all, { asOf: opts.asOf, excludeStory: opts.excludeStory });
 
-  const cacheFile = join(root, ".harness", ...CACHE_FILE);
+  const cacheFile = join(outRoot, ".harness", ...CACHE_FILE);
+  const rootCacheFile = join(root, ".harness", ...CACHE_FILE);
   const areas = areaNotes.filter((n) => n.type === "area").map((n) => ({ id: n.slug, globs: n.globs }));
   // fileObservations logs the cap itself; analyze already did, first.
   const filing = await fileObservations(observations, {
-    cache: readCache(cacheFile),
+    cache: { ...readCache(rootCacheFile), ...readCache(cacheFile) },
     classify,
     costCap,
     areas,
@@ -327,7 +332,7 @@ async function correctionsPass(
     produced.add(id);
     const file = join(memory, `${id}.md`);
     if (existsSync(file) && readFileSync(file, "utf8") === formatNote(note)) result.skipped.push(id);
-    else if (writeNote(root, note, { seededOnly: true })) result.written.push(id);
+    else if (writeNote(outRoot, note, { seededOnly: true })) result.written.push(id);
     else result.skipped.push(id);
   }
 

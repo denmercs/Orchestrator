@@ -62,6 +62,8 @@ export type StepExtra = {
   skills?: StepSkill[];
   // Existing-path entries in `## Plan` that aren't in the worktree.
   missing?: string[];
+  // Review: memory brief lines, shown as `## Memory brief`. Absent or empty leaves the prompt unchanged.
+  brief?: string[];
 };
 
 export type StepSkill = { name: string; path?: string };
@@ -342,6 +344,7 @@ ${[story.ticketKey, story.ticketUrl].filter(Boolean).join(" — ") || "(no ticke
     if (cycle) return cycleData(cycle, plan);
     return cycles?.length && round === 1 ? cyclesData(cycles, plan) : "";
   },
+  review: (_story, { brief }) => (brief?.length ? `## Memory brief\n${brief.map((l) => `- ${l}`).join("\n")}` : ""),
   fix: (_story, { failing }) => `## Failing checks
 ${failing ?? "(see the PR's checks)"}`,
   pr: (story) => `## PR commands

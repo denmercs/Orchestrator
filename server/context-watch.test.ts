@@ -581,6 +581,17 @@ test("explore: an agent without a loop-step label has no explore field, and neit
   );
 });
 
+test("explore: a replay agent's turn rows are counted by its replay-step label while step stays null", async () => {
+  const agents = { a: agent(20_000, { "replay-step": "review" }) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a", [user, readOf("a.ts", "12345")]));
+
+  const turns = rows.filter((r) => r.event === "turn");
+  assert.equal(turns[0].step, null);
+  assert.deepEqual(turns[0].explore, { reads: 1, searches: 0, files: 1, chars: 5, edited: false });
+});
+
 test("explore: first sight mid-session records null from then on", async () => {
   const agents = { a: agent(20_000, { "loop-step": "implement" }) };
   const { port, rows } = fakePort(agents);

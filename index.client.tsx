@@ -4,6 +4,7 @@ import { OrchestrationDashboard } from "./client/orchestration-dashboard";
 import { contributeSessionRolePills } from "./client/session-role-pills";
 import { attachSkill } from "./shared/pipeline";
 import { INSTALL_LABEL } from "./shared/install";
+import { startMemoryReplay } from "./shared/replay";
 
 const TITLE = INSTALL_LABEL ? `Orchestration (${INSTALL_LABEL})` : "Orchestration";
 
@@ -24,6 +25,18 @@ export default function contribute(client: PluginClientContext) {
     context: "global",
     onSelect({ openSurface }) {
       openSurface("orchestration");
+    },
+  });
+
+  // Replays this repo's past Reviews in three memory arms. Progress lands in `.harness/replay/run/` (run.log shows the cost cap).
+  client.addCommandCenterItem({
+    id: "replay-past-reviews",
+    title: "Replay past Reviews (memory)",
+    icon: "History",
+    keywords: ["replay", "review", "memory", "arms", "experiment"],
+    context: "workspace",
+    async onSelect({ rpc, workspace }) {
+      await rpc(startMemoryReplay, { root: workspace.projectRootPath });
     },
   });
 

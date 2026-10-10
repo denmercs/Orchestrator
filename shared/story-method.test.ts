@@ -396,3 +396,12 @@ test("parseSkills reads back what formatSkills wrote", () => {
   assert.deepEqual(parseSkills(formatSkills(skills)), skills);
   assert.deepEqual(parseSkills(""), []);
 });
+
+test("a memory brief adds a Memory brief block to the review step data and nothing else changes without it", () => {
+  const plain = stepPrompt("review", story, { round: 1 });
+  assert.equal(stepPrompt("review", story, { round: 1, brief: undefined }), plain);
+  assert.doesNotMatch(plain, /## Memory brief/);
+  const withBrief = stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] });
+  assert.match(withBrief, /\n## Memory brief\n- area a: x\/\*\*\n- A fact\.\n/);
+  assert.ok(withBrief.indexOf("## Memory brief") > withBrief.indexOf("Review for story S1"), "after the head");
+});
