@@ -1,7 +1,7 @@
 // Parity: a Claude transcript and the equivalent Paseo timeline items give the same ToolStep[].
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { toolSteps } from "../../../shared/exploration.ts";
+import { exploration, toolSteps } from "../../../shared/exploration.ts";
 import { transcriptSteps, shellBeforeEdit, calibration } from "./transcript.mjs";
 
 const use = (id, name, input) => ({ type: "assistant", message: { content: [{ type: "tool_use", id, name, input }] } });
@@ -36,7 +36,7 @@ const items = [
   { type: "tool_call", status: done, detail: { type: "read", filePath: "/r/a.ts", content: "1\tconst a = 1;\n" } },
   { type: "tool_call", status: done, detail: { type: "search", filePaths: [], content: "/r/a.ts\n/r/b.ts" } },
   { type: "tool_call", status: done, detail: { type: "search", filePaths: [], content: "/r/c.ts" } },
-  { type: "tool_call", status: done, detail: { type: "shell", command: "ls" } },
+  { type: "tool_call", status: done, detail: { type: "shell", command: "ls", output: "a b c" } },
   { type: "tool_call", status: done, detail: { type: "sub_agent" } },
   { type: "tool_call", status: "failed", detail: { type: "read", filePath: "/r/missing.ts", content: "File does not exist." } },
   { type: "tool_call", status: done, detail: { type: "edit", filePath: "/r/a.ts", newString: "2" } },
@@ -107,4 +107,40 @@ test("calibration pairs chars / 4 with billed prompt growth for read/search-only
     { estimated: 10, billed: 12, ratio: 1.2 },
     { estimated: 10, billed: 30, ratio: 3 },
   ]);
+});
+
+test("transcriptSteps classifies Bash reads and searches like the live shell items", () => {
+  const log = [
+    use("s1", "Bash", { command: "sed -n 1,5p /r/a.ts" }),
+    result("s1", "line one\n"),
+    use("s2", "Bash", { command: "grep -rn foo /r" }),
+    result("s2", "/r/a.ts:1:foo\n"),
+    use("s3", "Bash", { command: "grep -rn bar /r" }),
+    result("s3", "boom", true),
+  ];
+  const live = [
+    { type: "tool_call", status: "completed", detail: { type: "shell", command: "sed -n 1,5p /r/a.ts", output: "line one\n" } },
+    { type: "tool_call", status: "completed", detail: { type: "shell", command: "grep -rn foo /r", output: "/r/a.ts:1:foo\n" } },
+    { type: "tool_call", status: "failed", detail: { type: "shell", command: "grep -rn bar /r", output: "boom" } },
+  ];
+  const steps = transcriptSteps(log);
+  assert.deepEqual(steps, toolSteps(live));
+  assert.deepEqual(steps.map((s) => s.kind), ["read", "search", "search"]);
+  assert.equal(steps[2].chars, 0);
+});
+
+test("a Bash edit ends the transcript's exploration count but not shellBeforeEdit", () => {
+  const log = [
+    use("s1", "Bash", { command: "sed -n 1,5p /r/a.ts" }),
+    result("s1", "line one\n"),
+    use("s2", "Bash", { command: "sed -i s/1/2/ /r/a.ts" }),
+    result("s2", ""),
+    use("r1", "Read", { file_path: "/r/b.ts" }),
+    result("r1", "1\tb\n"),
+  ];
+  const seen = exploration(transcriptSteps(log), { step: "implement" });
+  assert.equal(seen.edited, true);
+  assert.equal(seen.reads, 1);
+  assert.equal(seen.chars, 9);
+  assert.deepEqual(shellBeforeEdit(log, { step: "implement" }), { calls: 2, chars: 9 });
 });
