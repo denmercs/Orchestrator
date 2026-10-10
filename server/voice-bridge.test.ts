@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createVoiceBridge, handleVoiceRequest, interpretReply, isRisky, spokenAsk, type VoiceAsk } from "./voice-bridge";
+import {
+  beforeRoger,
+  createVoiceBridge,
+  handleVoiceRequest,
+  interpretReply,
+  isRisky,
+  spokenAsk,
+  spokenReply,
+  type VoiceAsk,
+} from "./voice-bridge";
 
 type Request = Parameters<typeof isRisky>[0];
 
@@ -13,12 +22,32 @@ const risky: VoiceAsk = { ...safe, risky: true };
 
 function fakeBridge() {
   const responses: [string, string, unknown][] = [];
+  const sent: [string, string][] = [];
   const bridge = createVoiceBridge({
     respond: async (agentId, requestId, response) => {
       responses.push([agentId, requestId, response]);
     },
+    send: async (agentId, text) => {
+      sent.push([agentId, text]);
+    },
   });
-  return { bridge, responses };
+  return { bridge, responses, sent };
+}
+
+type TurnEnded = Parameters<ReturnType<typeof createVoiceBridge>["onTurnEnded"]>[0];
+
+function turnEnded(agentId: string, texts: string[], kind = "completed"): TurnEnded {
+  return {
+    agent: { id: agentId, title: "Story 4" },
+    outcome: { kind },
+    timeline: texts.map((text) => ({ type: "assistant_message", text })),
+  } as unknown as TurnEnded;
+}
+
+// The phone follows an agent once it answers one of that agent's asks.
+async function followed(bridge: ReturnType<typeof createVoiceBridge>, agentId: string) {
+  bridge.onRequested({ id: agentId, title: "Story 4" }, bash("npm test", `ask-${agentId}`));
+  await bridge.answer("yes", `ask-${agentId}`);
 }
 
 test("pushes, hard resets, recursive deletes and mode changes are risky; tests are not", () => {
@@ -85,7 +114,8 @@ test("approval picks the request's primary allow action when it offers actions",
       { id: "implement", label: "Implement", behavior: "allow", variant: "primary" },
     ],
   } as Request);
-  assert.equal(bridge.next()?.allowActionId, "implement");
+  const item = bridge.next();
+  assert.equal(item?.kind === "ask" && item.allowActionId, "implement");
 });
 
 test("asks are answered oldest first and leave the queue once answered or resolved", async () => {
@@ -106,7 +136,7 @@ test("asks are answered oldest first and leave the queue once answered or resolv
 test("a refused risky yes stays queued and sends nothing", async () => {
   const { bridge, responses } = fakeBridge();
   bridge.onRequested({ id: "a1", title: "Ship" }, bash("git push", "r1"));
-  assert.match((await bridge.answer("yes"))?.said ?? "", /Say confirm/);
+  assert.deepEqual(await bridge.answer("yes"), { said: "That one is risky. Say confirm to approve, or no." });
   assert.equal(responses.length, 0);
   assert.equal(bridge.next()?.id, "r1");
 });
@@ -127,7 +157,7 @@ test("http next returns the oldest ask and answer applies the reply", async () =
   const next = await handleVoiceRequest(bridge, "t", { method: "GET", path: "/voice/next", authorization: auth, body: "" });
   assert.deepEqual(next, {
     status: 200,
-    body: { id: "r1", text: "Story 4 wants: Run command. Command: npm test. Say yes, no, or what to do instead." },
+    body: { id: "r1", kind: "ask", text: "Story 4 wants: Run command. Command: npm test. Say yes, no, or what to do instead." },
   });
   const answer = await handleVoiceRequest(bridge, "t", {
     method: "POST",
@@ -146,4 +176,82 @@ test("http next returns the oldest ask and answer applies the reply", async () =
     body: JSON.stringify({ reply: "yes" }),
   });
   assert.equal(none.status, 404);
+});
+
+test("a reply is spoken as the agent's words without markdown, clipped", () => {
+  assert.equal(spokenReply("Story 4", "## Done\n\n**Tests** pass in `npm test`. See [the PR](https://x)."), "Story 4 says: Done Tests pass in npm test. See the PR.");
+  assert.equal(spokenReply(null, "x".repeat(700)).length, "An agent says: ".length + 601);
+});
+
+test("a finished turn queues a reply only for followed agents, using the last assistant message", async () => {
+  const { bridge } = fakeBridge();
+  bridge.onTurnEnded(turnEnded("a1", ["first", "last"]));
+  assert.equal(bridge.next(), null);
+  await followed(bridge, "a1");
+  bridge.onTurnEnded(turnEnded("a1", ["first", "last"], "canceled"));
+  assert.equal(bridge.next(), null);
+  bridge.onTurnEnded(turnEnded("a1", ["first", "last"]));
+  assert.deepEqual(bridge.next(), { kind: "reply", id: "reply:a1", agentId: "a1", text: "Story 4 says: last" });
+  bridge.onTurnEnded(turnEnded("a1", ["newer"]));
+  assert.equal(bridge.next()?.text, "Story 4 says: newer");
+});
+
+test("a new turn drops the agent's pending reply", async () => {
+  const { bridge } = fakeBridge();
+  await followed(bridge, "a1");
+  bridge.onTurnEnded(turnEnded("a1", ["done"]));
+  bridge.onTurnStarted("a1");
+  assert.equal(bridge.next(), null);
+});
+
+test("answering a reply sends the words to its agent", async () => {
+  const { bridge, sent } = fakeBridge();
+  await followed(bridge, "a1");
+  bridge.onTurnEnded(turnEnded("a1", ["done"]));
+  assert.deepEqual(await bridge.answer("now add tests", "reply:a1"), { said: "Sent." });
+  assert.deepEqual(sent, [["a1", "now add tests"]]);
+  assert.equal(bridge.next(), null);
+});
+
+test("with nothing waiting, an answer goes to the last followed agent", async () => {
+  const { bridge, sent } = fakeBridge();
+  assert.equal(await bridge.answer("hello"), null);
+  await followed(bridge, "a1");
+  await followed(bridge, "a2");
+  assert.deepEqual(await bridge.answer("start the next story"), { said: "Sent." });
+  assert.deepEqual(sent, [["a2", "start the next story"]]);
+  assert.equal(await bridge.answer("yes"), null);
+  assert.equal(await bridge.answer("hello", "gone"), null);
+});
+
+test("a trailing roger is stripped, so yes roger approves", async () => {
+  assert.equal(beforeRoger("Yes, roger."), "Yes");
+  assert.equal(beforeRoger("Roger"), "");
+  assert.equal(beforeRoger("rogers"), null);
+  const { bridge, responses } = fakeBridge();
+  bridge.onRequested({ id: "a1", title: "One" }, bash("npm test", "r1"));
+  assert.deepEqual(await bridge.answer("yes roger"), { said: "Approved." });
+  assert.equal(responses.length, 1);
+});
+
+test("held chunks keep the phone listening until roger, then go as one message", async () => {
+  const { bridge, sent } = fakeBridge();
+  await followed(bridge, "a1");
+  bridge.onTurnEnded(turnEnded("a1", ["done"]));
+  assert.deepEqual(await bridge.answer("add a test", "reply:a1", true), { listen: true });
+  assert.deepEqual(await bridge.answer("for the parser", "reply:a1", true), { listen: true });
+  assert.equal(sent.length, 0);
+  assert.deepEqual(await bridge.answer("please Roger.", "reply:a1", true), { said: "Sent." });
+  assert.deepEqual(sent, [["a1", "add a test for the parser please"]]);
+  assert.deepEqual(await bridge.answer("roger", undefined, true), { said: "I didn't catch that." });
+});
+
+test("http answer passes hold through and next tags the item kind", async () => {
+  const { bridge } = fakeBridge();
+  await followed(bridge, "a1");
+  bridge.onTurnEnded(turnEnded("a1", ["done"]));
+  const call = (method: string, path: string, body = "") => handleVoiceRequest(bridge, "t", { method, path, authorization: "Bearer t", body });
+  assert.deepEqual((await call("GET", "/voice/next")).body, { id: "reply:a1", kind: "reply", text: "Story 4 says: done" });
+  const held = await call("POST", "/voice/answer", JSON.stringify({ id: "reply:a1", reply: "ship it", hold: true }));
+  assert.deepEqual(held, { status: 200, body: { listen: true } });
 });

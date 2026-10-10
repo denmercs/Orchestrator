@@ -365,6 +365,8 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
       return;
     }
     loop.rememberPaseo(paseo);
+    voicePaseo = paseo;
+    voice.onTurnEnded(event);
     void loop.onTurnEnded(event);
     void advancePipeline(paseo, event, readPipeline, readAgentConfig).catch((error) => {
       console.warn("orchestrator: pipeline advance failed", error);
@@ -387,7 +389,10 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   const offSessionOpen = server.before("agent.session_open", (_input, { paseo }) => {
     arm(paseo);
   });
-  const offTurnStarted = server.on("agent.turn_started", (_event, { paseo }) => arm(paseo));
+  const offTurnStarted = server.on("agent.turn_started", (event, { paseo }) => {
+    arm(paseo);
+    voice.onTurnStarted(event.agent.id);
+  });
   const offAgentCreated = server.on("agent.created", (_event, { paseo }) => arm(paseo));
   // Voice bridge for a phone: on only when the Keychain holds a token. It binds to localhost unless
   // `orchestrator-voice-bind` names another address, such as the Mac's Tailscale IP.
@@ -396,6 +401,10 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
     respond: async (agentId, requestId, response) => {
       if (!voicePaseo) throw new Error("No Paseo session yet");
       await voicePaseo.agents.ref(agentId).respondToPermission({ requestId, response });
+    },
+    send: async (agentId, text) => {
+      if (!voicePaseo) throw new Error("No Paseo session yet");
+      await voicePaseo.agents.ref(agentId).send(text);
     },
   });
   let stopVoice: (() => Promise<void>) | null = null;
