@@ -87,10 +87,10 @@ test("outcomeOf is null when the judge gave no matches", () => {
 });
 
 test("newFindingsLines makes a yes/no checklist line per new finding", () => {
-  const row = { story: "S8", round: 1, arm: "facts" as const, outcome: { caught: [], notCaught: [], new: ["Missing check", "Odd name"] } };
+  const row = { initiative: "i", story: "S8", round: 1, arm: "facts" as const, outcome: { caught: [], notCaught: [], new: ["Missing check", "Odd name"] } };
   assert.deepEqual(newFindingsLines(row), [
-    "- [ ] yes / no — S8 r1 facts: Missing check",
-    "- [ ] yes / no — S8 r1 facts: Odd name",
+    "- [ ] yes / no — i/S8 r1 facts: Missing check",
+    "- [ ] yes / no — i/S8 r1 facts: Odd name",
   ]);
   assert.deepEqual(newFindingsLines({ ...row, outcome: null }), []);
 });

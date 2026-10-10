@@ -167,7 +167,7 @@ test("replays one corpus row in three arms and records each on its turn end", as
 
   // New findings go to a checklist for a human.
   const checklist = readFileSync(join(runDir, "new-findings.md"), "utf8");
-  assert.match(checklist, /- \[ \] yes \/ no — S7 r2 .*: naming nit/);
+  assert.match(checklist, /- \[ \] yes \/ no — agent-memory\/S7 r2 .*: naming nit/);
 
   // Every workspace is archived and its worktree removed.
   assert.deepEqual([...calls.archived].sort(), ["ws1", "ws2", "ws3"]);
