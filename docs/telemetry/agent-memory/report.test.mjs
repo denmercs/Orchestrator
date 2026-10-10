@@ -1,7 +1,7 @@
 // render(data) on a small fixture: four sections, coverage line, every merged story listed, deterministic.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { render, outcomeUpdates, snapshotStories } from "./report.mjs";
+import { render, outcomeUpdates, snapshotStories, entriesUntil } from "./report.mjs";
 
 const data = {
   cutoff: "2026-10-09T14:01:28Z",
@@ -93,4 +93,16 @@ test("snapshotStories: ordered by mergedAt, then initiative, then id", () => {
 
 test("render: stories intro says stories closed without a PR are left out", () => {
   assert.match(render(data), /closed without a PR are left out/);
+});
+
+test("entriesUntil: keeps entries at or before the cutoff and ones without a timestamp, drops later ones", () => {
+  const cutoff = "2026-10-09T14:01:28Z";
+  const entries = [
+    { id: "before", timestamp: "2026-10-09T14:01:27.999Z" },
+    { id: "at", timestamp: "2026-10-09T14:01:28.000Z" },
+    { id: "same-second", timestamp: "2026-10-09T14:01:28.500Z" },
+    { id: "after", timestamp: "2026-10-09T14:01:29Z" },
+    { id: "none", type: "summary" },
+  ];
+  assert.deepEqual(entriesUntil(entries, cutoff).map((e) => e.id), ["before", "at", "none"]);
 });

@@ -1,5 +1,5 @@
 // Offline baseline report: writes docs/telemetry/agent-memory/baseline.md. Never imported by server/, client/ or shared/.
-// Snapshot is fixed at CUTOFF, so a rerun gives the same bytes. `--write-outcomes` also backfills story files.
+// Snapshot is fixed at CUTOFF (agents by createdAt, transcript entries by timestamp), so a rerun gives the same bytes. `--write-outcomes` also backfills story files.
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -98,6 +98,15 @@ const frontmatter = (text) => {
 const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "pipe"], ...opts });
 const readEntries = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
 
+// Entries stamped after `cutoff` are dropped; ones with no (or unparseable) timestamp are kept. Compared as times: transcript stamps carry milliseconds.
+export function entriesUntil(entries, cutoff) {
+  const limit = Date.parse(cutoff);
+  return entries.filter((e) => {
+    const t = Date.parse(e.timestamp);
+    return Number.isNaN(t) || t <= limit;
+  });
+}
+
 function storyFiles(repo) {
   const files = [];
   const base = join(repo, ".harness", "initiatives");
@@ -153,7 +162,7 @@ function main() {
   const ratios = [];
   for (const a of all) {
     if (!a.transcript) { agents.push({ step: a.step, hasTranscript: false }); continue; }
-    const entries = readEntries(a.transcript);
+    const entries = entriesUntil(readEntries(a.transcript), CUTOFF);
     entriesOf.set(a.id, entries);
     const ex = exploration(transcriptSteps(entries), { step: a.step });
     const sh = shellBeforeEdit(entries, { step: a.step });
