@@ -37,7 +37,7 @@ import { startMemoryReplay } from "./shared/replay-rpc";
 import { join } from "node:path";
 import { readKeychainSecret } from "./server/keychain";
 import { createVoiceBridge, startVoiceServer, VOICE_PORT } from "./server/voice-bridge";
-import { voiceMergePort } from "./server/voice-merge";
+import { createMergeQueue, voiceMergePort } from "./server/voice-merge";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -231,7 +231,11 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
     const state = await context.read();
     return state.status === "ready" ? state.values : { amber: 100_000, red: 150_000 };
   };
-  const contextWatch = createContextWatch(paseoPort(() => contextPaseo, readThresholds, initiativeLoop));
+  const readAutoCompact = async () => {
+    const state = await context.read();
+    return state.status === "ready" ? state.values.autoCompact : true;
+  };
+  const contextWatch = createContextWatch(paseoPort(() => contextPaseo, readThresholds, readAutoCompact, initiativeLoop));
   server.handle(contextAct, (input, { paseo }) => {
     contextPaseo = paseo;
     return contextWatch.act(input);
@@ -346,6 +350,8 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   const offWorkspaceCreated = server.on("workspace.created", ({ workspace }) => {
     scopeWorkerWorkspace(workspace);
   });
+  // The voice bridge's Paseo handle.
+  let voicePaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     // A memory replay's agent is the runner's business only: the telemetry row first, then its result row.
     if (memoryReplay.pendingAgents().includes(event.agent.id)) {
@@ -366,6 +372,8 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
       return;
     }
     loop.rememberPaseo(paseo);
+    voicePaseo = paseo;
+    voice.onTurnEnded(event);
     void loop.onTurnEnded(event);
     void advancePipeline(paseo, event, readPipeline, readAgentConfig).catch((error) => {
       console.warn("orchestrator: pipeline advance failed", error);
@@ -388,21 +396,24 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   const offSessionOpen = server.before("agent.session_open", (_input, { paseo }) => {
     arm(paseo);
   });
-  const offTurnStarted = server.on("agent.turn_started", (_event, { paseo }) => arm(paseo));
+  const offTurnStarted = server.on("agent.turn_started", (event, { paseo }) => {
+    arm(paseo);
+    voice.onTurnStarted(event.agent.id);
+  });
   const offAgentCreated = server.on("agent.created", (_event, { paseo }) => arm(paseo));
   // Voice bridge for a phone: on only when the Keychain holds a token. It binds to localhost unless
   // `orchestrator-voice-bind` names another address, such as the Mac's Tailscale IP.
-  let voicePaseo: Parameters<typeof arm>[0] | null = null;
-  // It also reads out green story PRs in the loop's repos, review first, and merges one on "merge".
-  const voice = createVoiceBridge(
-    {
-      respond: async (agentId, requestId, response) => {
-        if (!voicePaseo) throw new Error("No Paseo session yet");
-        await voicePaseo.agents.ref(agentId).respondToPermission({ requestId, response });
-      },
+  // It also reads out green story PRs in the loop's repos, with a review, and merges one on "merge".
+  const voice = createVoiceBridge({
+    respond: async (agentId, requestId, response) => {
+      if (!voicePaseo) throw new Error("No Paseo session yet");
+      await voicePaseo.agents.ref(agentId).respondToPermission({ requestId, response });
     },
-    voiceMergePort(readRegistry),
-  );
+    send: async (agentId, text) => {
+      if (!voicePaseo) throw new Error("No Paseo session yet");
+      await voicePaseo.agents.ref(agentId).send(text);
+    },
+  }, createMergeQueue(voiceMergePort(readRegistry)));
   let stopVoice: (() => Promise<void>) | null = null;
   let voiceStopped = false;
   void Promise.all([readKeychainSecret("orchestrator-voice-token"), readKeychainSecret("orchestrator-voice-bind")]).then(

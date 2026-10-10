@@ -8,6 +8,8 @@ const contextValues = z.object({
   // Tokens at which a session's level turns amber, then red.
   amber: z.number().int().min(1).default(100_000),
   red: z.number().int().min(1).default(150_000),
+  // Compact a session on its own when it crosses red.
+  autoCompact: z.boolean().default(true),
 });
 
 export type ContextConfig = z.infer<typeof contextValues>;
@@ -19,7 +21,7 @@ export const contextSettings = defineSettings({
   schema: contextValues,
 });
 
-export const CONTEXT_ACTIONS = ["compact", "fresh", "remind", "ignore"] as const;
+export const CONTEXT_ACTIONS = ["compact", "fresh", "remind", "ignore", "skip-auto"] as const;
 export type ContextAction = (typeof CONTEXT_ACTIONS)[number];
 
 // A pill action on one session. `agentId` in the output is the new session after `fresh`.
@@ -38,7 +40,8 @@ export const contextSummary = z.object({
   sessions: z.number(),
   sessionsOverThreshold: z.number(),
   warnings: z.number(),
-  compactions: z.object({ native: z.number(), fresh: z.number(), inferred: z.number() }),
+  // `auto` counts the compact.* rows the watch started itself (trigger "auto"); they also count in native/fresh.
+  compactions: z.object({ native: z.number(), fresh: z.number(), inferred: z.number(), auto: z.number() }),
   ignored: z.number(),
   reminded: z.number(),
   // Σ(preTokens − used) over compact rows.
@@ -100,6 +103,9 @@ export const contextStatus = z.object({
   warned: z.array(z.enum(["amber", "red"])),
   mode: z.enum(["normal", "remind", "ignore"]),
   red: z.number(),
+  // Whether the session will compact on its own at red: false when skipped, on Ignore, for a loop
+  // agent or with the setting off.
+  auto: z.boolean(),
 });
 
 export type ContextStatus = z.infer<typeof contextStatus>;

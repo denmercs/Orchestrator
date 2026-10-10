@@ -1,12 +1,16 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
+import { interpretMergeReply, type MergeQueue } from "./voice-merge";
 
 type AgentPermissionRequest = PluginLifecycleEvents["agent.permission_requested"]["request"];
 type AgentPermissionResponse = PluginLifecycleEvents["agent.permission_resolved"]["resolution"];
+type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 
-// Voice bridge: a phone (Tasker) asks for the oldest blocked permission, speaks it with Android
-// text to speech, listens, and posts the reply back. The bridge maps the reply onto the request.
+// Voice bridge: a phone (Tasker) asks for the oldest waiting item, speaks it with Android text to
+// speech, listens, and posts the reply back. An item is a blocked permission (ask), the last
+// message of an agent the phone is talking to (reply), or a green story PR to merge (merge, after
+// both of the others). The user ends each message with "roger".
 // Off unless a token is in the Keychain; every call must carry it as a bearer token.
 
 export type VoiceAsk = {
@@ -17,21 +21,18 @@ export type VoiceAsk = {
   allowActionId?: string;
 };
 
+// An agent's latest finished message, queued only for agents the phone follows.
+export type VoiceReply = { id: string; agentId: string; text: string };
+
+export type VoiceItem = ({ kind: "ask" } & VoiceAsk) | ({ kind: "reply" } & VoiceReply);
+
 export type VoiceDecision =
   | { kind: "respond"; response: AgentPermissionResponse; said: string }
   | { kind: "refuse"; said: string };
 
 export type VoicePort = {
   respond(agentId: string, requestId: string, response: AgentPermissionResponse): Promise<void>;
-};
-
-// A story PR at the merge gate (open, CI green). Its review is read out before "merge" can merge it.
-export type MergeReady = { id: string; storyId: string; title: string; pr: number; cwd: string; review: string };
-
-export type MergePort = {
-  ready(): MergeReady[];
-  // Checks the PR with GitHub again and merges it; `said` is the result or why it did not merge.
-  merge(item: MergeReady): Promise<{ merged: boolean; said: string }>;
+  send(agentId: string, text: string): Promise<void>;
 };
 
 const RISKY = [
@@ -52,12 +53,8 @@ const YES = new Set(["yes", "yeah", "yep", "sure", "ok", "okay", "allow", "appro
 const NO = new Set(["no", "nope", "deny", "stop", "cancel", "dont", "do not"]);
 const CONFIRM = new Set(["confirm", "confirmed", "confirm it", "yes confirm", "confirm allow"]);
 
-const MERGE = new Set(["merge", "merge it", "merge now", "yes merge"]);
-const SKIP = new Set(["skip", "skip it", "no", "nope", "not now", "later", "wait"]);
-
 const MAX_SPOKEN = 160;
-// A skipped merge isn't offered again for an hour.
-export const SKIP_MS = 60 * 60 * 1000;
+const MAX_REPLY = 600;
 
 function commandOf(request: AgentPermissionRequest): string {
   const command = request.input?.command;
@@ -73,9 +70,9 @@ function questionOf(request: AgentPermissionRequest): string {
   return request.description ?? "";
 }
 
-export function clip(text: string): string {
+function clip(text: string, max = MAX_SPOKEN): string {
   const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > MAX_SPOKEN ? `${flat.slice(0, MAX_SPOKEN)}…` : flat;
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
 // A mode change can turn approvals off for the whole session, so it's treated like a risky command.
@@ -97,12 +94,39 @@ export function spokenAsk(agentTitle: string | null, request: AgentPermissionReq
   return `${who} wants: ${clip(what)}.${detail} ${prompt}`;
 }
 
-function normalise(reply: string): string {
+// Markdown read aloud is noise: links keep their label, emphasis, heading and code marks go.
+export function spokenReply(agentTitle: string | null, text: string): string {
+  const who = agentTitle?.trim() || "An agent";
+  const plain = text.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[*#`~]/g, "");
+  return `${who} says: ${clip(plain, MAX_REPLY)}`;
+}
+
+export function lastAssistantText(timeline: TurnEnded["timeline"]): string {
+  for (let i = timeline.length - 1; i >= 0; i -= 1) {
+    const item = timeline[i];
+    if (item.type === "assistant_message" && item.text.trim()) return item.text;
+  }
+  return "";
+}
+
+// "roger" closes a spoken message. Returns the text before it, or null when it's absent.
+export function beforeRoger(reply: string): string | null {
+  const match = /^([\s\S]*?)\W*\broger\W*$/i.exec(reply);
+  return match ? match[1].trim() : null;
+}
+
+export function normalise(reply: string): string {
   return reply
     .toLowerCase()
     .replace(/[^a-z\s]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+// A bare yes or no with nothing waiting answers nothing; it must not reach an agent as a message.
+function isVerdict(reply: string): boolean {
+  const words = normalise(reply);
+  return YES.has(words) || NO.has(words) || CONFIRM.has(words);
 }
 
 // Only a whole short reply counts as yes or no, so "no, use pnpm" reaches the agent as an instruction.
@@ -126,45 +150,59 @@ export function interpretReply(reply: string, ask: VoiceAsk): VoiceDecision {
   };
 }
 
-export function mergeAskText(item: MergeReady): string {
-  return `${item.title}, PR ${item.pr}. CI is green. ${item.review} Say merge to merge it, or skip.`;
-}
+const replyId = (agentId: string) => `reply:${agentId}`;
 
-// Only "merge" merges a PR; yes and confirm don't, so a misheard approval can't merge anything.
-export function interpretMergeReply(reply: string): "merge" | "skip" | { said: string } {
-  const words = normalise(reply);
-  if (!words) return { said: "I didn't catch that." };
-  if (MERGE.has(words)) return "merge";
-  if (SKIP.has(words)) return "skip";
-  return { said: "Say merge to merge it, or skip." };
-}
+export type VoiceAnswer = { said: string } | { listen: true };
 
-export function createVoiceBridge(port: VoicePort, merges?: MergePort, now: () => number = Date.now) {
-  // Insertion order is arrival order, so the first entry is the oldest ask.
-  const asks = new Map<string, VoiceAsk>();
-  const skippedUntil = new Map<string, number>();
-  // Merged or merging here; the loop marks the story merged on its next tick.
-  const done = new Set<string>();
-  const offered = (item: MergeReady) => !done.has(item.id) && (skippedUntil.get(item.id) ?? 0) <= now();
-  async function answerMerge(merger: MergePort, item: MergeReady, reply: string) {
-    const decision = interpretMergeReply(reply);
-    if (typeof decision === "object") return decision;
-    if (decision === "skip") {
-      skippedUntil.set(item.id, now() + SKIP_MS);
-      return { said: "Skipped." };
+export type SpokenItem = { id: string; kind: VoiceItem["kind"] | "merge"; text: string };
+
+export function createVoiceBridge(port: VoicePort, merges?: MergeQueue) {
+  // Insertion order is arrival order, so the first entry is the oldest item.
+  const items = new Map<string, VoiceItem>();
+  // Agents the phone has answered; only they get their replies read out.
+  const followed = new Set<string>();
+  let lastFollowed: string | null = null;
+  // Held chunks per item id ("" for none) until a chunk ends with "roger".
+  const held = new Map<string, string[]>();
+  const follow = (agentId: string) => {
+    followed.add(agentId);
+    lastFollowed = agentId;
+  };
+  const sendTo = async (agentId: string, text: string): Promise<{ said: string }> => {
+    if (!text.trim()) return { said: "I didn't catch that." };
+    await port.send(agentId, text.trim());
+    follow(agentId);
+    return { said: "Sent." };
+  };
+  const apply = async (reply: string, id?: string): Promise<{ said: string } | null> => {
+    const item = id ? items.get(id) : items.values().next().value;
+    if (!item && merges) {
+      // Without an id, only a merge or skip word answers the PR, so a spoken message still reaches the agent.
+      const target = id ?? (typeof interpretMergeReply(reply) === "object" ? undefined : merges.next()?.id);
+      const merged = target ? await merges.answer(target, reply) : null;
+      if (merged) return merged;
     }
-    if (done.has(item.id)) return { said: `PR ${item.pr} is already merging.` };
-    done.add(item.id);
-    const result = await merger.merge(item).catch(() => ({ merged: false, said: `PR ${item.pr} did not merge.` }));
-    if (!result.merged) done.delete(item.id);
-    return { said: result.said };
-  }
+    if (!item) return !id && lastFollowed && !isVerdict(reply) ? sendTo(lastFollowed, reply) : null;
+    if (item.kind === "reply") {
+      if (!reply.trim()) return { said: "I didn't catch that." };
+      const result = await sendTo(item.agentId, reply);
+      items.delete(item.id);
+      return result;
+    }
+    const decision = interpretReply(reply, item);
+    if (decision.kind === "refuse") return { said: decision.said };
+    await port.respond(item.agentId, item.id, decision.response);
+    items.delete(item.id);
+    follow(item.agentId);
+    return { said: decision.said };
+  };
   return {
     onRequested(agent: { id: string; title: string | null }, request: AgentPermissionRequest) {
       const risky = isRisky(request);
       const allowAction = request.actions?.find((action) => action.behavior === "allow" && action.variant === "primary")
         ?? request.actions?.find((action) => action.behavior === "allow");
-      asks.set(request.id, {
+      items.set(request.id, {
+        kind: "ask",
         id: request.id,
         agentId: agent.id,
         text: spokenAsk(agent.title, request, risky),
@@ -173,30 +211,44 @@ export function createVoiceBridge(port: VoicePort, merges?: MergePort, now: () =
       });
     },
     onResolved(requestId: string) {
-      asks.delete(requestId);
+      items.delete(requestId);
     },
-    next(): VoiceAsk | null {
-      return asks.values().next().value ?? null;
+    // A newer reply replaces the older one and moves to the back of the queue.
+    onTurnEnded(event: Pick<TurnEnded, "agent" | "outcome" | "timeline">) {
+      if (event.outcome.kind !== "completed" || !followed.has(event.agent.id)) return;
+      const text = lastAssistantText(event.timeline);
+      if (!text) return;
+      const id = replyId(event.agent.id);
+      items.delete(id);
+      items.set(id, { kind: "reply", id, agentId: event.agent.id, text: spokenReply(event.agent.title, text) });
     },
-    // What the phone reads next: a blocked agent first, then a PR waiting to merge.
-    nextSpoken(): { id: string; text: string } | null {
-      const ask = this.next();
-      if (ask) return { id: ask.id, text: ask.text };
-      const item = merges?.ready().find(offered);
-      return item ? { id: item.id, text: mergeAskText(item) } : null;
+    // A new turn means the user answered elsewhere, so the old reply is stale.
+    onTurnStarted(agentId: string) {
+      items.delete(replyId(agentId));
     },
-    async answer(reply: string, id?: string): Promise<{ said: string } | null> {
-      const target = id ?? this.nextSpoken()?.id;
-      const ask = target ? asks.get(target) : undefined;
-      if (!ask) {
-        const item = target ? merges?.ready().find((ready) => ready.id === target) : undefined;
-        return merges && item ? answerMerge(merges, item, reply) : null;
+    next(): VoiceItem | null {
+      return items.values().next().value ?? null;
+    },
+    // What the phone reads next: a blocked agent or a reply first, then a PR waiting to merge.
+    nextSpoken(): SpokenItem | null {
+      const item = this.next();
+      if (item) return { id: item.id, kind: item.kind, text: item.text };
+      const ready = merges?.next();
+      return ready ? { id: ready.id, kind: "merge", text: ready.text } : null;
+    },
+    // With hold, chunks wait until one ends in "roger"; until then the phone keeps listening.
+    async answer(reply: string, id?: string, hold = false): Promise<VoiceAnswer | null> {
+      const message = beforeRoger(reply);
+      if (!hold) return apply(message ?? reply, id);
+      const key = id ?? "";
+      const chunks = held.get(key) ?? [];
+      if (message === null) {
+        if (reply.trim()) held.set(key, [...chunks, reply.trim()]);
+        return { listen: true };
       }
-      const decision = interpretReply(reply, ask);
-      if (decision.kind === "refuse") return { said: decision.said };
-      await port.respond(ask.agentId, ask.id, decision.response);
-      asks.delete(ask.id);
-      return { said: decision.said };
+      held.delete(key);
+      const whole = [...chunks, message].filter(Boolean).join(" ");
+      return whole ? apply(whole, id) : { said: "I didn't catch that." };
     },
   };
 }
@@ -211,7 +263,8 @@ function tokenMatches(header: string | undefined, token: string): boolean {
   return given.length === want.length && timingSafeEqual(given, want);
 }
 
-// GET /voice/next → the oldest ask, or 204. POST /voice/answer {id?, reply} → { said } to speak back.
+// GET /voice/next → the oldest item, or 204. POST /voice/answer {id?, reply, hold?} → { said } to
+// speak back, or { listen: true } while a held message waits for "roger".
 export async function handleVoiceRequest(
   bridge: VoiceBridge,
   token: string,
@@ -219,11 +272,11 @@ export async function handleVoiceRequest(
 ): Promise<VoiceHttpResult> {
   if (!token || !tokenMatches(request.authorization, token)) return { status: 401 };
   if (request.method === "GET" && request.path === "/voice/next") {
-    const ask = bridge.nextSpoken();
-    return ask ? { status: 200, body: ask } : { status: 204 };
+    const item = bridge.nextSpoken();
+    return item ? { status: 200, body: item } : { status: 204 };
   }
   if (request.method === "POST" && request.path === "/voice/answer") {
-    let parsed: { id?: unknown; reply?: unknown };
+    let parsed: { id?: unknown; reply?: unknown; hold?: unknown };
     try {
       parsed = JSON.parse(request.body) as typeof parsed;
     } catch {
@@ -231,7 +284,7 @@ export async function handleVoiceRequest(
     }
     if (typeof parsed.reply !== "string") return { status: 400, body: { error: "reply is required." } };
     const id = typeof parsed.id === "string" && parsed.id ? parsed.id : undefined;
-    const result = await bridge.answer(parsed.reply, id);
+    const result = await bridge.answer(parsed.reply, id, parsed.hold === true);
     return result ? { status: 200, body: result } : { status: 404, body: { said: "Nothing is waiting." } };
   }
   return { status: 404 };
@@ -256,7 +309,10 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-export function startVoiceServer(bridge: VoiceBridge, options: { host: string; port: number; token: string }) {
+export function startVoiceServer(
+  bridge: VoiceBridge,
+  options: { host: string; port: number; token: string },
+) {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
       let result: VoiceHttpResult;

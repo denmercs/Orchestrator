@@ -90,13 +90,13 @@ export function outcomeUpdates(text, events) {
   return events.reduce((t, event) => appendOutcome(t, event), text);
 }
 
-const frontmatter = (text) => {
+export const frontmatter = (text) => {
   const block = /^---\n([\s\S]*?)\n---/.exec(text)?.[1] ?? "";
   return Object.fromEntries(block.split("\n").flatMap((l) => { const i = l.indexOf(":"); return i > 0 ? [[l.slice(0, i).trim(), l.slice(i + 1).trim()]] : []; }));
 };
 
-const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "pipe"], ...opts });
-const readEntries = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+export const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "pipe"], ...opts });
+export const readEntries = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
 
 // Entries stamped after `cutoff` are dropped; ones with no (or unparseable) timestamp are kept. Compared as times: transcript stamps carry milliseconds.
 export function entriesUntil(entries, cutoff) {
@@ -107,7 +107,7 @@ export function entriesUntil(entries, cutoff) {
   });
 }
 
-function storyFiles(repo) {
+export function storyFiles(repo) {
   const files = [];
   const base = join(repo, ".harness", "initiatives");
   for (const init of readdirSync(base).sort()) {
@@ -133,7 +133,7 @@ function storyFiles(repo) {
 // before the cutoff. Dates are compared as times: `merged_at` carries milliseconds, the cutoff and gh do not. A
 // `merged_at` that is not an ISO time with a zone counts as absent, so the result never depends on the local timezone.
 // A story with neither date is left out.
-const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+export const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 export function snapshotStories(files, prs, cutoff = CUTOFF) {
   const prFor = (fm) => prs.find((p) => String(p.number) === fm.pr) ?? prs.find((p) => p.headRefName === fm.branch);
   const time = (iso) => Date.parse(iso ?? "");

@@ -27,12 +27,15 @@ async function sizeOf(file: string): Promise<number> {
 
 export type TelemetryEvent =
   | "turn"
+  // A canceled or failed turn end, from S24 on; `turn` is completed turns only.
+  | "turn.stopped"
   | "warning"
   | "compact.native"
   | "compact.fresh"
   | "compact.inferred"
   | "ignore"
-  | "remind";
+  | "remind"
+  | "skip-auto";
 
 export type TelemetryRow = {
   at: string;
@@ -53,11 +56,21 @@ export type TelemetryRow = {
   story?: string | null;
   // Absent on rows written before S18. Story ids repeat across initiatives, so this tells them apart.
   initiative?: string | null;
-  // The session's cumulative cost at this row; absent before S10, null when the provider reports none.
+  // The session's running total cost at this row (do not sum, use `turnCostUsd`); absent before S10, null when
+  // the provider reports none.
   costUsd?: number | null;
   // On `turn` rows of a loop step, from S1 on: what the step read before its first code edit, summed
   // over the agent's turns so far. null when the watch lost the count (daemon restart mid-step).
   explore?: Explore | null;
+  // On `compact.*` rows the watch started on its own at the red threshold; absent for a pill
+  // Compact and for Claude's own compactions.
+  trigger?: "auto";
+  // On `turn` and `turn.stopped` rows: Paseo's id for the turn (null when the provider gives none), so duplicates
+  // can be found.
+  turnId?: string | null;
+  // On `turn` and `turn.stopped` rows: this turn's cost, `costUsd` minus the session's `costUsd` at its previous
+  // turn end. null when the cost is unknown or the watch first saw the session mid-way. Sum this, never `costUsd`.
+  turnCostUsd?: number | null;
 };
 
 // Appends go through one chain so concurrent turn ends never interleave a line.
@@ -198,7 +211,7 @@ export async function summariseTelemetry(
     sessions: 0,
     sessionsOverThreshold: 0,
     warnings: 0,
-    compactions: { native: 0, fresh: 0, inferred: 0 },
+    compactions: { native: 0, fresh: 0, inferred: 0, auto: 0 },
     ignored: 0,
     reminded: 0,
     tokensAvoided: 0,
@@ -255,6 +268,7 @@ export async function summariseTelemetry(
       case "compact.fresh":
       case "compact.inferred":
         summary.compactions[row.event.slice("compact.".length) as "native" | "fresh" | "inferred"] += 1;
+        if (row.trigger === "auto") summary.compactions.auto += 1;
         if (row.preTokens != null && row.used != null) {
           summary.tokensAvoided += Math.max(0, row.preTokens - row.used);
         }

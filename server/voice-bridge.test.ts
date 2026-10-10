@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  SKIP_MS,
+  beforeRoger,
   createVoiceBridge,
   handleVoiceRequest,
-  interpretMergeReply,
   interpretReply,
   isRisky,
   spokenAsk,
-  type MergeReady,
+  spokenReply,
   type VoiceAsk,
 } from "./voice-bridge";
+import { createMergeQueue, type MergeReady } from "./voice-merge";
 
 type Request = Parameters<typeof isRisky>[0];
 
@@ -23,12 +23,32 @@ const risky: VoiceAsk = { ...safe, risky: true };
 
 function fakeBridge() {
   const responses: [string, string, unknown][] = [];
+  const sent: [string, string][] = [];
   const bridge = createVoiceBridge({
     respond: async (agentId, requestId, response) => {
       responses.push([agentId, requestId, response]);
     },
+    send: async (agentId, text) => {
+      sent.push([agentId, text]);
+    },
   });
-  return { bridge, responses };
+  return { bridge, responses, sent };
+}
+
+type TurnEnded = Parameters<ReturnType<typeof createVoiceBridge>["onTurnEnded"]>[0];
+
+function turnEnded(agentId: string, texts: string[], kind = "completed"): TurnEnded {
+  return {
+    agent: { id: agentId, title: "Story 4" },
+    outcome: { kind },
+    timeline: texts.map((text) => ({ type: "assistant_message", text })),
+  } as unknown as TurnEnded;
+}
+
+// The phone follows an agent once it answers one of that agent's asks.
+async function followed(bridge: ReturnType<typeof createVoiceBridge>, agentId: string) {
+  bridge.onRequested({ id: agentId, title: "Story 4" }, bash("npm test", `ask-${agentId}`));
+  await bridge.answer("yes", `ask-${agentId}`);
 }
 
 test("pushes, hard resets, recursive deletes and mode changes are risky; tests are not", () => {
@@ -95,7 +115,8 @@ test("approval picks the request's primary allow action when it offers actions",
       { id: "implement", label: "Implement", behavior: "allow", variant: "primary" },
     ],
   } as Request);
-  assert.equal(bridge.next()?.allowActionId, "implement");
+  const item = bridge.next();
+  assert.equal(item?.kind === "ask" && item.allowActionId, "implement");
 });
 
 test("asks are answered oldest first and leave the queue once answered or resolved", async () => {
@@ -116,7 +137,7 @@ test("asks are answered oldest first and leave the queue once answered or resolv
 test("a refused risky yes stays queued and sends nothing", async () => {
   const { bridge, responses } = fakeBridge();
   bridge.onRequested({ id: "a1", title: "Ship" }, bash("git push", "r1"));
-  assert.match((await bridge.answer("yes"))?.said ?? "", /Say confirm/);
+  assert.deepEqual(await bridge.answer("yes"), { said: "That one is risky. Say confirm to approve, or no." });
   assert.equal(responses.length, 0);
   assert.equal(bridge.next()?.id, "r1");
 });
@@ -137,7 +158,7 @@ test("http next returns the oldest ask and answer applies the reply", async () =
   const next = await handleVoiceRequest(bridge, "t", { method: "GET", path: "/voice/next", authorization: auth, body: "" });
   assert.deepEqual(next, {
     status: 200,
-    body: { id: "r1", text: "Story 4 wants: Run command. Command: npm test. Say yes, no, or what to do instead." },
+    body: { id: "r1", kind: "ask", text: "Story 4 wants: Run command. Command: npm test. Say yes, no, or what to do instead." },
   });
   const answer = await handleVoiceRequest(bridge, "t", {
     method: "POST",
@@ -158,82 +179,144 @@ test("http next returns the oldest ask and answer applies the reply", async () =
   assert.equal(none.status, 404);
 });
 
-const green: MergeReady = { id: "m1", storyId: "S3", title: "Add voice merge", pr: 95, cwd: "/repo", review: "Review passed on the first round." };
-
-function mergeBridge(ready: MergeReady[], result = { merged: true, said: "Merged PR 95." }) {
-  const merged: number[] = [];
-  let clock = 0;
-  const bridge = createVoiceBridge(
-    { respond: async () => undefined },
-    {
-      ready: () => ready,
-      merge: async (item) => {
-        merged.push(item.pr);
-        return result;
-      },
-    },
-    () => clock,
-  );
-  return { bridge, merged, tick: (ms: number) => (clock += ms) };
-}
-
-test("only merge merges; yes and confirm don't, and skip or no skip", () => {
-  assert.equal(interpretMergeReply("Merge."), "merge");
-  assert.equal(interpretMergeReply("merge it"), "merge");
-  assert.equal(interpretMergeReply("Not now"), "skip");
-  assert.equal(interpretMergeReply("no"), "skip");
-  assert.deepEqual(interpretMergeReply("yes"), { said: "Say merge to merge it, or skip." });
-  assert.deepEqual(interpretMergeReply("confirm"), { said: "Say merge to merge it, or skip." });
-  assert.deepEqual(interpretMergeReply(""), { said: "I didn't catch that." });
+test("a reply is spoken as the agent's words without markdown, clipped", () => {
+  assert.equal(spokenReply("Story 4", "## Done\n\n**Tests** pass in `npm test`. See [the PR](https://x)."), "Story 4 says: Done Tests pass in npm test. See the PR.");
+  assert.equal(spokenReply(null, "x".repeat(700)).length, "An agent says: ".length + 601);
 });
 
-test("a green PR is read out with its review before the merge question, after any blocked agent", () => {
-  const { bridge } = mergeBridge([green]);
+test("a finished turn queues a reply only for followed agents, using the last assistant message", async () => {
+  const { bridge } = fakeBridge();
+  bridge.onTurnEnded(turnEnded("a1", ["first", "last"]));
+  assert.equal(bridge.next(), null);
+  await followed(bridge, "a1");
+  bridge.onTurnEnded(turnEnded("a1", ["first", "last"], "canceled"));
+  assert.equal(bridge.next(), null);
+  bridge.onTurnEnded(turnEnded("a1", ["first", "last"]));
+  assert.deepEqual(bridge.next(), { kind: "reply", id: "reply:a1", agentId: "a1", text: "Story 4 says: last" });
+  bridge.onTurnEnded(turnEnded("a1", ["newer"]));
+  assert.equal(bridge.next()?.text, "Story 4 says: newer");
+});
+
+test("a new turn drops the agent's pending reply", async () => {
+  const { bridge } = fakeBridge();
+  await followed(bridge, "a1");
+  bridge.onTurnEnded(turnEnded("a1", ["done"]));
+  bridge.onTurnStarted("a1");
+  assert.equal(bridge.next(), null);
+});
+
+test("answering a reply sends the words to its agent", async () => {
+  const { bridge, sent } = fakeBridge();
+  await followed(bridge, "a1");
+  bridge.onTurnEnded(turnEnded("a1", ["done"]));
+  assert.deepEqual(await bridge.answer("now add tests", "reply:a1"), { said: "Sent." });
+  assert.deepEqual(sent, [["a1", "now add tests"]]);
+  assert.equal(bridge.next(), null);
+});
+
+test("with nothing waiting, an answer goes to the last followed agent", async () => {
+  const { bridge, sent } = fakeBridge();
+  assert.equal(await bridge.answer("hello"), null);
+  await followed(bridge, "a1");
+  await followed(bridge, "a2");
+  assert.deepEqual(await bridge.answer("start the next story"), { said: "Sent." });
+  assert.deepEqual(sent, [["a2", "start the next story"]]);
+  assert.equal(await bridge.answer("yes"), null);
+  assert.equal(await bridge.answer("hello", "gone"), null);
+});
+
+test("a trailing roger is stripped, so yes roger approves", async () => {
+  assert.equal(beforeRoger("Yes, roger."), "Yes");
+  assert.equal(beforeRoger("Roger"), "");
+  assert.equal(beforeRoger("rogers"), null);
+  const { bridge, responses } = fakeBridge();
+  bridge.onRequested({ id: "a1", title: "One" }, bash("npm test", "r1"));
+  assert.deepEqual(await bridge.answer("yes roger"), { said: "Approved." });
+  assert.equal(responses.length, 1);
+});
+
+test("held chunks keep the phone listening until roger, then go as one message", async () => {
+  const { bridge, sent } = fakeBridge();
+  await followed(bridge, "a1");
+  bridge.onTurnEnded(turnEnded("a1", ["done"]));
+  assert.deepEqual(await bridge.answer("add a test", "reply:a1", true), { listen: true });
+  assert.deepEqual(await bridge.answer("for the parser", "reply:a1", true), { listen: true });
+  assert.equal(sent.length, 0);
+  assert.deepEqual(await bridge.answer("please Roger.", "reply:a1", true), { said: "Sent." });
+  assert.deepEqual(sent, [["a1", "add a test for the parser please"]]);
+  assert.deepEqual(await bridge.answer("roger", undefined, true), { said: "I didn't catch that." });
+});
+
+test("http answer passes hold through and next tags the item kind", async () => {
+  const { bridge } = fakeBridge();
+  await followed(bridge, "a1");
+  bridge.onTurnEnded(turnEnded("a1", ["done"]));
+  const call = (method: string, path: string, body = "") => handleVoiceRequest(bridge, "t", { method, path, authorization: "Bearer t", body });
+  assert.deepEqual((await call("GET", "/voice/next")).body, { id: "reply:a1", kind: "reply", text: "Story 4 says: done" });
+  const held = await call("POST", "/voice/answer", JSON.stringify({ id: "reply:a1", reply: "ship it", hold: true }));
+  assert.deepEqual(held, { status: 200, body: { listen: true } });
+});
+
+const greenPr: MergeReady = { id: "m1", storyId: "S3", title: "Add voice merge", pr: 95, cwd: "/repo", review: "No findings." };
+
+async function mergeBridge() {
+  const merged: number[] = [];
+  const sent: [string, string][] = [];
+  const queue = createMergeQueue({
+    ready: () => (merged.length ? [] : [greenPr]),
+    explain: async () => null,
+    merge: async (item) => {
+      merged.push(item.pr);
+      return { merged: true, said: `Merged PR ${item.pr}.` };
+    },
+  });
+  const bridge = createVoiceBridge(
+    {
+      respond: async () => undefined,
+      send: async (agentId, text) => {
+        sent.push([agentId, text]);
+      },
+    },
+    queue,
+  );
+  queue.next();
+  await new Promise((resolve) => setImmediate(resolve));
+  return { bridge, merged, sent };
+}
+
+test("a green PR is read after any waiting ask, as a merge item", async () => {
+  const { bridge } = await mergeBridge();
   bridge.onRequested({ id: "a1", title: "Story 4" }, bash("npm test", "r1"));
   assert.equal(bridge.nextSpoken()?.id, "r1");
   bridge.onResolved("r1");
   assert.deepEqual(bridge.nextSpoken(), {
     id: "m1",
-    text: "Add voice merge, PR 95. CI is green. Review passed on the first round. Say merge to merge it, or skip.",
+    kind: "merge",
+    text: "Add voice merge, PR 95. CI is green. No findings. Say merge to merge it, or skip.",
   });
 });
 
-test("saying merge merges the PR once and stops offering it", async () => {
-  const { bridge, merged } = mergeBridge([green]);
-  assert.deepEqual(await bridge.answer("yes", "m1"), { said: "Say merge to merge it, or skip." });
-  assert.deepEqual(merged, []);
-  assert.deepEqual(await bridge.answer("merge", "m1"), { said: "Merged PR 95." });
-  assert.deepEqual(merged, [95]);
-  assert.equal(bridge.nextSpoken(), null);
-  assert.deepEqual(await bridge.answer("merge", "m1"), { said: "PR 95 is already merging." });
-  assert.deepEqual(merged, [95]);
-});
-
-test("a merge GitHub refuses says why and is offered again", async () => {
-  const { bridge } = mergeBridge([green], { merged: false, said: "PR 95 has conflicts with its base branch. Not merged." });
-  assert.deepEqual(await bridge.answer("merge"), { said: "PR 95 has conflicts with its base branch. Not merged." });
-  assert.equal(bridge.nextSpoken()?.id, "m1");
-});
-
-test("a skipped PR comes back after an hour", async () => {
-  const { bridge, merged, tick } = mergeBridge([green]);
-  assert.deepEqual(await bridge.answer("skip", "m1"), { said: "Skipped." });
-  assert.equal(bridge.nextSpoken(), null);
-  tick(SKIP_MS);
-  assert.equal(bridge.nextSpoken()?.id, "m1");
-  assert.deepEqual(merged, []);
-});
-
-test("http next falls back to a green PR and answer merges it", async () => {
-  const { bridge, merged } = mergeBridge([green]);
+test("http answer with the merge id and a roger merges the PR", async () => {
+  const { bridge, merged } = await mergeBridge();
   const next = await handleVoiceRequest(bridge, "t", { method: "GET", path: "/voice/next", authorization: "Bearer t", body: "" });
-  assert.equal((next.body as { id: string }).id, "m1");
+  assert.equal((next.body as { kind: string }).kind, "merge");
   const answer = await handleVoiceRequest(bridge, "t", {
     method: "POST",
     path: "/voice/answer",
     authorization: "Bearer t",
-    body: JSON.stringify({ id: "m1", reply: "merge" }),
+    body: JSON.stringify({ id: "m1", reply: "Merge roger", hold: true }),
   });
   assert.deepEqual(answer, { status: 200, body: { said: "Merged PR 95." } });
+  assert.deepEqual(merged, [95]);
+});
+
+test("without an id, merge answers the PR but a message still reaches the followed agent", async () => {
+  const { bridge, merged, sent } = await mergeBridge();
+  bridge.onRequested({ id: "a1", title: "Story 4" }, bash("npm test", "r1"));
+  await bridge.answer("yes");
+  assert.deepEqual(await bridge.answer("use pnpm instead"), { said: "Sent." });
+  assert.deepEqual(sent, [["a1", "use pnpm instead"]]);
+  assert.deepEqual(merged, []);
+  assert.deepEqual(await bridge.answer("merge it"), { said: "Merged PR 95." });
   assert.deepEqual(merged, [95]);
 });

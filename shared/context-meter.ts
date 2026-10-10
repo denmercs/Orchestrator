@@ -38,6 +38,8 @@ export function readContext(snapshot: ContextSnapshot, thresholds: Thresholds): 
 export type WarningMemory = {
   warned: ("amber" | "red")[];
   mode: "normal" | "remind" | "ignore";
+  // Auto-compact: armed until one is started ("sent") or the user opts the session out ("skipped").
+  auto: "armed" | "sent" | "skipped";
 };
 
 export type Warning = { level: "amber" | "red" };
@@ -48,6 +50,20 @@ export function nextWarning(memory: WarningMemory, reading: ContextReading): War
   if (reading.level !== "amber" && reading.level !== "red") return null;
   if (reading.level === "amber" && memory.mode === "remind") return null;
   return memory.warned.includes(reading.level) ? null : { level: reading.level };
+}
+
+export type AutoCompactGuards = {
+  enabled: boolean;
+  running: boolean;
+  pendingPermissions: boolean;
+  completed: boolean;
+  loop: boolean;
+};
+
+// Compact on its own once per red crossing, only when nothing else is going on in the session.
+export function shouldAutoCompact(memory: WarningMemory, reading: ContextReading, guards: AutoCompactGuards): boolean {
+  if (reading.level !== "red" || memory.mode === "ignore" || memory.auto !== "armed") return false;
+  return guards.enabled && !guards.running && !guards.pendingPermissions && guards.completed && !guards.loop;
 }
 
 // A timeline item as the meter sees it. Only `compaction` items matter; S2's watch passes just

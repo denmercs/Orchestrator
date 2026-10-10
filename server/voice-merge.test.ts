@@ -4,7 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { PrStatus } from "./pr-checks";
-import { mergeBlocker, mergeStoryPr, readyToMerge, reviewSummary, type MergeView } from "./voice-merge";
+import {
+  SKIP_MS,
+  claudeExplain,
+  createMergeQueue,
+  interpretMergeReply,
+  mergeBlocker,
+  mergeStoryPr,
+  readyToMerge,
+  reviewSummary,
+  type MergePort,
+  type MergeReady,
+  type MergeView,
+} from "./voice-merge";
 
 const state = (findings: string) => `# S3 — Add voice merge\n\n## Status\nreview-done\n\n## Review findings\n${findings}\n## Preview\nnone\n`;
 
@@ -57,6 +69,92 @@ test("only open story PRs with green CI are ready to merge, with their review", 
   ]);
 });
 
+test("only merge merges; yes and confirm don't, and skip or no skip", () => {
+  assert.equal(interpretMergeReply("Merge."), "merge");
+  assert.equal(interpretMergeReply("just merge it"), "merge");
+  assert.equal(interpretMergeReply("Not now"), "skip");
+  assert.equal(interpretMergeReply("no"), "skip");
+  assert.deepEqual(interpretMergeReply("yes"), { said: "Say merge to merge it, or skip." });
+  assert.deepEqual(interpretMergeReply("confirm"), { said: "Say merge to merge it, or skip." });
+  assert.deepEqual(interpretMergeReply(""), { said: "I didn't catch that." });
+});
+
+const green: MergeReady = { id: "m1", storyId: "S3", title: "Add voice merge", pr: 95, cwd: "/repo", review: "Review passed on the first round." };
+
+function fakeQueue(ready: MergeReady[], overrides: Partial<MergePort> = {}) {
+  const merged: number[] = [];
+  let clock = 0;
+  const queue = createMergeQueue(
+    {
+      ready: () => ready,
+      explain: async () => "It adds a merge reply. Nothing looks off.",
+      merge: async (item) => {
+        merged.push(item.pr);
+        return { merged: true, said: `Merged PR ${item.pr}.` };
+      },
+      ...overrides,
+    },
+    () => clock,
+  );
+  return { queue, merged, tick: (ms: number) => (clock += ms) };
+}
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test("a PR is offered once Haiku's summary is in, read before the loop's review and the question", async () => {
+  const { queue } = fakeQueue([green]);
+  assert.equal(queue.next(), null);
+  await settle();
+  assert.deepEqual(queue.next(), {
+    id: "m1",
+    text:
+      "Add voice merge, PR 95. CI is green. It adds a merge reply. Nothing looks off. " +
+      "Review passed on the first round. Say merge to merge it, or skip.",
+  });
+});
+
+test("a failed summary still offers the PR with the loop's review", async () => {
+  const { queue } = fakeQueue([green], { explain: async () => Promise.reject(new Error("no claude")) });
+  queue.next();
+  await settle();
+  assert.match(queue.next()?.text ?? "", /^Add voice merge, PR 95\. CI is green\. Review passed/);
+});
+
+test("saying merge merges the PR once and stops offering it", async () => {
+  const { queue, merged } = fakeQueue([green]);
+  queue.next();
+  await settle();
+  assert.deepEqual(await queue.answer("m1", "yes"), { said: "Say merge to merge it, or skip." });
+  assert.deepEqual(merged, []);
+  assert.deepEqual(await queue.answer("m1", "merge"), { said: "Merged PR 95." });
+  assert.deepEqual(merged, [95]);
+  assert.equal(queue.next(), null);
+  assert.deepEqual(await queue.answer("m1", "merge"), { said: "PR 95 is already merging." });
+  assert.deepEqual(merged, [95]);
+  assert.equal(await queue.answer("other", "merge"), null);
+});
+
+test("a merge GitHub refuses says why and is offered again", async () => {
+  const { queue } = fakeQueue([green], {
+    merge: async () => ({ merged: false, said: "PR 95 has conflicts with its base branch. Not merged." }),
+  });
+  queue.next();
+  await settle();
+  assert.deepEqual(await queue.answer("m1", "merge"), { said: "PR 95 has conflicts with its base branch. Not merged." });
+  assert.equal(queue.next()?.id, "m1");
+});
+
+test("a skipped PR comes back after an hour", async () => {
+  const { queue, merged, tick } = fakeQueue([green]);
+  queue.next();
+  await settle();
+  assert.deepEqual(await queue.answer("m1", "skip"), { said: "Skipped." });
+  assert.equal(queue.next(), null);
+  tick(SKIP_MS);
+  assert.equal(queue.next()?.id, "m1");
+  assert.deepEqual(merged, []);
+});
+
 const status = (over: Partial<PrStatus> = {}): PrStatus => ({ state: "green", number: 95, url: "u", headSha: "abc", failing: [], ...over });
 const view = (over: Partial<MergeView> = {}): MergeView => ({ isDraft: false, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", headRefOid: "abc", ...over });
 
@@ -79,19 +177,20 @@ test("a PR merges only when GitHub says it is green, conflict-free, clean and un
   assert.equal(mergeBlocker(status(), view({ mergeStateStatus: "UNSTABLE" })), "can't merge yet: unstable");
 });
 
-const item = { id: "m1", storyId: "S1", title: "T", pr: 95, cwd: "/wt", review: "" };
+const item: MergeReady = { id: "m1", storyId: "S1", title: "T", pr: 95, cwd: "/wt", review: "" };
 
-test("merging pins the merge to the head GitHub just checked", async () => {
+test("merging uses the repo's merge method, pinned to the head GitHub just checked", async () => {
   const calls: string[][] = [];
   const result = await mergeStoryPr(item, {
     status: async () => status(),
     gh: async (args) => {
       calls.push(args);
+      if (args[0] === "repo") return JSON.stringify({ mergeCommitAllowed: false, squashMergeAllowed: true });
       return args[1] === "view" ? JSON.stringify(view()) : "";
     },
   });
   assert.deepEqual(result, { merged: true, said: "Merged PR 95." });
-  assert.deepEqual(calls[1], ["pr", "merge", "95", "--merge", "--match-head-commit", "abc"]);
+  assert.deepEqual(calls.at(-1), ["pr", "merge", "95", "--squash", "--match-head-commit", "abc"]);
 });
 
 test("a blocked or failed merge is not merged and says why", async () => {
@@ -108,9 +207,23 @@ test("a blocked or failed merge is not merged and says why", async () => {
   const failed = await mergeStoryPr(item, {
     status: async () => status(),
     gh: async (args) => {
+      if (args[0] === "repo") return JSON.stringify({ mergeCommitAllowed: true });
       if (args[1] === "view") return JSON.stringify(view());
       throw Object.assign(new Error("Command failed"), { stderr: "Head branch was modified.\nmore" });
     },
   });
   assert.deepEqual(failed, { merged: false, said: "PR 95 did not merge: Head branch was modified." });
+});
+
+test("claudeExplain pipes the diff to the Claude CLI with no tools and returns its text", async () => {
+  const pr = { title: "Merge PRs by voice", body: "## Purpose\n\nMerge by voice." };
+  let call: { args: string[]; input: string } = { args: [], input: "" };
+  const text = await claudeExplain(pr, "+const x = 1;", async (args, input) => {
+    call = { args, input };
+    return "It adds a merge command.\n Nothing looks off.\n";
+  });
+  assert.equal(text, "It adds a merge command. Nothing looks off.");
+  assert.match(call.input, /Diff:\n\+const x = 1;/);
+  assert.deepEqual(call.args.slice(0, 5), ["-p", "--model", "haiku", "--tools", ""]);
+  assert.equal(await claudeExplain(pr, "", async () => "  "), null);
 });
