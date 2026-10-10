@@ -1,6 +1,8 @@
 // What a loop step reads before it starts changing code (see CONTEXT.md, "Telemetry row"). Pure:
 // no host-plugin imports, and no branch on the provider.
 
+import { classifyShell } from "./shell-steps";
+
 export type ToolStep = {
   kind: "read" | "search" | "edit" | "write";
   // read/edit/write: the file path; search: the files it returned.
@@ -81,8 +83,10 @@ export type ToolItem = {
 
 const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
 
-// The steps `exploration` takes, from Paseo `tool_call` items, read by `detail.type` alone. Other
-// detail types (shell, fetch, sub_agent, ...) and non-tool items are dropped.
+// The steps `exploration` takes, from Paseo `tool_call` items, read by `detail.type` alone. A shell
+// item becomes one step per classified command (see shell-steps.ts), with the whole output on its
+// first read or search step. `other` shell commands, other detail types (fetch, sub_agent, ...) and
+// non-tool items are dropped.
 export function toolSteps(items: readonly ToolItem[]): ToolStep[] {
   const steps: ToolStep[] = [];
   for (const item of items) {
@@ -108,6 +112,19 @@ export function toolSteps(items: readonly ToolItem[]): ToolStep[] {
       case "write":
         steps.push({ kind: "write", paths: filePath === null ? [] : [filePath], chars: 0, text: str(detail.content) });
         break;
+      case "shell": {
+        const command = str(detail.command);
+        if (command === null) break;
+        // Whole output goes on the first read or search step, so `exploration` sums it once.
+        let output = item.status === "completed" ? (str(detail.output)?.length ?? 0) : 0;
+        for (const call of classifyShell(command, str(detail.cwd) ?? undefined)) {
+          if (call.kind === "other") continue;
+          const counted = call.kind === "read" || call.kind === "search";
+          steps.push({ kind: call.kind, paths: call.paths, chars: counted ? output : 0, text: call.text });
+          if (counted) output = 0;
+        }
+        break;
+      }
     }
   }
   return steps;
