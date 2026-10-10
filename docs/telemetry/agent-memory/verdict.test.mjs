@@ -297,8 +297,9 @@ function fixtureRoot(root, { findings = true } = {}) {
   if (findings) writeFileSync(join(d, "new-findings.md"), "- [x] yes \u2014 S1 r1 facts: brand new\n");
   const mem = join(d, "memory", "i-S1", ".harness", "memory", "corrections", "testing");
   mkdirSync(mem, { recursive: true });
-  for (const [slug, count] of [["flaky", 2], ["once", 1]]) {
-    writeFileSync(join(mem, `${slug}.md`), `---\ntype: correction\nstatus: active\ncategory: testing\narea: server\ncount: ${count}\nevidence:\n  - seen one\n  - seen two\n---\nbody\n`);
+  // Evidence is the note's distinct links, so it never outnumbers count (shared/corrections.ts).
+  for (const [slug, count, ev] of [["flaky", 2, ["seen one", "seen two"]], ["once", 1, ["seen one"]]]) {
+    writeFileSync(join(mem, `${slug}.md`), `---\ntype: correction\nstatus: active\ncategory: testing\narea: server\ncount: ${count}\nevidence:\n${ev.map((e) => `  - ${e}\n`).join("")}---\nbody\n`);
   }
 }
 const quiet = () => { const lines = []; return { lines, log: (l) => lines.push(l) }; };
@@ -413,6 +414,19 @@ test("main: overlapping cumulative snapshots are not counted again per story", (
   assert.match(sample, /flaky: seen one \| seen two\n/, "evidence is not repeated");
   main([], { out: outFile, repoRoot: repo, log: () => {} });
   assert.match(readFileSync(outFile, "utf8"), /overall 33% \(1 of 3\)/, "flaky 2 + once 1 = 1 repeat in 3, not 3 stories' worth added up");
+});
+
+test("main: count covers evidence that only the union of snapshots holds", () => {
+  const repo = mk(), outFile = join(mk(), "verdict.md");
+  fixtureRoot(repo);
+  // Each snapshot leaves out its own story, so S2 and S3 each see a different two of the three observations.
+  for (const [story, ev] of [["i-S2", ["seen one", "seen three"]], ["i-S3", ["seen one", "seen two"]]]) {
+    const dir = join(runDir(repo), "memory", story, ".harness", "memory", "corrections", "testing");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "flaky.md"), `---\ntype: correction\nstatus: active\ncategory: testing\narea: server\ncount: 2\nevidence:\n${ev.map((e) => `  - ${e}\n`).join("")}---\nbody\n`);
+  }
+  main([], { out: outFile, repoRoot: repo, log: () => {} });
+  assert.match(readFileSync(outFile, "utf8"), /overall 50% \(2 of 4\)/, "flaky 3 + once 1 = 2 repeats in 4");
 });
 
 test("render: the repeat definition follows the source", () => {

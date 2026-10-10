@@ -334,7 +334,8 @@ function readRows(file) {
 
 // Corrections from every per-story memory root under run/memory/, merged by note id. Each root is a cumulative
 // snapshot of history up to its story, so one correction recurs in later roots: evidence is de-duplicated and
-// count is the largest snapshot count (later snapshots only grow).
+// count is the largest snapshot count, raised to the distinct evidence when the union holds more (each snapshot
+// leaves out its own story, so no single one need see every observation).
 function readRunMemory(dir) {
   const base = join(dir, "memory");
   const byId = new Map();
@@ -345,7 +346,7 @@ function readRunMemory(dir) {
       const id = noteId(n);
       const prev = byId.get(id);
       const evidence = [...new Set([...(prev ? prev.evidence : []), ...n.evidence])];
-      byId.set(id, { ...(prev ?? n), evidence, count: Math.max(prev ? prev.count : 0, n.count) });
+      byId.set(id, { ...(prev ?? n), evidence, count: Math.max(prev ? prev.count : 0, n.count, evidence.length) });
     }
   }
   return { notes: [...byId.values()] };
