@@ -71,8 +71,12 @@ function agent(
   };
 }
 
-function turn(id: string, timeline: Item[] = []): TurnEnded {
-  return { agent: { id, provider: "claude" }, timeline };
+function turn(
+  id: string,
+  timeline: Item[] = [],
+  { turnId = null, outcome = { kind: "completed" } }: Partial<Pick<TurnEnded, "turnId" | "outcome">> = {},
+): TurnEnded {
+  return { agent: { id, provider: "claude" }, timeline, turnId, outcome };
 }
 
 test("onTurnEnded: one turn end writes one turn row with provider and step", async () => {
@@ -102,8 +106,21 @@ test("onTurnEnded: one turn end writes one turn row with provider and step", asy
       initiative: "telemetry",
       costUsd: 0.42,
       explore: { reads: 0, searches: 0, files: 0, chars: 0, edited: false },
+      turnId: null,
+      turnCostUsd: 0.42,
     },
   ]);
+});
+
+test("onTurnEnded: the same turn end twice, at once or later, writes one turn row", async () => {
+  const { port, rows } = fakePort({ a1: agent(40_000) });
+  const watch = createContextWatch(port);
+  await Promise.all([watch.onTurnEnded(turn("a1", [], { turnId: "t1" })), watch.onTurnEnded(turn("a1", [], { turnId: "t1" }))]);
+  await watch.onTurnEnded(turn("a1", [], { turnId: "t1" }));
+  assert.deepEqual(rows.map((r) => [r.event, r.turnId]), [["turn", "t1"]]);
+
+  await watch.onTurnEnded(turn("a1", [], { turnId: "t2" }));
+  assert.deepEqual(rows.map((r) => [r.event, r.turnId]), [["turn", "t1"], ["turn", "t2"]]);
 });
 
 test("onTurnEnded: a turn row's cost is null when the agent reports none", async () => {
@@ -197,6 +214,77 @@ test("onTurnEnded: an unknown agent writes no row", async () => {
 const user: Item = { type: "user_message" };
 const reply: Item = { type: "assistant_message" };
 const compacted: Item = { type: "compaction", status: "completed", preTokens: 160_000 };
+
+test("onTurnEnded: a canceled or failed turn end writes turn.stopped, not turn, and still counts its items and warns", async () => {
+  const agents = { a1: agent(160_000) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  agents.a1 = agent(30_000);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted], { outcome: { kind: "canceled", reason: "x" } }));
+  agents.a1 = agent(160_000);
+  await watch.onTurnEnded(
+    turn("a1", [user, reply, user, compacted, user], { outcome: { kind: "failed", error: { message: "boom" } } }),
+  );
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted, user, reply]));
+
+  // The compaction is counted once and re-arms the warning; only completed turn ends write a turn row.
+  assert.deepEqual(
+    rows.map((r) => [r.event, r.used]),
+    [
+      ["turn", 160_000],
+      ["warning", 160_000],
+      ["compact.native", 30_000],
+      ["turn.stopped", 30_000],
+      ["turn.stopped", 160_000],
+      ["warning", 160_000],
+      ["turn", 160_000],
+    ],
+  );
+});
+
+test("onTurnEnded: turnCostUsd is this turn's share of the session's running costUsd", async () => {
+  const agents = { a1: agent(40_000, {}, ["compact"], null, 0.5) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  agents.a1 = agent(40_000, {}, ["compact"], null, 1.25);
+  // A canceled turn's spend goes on its own turn.stopped row, so an agent whose last turn fails still counts.
+  await watch.onTurnEnded(turn("a1", [user, reply, user], { outcome: { kind: "canceled", reason: "x" } }));
+  agents.a1 = agent(40_000, {}, ["compact"], null, 2);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, user, reply]));
+
+  assert.deepEqual(
+    rows.map((r) => [r.event, r.costUsd, r.turnCostUsd]),
+    [["turn", 0.5, 0.5], ["turn.stopped", 1.25, 0.75], ["turn", 2, 0.75]],
+  );
+  assert.equal(rows.reduce((sum, r) => sum + (r.turnCostUsd ?? 0), 0), rows[rows.length - 1].costUsd);
+});
+
+test("onTurnEnded: turnCostUsd is null when the cost is null or the session was first seen mid-way", async () => {
+  const agents = { none: agent(40_000), mid: agent(40_000, {}, ["compact"], null, 3) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("none", [user, reply]));
+  await watch.onTurnEnded(turn("mid", [user, reply, user, reply]));
+  agents.mid = agent(40_000, {}, ["compact"], null, 3.5);
+  await watch.onTurnEnded(turn("mid", [user, reply, user, reply, user, reply]));
+
+  assert.deepEqual(
+    rows.map((r) => [r.agentId, r.costUsd, r.turnCostUsd]),
+    [["none", null, null], ["mid", 3, null], ["mid", 3.5, 0.5]],
+  );
+});
+
+test("onTurnEnded: only turn rows carry turnCostUsd", async () => {
+  const { port, rows } = fakePort({ a1: agent(160_000, {}, ["compact"], null, 1) });
+  await createContextWatch(port).onTurnEnded(turn("a1", [user, reply]));
+
+  assert.deepEqual(
+    rows.map((r) => [r.event, "turnCostUsd" in r]),
+    [["turn", true], ["warning", false]],
+  );
+});
 
 test("onTurnEnded: a new completed compaction item writes compact.native and re-arms warnings", async () => {
   const agents = { a1: agent(160_000) };

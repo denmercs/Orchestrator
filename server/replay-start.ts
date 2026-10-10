@@ -20,11 +20,12 @@ const git = (cwd: string, args: string[]) => execFileAsync("git", args, { cwd, t
 
 export const REPLAY_RUN = "run";
 
-// The last `turn` row for an agent in the telemetry file, or null.
+// The last `turn` or `turn.stopped` row for an agent in the telemetry file, or null. A failed replay agent's
+// last turn is `turn.stopped`, and its result row still needs that turn's cost and explore count.
 export async function lastTurn(agentId: string, rows: () => Promise<TelemetryRow[]> = readTelemetry): Promise<TelemetryRow | null> {
   const all = await rows();
   for (let i = all.length - 1; i >= 0; i--) {
-    if (all[i].agentId === agentId && all[i].event === "turn") return all[i];
+    if (all[i].agentId === agentId && (all[i].event === "turn" || all[i].event === "turn.stopped")) return all[i];
   }
   return null;
 }
