@@ -19,7 +19,7 @@ import { stopPlanServer } from "./server/plan-server";
 import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { advancePipeline, closeMergedStories, startStory } from "./server/pipeline-advance";
 import { createLoopAdvance } from "./server/loop-advance";
-import { createInitiativeLoop, readRegistry } from "./server/initiative-loop";
+import { createInitiativeLoop } from "./server/initiative-loop";
 import { startTicket } from "./server/ticket-start";
 import { readBranchInitials } from "./server/git-identity";
 import { getBranchInitials } from "./shared/naming";
@@ -35,9 +35,6 @@ import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay
 import { readCorpus, readCostCap, realReplayPorts, REPLAY_RUN } from "./server/replay-start";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { join } from "node:path";
-import { readKeychainSecret } from "./server/keychain";
-import { createVoiceBridge, startVoiceServer, VOICE_PORT } from "./server/voice-bridge";
-import { createMergeQueue, voiceMergePort } from "./server/voice-merge";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -350,8 +347,6 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   const offWorkspaceCreated = server.on("workspace.created", ({ workspace }) => {
     scopeWorkerWorkspace(workspace);
   });
-  // The voice bridge's Paseo handle.
-  let voicePaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     // A memory replay's agent is the runner's business only: the telemetry row first, then its result row.
     if (memoryReplay.pendingAgents().includes(event.agent.id)) {
@@ -372,8 +367,6 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
       return;
     }
     loop.rememberPaseo(paseo);
-    voicePaseo = paseo;
-    voice.onTurnEnded(event);
     void loop.onTurnEnded(event);
     void advancePipeline(paseo, event, readPipeline, readAgentConfig).catch((error) => {
       console.warn("orchestrator: pipeline advance failed", error);
@@ -398,41 +391,16 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   });
   const offTurnStarted = server.on("agent.turn_started", (event, { paseo }) => {
     arm(paseo);
-    voice.onTurnStarted(event.agent.id);
   });
   const offAgentCreated = server.on("agent.created", (_event, { paseo }) => arm(paseo));
-  // Voice bridge for a phone: on only when the Keychain holds a token. It binds to localhost unless
-  // `orchestrator-voice-bind` names another address, such as the Mac's Tailscale IP.
-  // It also reads out green story PRs in the loop's repos, with a review, and merges one on "merge".
-  const voice = createVoiceBridge({
-    respond: async (agentId, requestId, response) => {
-      if (!voicePaseo) throw new Error("No Paseo session yet");
-      await voicePaseo.agents.ref(agentId).respondToPermission({ requestId, response });
-    },
-    send: async (agentId, text) => {
-      if (!voicePaseo) throw new Error("No Paseo session yet");
-      await voicePaseo.agents.ref(agentId).send(text);
-    },
-  }, createMergeQueue(voiceMergePort(readRegistry)));
-  let stopVoice: (() => Promise<void>) | null = null;
-  let voiceStopped = false;
-  void Promise.all([readKeychainSecret("orchestrator-voice-token"), readKeychainSecret("orchestrator-voice-bind")]).then(
-    ([token, bind]) => {
-      if (!token || voiceStopped) return;
-      stopVoice = startVoiceServer(voice, { host: bind || "127.0.0.1", port: VOICE_PORT, token });
-    },
-  );
   const offPermissionRequested = server.on("agent.permission_requested", (event, { paseo }) => {
     arm(paseo);
-    voicePaseo = paseo;
-    voice.onRequested(event.agent, event.request);
     void initiativeLoop.onPermissionRequested(paseo, event).catch((error) => {
       console.warn("orchestrator: loop permission request failed", error);
     });
   });
   const offPermissionResolved = server.on("agent.permission_resolved", (event, { paseo }) => {
     arm(paseo);
-    voice.onResolved(event.requestId);
     void initiativeLoop.onPermissionResolved(paseo, event).catch((error) => {
       console.warn("orchestrator: loop permission resolve failed", error);
     });
@@ -454,8 +422,6 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
     offAgentCreated();
     offPermissionRequested();
     offPermissionResolved();
-    voiceStopped = true;
-    void stopVoice?.();
     clearInterval(timer);
   };
 }
