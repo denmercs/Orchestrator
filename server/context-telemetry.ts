@@ -27,6 +27,8 @@ async function sizeOf(file: string): Promise<number> {
 
 export type TelemetryEvent =
   | "turn"
+  // A canceled or failed turn end, from S24 on; `turn` is completed turns only.
+  | "turn.stopped"
   | "warning"
   | "compact.native"
   | "compact.fresh"
@@ -59,10 +61,11 @@ export type TelemetryRow = {
   // On `turn` rows of a loop step, from S1 on: what the step read before its first code edit, summed
   // over the agent's turns so far. null when the watch lost the count (daemon restart mid-step).
   explore?: Explore | null;
-  // On `turn` rows: Paseo's id for the turn (null when the provider gives none), so duplicates can be found.
+  // On `turn` and `turn.stopped` rows: Paseo's id for the turn (null when the provider gives none), so duplicates
+  // can be found.
   turnId?: string | null;
-  // On `turn` rows: this turn's cost, `costUsd` minus the session's `costUsd` at its previous turn row. null when
-  // the cost is unknown or the watch first saw the session mid-way. Sum this, never `costUsd`.
+  // On `turn` and `turn.stopped` rows: this turn's cost, `costUsd` minus the session's `costUsd` at its previous
+  // turn end. null when the cost is unknown or the watch first saw the session mid-way. Sum this, never `costUsd`.
   turnCostUsd?: number | null;
 };
 

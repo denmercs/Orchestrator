@@ -215,7 +215,7 @@ const user: Item = { type: "user_message" };
 const reply: Item = { type: "assistant_message" };
 const compacted: Item = { type: "compaction", status: "completed", preTokens: 160_000 };
 
-test("onTurnEnded: a canceled or failed turn end writes no turn row but still counts its items and warns", async () => {
+test("onTurnEnded: a canceled or failed turn end writes turn.stopped, not turn, and still counts its items and warns", async () => {
   const agents = { a1: agent(160_000) };
   const { port, rows } = fakePort(agents);
   const watch = createContextWatch(port);
@@ -235,6 +235,8 @@ test("onTurnEnded: a canceled or failed turn end writes no turn row but still co
       ["turn", 160_000],
       ["warning", 160_000],
       ["compact.native", 30_000],
+      ["turn.stopped", 30_000],
+      ["turn.stopped", 160_000],
       ["warning", 160_000],
       ["turn", 160_000],
     ],
@@ -247,14 +249,16 @@ test("onTurnEnded: turnCostUsd is this turn's share of the session's running cos
   const watch = createContextWatch(port);
   await watch.onTurnEnded(turn("a1", [user, reply]));
   agents.a1 = agent(40_000, {}, ["compact"], null, 1.25);
-  // A canceled turn writes no row; what it spent lands on the next completed turn.
+  // A canceled turn's spend goes on its own turn.stopped row, so an agent whose last turn fails still counts.
   await watch.onTurnEnded(turn("a1", [user, reply, user], { outcome: { kind: "canceled", reason: "x" } }));
   agents.a1 = agent(40_000, {}, ["compact"], null, 2);
   await watch.onTurnEnded(turn("a1", [user, reply, user, user, reply]));
 
-  const turns = rows.filter((r) => r.event === "turn");
-  assert.deepEqual(turns.map((r) => [r.costUsd, r.turnCostUsd]), [[0.5, 0.5], [2, 1.5]]);
-  assert.equal(turns.reduce((sum, r) => sum + (r.turnCostUsd ?? 0), 0), turns[turns.length - 1].costUsd);
+  assert.deepEqual(
+    rows.map((r) => [r.event, r.costUsd, r.turnCostUsd]),
+    [["turn", 0.5, 0.5], ["turn.stopped", 1.25, 0.75], ["turn", 2, 0.75]],
+  );
+  assert.equal(rows.reduce((sum, r) => sum + (r.turnCostUsd ?? 0), 0), rows[rows.length - 1].costUsd);
 });
 
 test("onTurnEnded: turnCostUsd is null when the cost is null or the session was first seen mid-way", async () => {

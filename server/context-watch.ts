@@ -163,7 +163,7 @@ type SessionState = {
   cursor: number | null;
   // The `turnId` of the last turn end handled, so a repeat of it is skipped.
   lastTurnId: string | null;
-  // The session's `costUsd` at its last completed turn; null when unknown (first sight mid-session).
+  // The session's `costUsd` at its last turn end; null when unknown (first sight mid-session).
   lastTurnCost: number | null;
   // Split inputs: system is the session's first reading, toolChars the tool output characters of
   // every later turn. null unless the watch saw the first turn, and from any compaction on.
@@ -315,16 +315,16 @@ export function createContextWatch(port: WatchPort) {
     // Only a loop or replay agent has an exploration count; null means the watch lost it.
     const loopStep = countedStep(agent.labels);
     const counted = loopStep === undefined ? {} : { explore: runningCount(state, loopStep) };
-    // A canceled or failed turn writes no row: the next completed turn's cost covers what it spent.
-    if (event.outcome.kind === "completed") {
-      // The cost of this turn alone; `costUsd` is the session's running total.
-      let turnCostUsd: number | null = null;
-      if (agent.costUsd !== null) {
-        if (state.lastTurnCost !== null) turnCostUsd = Math.max(0, agent.costUsd - state.lastTurnCost);
-        state.lastTurnCost = agent.costUsd;
-      }
-      await record(agentId, state, agent, "turn", { ...counted, turnId: event.turnId, turnCostUsd });
+    // The cost of this turn alone; `costUsd` is the session's running total.
+    let turnCostUsd: number | null = null;
+    if (agent.costUsd !== null) {
+      if (state.lastTurnCost !== null) turnCostUsd = Math.max(0, agent.costUsd - state.lastTurnCost);
+      state.lastTurnCost = agent.costUsd;
     }
+    // A canceled or failed turn is `turn.stopped`, so `turn` counts completed turns only while an agent whose
+    // last turn fails still has its cost (and its explore count) on a row.
+    const turnEvent = event.outcome.kind === "completed" ? "turn" : "turn.stopped";
+    await record(agentId, state, agent, turnEvent, { ...counted, turnId: event.turnId, turnCostUsd });
     const warning = nextWarning(state.memory, reading);
     if (warning) {
       state.memory.warned.push(warning.level);
