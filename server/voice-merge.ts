@@ -1,3 +1,5 @@
+import { defaultApiKey } from "./correction-classifier";
+import { MODEL } from "./corrections";
 import { gh, prStatus, type PrStatus } from "./pr-checks";
 import { normalise } from "./voice-bridge";
 
@@ -24,6 +26,8 @@ export type MergePort = {
   // The open PR for the current branch in `cwd`, or null when there is none.
   pr(cwd: string): Promise<PrFacts | null>;
   checks(cwd: string, number: number): Promise<PrStatus | null>;
+  // A few spoken sentences on what the diff does and what looks off, or null when it can't be had.
+  explain(cwd: string, facts: PrFacts): Promise<string | null>;
   merge(cwd: string, number: number, headSha: string): Promise<void>;
 };
 
@@ -61,8 +65,9 @@ export function concerns(facts: PrFacts, checks: PrStatus | null): string[] {
   return found;
 }
 
-export function spokenReview(facts: PrFacts, checks: PrStatus | null): string {
-  const summary = bodySummary(facts.body);
+// `explained` is the model's read of the diff; without it the body's first line stands in.
+export function spokenReview(facts: PrFacts, checks: PrStatus | null, explained: string | null = null): string {
+  const summary = explained?.trim() || bodySummary(facts.body);
   const size = `${facts.changedFiles} ${facts.changedFiles === 1 ? "file" : "files"}, ${facts.additions} lines added, ${facts.deletions} removed.`;
   const issues = concerns(facts, checks);
   const status = checks?.state === "green" ? "Checks passed." : checks?.state === "no-checks" ? "It has no checks." : "";
@@ -82,9 +87,15 @@ export function createVoiceMerge(port: MergePort, now: () => number = Date.now) 
     const who = session.title?.trim() || "The last session";
     const facts = await port.pr(session.cwd);
     if (!facts || facts.state !== "OPEN") return { said: `${who} has no open PR.`, listen: false };
-    const checks = await port.checks(session.cwd, facts.number);
+    const [checks, explained] = await Promise.all([
+      port.checks(session.cwd, facts.number),
+      port.explain(session.cwd, facts).catch((error: unknown) => {
+        console.warn("orchestrator: voice PR summary failed", error instanceof Error ? error.message : error);
+        return null;
+      }),
+    ]);
     pending = { cwd: session.cwd, number: facts.number, headSha: facts.headRefOid, at: now() };
-    return { said: spokenReview(facts, checks), listen: true };
+    return { said: spokenReview(facts, checks, explained), listen: true };
   }
 
   async function merge(): Promise<VoiceReply> {
@@ -137,6 +148,42 @@ async function mergeMethod(cwd: string): Promise<string> {
   return "--merge";
 }
 
+const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+// Enough diff for a summary; past this the model sees the head of it and is told so.
+const MAX_DIFF_CHARS = 60_000;
+
+const EXPLAIN_PROMPT = [
+  "You summarise a pull request for someone deciding by ear, on a phone, whether to merge it.",
+  "Write at most three short spoken sentences, plain text, no markdown, no lists, no code, no file paths unless essential.",
+  "First say what the change actually does. Then name anything that looks off: missing tests, risky edits, secrets, unrelated changes, unfinished work.",
+  "If nothing looks off, end with: Nothing looks off.",
+].join(" ");
+
+export async function haikuExplain(
+  facts: PrFacts,
+  diff: string,
+  options: { fetch?: typeof globalThis.fetch; apiKey?: () => Promise<string> } = {},
+): Promise<string | null> {
+  const key = await (options.apiKey ?? defaultApiKey)();
+  if (!key) return null;
+  const clipped = diff.length > MAX_DIFF_CHARS ? `${diff.slice(0, MAX_DIFF_CHARS)}\n[diff cut off here]` : diff;
+  const response = await (options.fetch ?? globalThis.fetch)(ANTHROPIC_URL, {
+    method: "POST",
+    headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: 300,
+      system: EXPLAIN_PROMPT,
+      messages: [{ role: "user", content: `Title: ${facts.title}\n\nDescription:\n${facts.body}\n\nDiff:\n${clipped}` }],
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) throw new Error(`Anthropic API returned ${response.status}`);
+  const reply = (await response.json()) as { content?: { type?: string; text?: string }[] };
+  const text = reply.content?.find((block) => block.type === "text")?.text?.replace(/\s+/g, " ").trim();
+  return text || null;
+}
+
 export const ghMergePort: Omit<MergePort, "lastSession"> = {
   async pr(cwd) {
     try {
@@ -146,6 +193,10 @@ export const ghMergePort: Omit<MergePort, "lastSession"> = {
     }
   },
   checks: prStatus,
+  async explain(cwd, facts) {
+    const diff = await gh(["pr", "diff", String(facts.number)], cwd);
+    return haikuExplain(facts, diff);
+  },
   async merge(cwd, number, headSha) {
     // --match-head-commit: a push after the review makes GitHub refuse instead of merging unseen code.
     await gh(["pr", "merge", String(number), await mergeMethod(cwd), "--match-head-commit", headSha], cwd, 60_000);

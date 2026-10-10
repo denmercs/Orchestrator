@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PrStatus } from "./pr-checks";
 import { handleVoiceRequest, createVoiceBridge } from "./voice-bridge";
-import { bodySummary, createVoiceMerge, spokenReview, type MergePort, type PrFacts } from "./voice-merge";
+import { bodySummary, createVoiceMerge, haikuExplain, spokenReview, type MergePort, type PrFacts } from "./voice-merge";
 
 const pr: PrFacts = {
   number: 95,
@@ -26,6 +26,7 @@ function fakePort(overrides: Partial<MergePort> = {}) {
     lastSession: async () => ({ title: "Story 4", cwd: "/repo" }),
     pr: async () => pr,
     checks: async () => green,
+    explain: async () => null,
     merge: async (cwd, number, headSha) => {
       merged.push([cwd, number, headSha]);
     },
@@ -111,4 +112,23 @@ test("http command needs the token and a text field", async () => {
   const ok = await call("Bearer t", JSON.stringify({ text: "merge it" }));
   assert.equal(ok.status, 200);
   assert.equal((ok.body as { listen: boolean }).listen, true);
+});
+
+test("the model's read of the diff replaces the body line when it has one", async () => {
+  const said = spokenReview(pr, green, "It adds voice merging. Nothing looks off.");
+  assert.match(said, /^PR 95: Merge PRs by voice\. It adds voice merging\. Nothing looks off\. 3 files/);
+  const voice = createVoiceMerge(fakePort({ explain: async () => { throw new Error("rate limited"); } }).port);
+  assert.match((await voice.command("merge it")).said, /Say merge it on the phone/);
+});
+
+test("haikuExplain sends the diff and returns the spoken text, or null without a key", async () => {
+  let sent: { model?: string; messages?: { content: string }[] } = {};
+  const fetch = (async (_url: string, init: { body: string }) => {
+    sent = JSON.parse(init.body);
+    return new Response(JSON.stringify({ content: [{ type: "text", text: "It adds a merge command.\n Nothing looks off." }] }));
+  }) as unknown as typeof globalThis.fetch;
+  const text = await haikuExplain(pr, "+const x = 1;", { fetch, apiKey: async () => "k" });
+  assert.equal(text, "It adds a merge command. Nothing looks off.");
+  assert.match(sent.messages?.[0]?.content ?? "", /Diff:\n\+const x = 1;/);
+  assert.equal(await haikuExplain(pr, "", { fetch, apiKey: async () => "" }), null);
 });
