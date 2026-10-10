@@ -9,6 +9,8 @@ import { LOOP_AGENT_KIND, type LoopConfig } from "../shared/initiative-loop";
 import { branchName } from "../shared/naming";
 import { phaseLabel } from "../shared/orchestration";
 import { DEFAULT_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
+import type { ToolItem } from "../shared/exploration";
+import { stuckCheck, type StuckCounters } from "../shared/stuck";
 import { appendOutcome, type OutcomeEvent } from "../shared/story-outcome";
 import {
   PHASES_DIR,
@@ -49,6 +51,9 @@ import { installSkills, skillPaths } from "./skill-sources";
 import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
 import { inHoldWindow, usageLimitResumeAt } from "./usage-limit";
 
+// The stuck evidence a step carries in its frontmatter; a new step or a reopen starts it clean.
+const STUCK_CLEAR = { idle_turns: null, fail_tests: null, fail_runs: null, stuck_nudged: null };
+
 // The initiative loop, driven by Paseo events rather than a long-running process:
 //   Start            marks the initiative loop: on and starts every ready story of its active phase.
 //   agent.turn_ended reads the step's marker in the story worktree's .harness/state.md and starts the
@@ -65,6 +70,10 @@ import { inHoldWindow, usageLimitResumeAt } from "./usage-limit";
 //                    the reset time in the message (an hour on if it names none), then nudged.
 //                    A permission request blocks the story until it's answered.
 //                    A turn you cancel is left alone.
+//                    Stuck evidence is read from each completed turn: no file edits for stuckTurns turns, or the
+//                    same test failing 3 brief test runs in a row. The first time, one nudge names it (no
+//                    retry counted); if it still holds on a later turn the story blocks as `stuck`. Progress
+//                    resets it; a new step or a reopen starts clean.
 // The story files are the state: the loop writes status, branch, workspace, agent, pr and ci into
 // their frontmatter, so it resumes from them after a restart. Paseo owns the worktrees and agents.
 
@@ -201,8 +210,8 @@ function recordOutcome(story: StoryFile, event: OutcomeEvent) {
 }
 
 // `kind` names what blocked it, so the loop can tell its own give-up from the rest and Retry knows what
-// to redo: `start` and `pr` and `ci` need no agent, `retry-limit` and `step` do. A permission wait has none.
-export type BlockKind = "start" | "pr" | "ci" | "retry-limit" | "step";
+// to redo: `start` and `pr` and `ci` need no agent, `retry-limit`, `step` and `stuck` do. A permission wait has none.
+export type BlockKind = "start" | "pr" | "ci" | "retry-limit" | "step" | "stuck";
 // A permission wait is answered in the session, so it passes `record = false` and stays out of ## Outcome.
 function block(story: StoryFile, reason: string, kind?: BlockKind, record = true) {
   if (record) recordOutcome(story, { kind: "blocked", reason });
@@ -342,6 +351,7 @@ export function createInitiativeLoop(
         paused_until: null,
         waiting_on: null,
         ...(extra.attempt ? {} : { retries: null }),
+        ...STUCK_CLEAR,
         skill_warnings: warnings.join(" · ") || null,
         // The first prompt's skills line, so a resumed agent gets the same one.
         step_skills: formatSkills(skills) || null,
@@ -828,6 +838,7 @@ export function createInitiativeLoop(
           stalled: null,
           paused_until: null,
           retries: null,
+          ...STUCK_CLEAR,
           ...(kind === "ci" ? { fix_attempts: null, fixed_sha: null } : {}),
         });
       });
@@ -875,7 +886,7 @@ export function createInitiativeLoop(
       return pr?.state === "closed" ? pr.number : null;
     },
 
-    onTurnEnded(api: PaseoApi, event: { agent: PluginHookAgent; outcome: PluginTurnOutcome }) {
+    onTurnEnded(api: PaseoApi, event: { agent: PluginHookAgent; outcome: PluginTurnOutcome; timeline?: readonly unknown[] }) {
       paseo = api;
       // You stopped it: the loop leaves it to you.
       if (event.outcome.kind === "canceled") return Promise.resolve();
@@ -919,7 +930,42 @@ export function createInitiativeLoop(
           SUPERVISED_STEPS.has(after.meta.step ?? "") &&
           readMarker(readText(stateFile(after.meta.worktree))).marker === `${after.meta.step}-running`
         ) {
-          writeFrontmatter(after.path, { stalled: "It ended its turn without writing the step's marker." });
+          // This turn's items are those after the last user message.
+          const items = (event.timeline ?? []) as readonly ToolItem[];
+          const lastUser = items.map((item) => item.type).lastIndexOf("user_message");
+          let failTests: string[] = [];
+          try {
+            const parsed: unknown = JSON.parse(after.meta.fail_tests || "[]");
+            if (Array.isArray(parsed)) failTests = parsed.filter((name): name is string => typeof name === "string");
+          } catch {
+            // an unreadable list restarts the streak
+          }
+          const carried: StuckCounters = {
+            idle_turns: Number(after.meta.idle_turns) || 0,
+            fail_tests: failTests,
+            fail_runs: Number(after.meta.fail_runs) || 0,
+          };
+          const config = await readConfig();
+          const { counters, evidence } = stuckCheck(carried, items.slice(lastUser + 1), {
+            step: after.meta.step ?? null,
+            subagents: after.meta.cycles === "subagents",
+            stuckTurns: config.stuckTurns,
+          });
+          const progressed = !evidence && after.meta.stuck_nudged;
+          writeFrontmatter(after.path, {
+            idle_turns: counters.idle_turns || null,
+            fail_tests: counters.fail_tests.length ? JSON.stringify(counters.fail_tests) : null,
+            fail_runs: counters.fail_runs || null,
+            ...(progressed ? { stuck_nudged: null } : {}),
+          });
+          if (evidence && after.meta.stuck_nudged) {
+            block(after, `stuck: ${evidence}`, "stuck");
+          } else if (evidence) {
+            writeFrontmatter(after.path, { stuck_nudged: 1 });
+            await api.agents.ref(event.agent.id).send(nudgePrompt(`You look stuck: ${evidence}.`));
+          } else if (!evidence) {
+            writeFrontmatter(after.path, { stalled: "It ended its turn without writing the step's marker." });
+          }
         }
         await advance(api, await readConfig(), init);
       });
