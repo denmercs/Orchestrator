@@ -13,6 +13,8 @@ import { createMemoryReplay, type ReplayPorts } from "./memory-replay";
 const row: CorpusRow = {
   initiative: "agent-memory",
   story: "S7",
+  title: "Replay past Reviews",
+  body: "## Acceptance\n- a judge marks each finding",
   round: 2,
   kind: "failed",
   commit: "abc123",
@@ -139,10 +141,11 @@ test("replays one corpus row in three arms and records each on its turn end", as
   const noneAgent = calls.agents.find((a) => a.input.labels["replay-arm"] === "none")!;
   const bare = stepPrompt(
     "review",
-    { id: "S7", title: "S7", body: "", ticketKey: null, ticketUrl: null, storyFile: null, storiesDir: null, phaseLabel: null, phaseTitle: null, architectureFile: null, initiativeTitle: null, initiativeFile: null, branch: "", base: "base000" },
+    { id: "S7", title: row.title, body: row.body, ticketKey: null, ticketUrl: null, storyFile: null, storiesDir: null, phaseLabel: null, phaseTitle: null, architectureFile: null, initiativeTitle: null, initiativeFile: null, branch: "", base: "base000" },
     { round: 2, plan: row.plan },
   );
   assert.equal(noneAgent.input.prompt, bare);
+  assert.ok(noneAgent.input.prompt.includes("a judge marks each finding"), "the Review prompt carries the story body");
 
   // Turn ends: each agent's worktree holds its findings.
   for (const [i, a] of calls.agents.entries()) {
@@ -360,4 +363,76 @@ test("a bad cost cap is rejected before anything starts", async () => {
   withCaps(ports);
   await assert.rejects(createMemoryReplay(ports).replay([row], { run: "run1", root, runDir, costCap: 0 }), /bad cost cap/);
   assert.equal(calls.agents.length, 0);
+});
+
+// ---- Round 2 review fixes ----
+
+test("a 'None' findings bullet is not a replay finding", async () => {
+  const { root, runDir, calls, ports } = setup();
+  withCaps(ports);
+  const replay = createMemoryReplay(ports);
+  const done = replay.replay([row], { run: "run1", root, runDir });
+  await tick();
+  await tick();
+  for (const id of replay.pendingAgents()) {
+    const dir = calls.workspaces.find((w) => w.id === calls.agents[Number(id.slice(2)) - 1].workspace)!.directory;
+    writeFileSync(join(dir, ".harness", "state.md"), reviewState("- None\n- No findings.\n- real problem"), "utf8");
+    await replay.onTurnEnded({ agentId: id });
+  }
+  await done;
+  assert.deepEqual(calls.judged[0].replay, ["real problem"]);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a rerun retries error rows", async () => {
+  const { root, runDir, calls, ports } = setup();
+  withCaps(ports);
+  const doneRow = (arm: string, extra: object = {}) => ({ run: "run1", initiative: row.initiative, story: "S7", round: 2, kind: "failed", arm, outcome: null, tokens: { used: 1, costUsd: 0 }, judgeCostUsd: 0, ...extra });
+  writeFileSync(
+    join(runDir, "results.jsonl"),
+    [doneRow("none"), doneRow("facts", { error: "git worktree add failed" }), doneRow("facts+corrections")].map((r) => JSON.stringify(r)).join("\n") + "\n",
+    "utf8",
+  );
+  const replay = createMemoryReplay(ports);
+  const done = replay.replay([row], { run: "run1", root, runDir });
+  await tick();
+  await tick();
+  assert.deepEqual(calls.agents.map((a) => a.input.labels["replay-arm"]), ["facts"]);
+  await replay.onTurnEnded({ agentId: replay.pendingAgents()[0] });
+  await done;
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("classifier spend while building memory counts against the cap and is logged", async () => {
+  const { root, runDir, calls, ports } = setup();
+  withCaps(ports);
+  ports.analyze = async (r, opts) => {
+    calls.analyze.push({ root: r, opts: opts as Record<string, unknown> });
+    return { spentUsd: 0.4 };
+  };
+  const replay = createMemoryReplay(ports);
+  const done = replay.replay([row], { run: "run1", root, runDir, costCap: 50 });
+  await tick();
+  await tick();
+  assert.equal(calls.analyze[0].opts.costCap, 50);
+  assert.ok(calls.agents[0].input.title.endsWith("$0.40/$50.00"));
+  assert.match(readFileSync(join(runDir, "run.log"), "utf8"), /classifier spent \$0\.40/);
+  for (const id of replay.pendingAgents()) await replay.onTurnEnded({ agentId: id });
+  await done;
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a rerun archives replay agents and workspaces the dead plugin left in Paseo", async () => {
+  const { root, runDir, calls, ports } = setup();
+  const cancelled = withCaps(ports);
+  ports.strays = async (run) => (run === "run1" ? [{ agentId: "old1", workspaceId: "wsOld" }, { agentId: "old2", workspaceId: null }] : []);
+  const replay = createMemoryReplay(ports);
+  const done = replay.replay([row], { run: "run1", root, runDir });
+  await tick();
+  await tick();
+  assert.deepEqual(cancelled, ["old1", "old2"]);
+  assert.ok(calls.archived.includes("wsOld"));
+  for (const id of replay.pendingAgents()) await replay.onTurnEnded({ agentId: id });
+  await done;
+  rmSync(root, { recursive: true, force: true });
 });

@@ -48,7 +48,9 @@ export type ReplayPorts = {
     removeWorktree(root: string, dir: string): Promise<void>;
     changedPaths(root: string, base: string, commit: string): Promise<string[]>;
   };
-  analyze: (root: string, opts: Parameters<typeof analyzeRepo>[1]) => Promise<unknown>;
+  analyze: (root: string, opts: Parameters<typeof analyzeRepo>[1]) => Promise<{ spentUsd?: number } | void>;
+  // Replay agents of the run still alive in Paseo, left by a plugin that died mid-run. Optional: without it only worktrees are swept.
+  strays?: (run: string) => Promise<{ agentId: string; workspaceId: string | null }[]>;
   // The brief for one arm, from the memory built under `memoryRoot`. Defaults to `armBrief` over `readMemory`.
   brief?: (memoryRoot: string, arm: Arm, paths: string[]) => Promise<string[]>;
   judge: Judge;
@@ -115,7 +117,7 @@ function findingsOf(state: string): string[] {
   return readSection(state, "Review findings")
     .split("\n")
     .map((line) => /^\s*[-*]\s+(.+)$/.exec(line)?.[1]?.trim() ?? "")
-    .filter(Boolean);
+    .filter((text) => text && !/^\W*(none|no (new )?findings?|n\/a)\W*$/i.test(text));
 }
 
 export function createMemoryReplay(ports: ReplayPorts) {
@@ -137,9 +139,16 @@ export function createMemoryReplay(ports: ReplayPorts) {
     if (!built) {
       const memoryRoot = join(ctx.runDir, "memory", key);
       mkdirSync(memoryRoot, { recursive: true });
+      // Classifier spend on a cache miss counts against the cap, and analyze gets only what is left of it.
+      const left = Math.max(0, (cap ?? DEFAULT_COST_CAP_USD) - spentDone);
       built = ports
-        .analyze(ctx.root, { asOf: row.asOf, excludeStory: row.story, memoryRoot })
-        .then(() => memoryRoot);
+        .analyze(ctx.root, { asOf: row.asOf, excludeStory: row.story, memoryRoot, costCap: left })
+        .then((result) => {
+          const spent = (result && result.spentUsd) || 0;
+          spentDone += spent;
+          if (spent > 0) log(ctx, `memory for ${row.story}: classifier spent ${usd(spent)}`);
+          return memoryRoot;
+        });
       memories.set(`${ctx.run}/${key}`, built);
       built.catch(() => memories.delete(`${ctx.run}/${key}`));
     }
@@ -161,8 +170,8 @@ export function createMemoryReplay(ports: ReplayPorts) {
 
       const story: StoryContext = {
         id: row.story,
-        title: row.story,
-        body: "",
+        title: row.title || row.story,
+        body: row.body ?? "",
         ticketKey: null,
         ticketUrl: null,
         storyFile: null,
@@ -349,7 +358,7 @@ export function createMemoryReplay(ports: ReplayPorts) {
       if (!line.trim()) continue;
       try {
         const r = JSON.parse(line) as ResultRow;
-        if (r.stopped) continue; // cut off by the cap: a rerun picks it up again
+        if (r.stopped || r.error) continue; // cut off by the cap or failed to run: a rerun picks it up again
         done.add(pairKey(r, r.arm));
       } catch {
         // a torn line is not a done row
@@ -392,6 +401,13 @@ export function createMemoryReplay(ports: ReplayPorts) {
         await ports.git.removeWorktree(ctx.root, dir).catch(() => undefined);
         log(ctx, `removed orphan worktree ${name}`);
       }
+    }
+
+    for (const stray of (await ports.strays?.(ctx.run).catch(() => [])) ?? []) {
+      if (pending.has(stray.agentId)) continue;
+      await ports.paseo.cancelAgent(stray.agentId).catch(() => undefined);
+      if (stray.workspaceId) await ports.paseo.archiveWorkspace(stray.workspaceId).catch(() => undefined);
+      log(ctx, `archived stray replay agent ${stray.agentId}`);
     }
 
     let started = 0;

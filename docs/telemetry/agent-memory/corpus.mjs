@@ -13,8 +13,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const byText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 const keyOf = (initiative, story) => `${initiative}/${story}`;
 
-// stories: [{ initiative, id }]. agents: loopAgents() records. prCommits: { "initiative/story": [{ oid, committedDate, parent? }] },
-// oldest first, `parent` set on the first commit. findingsByRound: { "initiative/story": { [round]: string[] } }.
+// stories: [{ initiative, id, title?, body? }]; `body` is the story file without frontmatter and `## Outcome`. agents: loopAgents() records.
+// prCommits: { "initiative/story": [{ oid, committedDate, parent?, parentDate? }] }, oldest first, `parent` and `parentDate` set on the first commit. findingsByRound: { "initiative/story": { [round]: string[] } }.
 // plans: { "initiative/story": { plan, cycles } }.
 // Failed rows: every Review round before the story's last (it merged, so each earlier round failed).
 // Controls: round-1 Reviews of stories that never failed, most recent first; `controls` defaults to the number of failed rows.
@@ -28,11 +28,13 @@ export function corpusRows({ stories = [], agents = [], prCommits = {}, findings
     return {
       initiative: story.initiative,
       story: story.id,
+      title: story.title || story.id,
+      body: story.body ?? "",
       round: agent.round,
       kind,
       commit: head.oid,
       base: commits[0].parent ?? null,
-      asOf: commits[0].committedDate,
+      asOf: commits[0].parentDate ?? commits[0].committedDate, // d5: the story's base, not its first commit
       findings: kind === "failed" ? (findingsByRound[key]?.[agent.round] ?? []) : [],
       plan: plans[key]?.plan ?? "",
       cycles: plans[key]?.cycles ?? "",
@@ -79,11 +81,17 @@ function storyFiles(repo) {
       for (const n of names) {
         const text = readFileSync(join(dir, n), "utf8");
         const fm = frontmatter(text);
-        if (fm.status === "merged") files.push({ initiative, id: fm.id, text, fm });
+        if (fm.status === "merged") files.push({ initiative, id: fm.id, title: fm.title, body: storyBody(text), text, fm });
       }
     }
   }
   return files;
+}
+
+// What the loop hands a Review as the story body: the file without frontmatter, and without `## Outcome` so recorded findings don't leak.
+export function storyBody(text) {
+  const body = text.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
+  return body.replace(/^##[ \t]+Outcome[ \t]*\n[\s\S]*?(?=^##[ \t]|(?![\s\S]))/m, "").trim();
 }
 
 // `## Outcome` round lines: { [round]: string[] }.
@@ -130,8 +138,9 @@ function main() {
       const commits = (JSON.parse(run("gh", ["pr", "view", String(pr.number), "--json", "commits"], { cwd: repo })).commits ?? [])
         .map((c) => ({ oid: c.oid, committedDate: c.committedDate }));
       if (!commits.length) continue;
-      // asOf is the committer date, which gh's committedDate is; the parent is not in gh's output.
+      // gh's output has no parent; asOf (d5) is the parent's committer date.
       commits[0].parent = run("git", ["rev-parse", `${commits[0].oid}^`], { cwd: repo }).trim();
+      commits[0].parentDate = run("git", ["show", "-s", "--format=%cI", commits[0].parent], { cwd: repo }).trim();
       prCommits[keyOf(f.initiative, f.id)] = commits;
     }
   } catch (err) {
@@ -158,7 +167,7 @@ function main() {
     if (planAgent) plans[key] = planSections(readEntries(planAgent.transcript));
   }
 
-  const stories = files.map((f) => ({ initiative: f.initiative, id: f.id }));
+  const stories = files.map((f) => ({ initiative: f.initiative, id: f.id, title: f.title, body: f.body }));
   const rows = corpusRows({ stories, agents: all, prCommits, findingsByRound, plans, controls });
   const out = join(repo, ".harness", "replay", "corpus.jsonl");
   mkdirSync(dirname(out), { recursive: true });

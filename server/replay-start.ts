@@ -46,6 +46,13 @@ export function realReplayPorts(getPaseo: () => PaseoApi | null, agentConfig: (p
       // The plugin API has no cancel; archiving the agent ends its session, and its workspace is archived right after.
       cancelAgent: async (id) => void (await paseo().agents.ref(id).archive()),
     },
+    async strays(run) {
+      const listed = await paseo().agents.list({ filter: { includeArchived: false }, page: { limit: 200 } });
+      return listed.entries
+        .map((entry) => entry.agent)
+        .filter((agent) => agent.labels?.kind === "memory-replay" && agent.labels["replay-run"] === run)
+        .map((agent) => ({ agentId: agent.id, workspaceId: agent.workspaceId ?? null }));
+    },
     git: {
       async addWorktree(root, dir, commit) {
         await git(root, ["worktree", "add", "--detach", dir, commit]);

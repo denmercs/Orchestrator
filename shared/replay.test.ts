@@ -96,7 +96,7 @@ test("newFindingsLines makes a yes/no checklist line per new finding", () => {
 });
 
 function row(story: string, round: number, kind: CorpusRow["kind"]): CorpusRow {
-  return { initiative: "i", story, round, kind, commit: "c", base: "b", asOf: "2026-01-01T00:00:00Z", findings: [], plan: "", cycles: "" };
+  return { initiative: "i", story, title: story, body: "", round, kind, commit: "c", base: "b", asOf: "2026-01-01T00:00:00Z", findings: [], plan: "", cycles: "" };
 }
 const label = (q: { row: CorpusRow }[]) => q.map((r) => `${r.row.story}${r.row.round}`);
 

@@ -127,7 +127,7 @@ function repoWithCorpus(rows: object[] | null): string {
 }
 
 const row = (story: string, kind: "failed" | "control") => ({
-  initiative: "i", story, round: 1, kind, commit: "c", base: "b", asOf: "2026-01-01T00:00:00Z", findings: [], plan: "", cycles: "",
+  initiative: "i", story, title: story, body: "", round: 1, kind, commit: "c", base: "b", asOf: "2026-01-01T00:00:00Z", findings: [], plan: "", cycles: "",
 });
 
 test("handles startMemoryReplay: reads the corpus, passes the cap and starts the replay", async () => {

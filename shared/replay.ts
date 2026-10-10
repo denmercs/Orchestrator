@@ -1,4 +1,4 @@
-// Pure helpers for the memory replay: which brief each arm gets. Later cycles add queue, cap and judge helpers.
+// Pure helpers for the memory replay: which brief each arm gets. Also the judge outcome, the queue and cap planning, and the RPC contract.
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { briefFor, type Memory } from "./memory";
@@ -63,6 +63,9 @@ export function newFindingsLines(row: { story: string; round: number; arm: Arm; 
 export type CorpusRow = {
   initiative: string;
   story: string;
+  title: string;
+  // The story file without frontmatter and `## Outcome`, as the loop's Review prompt carries it.
+  body: string;
   round: number;
   kind: "failed" | "control";
   commit: string;
