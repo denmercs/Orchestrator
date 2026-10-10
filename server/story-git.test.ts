@@ -153,6 +153,18 @@ test("leftovers are committed as \"Commit remaining changes\" before the PR open
   }
 });
 
+test("leftovers take the given subject, such as a reviewer's fixes", async () => {
+  const { dir, git, done } = prRepo();
+  try {
+    writeFileSync(join(dir, "search.ts"), "export const x = 1;\n");
+    const input = { id: "S1", title: "Add search", jira: false, branch: "feature/s1", base: "origin/main" };
+    await openStoryPr(dir, { ...input, subject: "Guard the empty query" });
+    assert.equal(git("log", "-1", "--format=%s"), "Guard the empty query");
+  } finally {
+    done();
+  }
+});
+
 test("an already-open PR is returned as it is, without creating another", async () => {
   const { dir, created, done } = prRepo();
   try {
