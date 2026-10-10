@@ -1,7 +1,7 @@
 // render(data) on a small fixture: four sections, coverage line, every merged story listed, deterministic.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { render, outcomeUpdates } from "./report.mjs";
+import { render, outcomeUpdates, snapshotStories } from "./report.mjs";
 
 const data = {
   cutoff: "2026-10-09T14:01:28Z",
@@ -51,4 +51,46 @@ test("outcomeUpdates: only story files without ## Outcome", () => {
   const todo = outcomeUpdates("---\nid: S1\n---\n\n## Goal\nx\n", events);
   assert.ok(todo && todo.includes("## Outcome"));
   assert.equal(outcomeUpdates(todo, events), null);
+});
+
+const story = (initiative, id, fm = {}) => ({ initiative, fm: { id, ...fm } });
+const CUT = "2026-10-09T14:00:00Z";
+
+test("snapshotStories: keeps only stories whose PR merged by the cutoff", () => {
+  const prs = [
+    { number: 1, headRefName: "b/early", mergedAt: "2026-10-09T10:00:00Z" },
+    { number: 2, headRefName: "b/late", mergedAt: "2026-10-09T15:00:00Z" },
+  ];
+  const out = snapshotStories([story("i", "S1", { branch: "b/early" }), story("i", "S2", { branch: "b/late" }), story("i", "S3", { branch: "b/none" }), story("i", "S4", {})], prs, CUT);
+  assert.deepEqual(out.map((f) => f.fm.id), ["S1"]);
+  assert.equal(out[0].pr.number, 1);
+});
+
+test("snapshotStories: a PR merged exactly at the cutoff is kept", () => {
+  const prs = [{ number: 1, headRefName: "b/edge", mergedAt: CUT }];
+  assert.deepEqual(snapshotStories([story("i", "S1", { branch: "b/edge" })], prs, CUT).map((f) => f.fm.id), ["S1"]);
+});
+
+test("snapshotStories: PR number match beats branch match", () => {
+  const prs = [
+    { number: 1, headRefName: "b/x", mergedAt: "2026-10-09T10:00:00Z" },
+    { number: 2, headRefName: "b/y", mergedAt: "2026-10-09T11:00:00Z" },
+  ];
+  const [f] = snapshotStories([story("i", "S1", { pr: "2", branch: "b/x" })], prs, CUT);
+  assert.equal(f.pr.number, 2);
+});
+
+test("snapshotStories: ordered by mergedAt, then initiative, then id", () => {
+  const prs = [
+    { number: 1, headRefName: "a", mergedAt: "2026-10-09T12:00:00Z" },
+    { number: 2, headRefName: "b", mergedAt: "2026-10-09T12:00:00Z" },
+    { number: 3, headRefName: "c", mergedAt: "2026-10-09T12:00:00Z" },
+    { number: 4, headRefName: "d", mergedAt: "2026-10-09T09:00:00Z" },
+  ];
+  const out = snapshotStories([story("z", "S1", { branch: "a" }), story("a", "S2", { branch: "b" }), story("a", "S1", { branch: "c" }), story("z", "S9", { branch: "d" })], prs, CUT);
+  assert.deepEqual(out.map((f) => `${f.initiative}/${f.fm.id}`), ["z/S9", "a/S1", "a/S2", "z/S1"]);
+});
+
+test("render: stories intro says stories closed without a PR are left out", () => {
+  assert.match(render(data), /closed without a PR are left out/);
 });

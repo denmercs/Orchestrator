@@ -56,7 +56,7 @@ export function render(data) {
   out.push("");
 
   out.push("## Review rounds and fix attempts per story", "");
-  out.push("Every merged story in this repo. Rounds come from Review agent labels and fixes from fix agents and CI-fix commit names; stories with no agent records show — for rounds.", "");
+  out.push("Every story merged by a PR in this repo; stories closed without a PR are left out. Rounds come from Review agent labels and fixes from fix agents and CI-fix commit names; stories with no agent records show — for rounds.", "");
   out.push("| Initiative | Story | Title | Agent records | Review rounds | Fix attempts |", "|---|---|---|---|---:|---:|");
   for (const s of stories) {
     out.push(`| ${cell(s.initiative)} | ${cell(s.id)} | ${cell(s.title)} | ${s.hasAgents ? "yes" : "no"} | ${s.hasAgents ? s.reviewRounds : "—"} | ${s.fixAttempts} |`);
@@ -120,6 +120,16 @@ function storyFiles(repo) {
   return files;
 }
 
+// Merged stories with their PR attached, kept only when that PR merged by the cutoff. A story with no matching PR
+// (closed as "Nothing to ship") has no date to check, so it is left out.
+export function snapshotStories(files, prs, cutoff = CUTOFF) {
+  const prFor = (fm) => prs.find((p) => String(p.number) === fm.pr) ?? prs.find((p) => p.headRefName === fm.branch);
+  return files
+    .map((f) => ({ ...f, pr: prFor(f.fm) }))
+    .filter((f) => f.pr && f.pr.mergedAt <= cutoff)
+    .sort((a, b) => byText(a.pr.mergedAt, b.pr.mergedAt) || byText(a.initiative, b.initiative) || byText(a.fm.id, b.fm.id));
+}
+
 function main() {
   const writeOutcomes = process.argv.includes("--write-outcomes");
   const repo = resolve(run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: HERE }).trim(), "..");
@@ -135,12 +145,7 @@ function main() {
     console.error(`gh failed, nothing written: ${err.stderr || err.message}`);
     process.exit(1);
   }
-  const prFor = (fm) => prs.find((p) => String(p.number) === fm.pr) ?? prs.find((p) => p.headRefName === fm.branch);
-
-  const files = storyFiles(repo)
-    .map((f) => ({ ...f, pr: prFor(f.fm) }))
-    .filter((f) => !f.pr || f.pr.mergedAt <= CUTOFF)
-    .sort((a, b) => byText(a.pr?.mergedAt ?? "", b.pr?.mergedAt ?? "") || byText(a.initiative, b.initiative) || byText(a.fm.id, b.fm.id));
+  const files = snapshotStories(storyFiles(repo), prs);
 
   const all = loopAgents({ repo, until: CUTOFF }).sort((a, b) => byText(a.createdAt ?? "", b.createdAt ?? "") || byText(a.id, b.id));
   const entriesOf = new Map();
@@ -167,7 +172,7 @@ function main() {
       const found = reviewFindings(entriesOf.get(a.id));
       if (found.marker === "review-failed" || found.findings.length) findingsByRound[a.round] = found.findings;
     }
-    const commits = f.pr ? commitsByPr.get(f.pr.number) ?? [] : [];
+    const commits = commitsByPr.get(f.pr.number) ?? [];
     const events = storyOutcome({ agents: mine, commits, findingsByRound });
     stories.push({
       initiative: f.initiative,
