@@ -482,7 +482,8 @@ export function createInitiativeLoop(
     if (!meta.worktree) return;
     const ctx = storyContext(init, phaseDir, story);
     try {
-      const pr = await openStoryPr(meta.worktree, { id: story.id, title: ctx.title, jira: false, branch: meta.branch ?? "", base: ctx.base });
+      const subject = commitSubject(readText(stateFile(meta.worktree)), "Commit remaining changes");
+      const pr = await openStoryPr(meta.worktree, { id: story.id, title: ctx.title, jira: false, branch: meta.branch ?? "", base: ctx.base, subject });
       // Nothing to ship: the work is already on the base, so the story is done and its dependents can go.
       if (!pr) {
         recordOutcome(story, { kind: "no-change" });

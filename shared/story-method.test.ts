@@ -291,6 +291,15 @@ test("review points at the base under Where it sits; pr carries the exact comman
   assert.ok(jira.includes('--title "KEY-1 | Add search"'), "Jira PR title");
 });
 
+test("review fixes its findings, non-blocking ones too, and fails only on what it could not fix", () => {
+  const review = stepPrompt("review", story, { round: 1 });
+  assert.doesNotMatch(review, /Do not fix anything/);
+  assert.match(review, /fix every finding you can, blocking and non-blocking alike/);
+  assert.match(review, /"fixed: <finding>"/);
+  assert.match(review, /only when a finding is left that must be fixed/);
+  assert.match(review, /commit subject/);
+});
+
 test("missing Plan paths go in the story section, after the head and before Where it sits", () => {
   const line = "These paths in ## Plan don't exist: src/a.ts, src/b.ts. Find the right ones and correct ## Plan.";
   const review = stepPrompt("review", story, { round: 1, missing: ["src/a.ts", "src/b.ts"] });

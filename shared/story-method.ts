@@ -284,7 +284,7 @@ the next line.`,
     }
     if (round > 1) {
       return `## This step: fix the review findings
-Review found problems. Fix every item under \`## Review findings\` (skip "follow-up:" lines), each with a test
+Review found problems. Fix every item under \`## Review findings\` (skip "follow-up:" and "fixed:" lines), each with a test
 that fails before the fix, and add one line per fix to \`## Evidence\`. Do not work unticked cycles; fresh agents
 take those. Then set \`## Status\` to ${DONE}.
 If you cannot go on, set it to \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
@@ -299,9 +299,9 @@ Then set \`## Status\` to ${DONE}.
 If you cannot go on, set it to \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
   },
 
-  review: () => `## This step: review the change as a fresh critic
+  review: () => `## This step: review the change as a fresh critic, then fix what you find
 Review the diff against the base branch named under \`## Where it sits\` (\`git diff <base>...HEAD\`): check it
-against the story, its acceptance, \`## Plan\` and \`## Cycles\`. Do not fix anything.
+against the story, its acceptance, \`## Plan\` and \`## Cycles\`. Finish the whole review before you fix anything.
 Check:
 - Every acceptance check is met, and each cycle has a test that would fail without its change.
 - Correctness: edge cases, error paths, concurrency, data loss.
@@ -310,11 +310,17 @@ Check:
 - The repo's own conventions, and nothing changed outside the story's scope.
 - The full test suite, lint and build pass (run them; keep only the summary and any failures).
 Write each problem under \`## Review findings\` as one line: file:line — what is wrong — what would fix it.
+Then fix every finding you can, blocking and non-blocking alike, inside the story's scope. A behaviour fix gets a
+test that fails before it; add one line per fix to \`## Evidence\`. Rewrite each fixed line as
+"fixed: <finding>". Leave a finding as it is when fixing it needs a human decision or work outside the story.
+After fixing, run the full test suite, lint and build again.
 Write \`## Preview\`: one line per app route or screen the story changes, "- <route> — what to look at", or
 \`none — <why>\` when nothing is visible.
 Write .harness/pr-body.md: a short Purpose, the Changes Made as bullets, and how it was tested.
-If there are no findings that must be fixed, set \`## Status\` to \`${MARKERS.reviewDone}\`; otherwise set it to
-\`${MARKERS.reviewFailed}\`. The plugin opens the PR after a pass.`,
+Set \`## Status\` to \`${MARKERS.reviewFailed}\` only when a finding is left that must be fixed, or the gate fails;
+otherwise set it to \`${MARKERS.reviewDone}\`. If you changed code, put a commit subject for your fixes on the next
+line: plain words, imperative mood, under 72 characters, no story id. The plugin commits and opens the PR after a
+pass.`,
 
   // Kept for stories that were already at this step; new stories get their PR from the plugin.
   pr: () => `## This step: open the pull request
