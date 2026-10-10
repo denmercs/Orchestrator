@@ -4,6 +4,7 @@ import {
   detectCompaction,
   nextWarning,
   readContext,
+  shouldAutoCompact,
   type ContextReading,
   type CompactionItem,
   type ContextSnapshot,
@@ -81,18 +82,18 @@ function reading(level: Level): ContextReading {
   };
 }
 
-const fresh: WarningMemory = { warned: [], mode: "normal" };
+const fresh: WarningMemory = { warned: [], mode: "normal", auto: "armed" };
 
 test("nextWarning: first amber warns amber", () => {
   assert.deepEqual(nextWarning(fresh, reading("amber")), { level: "amber" });
 });
 
 test("nextWarning: amber again after an amber warning is silent", () => {
-  assert.equal(nextWarning({ warned: ["amber"], mode: "normal" }, reading("amber")), null);
+  assert.equal(nextWarning({ warned: ["amber"], mode: "normal", auto: "armed" }, reading("amber")), null);
 });
 
 test("nextWarning: red after amber warns red", () => {
-  assert.deepEqual(nextWarning({ warned: ["amber"], mode: "normal" }, reading("red")), { level: "red" });
+  assert.deepEqual(nextWarning({ warned: ["amber"], mode: "normal", auto: "armed" }, reading("red")), { level: "red" });
 });
 
 test("nextWarning: a jump from ok straight to red warns red only", () => {
@@ -101,17 +102,17 @@ test("nextWarning: a jump from ok straight to red warns red only", () => {
 });
 
 test("nextWarning: red again after a red warning is silent", () => {
-  assert.equal(nextWarning({ warned: ["amber", "red"], mode: "normal" }, reading("red")), null);
+  assert.equal(nextWarning({ warned: ["amber", "red"], mode: "normal", auto: "armed" }, reading("red")), null);
 });
 
 test("nextWarning: Remind skips amber and warns at red", () => {
-  const remind: WarningMemory = { warned: [], mode: "remind" };
+  const remind: WarningMemory = { warned: [], mode: "remind", auto: "armed" };
   assert.equal(nextWarning(remind, reading("amber")), null);
   assert.deepEqual(nextWarning(remind, reading("red")), { level: "red" });
 });
 
 test("nextWarning: Ignore silences amber and red", () => {
-  const ignore: WarningMemory = { warned: [], mode: "ignore" };
+  const ignore: WarningMemory = { warned: [], mode: "ignore", auto: "armed" };
   assert.equal(nextWarning(ignore, reading("amber")), null);
   assert.equal(nextWarning(ignore, reading("red")), null);
 });
@@ -152,4 +153,32 @@ test("detectCompaction: a small drop or a rise is no compaction", () => {
 
 test("detectCompaction: no previous reading and no item is no compaction", () => {
   assert.equal(detectCompaction(null, at(40_000), []), null);
+});
+
+const GO = { enabled: true, running: false, pendingPermissions: false, completed: true, loop: false };
+
+test("shouldAutoCompact: red, armed and every guard clear compacts", () => {
+  assert.equal(shouldAutoCompact(fresh, reading("red"), GO), true);
+});
+
+test("shouldAutoCompact: amber and ok do not compact", () => {
+  assert.equal(shouldAutoCompact(fresh, reading("amber"), GO), false);
+  assert.equal(shouldAutoCompact(fresh, reading("ok"), GO), false);
+});
+
+test("shouldAutoCompact: Ignore does not compact", () => {
+  assert.equal(shouldAutoCompact({ ...fresh, mode: "ignore" }, reading("red"), GO), false);
+});
+
+test("shouldAutoCompact: already sent or skipped does not compact", () => {
+  assert.equal(shouldAutoCompact({ ...fresh, auto: "sent" }, reading("red"), GO), false);
+  assert.equal(shouldAutoCompact({ ...fresh, auto: "skipped" }, reading("red"), GO), false);
+});
+
+test("shouldAutoCompact: running, pending permission, unfinished turn, loop agent or setting off do not compact", () => {
+  assert.equal(shouldAutoCompact(fresh, reading("red"), { ...GO, running: true }), false);
+  assert.equal(shouldAutoCompact(fresh, reading("red"), { ...GO, pendingPermissions: true }), false);
+  assert.equal(shouldAutoCompact(fresh, reading("red"), { ...GO, completed: false }), false);
+  assert.equal(shouldAutoCompact(fresh, reading("red"), { ...GO, loop: true }), false);
+  assert.equal(shouldAutoCompact(fresh, reading("red"), { ...GO, enabled: false }), false);
 });

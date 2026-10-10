@@ -182,6 +182,7 @@ function status(used: number | null, max: number | null, rest: Partial<ContextSt
     warned: [],
     mode: "normal",
     red: 150_000,
+    auto: true,
   };
 }
 

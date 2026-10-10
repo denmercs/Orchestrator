@@ -34,7 +34,8 @@ export type TelemetryEvent =
   | "compact.fresh"
   | "compact.inferred"
   | "ignore"
-  | "remind";
+  | "remind"
+  | "skip-auto";
 
 export type TelemetryRow = {
   at: string;
@@ -61,6 +62,9 @@ export type TelemetryRow = {
   // On `turn` rows of a loop step, from S1 on: what the step read before its first code edit, summed
   // over the agent's turns so far. null when the watch lost the count (daemon restart mid-step).
   explore?: Explore | null;
+  // On `compact.*` rows the watch started on its own at the red threshold; absent for a pill
+  // Compact and for Claude's own compactions.
+  trigger?: "auto";
   // On `turn` and `turn.stopped` rows: Paseo's id for the turn (null when the provider gives none), so duplicates
   // can be found.
   turnId?: string | null;
@@ -207,7 +211,7 @@ export async function summariseTelemetry(
     sessions: 0,
     sessionsOverThreshold: 0,
     warnings: 0,
-    compactions: { native: 0, fresh: 0, inferred: 0 },
+    compactions: { native: 0, fresh: 0, inferred: 0, auto: 0 },
     ignored: 0,
     reminded: 0,
     tokensAvoided: 0,
@@ -264,6 +268,7 @@ export async function summariseTelemetry(
       case "compact.fresh":
       case "compact.inferred":
         summary.compactions[row.event.slice("compact.".length) as "native" | "fresh" | "inferred"] += 1;
+        if (row.trigger === "auto") summary.compactions.auto += 1;
         if (row.preTokens != null && row.used != null) {
           summary.tokensAvoided += Math.max(0, row.preTokens - row.used);
         }
