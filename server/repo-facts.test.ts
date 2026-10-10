@@ -164,11 +164,11 @@ test("historyFacts refix needs 3 fix commits touching the file", () => {
   assert.deepEqual(refix[0].extra.commits, fixes.map(short));
 });
 
-test("assignAreas puts term files first, clusters unclaimed co-changers, then falls back to folder or root", () => {
+test("assignAreas puts term files first, clusters unclaimed co-changers, then falls back to folder, entry or root", () => {
   const files = [
     "server/context-meter.ts", "client/pill.tsx", "client/pill.css", "server/alpha.ts", "shared/beta.ts",
-    "client/solo.ts", "client/mate.ts", "server/other.ts", "docs/guide.md", "README.md",
-    "package-lock.json", ".harness/state.md",
+    "client/solo.ts", "client/mate.ts", "server/other.ts", "docs/guide.md", "README.md", "index.ts",
+    "server/scope.ts", "server/scope.test.ts", "package-lock.json", ".harness/state.md",
   ];
   const [term] = termAreas("## Context meter\n`server/context-meter.ts`\n", files, "2026-03-01");
   const commits = [
@@ -176,15 +176,18 @@ test("assignAreas puts term files first, clusters unclaimed co-changers, then fa
     ...many(3, ["server/alpha.ts", "shared/beta.ts"]),
     ...many(3, ["client/solo.ts", "client/mate.ts"]), ...many(3, ["client/solo.ts"]), ...many(3, ["client/mate.ts"]),
     ...many(2, ["server/other.ts", "docs/guide.md"]),
+    ...many(3, ["server/scope.ts", "server/scope.test.ts"]),
   ];
   const { areas, primaryArea } = assignAreas(files, [term], commits, "2026-03-01");
   assert.deepEqual(areas.map((a) => [a.slug, a.globs]), [
     ["context-meter", ["server/context-meter.ts"]],
     ["pill", ["client/pill.css", "client/pill.tsx"]],
     ["server-alpha", ["server/alpha.ts", "shared/beta.ts"]],
+    ["scope", ["server/scope.test.ts", "server/scope.ts"]],
     ["client", ["client/**"]],
     ["docs", ["docs/**"]],
-    ["root", ["*"]],
+    ["entry", ["index.ts"]],
+    ["root", ["README.md"]],
     ["server", ["server/**"]],
   ]);
   assert.deepEqual(areas[0].citations, term.citations);
@@ -198,6 +201,8 @@ test("assignAreas puts term files first, clusters unclaimed co-changers, then fa
   assert.equal(primary("client/solo.ts"), "client");
   assert.equal(primary("server/other.ts"), "server");
   assert.equal(primary("README.md"), "root");
+  assert.equal(primary("index.ts"), "entry");
+  assert.equal(primary("server/scope.test.ts"), "scope");
   assert.equal(primary("package-lock.json"), null);
   assert.equal(primary(".harness/state.md"), null);
   assert.deepEqual(assignAreas([...files].reverse(), [term], [...commits].reverse(), "2026-03-01").areas, areas);

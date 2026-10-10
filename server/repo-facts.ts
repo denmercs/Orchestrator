@@ -227,17 +227,20 @@ export type AreaAssignment = {
 const stemOf = (path: string) => (path.split("/").pop() ?? path).replace(/\.[^.]*$/, "");
 const dirOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
 
-// Common leading characters of the members' basenames, minus trailing separators.
+// Common leading characters of the members' stems (`.test`/`.spec` dropped), cut back to a whole word so
+// `x.test.ts` and `x.ts` name `x`, not `x-t`.
 function sharedPrefix(members: string[]): string {
-  const names = members.map((m) => m.split("/").pop() ?? m);
+  const names = members.map((m) => stemOf(m).replace(/\.(?:test|spec)$/, ""));
   let prefix = names[0];
   for (const n of names) while (!n.startsWith(prefix)) prefix = prefix.slice(0, -1);
+  if (!names.includes(prefix)) prefix = prefix.replace(/[a-z0-9]+$/i, "");
   return prefix.replace(/[^a-z0-9]+$/i, "");
 }
 
 // Areas in order: term areas as given; co-change clusters among files no term claims (union-find over pairs
 // with >=3 shared commits and Jaccard >=0.5; a lone file is no cluster); then one `<folder>/**` per top-level
-// folder (`root`, glob `*`, for top-level files) holding whatever is left. Citations stay empty for clusters
+// folder holding whatever is left, with top-level files listed by name: source files in `entry` (entry points
+// import everything, so their facts stay off config and docs), the rest in `root`. Citations stay empty for clusters
 // and folders. Ordered by member path / slug so a re-run is byte-identical.
 export function assignAreas(files: string[], terms: Note[], commits: Commit[], verifiedAt: string): AreaAssignment {
   const tracked = [...new Set(files)].filter((f) => f !== "package-lock.json" && !f.startsWith(".harness/")).sort(byPath);
@@ -277,11 +280,15 @@ export function assignAreas(files: string[], terms: Note[], commits: Commit[], v
     return note;
   });
 
-  const folders = new Map<string, string>();
-  for (const f of unclaimed) if (!clustered.has(f)) folders.set(f.includes("/") ? f.split("/")[0] : "root", f.includes("/") ? `${f.split("/")[0]}/**` : "*");
-  const folderAreas = [...folders.entries()].sort((x, y) => byPath(x[0], y[0])).map(([slug, glob], n) => {
+  const folders = new Map<string, Set<string>>();
+  for (const f of unclaimed) {
+    if (clustered.has(f)) continue;
+    const [slug, glob] = f.includes("/") ? [f.split("/")[0], `${f.split("/")[0]}/**`] : [SOURCE.test(f) ? "entry" : "root", f];
+    folders.set(slug, (folders.get(slug) ?? new Set()).add(glob));
+  }
+  const folderAreas = [...folders.entries()].sort((x, y) => byPath(x[0], y[0])).map(([slug, globs], n) => {
     const note = emptyNote(unique(kebab(slug, Infinity), "folder", n + 1), "area", verifiedAt);
-    note.globs = [glob];
+    note.globs = [...globs].sort(byPath);
     return note;
   });
 
