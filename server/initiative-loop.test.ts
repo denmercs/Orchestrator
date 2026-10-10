@@ -20,8 +20,8 @@ const ghReply = join(home, "gh-reply.json");
 process.env.GH_BIN = join(home, "gh");
 writeFileSync(process.env.GH_BIN, `#!/bin/sh\n[ -f "${ghReply}" ] && cat "${ghReply}" || exit 1\n`, "utf8");
 chmodSync(process.env.GH_BIN, 0o755);
-const ghPr = (state: string | null, statusCheckRollup: unknown[] = []) => {
-  if (state) writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid: "abc", statusCheckRollup }), "utf8");
+const ghPr = (state: string | null, statusCheckRollup: unknown[] = [], mergedAt?: string) => {
+  if (state) writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid: "abc", statusCheckRollup, mergedAt }), "utf8");
   else rmSync(ghReply, { force: true });
 };
 const { createInitiativeLoop, RESUME_LINE, RESTART_LINE, nudgePrompt } = await import("./initiative-loop");
@@ -500,10 +500,14 @@ test("review-done on a branch with no commits over its base closes the story wit
     ReturnType<typeof loop>["onTurnEnded"]
   >[1];
 
+  const before = Date.now();
+
   await loop().onTurnEnded(api, turnEnded);
 
   const meta = storyMeta(fx.story);
   assert.deepEqual([meta.status, meta.pr, meta.blocked_reason], ["merged", undefined, undefined]);
+  const stamped = Date.parse(String(meta.merged_at));
+  assert.ok(stamped >= before && stamped <= Date.now(), `merged_at ${meta.merged_at} is not within the run`);
   assert.match(readFileSync(fx.story, "utf8"), /### Nothing to ship/);
   assert.equal(git("ls-remote", "--heads", "origin", "feature/s1"), "");
 });
@@ -985,13 +989,30 @@ test("a step whose worktree is gone and whose PR merged is recorded merged and i
   const { api, created, sent, archived } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
   initiative.rememberPaseo(api);
+  const before = Date.now();
 
   await initiative.tick();
 
   const meta = storyMeta(story);
   assert.deepEqual([meta.status, meta.pr, meta.agent], ["merged", "45", undefined]);
+  const stamped = Date.parse(String(meta.merged_at));
+  assert.ok(stamped >= before && stamped <= Date.now(), `merged_at ${meta.merged_at} is not within the run`);
   assert.deepEqual(archived, ["ws1"]);
   assert.deepEqual([created, sent], [[], []]);
+});
+
+test("a merged PR stamps the merge time GitHub reports, not the time the loop noticed", async (t) => {
+  t.after(() => ghPr(null));
+  const { story, worktree, labels } = fixture("a1");
+  rmSync(worktree, { recursive: true });
+  ghPr("MERGED", [], "2026-09-01T12:00:00Z");
+  const { api } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.equal(storyMeta(story).merged_at, "2026-09-01T12:00:00Z");
 });
 
 test("a step whose worktree is gone with an open PR is handed to the PR watcher", async (t) => {
