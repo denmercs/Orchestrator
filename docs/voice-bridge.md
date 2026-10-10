@@ -9,8 +9,8 @@ and posts what you said back to the plugin. The mic is off while the agent works
 ```sh
 # Token Tasker sends. The bridge stays off until this exists.
 security add-generic-password -U -a "$USER" -s orchestrator-voice-token -w "$(openssl rand -hex 24)"
-# Address to listen on. Use the Mac's Tailscale IP (`tailscale ip -4`); never a public interface.
-security add-generic-password -U -a "$USER" -s orchestrator-voice-bind -w "100.x.y.z"
+# Address to listen on: a private address the phone can reach; never a public interface.
+security add-generic-password -U -a "$USER" -s orchestrator-voice-bind -w "<mac-ip>"
 paseo plugin reload orchestrator
 ```
 
@@ -84,18 +84,18 @@ is not deleted.
 
 ## Tasker (Android)
 
-The phone must be on the same Tailscale network.
+The phone must be on a private network that reaches the Mac.
 
 Task **Voice answer**:
 
-1. HTTP Request: GET `http://100.x.y.z:4777/voice/next`, header `Authorization:Bearer <token>`.
+1. HTTP Request: GET `http://<mac-ip>:4777/voice/next`, header `Authorization:Bearer <token>`.
 2. If `%http_response_code` != 200, Stop.
 3. Variable Set `%vtext` to `%http_data.text`, `%vid` to `%http_data.id`, `%vkind` to
    `%http_data.kind` (`ask`, `reply` or `merge`, if you want a different tone per kind).
 4. Say `%vtext`.
 5. Variable Set `%tries` to 0.
 6. Get Voice (timeout 8s). Variable Add `%tries` 1.
-7. HTTP Request: POST `http://100.x.y.z:4777/voice/answer`, same header, body
+7. HTTP Request: POST `http://<mac-ip>:4777/voice/answer`, same header, body
    `{"id":"%vid","reply":"%gv_heard","hold":true}`, content type `application/json`.
 8. If `%http_data.listen` ~ true and `%tries` < 10, Goto action 6. If it is still listening after
    that, Stop.

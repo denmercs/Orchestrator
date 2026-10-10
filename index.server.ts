@@ -402,7 +402,7 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   });
   const offAgentCreated = server.on("agent.created", (_event, { paseo }) => arm(paseo));
   // Voice bridge for a phone: on only when the Keychain holds a token. It binds to localhost unless
-  // `orchestrator-voice-bind` names another address, such as the Mac's Tailscale IP.
+  // `orchestrator-voice-bind` names another address.
   // It also reads out green story PRs in the loop's repos, with a review, and merges one on "merge".
   const voice = createVoiceBridge({
     respond: async (agentId, requestId, response) => {
