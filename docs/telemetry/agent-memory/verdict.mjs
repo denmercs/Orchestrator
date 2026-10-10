@@ -5,14 +5,16 @@ import { dirname, join, resolve } from "node:path";
 import { ARMS } from "../../../shared/replay.ts";
 import { noteId, readMemory } from "../../../shared/memory.ts";
 
+// d1's minimum sample: complete failed and control rounds, per arm.
+const MIN_ROUNDS = 20;
 const cell = (s) => String(s).replace(/\|/g, "\\|");
 
 const roundKey = (r) => `${r.initiative}|${r.story}|${r.round}`;
 
 // A round is compared only when all three arms have a row with an outcome and none errored or stopped.
-// Error and stopped rows come back in leftOut with a reason; their whole round is excluded for every arm.
+// Error, stopped and no-outcome rows (the judge gave no matches) come back in leftOut with a reason; their whole round is excluded for every arm.
 export function completeRounds(rows) {
-  const bad = rows.filter((r) => r.error || r.stopped);
+  const bad = rows.filter((r) => r.error || r.stopped || !r.outcome);
   const badRounds = new Set(bad.map(roundKey));
   const byRound = new Map();
   for (const r of rows) {
@@ -23,7 +25,7 @@ export function completeRounds(rows) {
     const mine = byRound.get(roundKey(r));
     return mine && r.outcome && !r.error && !r.stopped && ARMS.every((a) => mine.some((m) => m.arm === a));
   });
-  const leftOut = bad.map((r) => ({ story: r.story, round: r.round, arm: r.arm, reason: r.error ? `error: ${r.error}` : `stopped: ${r.stopped}` }));
+  const leftOut = bad.map((r) => ({ story: r.story, round: r.round, arm: r.arm, reason: r.error ? `error: ${r.error}` : r.stopped ? `stopped: ${r.stopped}` : "no outcome" }));
   return { complete, leftOut };
 }
 
@@ -42,6 +44,8 @@ export function parseLabels(text) {
 
 // rows: ResultRow[]; labels: { "<story>|<round>|<arm>|<finding>": "yes" | "no" }.
 // Per arm: n failed / control rounds, caught, missed, new findings by label, and whether the arm does not ship.
+export const meetsMinimum = (arms) => arms.every((a) => a.nFailed >= MIN_ROUNDS && a.nControl >= MIN_ROUNDS);
+
 export function successByArm(rows, labels = {}) {
   const ok = completeRounds(rows).complete;
   const tally = (arm, keep = () => true) => {
@@ -139,8 +143,10 @@ export function taskSuccess(data) {
   const rounds = new Set(ok.map(roundKey)).size;
   out.push(`n = ${rounds} rounds replayed. New findings are split by the human's yes/no labels.`, "");
   out.push("| Arm | Rounds | Caught | Missed | Valid new | Wrong new | Unlabelled | Verdict |", "|---|---|---:|---:|---:|---:|---:|---|");
-  for (const a of successByArm(data.rows, data.labels)) {
-    out.push(`| ${cell(a.arm)} | ${a.nFailed} failed, ${a.nControl} control | ${a.caught} | ${a.missed} | ${a.validNew} | ${a.wrongNew} | ${a.unlabelled} | ${a.doesNotShip ? "**does not ship**" : ""} |`);
+  const arms = successByArm(data.rows, data.labels);
+  const provisional = meetsMinimum(arms) ? "" : " (provisional)";
+  for (const a of arms) {
+    out.push(`| ${cell(a.arm)} | ${a.nFailed} failed, ${a.nControl} control | ${a.caught} | ${a.missed} | ${a.validNew} | ${a.wrongNew} | ${a.unlabelled} | ${a.doesNotShip ? `**does not ship**${provisional}` : ""} |`);
   }
   return [...out, "", ...left];
 }
@@ -233,7 +239,6 @@ export function correctionRepeats(memory, baselineRows = []) {
   return { source: from.source, rows, observations, repeats, overall: observations ? (repeats / observations) * 100 : null };
 }
 
-const MIN_ROUNDS = 20;
 const REPEAT_LIMIT = 25;
 
 // Fixed rules over facts = { rows, labels, memory, baseline }. Returns lines of text.
@@ -243,10 +248,11 @@ export function decisions(facts) {
   const none = arms.find((a) => a.arm === "none");
   const nFailed = none.nFailed;
   const nControl = none.nControl;
+  const enough = nFailed >= MIN_ROUNDS && nControl >= MIN_ROUNDS;
   if (nFailed + nControl === 0) lines.push("no replay data: arms cannot be decided");
-  else for (const a of arms.filter((x) => x.arm !== "none")) lines.push(`${a.arm}: ${a.doesNotShip ? "does not ship" : "ships"}`);
+  else for (const a of arms.filter((x) => x.arm !== "none")) lines.push(`${a.arm}: ${enough ? "" : "provisional, "}${a.doesNotShip ? "does not ship" : "ships"}`);
   const n = `n = ${nFailed} failed, ${nControl} control complete rounds`;
-  if (nFailed >= MIN_ROUNDS && nControl >= MIN_ROUNDS) lines.push(`sample meets d1's minimum of ${MIN_ROUNDS} failed + ${MIN_ROUNDS} control (${n})`);
+  if (enough) lines.push(`sample meets d1's minimum of ${MIN_ROUNDS} failed + ${MIN_ROUNDS} control (${n})`);
   else {
     lines.push(`sample is under d1's minimum of ${MIN_ROUNDS} failed + ${MIN_ROUNDS} control (${n})`);
     lines.push("insufficient data, Phase 2 builds facts only");
@@ -272,10 +278,11 @@ export function repeatRate(data) {
   const out = ["## Repeat rate per area and category", ""];
   const r = correctionRepeats(data.memory, data.baseline);
   if (r.observations === 0) return [...out, "no replay data", "", "n = 0", ""];
+  const repeat = r.source === "replay memory" ? "an observation after the first of the same correction" : "a finding whose (area, category) was seen in an earlier story";
   return [
     ...out,
     `Source: ${r.source}`,
-    `n = ${r.observations} observations; overall ${Math.round(r.overall)}% (${r.repeats} of ${r.observations}). A repeat is an observation after the first of the same correction.`,
+    `n = ${r.observations} observations; overall ${Math.round(r.overall)}% (${r.repeats} of ${r.observations}). A repeat is ${repeat}.`,
     "",
     "| Area | Category | Observations | Repeats |",
     "|---|---|---:|---:|",
@@ -371,8 +378,13 @@ export function main(argv = [], { out = join(dirname(fileURLToPath(import.meta.u
     const dir = runDirOf(root);
     const memory = readRunMemory(dir);
     if (sample) {
+      const file = join(dir, "dedupe-sample.md");
+      if (/^- \[[xX]\] (yes|no) —/m.test(readText(file))) {
+        log(`kept ${file} (already labelled)`);
+        continue;
+      }
       const lines = dedupeSample(memory, 30, 1).map((d) => `- [ ] yes / no — ${d.id}: ${d.pair.map(oneLine).join(" | ")}`);
-      write(join(dir, "dedupe-sample.md"), ["# Dedupe sample", "", "Replace `yes / no` with `yes` if the pair is a true duplicate, `no` if not.", "", ...lines, ""].join("\n"), log);
+      write(file, ["# Dedupe sample", "", "Replace `yes / no` with `yes` if the pair is a true duplicate, `no` if not.", "", ...lines, ""].join("\n"), log);
       continue;
     }
     const data = {

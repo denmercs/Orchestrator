@@ -114,7 +114,7 @@ test("completeRounds: a round needs all three arms with an outcome; error and ca
   assert.deepEqual(complete, full);
   assert.deepEqual(
     leftOut.map((l) => [l.story, l.round, l.arm, l.reason]),
-    [["D", 1, "facts", "error: boom"], ["E", 1, "none", "stopped: cap"]],
+    [["C", 1, "none", "no outcome"], ["D", 1, "facts", "error: boom"], ["E", 1, "none", "stopped: cap"]],
   );
 });
 
@@ -237,8 +237,8 @@ const baseline = [{ area: "server", category: "testing", findings: 15, repeats: 
 
 test("decisions: arms ship or not, and the sample minimum rule", () => {
   const lines = decisions({ rows, labels, memory: { notes: [] }, baseline });
-  assert.ok(lines.includes("facts: does not ship"));
-  assert.ok(lines.includes("facts+corrections: does not ship"));
+  assert.ok(lines.includes("facts: provisional, does not ship"));
+  assert.ok(lines.includes("facts+corrections: provisional, does not ship"));
   assert.ok(lines.includes("insufficient data, Phase 2 builds facts only"));
   assert.ok(lines.some((l) => /n = 2 failed, 1 control/.test(l)), "n's are stated");
   const enough = decisions({ rows: roundsOf(20, 20), labels: {}, memory: { notes: [] }, baseline });
@@ -274,7 +274,7 @@ test("render: Dedupe accuracy, Repeat rate and Decisions sections", () => {
   assert.match(full, /## Dedupe accuracy\n\nn = 4 sampled pairs; 3 marked as true duplicates \(75%\)/);
   assert.match(full, /Source: replay memory/);
   assert.match(full, /\| client \| types \| 7 \| 5 \|/);
-  assert.match(full, /## Decisions\n\n- facts: does not ship/);
+  assert.match(full, /## Decisions\n\n- facts: provisional, does not ship/);
   const empty = render({ rows: [], labels: {}, baseline });
   assert.match(empty, /## Dedupe accuracy\n\nno replay data\n\nn = 0/);
   assert.match(empty, /Source: baseline keyword guess/);
@@ -373,4 +373,37 @@ test("main: a missing run dir renders the no-data verdict without crashing", () 
   assert.match(text, /## Task success\n\nno replay data/);
   assert.match(text, /Source: baseline keyword guess/);
   assert.match(text, /overall 20% \(3 of 15\)/);
+});
+
+test("main: --dedupe-sample keeps a file the human has already labelled", () => {
+  const repo = mk(), outFile = join(mk(), "verdict.md");
+  fixtureRoot(repo);
+  const file = join(runDir(repo), "dedupe-sample.md");
+  const labelled = "# Dedupe sample\n\n- [x] yes \u2014 corrections/testing/flaky: seen one | seen two\n";
+  writeFileSync(file, labelled);
+  const q = quiet();
+  main(["--root", repo, "--dedupe-sample"], { out: outFile, repoRoot: repo, log: q.log });
+  assert.equal(readFileSync(file, "utf8"), labelled);
+  assert.deepEqual(q.lines, [`kept ${file} (already labelled)`]);
+  writeFileSync(file, "- [ ] yes / no \u2014 corrections/testing/flaky: x\n");
+  main(["--root", repo, "--dedupe-sample"], { out: outFile, repoRoot: repo, log: () => {} });
+  assert.match(readFileSync(file, "utf8"), /seen one \| seen two/, "an unlabelled file is regenerated");
+});
+
+test("render: the repeat definition follows the source", () => {
+  const base = render({ rows: [], labels: {}, baseline });
+  assert.match(base, /\(area, category\) was seen in an earlier story/);
+  assert.doesNotMatch(base, /same correction/);
+  const real = render({ rows: [], labels: {}, memory, baseline });
+  assert.match(real, /after the first of the same correction/);
+});
+
+test("decisions and render: arm verdicts are provisional under d1's minimum, plain at it", () => {
+  const under = decisions({ rows, labels, memory: { notes: [] }, baseline });
+  assert.ok(under.includes("facts: provisional, does not ship"));
+  assert.ok(!under.includes("facts: does not ship"));
+  assert.match(render({ rows, labels, baseline }), /\*\*does not ship\*\* \(provisional\)/);
+  const bad = roundsOf(20, 20).map((r) => (r.arm === "facts" ? { ...r, outcome: out([], ["a"]) } : r));
+  assert.ok(decisions({ rows: bad, labels: {}, baseline }).includes("facts: does not ship"));
+  assert.doesNotMatch(render({ rows: bad, labels: {}, baseline }), /\(provisional\)/);
 });

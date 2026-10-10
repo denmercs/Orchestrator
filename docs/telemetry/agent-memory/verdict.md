@@ -25,7 +25,7 @@ n = 0
 ## Repeat rate per area and category
 
 Source: baseline keyword guess
-n = 15 observations; overall 20% (3 of 15). A repeat is an observation after the first of the same correction.
+n = 15 observations; overall 20% (3 of 15). A repeat is a finding whose (area, category) was seen in an earlier story.
 
 | Area | Category | Observations | Repeats |
 |---|---|---:|---:|
