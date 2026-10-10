@@ -78,7 +78,7 @@ Every session also gets a **context pill** with its size (for example `82k / 200
 - **Knowledge.** Facts about each area of the code, with file citations, written after each merge.
 - **Corrections.** Review findings that keep coming back, counted, de-duplicated and approved by you.
 
-The plugin, not the agent, picks the few lines that match a story's files and hands them over as a short brief. A no-memory holdout keeps it honest: if memory doesn't improve results, it switches itself off. See `.harness/initiatives/agent-memory/`.
+The plugin, not the agent, picks the few lines that match a story's files and hands them over as a short brief. A no-memory holdout keeps it honest: if memory doesn't improve results, it switches itself off. See [docs/telemetry/agent-memory/README.md](docs/telemetry/agent-memory/README.md) for the plan, decisions and status.
 
 Also planned: Kiro and Cursor as first-class providers.
 

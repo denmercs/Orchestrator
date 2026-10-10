@@ -55,6 +55,14 @@ export async function pushStoryFix(cwd: string, message: string) {
   return committed;
 }
 
+// What a failed git or gh call said, without the command line: execFile's message repeats every
+// argument, PR body included. Falls back to the message when the command printed nothing.
+export function failureText(error: unknown) {
+  const stderr = (error as { stderr?: unknown } | null)?.stderr;
+  if (typeof stderr === "string" && stderr.trim()) return stderr.trim();
+  return error instanceof Error ? error.message : String(error);
+}
+
 export type OpenedPr = { number: number; url: string };
 
 // How many commits HEAD has that `base` doesn't; null when `base` doesn't resolve here.

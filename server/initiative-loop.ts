@@ -46,7 +46,7 @@ import {
 } from "../shared/story-method";
 import { withMcpScope } from "./mcp-scope";
 import { installSkills, skillPaths } from "./skill-sources";
-import { commitStory, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
+import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
 import { inHoldWindow, usageLimitResumeAt } from "./usage-limit";
 
 // The initiative loop, driven by Paseo events rather than a long-running process:
@@ -487,14 +487,22 @@ export function createInitiativeLoop(
       // Nothing to ship: the work is already on the base, so the story is done and its dependents can go.
       if (!pr) {
         recordOutcome(story, { kind: "no-change" });
-        writeFrontmatter(story.path, { status: "merged", step: "pr", round: 1, cycle: null, agent: null, ci: null });
+        writeFrontmatter(story.path, {
+          status: "merged",
+          merged_at: new Date().toISOString(),
+          step: "pr",
+          round: 1,
+          cycle: null,
+          agent: null,
+          ci: null,
+        });
         refreshInitiativeIndex(init.dir);
         return;
       }
       writeFileSync(stateFile(meta.worktree), writeMarker(readText(stateFile(meta.worktree)), `${MARKERS.prDone}\n${pr.url}`), "utf8");
       writeFrontmatter(story.path, { status: "pr-open", step: "pr", round: 1, cycle: null, agent: null, pr: pr.number, ci: "pending" });
     } catch (error) {
-      block(story, `Could not open the PR: ${error instanceof Error ? error.message : String(error)}`, "pr");
+      block(story, `Could not open the PR: ${failureText(error)}`, "pr");
     }
   }
 
@@ -507,7 +515,7 @@ export function createInitiativeLoop(
     try {
       await pushStoryFix(meta.worktree, commitSubject(state, "Fix failing CI checks"));
     } catch (error) {
-      block(story, `Could not push the CI fix: ${error instanceof Error ? error.message : String(error)}`, "ci");
+      block(story, `Could not push the CI fix: ${failureText(error)}`, "ci");
     }
   }
 
@@ -519,7 +527,7 @@ export function createInitiativeLoop(
     if (!pr) return;
     if (pr.state === "merged") {
       recordOutcome(story, { kind: "merged" });
-      writeFrontmatter(story.path, { status: "merged", ci: null, agent: null });
+      writeFrontmatter(story.path, { status: "merged", merged_at: pr.mergedAt || new Date().toISOString(), ci: null, agent: null });
       if (meta.workspace) await api.workspaces.archive(meta.workspace).catch(() => undefined);
       refreshInitiativeIndex(init.dir);
       return;

@@ -21,6 +21,7 @@ export type PrStatus = {
   url: string;
   headSha: string;
   failing: FailingCheck[];
+  mergedAt?: string;
 };
 
 export async function gh(args: string[], cwd: string, timeout = 30_000) {
@@ -76,7 +77,7 @@ function latest(rollup: unknown[]) {
 export async function prStatus(cwd: string, pr: number | string): Promise<PrStatus | null> {
   try {
     const out = await gh(
-      ["pr", "view", String(pr), "--json", "number,url,state,headRefOid,statusCheckRollup"],
+      ["pr", "view", String(pr), "--json", "number,url,state,headRefOid,statusCheckRollup,mergedAt"],
       cwd,
     );
     const row = JSON.parse(out) as {
@@ -85,9 +86,10 @@ export async function prStatus(cwd: string, pr: number | string): Promise<PrStat
       state: string;
       headRefOid: string;
       statusCheckRollup?: unknown[];
+      mergedAt?: string | null;
     };
     const base = { number: row.number, url: row.url, headSha: row.headRefOid, failing: [] as FailingCheck[] };
-    if (row.state === "MERGED") return { ...base, state: "merged" };
+    if (row.state === "MERGED") return { ...base, state: "merged", mergedAt: row.mergedAt || undefined };
     if (row.state === "CLOSED") return { ...base, state: "closed" };
     const checks = latest(row.statusCheckRollup ?? []);
     if (checks.length === 0) return { ...base, state: "no-checks" };

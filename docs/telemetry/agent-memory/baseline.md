@@ -17,7 +17,7 @@ Typed calls and Bash commands classified as reads, searches or edits (S9); any e
 
 ## Review rounds and fix attempts per story
 
-Every story merged by a PR in this repo; stories closed without a PR are left out. Rounds come from Review agent labels and fixes from fix agents and CI-fix commit names; stories with no agent records show — for rounds.
+Every story closed by the cutoff, dated by its `merged_at` or else its PR's merge time; stories with neither are left out. Rounds come from Review agent labels and fixes from fix agents and CI-fix commit names; stories with no agent records show — for rounds.
 
 | Initiative | Story | Title | Agent records | Review rounds | Fix attempts |
 |---|---|---|---|---:|---:|
