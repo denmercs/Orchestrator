@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "./index.server";
-import { startMemoryReplay } from "./shared/replay";
+import { startMemoryReplay } from "./shared/replay-rpc";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -141,6 +141,20 @@ test("handles startMemoryReplay: reads the corpus, passes the cap and starts the
   assert.deepEqual(call.corpus.map((r) => r.story), ["S1", "S2"]);
   assert.equal(call.opts.costCap, 5);
   assert.equal(call.opts.root, root);
+});
+
+test("startMemoryReplay takes the cap from the corpus's cost-cap file, and an explicit costCap wins", async () => {
+  const { handlers, fake } = wired();
+  const handler = handlers.get(startMemoryReplay.name);
+  assert.ok(handler);
+  const root = repoWithCorpus([row("S1", "failed")]);
+  writeFileSync(join(root, ".harness", "replay", "cost-cap"), "50\n");
+  const fromFile = (await handler({ root }, { paseo: {} })) as { costCap: number };
+  assert.equal(fromFile.costCap, 50);
+  assert.equal((fake.replayed[0] as { opts: { costCap: number } }).opts.costCap, 50);
+  await new Promise((r) => setTimeout(r, 10));
+  const explicit = (await handler({ root, costCap: 7 }, { paseo: {} })) as { costCap: number };
+  assert.equal(explicit.costCap, 7);
 });
 
 test("startMemoryReplay says clearly when the corpus is missing", async () => {

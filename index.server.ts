@@ -32,8 +32,8 @@ import { kiroUsageSource } from "./server/kiro-usage";
 import { readPlanUsage } from "./server/plan-usage";
 import { planUsageRpc } from "./shared/plan-usage";
 import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay";
-import { readCorpus, realReplayPorts, REPLAY_RUN } from "./server/replay-start";
-import { startMemoryReplay } from "./shared/replay";
+import { readCorpus, readCostCap, realReplayPorts, REPLAY_RUN } from "./server/replay-start";
+import { startMemoryReplay } from "./shared/replay-rpc";
 import { join } from "node:path";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, storyContextRpc } from "./shared/context";
 import {
@@ -213,7 +213,7 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
     contextPaseo = paseo;
     if (replaying || memoryReplay.pendingAgents().length > 0) throw new Error("A memory replay is already running.");
     const corpus = readCorpus(input.root, input.controls);
-    const costCap = input.costCap ?? DEFAULT_COST_CAP_USD;
+    const costCap = input.costCap ?? readCostCap(input.root) ?? DEFAULT_COST_CAP_USD;
     const runDir = join(input.root, ".harness", "replay", REPLAY_RUN);
     replaying = true;
     void memoryReplay
