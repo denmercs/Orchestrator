@@ -1,14 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FreshPort } from "./compactor";
-import type { ContextAction } from "../shared/context";
+import type { ContextAction, ContextConfig } from "../shared/context";
 import type { TelemetryRow } from "./context-telemetry";
 import { createContextWatch, type TurnEnded, type WatchAgent, type WatchPort } from "./context-watch";
 
 type Item = TurnEnded["timeline"][number];
 
 // A fake port: agents are set per test, and every row and sent message is captured.
-function fakePort(agents: Record<string, WatchAgent>, autoCompact = false) {
+const HALF: ContextConfig["default"] = { warn: 50, act: 75, mode: "fresh" };
+
+// Every step at 50/75, which is 100k/150k on the 200k window these tests use.
+const ALL_HALF: ContextConfig = { default: HALF, plan: HALF, implement: HALF, review: HALF, autoCompact: true };
+
+function fakePort(agents: Record<string, WatchAgent>, autoCompact = false, config: ContextConfig = ALL_HALF) {
   const rows: TelemetryRow[] = [];
   const sent: [string, string][] = [];
   const fresh: string[] = [];
@@ -41,7 +46,7 @@ function fakePort(agents: Record<string, WatchAgent>, autoCompact = false) {
     record: async (row) => {
       rows.push(row);
     },
-    thresholds: async () => ({ amber: 100_000, red: 150_000 }),
+    policy: async () => config,
     autoCompact: async () => autoCompact,
     now: () => "2026-10-07T12:00:00.000Z",
     fresh: freshPort,
@@ -901,4 +906,36 @@ test("auto-compact: a fresh auto compact that fails is logged and not retried on
   await watch.onTurnEnded(turn("a1", [user, reply, user, reply]));
   await settle();
   assert.deepEqual(fresh, ["handoff a1"]);
+});
+
+test("a plan and an implement session at the same usage get their own step's level and red", async () => {
+  const config: ContextConfig = {
+    ...ALL_HALF,
+    plan: { warn: 30, act: 40, mode: "fresh" },
+    implement: { warn: 70, act: 85, mode: "compact" },
+  };
+  const { port, rows } = fakePort(
+    {
+      p1: agent(90_000, { "loop-step": "plan" }),
+      i1: agent(90_000, { "loop-step": "implement" }),
+      n1: agent(90_000),
+    },
+    false,
+    config,
+  );
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("p1"));
+  await watch.onTurnEnded(turn("i1"));
+  const statuses = await watch.sessions(["p1", "i1", "n1"]);
+  assert.deepEqual(
+    statuses.map((status) => [status?.reading.level, status?.red]),
+    [
+      ["red", 80_000],
+      ["ok", 170_000],
+      ["ok", 150_000],
+    ],
+  );
+  assert.deepEqual(rows.filter((row) => row.event === "warning").map((row) => [row.agentId, row.level]), [["p1", "red"]]);
+  assert.equal((await watch.live("p1"))?.reading.level, "red");
+  assert.equal((await watch.live("i1"))?.reading.level, "ok");
 });

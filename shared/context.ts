@@ -1,25 +1,71 @@
 import { defineRpc, defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
+import type { MeterPolicy } from "./context-meter";
+import { LOOP_STEPS, type LoopStep } from "./initiative-loop";
+import { STEP_PHASES } from "./pipeline";
 
 // The context watch's settings and RPCs (see CONTEXT.md, "Context meter"). The pure meter is
 // shared/context-meter.ts; the server side registers these in S2.
 
+// A step's policy: warn and act as a percent of the session's window, and what act does.
+const stepPolicy = (mode: "compact" | "fresh") =>
+  z.object({
+    warn: z.number().int().min(1).max(100).default(70),
+    act: z.number().int().min(1).max(100).default(85),
+    mode: z.enum(["compact", "fresh"]).default(mode),
+  });
+
 const contextValues = z.object({
-  // Tokens at which a session's level turns amber, then red.
-  amber: z.number().int().min(1).default(100_000),
-  red: z.number().int().min(1).default(150_000),
-  // Compact a session on its own when it crosses red.
+  // `default` covers every step without its own policy, and sessions that are not loop steps.
+  default: stepPolicy("fresh").default({ warn: 70, act: 85, mode: "fresh" }),
+  plan: stepPolicy("fresh").default({ warn: 70, act: 85, mode: "fresh" }),
+  implement: stepPolicy("compact").default({ warn: 70, act: 85, mode: "compact" }),
+  review: stepPolicy("fresh").default({ warn: 70, act: 85, mode: "fresh" }),
+  // Compact a session on its own when it crosses act.
   autoCompact: z.boolean().default(true),
 });
 
 export type ContextConfig = z.infer<typeof contextValues>;
 
+export const DEFAULT_CONTEXT_CONFIG: ContextConfig = contextValues.parse({});
+
+// v1 stored two token counts for a 200k window; they become `default`'s percents.
+const V1_WINDOW = 200_000;
+
+function toPercent(tokens: unknown, fallback: number): number {
+  if (typeof tokens !== "number" || !Number.isFinite(tokens)) return fallback;
+  return Math.min(100, Math.max(1, Math.round((tokens / V1_WINDOW) * 100)));
+}
+
 export const contextSettings = defineSettings({
   id: "context",
   scope: "host",
-  version: 1,
+  version: 2,
   schema: contextValues,
+  migrate(values) {
+    const row = values !== null && typeof values === "object" ? (values as Record<string, unknown>) : {};
+    const parsed = contextValues.safeParse({
+      ...row,
+      default: {
+        warn: toPercent(row.amber, 70),
+        act: toPercent(row.red, 85),
+        mode: "fresh",
+      },
+    });
+    return parsed.success ? parsed.data : DEFAULT_CONTEXT_CONFIG;
+  },
 });
+
+const POLICY_KEYS = ["plan", "implement", "review"] as const;
+
+// The policy a session's meter reads: its loop step's (through the drawer phase), else `default`,
+// which is also what a missing window falls back to.
+export function meterPolicy(config: ContextConfig, labels: Record<string, string>): MeterPolicy {
+  const label = labels["loop-step"];
+  const phase = label !== undefined && (LOOP_STEPS as readonly string[]).includes(label) ? STEP_PHASES[label as LoopStep] : null;
+  const key = POLICY_KEYS.find((candidate) => candidate === phase);
+  return { step: key ? config[key] : config.default, fallback: config.default };
+}
 
 export const CONTEXT_ACTIONS = ["compact", "fresh", "remind", "ignore", "skip-auto"] as const;
 export type ContextAction = (typeof CONTEXT_ACTIONS)[number];

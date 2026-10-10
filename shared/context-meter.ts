@@ -12,7 +12,23 @@ export type ContextSnapshot = {
   commands: { name: string }[];
 };
 
+// Absolute token counts, as the pill and the story panel show them.
 export type Thresholds = { amber: number; red: number };
+
+// A step's policy: warn and act as a percent of the session's window, and what act does.
+export type StepPolicy = { warn: number; act: number; mode: "compact" | "fresh" };
+
+// The step's policy, and `default`'s for a session that reports no window.
+export type MeterPolicy = { step: StepPolicy; fallback: StepPolicy };
+
+export const FALLBACK_WINDOW = 200_000;
+
+// Percent of the window as tokens: the step's of `max`, else the fallback's of 200k.
+export function thresholdsFor(policy: MeterPolicy, max: number | null): Thresholds {
+  const { warn, act } = max === null ? policy.fallback : policy.step;
+  const window = max ?? FALLBACK_WINDOW;
+  return { amber: (window * warn) / 100, red: (window * act) / 100 };
+}
 
 export type ContextReading = {
   used: number | null;
@@ -22,11 +38,12 @@ export type ContextReading = {
   strategy: CompactStrategy;
 };
 
-export function readContext(snapshot: ContextSnapshot, thresholds: Thresholds): ContextReading {
+export function readContext(snapshot: ContextSnapshot, policy: MeterPolicy): ContextReading {
   const used = snapshot.usage?.contextWindowUsedTokens ?? null;
   const max = snapshot.usage?.contextWindowMaxTokens ?? null;
   // Exact name match: `autocompact` and friends are not the native compact command.
   const hasCompact = snapshot.commands.some((command) => command.name === "compact");
+  const thresholds = thresholdsFor(policy, max);
   const level: Level =
     used === null ? "unknown" : used >= thresholds.red ? "red" : used >= thresholds.amber ? "amber" : "ok";
   const capability: Capability = used === null ? "basic" : hasCompact ? "full" : "partial";

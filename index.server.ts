@@ -38,7 +38,14 @@ import { join } from "node:path";
 import { readKeychainSecret } from "./server/keychain";
 import { createVoiceBridge, startVoiceServer, VOICE_PORT } from "./server/voice-bridge";
 import { createVoiceMerge, ghMergePort } from "./server/voice-merge";
-import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, storyContextRpc } from "./shared/context";
+import {
+  contextAct,
+  contextSessionsRpc,
+  contextSettings,
+  contextSummaryRpc,
+  DEFAULT_CONTEXT_CONFIG,
+  storyContextRpc,
+} from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
   initiativeLoopSettings,
@@ -227,15 +234,15 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
       });
     return { run: REPLAY_RUN, rounds: corpus.length, costCap, runDir };
   });
-  const readThresholds = async () => {
+  const readPolicy = async () => {
     const state = await context.read();
-    return state.status === "ready" ? state.values : { amber: 100_000, red: 150_000 };
+    return state.status === "ready" ? state.values : DEFAULT_CONTEXT_CONFIG;
   };
   const readAutoCompact = async () => {
     const state = await context.read();
     return state.status === "ready" ? state.values.autoCompact : true;
   };
-  const contextWatch = createContextWatch(paseoPort(() => contextPaseo, readThresholds, readAutoCompact, initiativeLoop));
+  const contextWatch = createContextWatch(paseoPort(() => contextPaseo, readPolicy, readAutoCompact, initiativeLoop));
   server.handle(contextAct, (input, { paseo }) => {
     contextPaseo = paseo;
     return contextWatch.act(input);
@@ -256,7 +263,7 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
     return loadStoryContext(input, {
       live: (agentId) => contextWatch.live(agentId),
       rows: () => readTelemetry(),
-      thresholds: readThresholds,
+      policy: readPolicy,
     });
   });
   const readPipeline = async () => {
