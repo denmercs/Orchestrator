@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc } from "./context";
 
-test("context settings default to amber 100k and red 150k", () => {
-  assert.deepEqual(contextSettings.schema.parse({}), { amber: 100_000, red: 150_000 });
+test("context settings default to amber 100k, red 150k and auto-compact on", () => {
+  assert.deepEqual(contextSettings.schema.parse({}), { amber: 100_000, red: 150_000, autoCompact: true });
 });
 
-test("context.act accepts the four actions and rejects anything else", () => {
-  for (const action of ["compact", "fresh", "remind", "ignore"]) {
+test("context.act accepts the five actions and rejects anything else", () => {
+  for (const action of ["compact", "fresh", "remind", "ignore", "skip-auto"]) {
     assert.deepEqual(contextAct.input.parse({ agentId: "a1", action }), { agentId: "a1", action });
   }
   assert.equal(contextAct.input.safeParse({ agentId: "a1", action: "reset" }).success, false);
@@ -34,6 +34,7 @@ test("context.sessions takes agent ids and returns a status or null for each", (
     warned: [],
     mode: "normal",
     red: 150_000,
+    auto: true,
   };
   assert.deepEqual(contextSessionsRpc.output.parse([status, null]), [status, null]);
   assert.equal(contextSessionsRpc.output.safeParse([{ ...status, mode: "snooze" }]).success, false);

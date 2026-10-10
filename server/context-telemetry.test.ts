@@ -39,7 +39,7 @@ test("summariseTelemetry counts recorded rows", async () => {
     sessions: 2,
     sessionsOverThreshold: 2,
     warnings: 2,
-    compactions: { native: 1, fresh: 0, inferred: 0 },
+    compactions: { native: 1, fresh: 0, inferred: 0, auto: 0 },
     ignored: 1,
     reminded: 1,
     tokensAvoided: 120_000,
@@ -48,6 +48,20 @@ test("summariseTelemetry counts recorded rows", async () => {
     spendToday: 0,
     spendWeek: 0,
   });
+});
+
+test("summariseTelemetry counts auto-triggered compact rows in compactions.auto and in native/fresh", async () => {
+  const file = join(root, "auto.jsonl");
+  const rows: TelemetryRow[] = [
+    row("2026-10-01T10:00:00.000Z", "a1", 30_000, "compact.native", { preTokens: 150_000, trigger: "auto" }),
+    row("2026-10-01T10:01:00.000Z", "a2", 30_000, "compact.fresh", { preTokens: 150_000, trigger: "auto" }),
+    row("2026-10-01T10:02:00.000Z", "a3", 30_000, "compact.native", { preTokens: 150_000 }),
+    row("2026-10-01T10:03:00.000Z", "a4", 30_000, "compact.inferred"),
+  ];
+  for (const r of rows) await recordTelemetry(r, file);
+
+  const summary = await summariseTelemetry(null, file);
+  assert.deepEqual(summary.compactions, { native: 2, fresh: 1, inferred: 1, auto: 2 });
 });
 
 test("summariseTelemetry totals turn rows per step", async () => {

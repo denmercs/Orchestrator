@@ -41,10 +41,19 @@ export function pillMenu(status: ContextStatus | null, running: boolean): PillMe
     { action: "fresh", title: "Start fresh", disabled: running },
     { action: "remind", title: `Remind me at ${red}`, disabled: mode === "remind" },
     { action: "ignore", title: "Ignore", disabled: mode === "ignore" },
+    { action: "skip-auto", title: "Don't auto-compact", disabled: !status?.auto },
   ];
 }
 
 export type ContextToast = { variant: "amber" | "red" | "error"; message: string };
+
+// With auto-compact armed the toast says what will happen; otherwise it is the plain warning.
+function warningMessage(level: "amber" | "red", status: ContextStatus): string {
+  const plain = `Context ${level}: ${pillView(status).label}`;
+  if (!status.auto) return plain;
+  if (level === "red") return `${plain}; compacting now.`;
+  return `${plain}; compacts automatically at ${formatTokens(status.red)}. Pick "Don't auto-compact" in the pill menu to stop it.`;
+}
 
 // Toasts waiting for each session's pill to show them. A level toasts once per session; the first
 // load only seeds, so warnings raised before the app started show as the pill colour alone.
@@ -69,7 +78,7 @@ export function createToastQueue() {
           const key = `${status.agentId}:${level}`;
           if (shown.has(key)) continue;
           shown.add(key);
-          if (seeded) push(status.agentId, { variant: level, message: `Context ${level}: ${pillView(status).label}` });
+          if (seeded) push(status.agentId, { variant: level, message: warningMessage(level, status) });
         }
       }
       seeded = true;
@@ -127,7 +136,7 @@ export function summaryTiles(summary: ContextSummary): SummaryTile[] {
   return [
     { label: "Sessions over threshold", value: String(summary.sessionsOverThreshold) },
     { label: "Warnings", value: String(summary.warnings) },
-    { label: "Compactions", value: `taken ${taken} vs ignored ${summary.ignored}` },
+    { label: "Compactions", value: `taken ${taken} (${summary.compactions.auto} auto) vs ignored ${summary.ignored}` },
     { label: "Auto-compacts", value: String(summary.compactions.inferred) },
     { label: "Tokens avoided", value: formatTokens(summary.tokensAvoided) },
   ];

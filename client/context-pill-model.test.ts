@@ -20,6 +20,7 @@ function status(reading: Partial<ContextReading>, rest: Partial<ContextStatus> =
     warned: [],
     mode: "normal",
     red: 150_000,
+    auto: true,
     ...rest,
   };
 }
@@ -62,6 +63,7 @@ test("pillMenu: compact, fresh, remind at red, ignore, each with its action", ()
       ["fresh", "Start fresh", false],
       ["remind", "Remind me at 150k", false],
       ["ignore", "Ignore", false],
+      ["skip-auto", "Don't auto-compact", false],
     ],
   );
 });
@@ -71,6 +73,34 @@ test("pillMenu: Remind and Ignore are off in their own mode; Compact and Fresh w
   assert.deepEqual(disabled(pillMenu(status({}, { mode: "remind" }), false)), ["remind"]);
   assert.deepEqual(disabled(pillMenu(status({}, { mode: "ignore" }), false)), ["ignore"]);
   assert.deepEqual(disabled(pillMenu(status({}), true)), ["compact", "fresh"]);
+});
+
+test("pillMenu: Don't auto-compact is off when auto-compact is not armed", () => {
+  const item = pillMenu(status({}, { auto: false }), false).find((entry) => entry.action === "skip-auto");
+  assert.equal(item?.title, "Don't auto-compact");
+  assert.equal(item?.disabled, true);
+});
+
+function toastFor(level: "amber" | "red", auto: boolean) {
+  const queue = createToastQueue();
+  queue.load([]);
+  queue.load([status({ used: level === "red" ? 160_000 : 120_000, level }, { warned: [level], auto })]);
+  return queue.take("a1")[0].message;
+}
+
+test("toastQueue: with auto on, amber says it compacts at red and points to the menu item", () => {
+  const message = toastFor("amber", true);
+  assert.match(message, /compacts automatically at 150k/);
+  assert.match(message, /Don't auto-compact/);
+});
+
+test("toastQueue: with auto on, red says it is compacting now", () => {
+  assert.match(toastFor("red", true), /compacting now/);
+});
+
+test("toastQueue: with auto off, toasts keep the plain wording", () => {
+  assert.equal(toastFor("amber", false), "Context amber: 120k / 200k");
+  assert.equal(toastFor("red", false), "Context red: 160k / 200k");
 });
 
 test("toastQueue: the first load seeds, then one toast per session per level", () => {
@@ -120,7 +150,7 @@ test("summaryTiles: over threshold, warnings, taken vs ignored, auto, tokens avo
     sessions: 6,
     sessionsOverThreshold: 2,
     warnings: 3,
-    compactions: { native: 2, fresh: 1, inferred: 4 },
+    compactions: { native: 2, fresh: 1, inferred: 4, auto: 2 },
     ignored: 1,
     reminded: 1,
     tokensAvoided: 412_000,
@@ -132,7 +162,7 @@ test("summaryTiles: over threshold, warnings, taken vs ignored, auto, tokens avo
   assert.deepEqual(tiles, [
     { label: "Sessions over threshold", value: "2" },
     { label: "Warnings", value: "3" },
-    { label: "Compactions", value: "taken 3 vs ignored 1" },
+    { label: "Compactions", value: "taken 3 (2 auto) vs ignored 1" },
     { label: "Auto-compacts", value: "4" },
     { label: "Tokens avoided", value: "412k" },
   ]);
@@ -143,7 +173,7 @@ const emptySummary = {
   sessions: 0,
   sessionsOverThreshold: 0,
   warnings: 0,
-  compactions: { native: 0, fresh: 0, inferred: 0 },
+  compactions: { native: 0, fresh: 0, inferred: 0, auto: 0 },
   ignored: 0,
   reminded: 0,
   tokensAvoided: 0,
