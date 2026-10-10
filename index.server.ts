@@ -31,6 +31,10 @@ import { loadStoryContext } from "./server/story-context";
 import { kiroUsageSource } from "./server/kiro-usage";
 import { readPlanUsage } from "./server/plan-usage";
 import { planUsageRpc } from "./shared/plan-usage";
+import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay";
+import { readCorpus, realReplayPorts, REPLAY_RUN } from "./server/replay-start";
+import { startMemoryReplay } from "./shared/replay";
+import { join } from "node:path";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -98,7 +102,10 @@ import {
   startPipelineStory,
 } from "./shared/pipeline";
 
-export default function contribute(server: PluginServerContext) {
+type ReplayRunner = ReturnType<typeof createMemoryReplay>;
+
+// `deps.replay` lets tests stand in for the memory replay runner.
+export default function contribute(server: PluginServerContext, deps: { replay?: ReplayRunner } = {}) {
   // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
   server.registerUsageSource?.(kiroUsageSource());
   server.registerSettings(standupSettings);
@@ -184,6 +191,39 @@ export default function contribute(server: PluginServerContext) {
   });
   const context = server.registerSettings(contextSettings);
   let contextPaseo: Parameters<typeof loadRunnerConfig>[0] | null = null;
+  let replayPaseo: Parameters<typeof loadRunnerConfig>[0] | null = null;
+  const memoryReplay =
+    deps.replay ??
+    createMemoryReplay(
+      realReplayPorts(
+        () => replayPaseo,
+        async (paseo) =>
+          // The replayed Review runs on the loop's Review profile.
+          loadStepConfig(
+            paseo,
+            await loopSettings.read().then((state) => (state.status === "ready" ? state.values : DEFAULT_LOOP_CONFIG)),
+            "review",
+            await readRunnerProfileId(),
+          ),
+      ),
+    );
+  let replaying = false;
+  server.handle(startMemoryReplay, async (input, { paseo }) => {
+    replayPaseo = paseo;
+    contextPaseo = paseo;
+    if (replaying || memoryReplay.pendingAgents().length > 0) throw new Error("A memory replay is already running.");
+    const corpus = readCorpus(input.root, input.controls);
+    const costCap = input.costCap ?? DEFAULT_COST_CAP_USD;
+    const runDir = join(input.root, ".harness", "replay", REPLAY_RUN);
+    replaying = true;
+    void memoryReplay
+      .replay(corpus, { run: REPLAY_RUN, root: input.root, runDir, costCap })
+      .catch((error) => console.warn("orchestrator: memory replay failed", error))
+      .finally(() => {
+        replaying = false;
+      });
+    return { run: REPLAY_RUN, rounds: corpus.length, costCap, runDir };
+  });
   const readThresholds = async () => {
     const state = await context.read();
     return state.status === "ready" ? state.values : { amber: 100_000, red: 150_000 };
@@ -304,6 +344,24 @@ export default function contribute(server: PluginServerContext) {
     scopeWorkerWorkspace(workspace);
   });
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
+    // A memory replay's agent is the runner's business only: the telemetry row first, then its result row.
+    if (memoryReplay.pendingAgents().includes(event.agent.id)) {
+      replayPaseo = paseo;
+      contextPaseo = paseo;
+      void contextWatch
+        .onTurnEnded(event)
+        .catch((error) => console.warn("orchestrator: context watch failed", error))
+        .then(() =>
+          event.outcome.kind === "completed"
+            ? memoryReplay.onTurnEnded({ agentId: event.agent.id })
+            : memoryReplay.onAgentFailed({
+                agentId: event.agent.id,
+                error: event.outcome.kind === "failed" ? event.outcome.error.message : `canceled: ${event.outcome.reason}`,
+              }),
+        )
+        .catch((error) => console.warn("orchestrator: memory replay failed", error));
+      return;
+    }
     loop.rememberPaseo(paseo);
     void loop.onTurnEnded(event);
     void advancePipeline(paseo, event, readPipeline, readAgentConfig).catch((error) => {

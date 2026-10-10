@@ -285,3 +285,39 @@ test("analyze keeps stale seeded corrections when a source reports a partial rea
     done();
   }
 });
+
+test("analyze with memoryRoot writes notes there, reads the filings cache from root, and leaves root memory unchanged", async () => {
+  const { dir, write, commit, done } = repo();
+  const out = mkdtempSync(join(tmpdir(), "repo-analyzer-out-"));
+  try {
+    write(".gitignore", ".harness/\n");
+    write("CONTEXT.md", "# Ctx\n\n## Widget\nA widget is a thing.\n");
+    write("src/a.ts", "export const a = 1;\n");
+    commit("2024-01-10T12:00:00Z", "add a");
+    const o: Observation = { id: "o1", source: "finding", story: "s1", date: "2024-01-05T00:00:00Z", link: "https://x/o1", text: "missing test" };
+    const calls: string[][] = [];
+    const classify: Classify = async (batch) => {
+      calls.push(batch.map((x) => x.id));
+      return { filings: batch.map((x) => ({ id: x.id, category: "testing", area: null, phrase: "add a test" })), costUsd: 0.01 };
+    };
+    const sources = async () => [o];
+    // Warm the repo's own cache and notes.
+    await analyze(dir, { classify, sources });
+    const rootMem = join(dir, ".harness", "memory");
+    const before = tree(rootMem);
+    assert.ok(Object.keys(before).length > 0);
+
+    calls.length = 0;
+    const result = await analyze(dir, { asOf: "2024-02-01", memoryRoot: out, classify, sources });
+    assert.deepEqual(calls, []);
+    assert.equal(result.spentUsd, 0);
+    const outMem = join(out, ".harness", "memory");
+    assert.ok(existsSync(join(outMem, "corrections/testing/add-a-test.md")));
+    assert.ok(existsSync(join(outMem, "SUMMARY.md")));
+    assert.ok(result.written.length > 0);
+    assert.deepEqual(tree(rootMem), before);
+  } finally {
+    done();
+    rmSync(out, { recursive: true, force: true });
+  }
+});

@@ -4,7 +4,7 @@ import { MARKERS, readSection } from "../../../shared/story-method.ts";
 const KNOWN = new Set(Object.values(MARKERS));
 
 // Text a tool call wrote: Write content, Edit new_string, or a Bash command (heredoc).
-const written = (block) => {
+export const written = (block) => {
   const input = block.input ?? {};
   if (block.name === "Write") return input.content;
   if (block.name === "Edit") return input.new_string;

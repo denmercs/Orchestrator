@@ -179,6 +179,12 @@ function unseenItems(timeline: readonly WatchItem[], cursor: number | null): rea
   return timeline.slice(lastUser + 1);
 }
 
+// The step whose exploration is counted: a loop agent's own, else a replay agent's (its row `step`
+// stays null so live stats are not polluted).
+function countedStep(labels: Record<string, string>): string | undefined {
+  return labels["loop-step"] ?? labels["replay-step"];
+}
+
 // The count to write on a turn row: the frozen one, else the steps so far; null when lost.
 function runningCount(state: SessionState, step: string): Explore | null {
   const { explore } = state;
@@ -271,7 +277,7 @@ export function createContextWatch(port: WatchPort) {
     const { explore } = state;
     if (explore && !explore.frozen) {
       explore.steps.push(...toolSteps(unseen));
-      const count = exploration(explore.steps, { step: agent.labels["loop-step"] ?? null });
+      const count = exploration(explore.steps, { step: countedStep(agent.labels) ?? null });
       if (count.edited) {
         explore.frozen = count;
         explore.steps = [];
@@ -294,8 +300,8 @@ export function createContextWatch(port: WatchPort) {
       pendingFresh.delete(agentId);
       await record(agentId, state, agent, "compact.fresh", preTokens === null ? {} : { preTokens });
     }
-    // Only a loop agent has an exploration count; null means the watch lost it.
-    const loopStep = agent.labels["loop-step"];
+    // Only a loop or replay agent has an exploration count; null means the watch lost it.
+    const loopStep = countedStep(agent.labels);
     const counted = loopStep === undefined ? {} : { explore: runningCount(state, loopStep) };
     await record(agentId, state, agent, "turn", counted);
     const warning = nextWarning(state.memory, reading);
