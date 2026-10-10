@@ -172,7 +172,7 @@ function main() {
       const found = reviewFindings(entriesOf.get(a.id));
       if (found.marker === "review-failed" || found.findings.length) findingsByRound[a.round] = found.findings;
     }
-    const commits = f.pr ? commitsByPr.get(f.pr.number) ?? [] : [];
+    const commits = commitsByPr.get(f.pr.number) ?? [];
     const events = storyOutcome({ agents: mine, commits, findingsByRound });
     stories.push({
       initiative: f.initiative,

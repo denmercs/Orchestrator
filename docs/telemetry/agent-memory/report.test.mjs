@@ -66,6 +66,11 @@ test("snapshotStories: keeps only stories whose PR merged by the cutoff", () => 
   assert.equal(out[0].pr.number, 1);
 });
 
+test("snapshotStories: a PR merged exactly at the cutoff is kept", () => {
+  const prs = [{ number: 1, headRefName: "b/edge", mergedAt: CUT }];
+  assert.deepEqual(snapshotStories([story("i", "S1", { branch: "b/edge" })], prs, CUT).map((f) => f.fm.id), ["S1"]);
+});
+
 test("snapshotStories: PR number match beats branch match", () => {
   const prs = [
     { number: 1, headRefName: "b/x", mergedAt: "2026-10-09T10:00:00Z" },
