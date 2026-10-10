@@ -28,10 +28,10 @@ const rows = [
   row("S9", 3, "failed", "none", out(["x"], []), { stopped: "cap" }),
 ];
 const labels = {
-  "S1|1|facts|n1": "yes",
-  "S1|1|facts|n2": "no",
-  "S1|2|facts|n3": "yes",
-  "S1|1|facts+corrections|w1": "no",
+  "|S1|1|facts|n1": "yes",
+  "|S1|1|facts|n2": "no",
+  "|S1|2|facts|n3": "yes",
+  "|S1|1|facts+corrections|w1": "no",
 };
 
 test("successByArm: counts per arm, n, and the does-not-ship rule", () => {
@@ -48,13 +48,29 @@ test("successByArm: counts per arm, n, and the does-not-ship rule", () => {
   assert.equal(by["facts+corrections"].doesNotShip, true);
 });
 
+test("successByArm: a label counts only for its own initiative; an old-format label still counts", () => {
+  const two = ["a", "b"].flatMap((initiative) => [
+    row("S3", 1, "failed", "none", out([], []), { initiative }),
+    row("S3", 1, "failed", "facts", out([], [], ["f"]), { initiative }),
+    row("S3", 1, "failed", "facts+corrections", out([], []), { initiative }),
+  ]);
+  const labelled = parseLabels(["- [x] yes — a/S3 r1 facts: f", "- [x] no — b/S3 r1 facts: f"].join("\n"));
+  const facts = (r, l) => successByArm(r, l).find((x) => x.arm === "facts");
+  const got = facts(two, labelled);
+  assert.equal(got.validNew, 1);
+  assert.equal(got.wrongNew, 1);
+  assert.equal(got.unlabelled, 0);
+  assert.equal(facts(two, parseLabels("- [x] yes — S3 r1 facts: f")).validNew, 2);
+  assert.equal(facts(two, { ...parseLabels("- [x] no — a/S3 r1 facts: f"), ...parseLabels("- [x] yes — S3 r1 facts: f") }).wrongNew, 1);
+});
+
 test("successByArm: fewer catches alone trips the rule; equal catches and no wrong new does not", () => {
   const few = [
     row("S1", 1, "failed", "none", out(["a"], [])),
     row("S1", 1, "failed", "facts", out([], ["a"])),
     row("S1", 1, "failed", "facts+corrections", out(["a"], [], ["n"])),
   ];
-  const by = Object.fromEntries(successByArm(few, { "S1|1|facts+corrections|n": "yes" }).map((a) => [a.arm, a]));
+  const by = Object.fromEntries(successByArm(few, { "|S1|1|facts+corrections|n": "yes" }).map((a) => [a.arm, a]));
   assert.equal(by.facts.doesNotShip, true);
   assert.equal(by["facts+corrections"].doesNotShip, false);
 });
@@ -89,6 +105,7 @@ test("parseLabels: yes/no lines map to labelKey; unlabelled and other lines are 
   const text = [
     "# New findings",
     "- [x] yes — S3 r2 facts: a finding",
+    "- [x] yes — a/S3 r2 facts: f",
     "- [x] no — S3 r2 facts+corrections: has: colons: inside",
     "- [ ] yes / no — S3 r2 none: untouched",
     "- [ ] yes — S4 r1 none: unchecked box still labelled",
@@ -96,11 +113,13 @@ test("parseLabels: yes/no lines map to labelKey; unlabelled and other lines are 
   ].join("\n");
   const got = parseLabels(text);
   assert.deepEqual(got, {
-    "S3|2|facts|a finding": "yes",
-    "S3|2|facts+corrections|has: colons: inside": "no",
-    "S4|1|none|unchecked box still labelled": "yes",
+    "|S3|2|facts|a finding": "yes",
+    "a|S3|2|facts|f": "yes",
+    "|S3|2|facts+corrections|has: colons: inside": "no",
+    "|S4|1|none|unchecked box still labelled": "yes",
   });
-  assert.equal(labelKey({ story: "S3", round: 2, arm: "facts" }, "a finding"), "S3|2|facts|a finding");
+  assert.equal(labelKey({ initiative: "a", story: "S3", round: 2, arm: "facts" }, "f"), "a|S3|2|facts|f");
+  assert.equal(labelKey({ story: "S3", round: 2, arm: "facts" }, "f"), "|S3|2|facts|f");
 });
 
 test("completeRounds: a round needs all three arms with an outcome; error and cap rows are listed with a reason", () => {

@@ -30,19 +30,19 @@ export function completeRounds(rows) {
 }
 
 const sum = (rows, f) => rows.reduce((s, r) => s + f(r), 0);
-export const labelKey = (r, finding) => `${r.story}|${r.round}|${r.arm}|${finding}`;
+export const labelKey = (r, finding) => `${r.initiative ?? ""}|${r.story}|${r.round}|${r.arm}|${finding}`;
 
-// new-findings.md lines: `- [x] yes — S3 r2 facts: <finding>`. Untouched `yes / no` lines are omitted.
+// new-findings.md lines: `- [x] yes — <initiative>/S3 r2 facts: <finding>`; the `<initiative>/` is absent in older files and keys as ``. Untouched `yes / no` lines are omitted.
 export function parseLabels(text) {
   const labels = {};
   for (const line of text.split("\n")) {
-    const m = line.match(/^- \[[ xX]\] (yes|no) — (\S+) r(\d+) (none|facts\+corrections|facts): (.*)$/);
-    if (m) labels[labelKey({ story: m[2], round: Number(m[3]), arm: m[4] }, m[5])] = m[1];
+    const m = line.match(/^- \[[ xX]\] (yes|no) — (?:(\S+)\/)?(\S+) r(\d+) (none|facts\+corrections|facts): (.*)$/);
+    if (m) labels[labelKey({ initiative: m[2], story: m[3], round: Number(m[4]), arm: m[5] }, m[6])] = m[1];
   }
   return labels;
 }
 
-// rows: ResultRow[]; labels: { "<story>|<round>|<arm>|<finding>": "yes" | "no" }.
+// rows: ResultRow[]; labels: { "<initiative>|<story>|<round>|<arm>|<finding>": "yes" | "no" }; a label with an empty initiative applies to any initiative without its own.
 // Per arm: n failed / control rounds, caught, missed, new findings by label, and whether the arm does not ship.
 export const meetsMinimum = (arms) => arms.every((a) => a.nFailed >= MIN_ROUNDS && a.nControl >= MIN_ROUNDS);
 
@@ -50,7 +50,7 @@ export function successByArm(rows, labels = {}) {
   const ok = completeRounds(rows).complete;
   const tally = (arm, keep = () => true) => {
     const mine = ok.filter((r) => r.arm === arm && keep(r));
-    const news = mine.flatMap((r) => r.outcome.new.map((f) => labels[labelKey(r, f)]));
+    const news = mine.flatMap((r) => r.outcome.new.map((f) => labels[labelKey(r, f)] ?? labels[labelKey({ ...r, initiative: "" }, f)]));
     return {
       mine,
       caught: sum(mine, (r) => r.outcome.caught.length),

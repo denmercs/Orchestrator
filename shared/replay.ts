@@ -56,8 +56,8 @@ export function outcomeOf(recorded: string[], replay: string[], matches: Match[]
 }
 
 // One yes/no checklist line per new finding, for a human to judge in S8.
-export function newFindingsLines(row: { story: string; round: number; arm: Arm; outcome: Outcome | null }): string[] {
-  return (row.outcome?.new ?? []).map((f) => `- [ ] yes / no — ${row.story} r${row.round} ${row.arm}: ${f}`);
+export function newFindingsLines(row: { initiative: string; story: string; round: number; arm: Arm; outcome: Outcome | null }): string[] {
+  return (row.outcome?.new ?? []).map((f) => `- [ ] yes / no — ${row.initiative}/${row.story} r${row.round} ${row.arm}: ${f}`);
 }
 
 export type CorpusRow = {
