@@ -230,7 +230,11 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
     const state = await context.read();
     return state.status === "ready" ? state.values : { amber: 100_000, red: 150_000 };
   };
-  const contextWatch = createContextWatch(paseoPort(() => contextPaseo, readThresholds, initiativeLoop));
+  const readAutoCompact = async () => {
+    const state = await context.read();
+    return state.status === "ready" ? state.values.autoCompact : true;
+  };
+  const contextWatch = createContextWatch(paseoPort(() => contextPaseo, readThresholds, readAutoCompact, initiativeLoop));
   server.handle(contextAct, (input, { paseo }) => {
     contextPaseo = paseo;
     return contextWatch.act(input);

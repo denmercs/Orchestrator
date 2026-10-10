@@ -3,6 +3,7 @@ import {
   detectCompaction,
   nextWarning,
   readContext,
+  shouldAutoCompact,
   type CompactionItem,
   type ContextReading,
   type ContextSnapshot,
@@ -29,6 +30,9 @@ export type WatchAgent = {
   model: string | null;
   // The session's cumulative cost so far (`lastUsage.totalCostUsd`); null when the provider reports none.
   costUsd: number | null;
+  // Mid-turn now, and whether a permission request is waiting; both hold off an auto-compact.
+  running: boolean;
+  pendingPermissions: boolean;
 };
 
 export type WatchPort = {
@@ -37,6 +41,8 @@ export type WatchPort = {
   send(agentId: string, text: string): Promise<void>;
   record(row: TelemetryRow): Promise<void>;
   thresholds(): Promise<Thresholds>;
+  // Whether the red threshold compacts on its own (the context setting).
+  autoCompact(): Promise<boolean>;
   now(): string;
   // The fresh adapter's port.
   fresh: FreshPort;
@@ -104,6 +110,7 @@ function paseoFreshPort(paseo: () => PaseoApi | null, loop: LoopHandover): Fresh
 export function paseoPort(
   paseo: () => PaseoApi | null,
   thresholds: () => Promise<Thresholds>,
+  autoCompact: () => Promise<boolean>,
   loop: LoopHandover,
 ): WatchPort {
   return {
@@ -121,6 +128,8 @@ export function paseoPort(
         labels: refreshed.agent.labels ?? {},
         model: refreshed.agent.model ?? null,
         costUsd: refreshed.agent.lastUsage?.totalCostUsd ?? null,
+        running: refreshed.agent.status === "running",
+        pendingPermissions: refreshed.agent.pendingPermissions.length > 0,
       };
     },
     async send(agentId, text) {
@@ -128,6 +137,7 @@ export function paseoPort(
     },
     record: (row) => recordTelemetry(row),
     thresholds,
+    autoCompact,
     now: () => new Date().toISOString(),
     fresh: paseoFreshPort(paseo, loop),
   };
@@ -137,6 +147,8 @@ export type TurnEnded = {
   agent: { id: string; provider: string };
   // The whole timeline so far.
   timeline: readonly WatchItem[];
+  // How the turn ended; missing counts as completed.
+  outcome?: { kind: "completed" | "failed" | "canceled" };
 };
 
 type WatchItem = CompactionItem & TimelineItem & ToolItem;
@@ -158,6 +170,8 @@ type SessionState = {
   memory: WarningMemory;
   // Timeline length at the last turn end; items past it are unseen. null until a turn end.
   cursor: number | null;
+  // Whether the agent is a loop or replay step, as of the last turn end (those never auto-compact).
+  loop?: boolean;
   // Split inputs: system is the session's first reading, toolChars the tool output characters of
   // every later turn. null unless the watch saw the first turn, and from any compaction on.
   split: { system: number; toolChars: number } | null;
@@ -200,16 +214,24 @@ export function createContextWatch(port: WatchPort) {
   const handingOver = new Set<string>();
   // New sessions from a fresh compact → the old session's last `used`. Their first turn end writes
   // the `compact.fresh` row, so it has a real reading to count tokens avoided against.
-  const pendingFresh = new Map<string, number | null>();
+  // The entry also says whether the watch started it (`trigger: "auto"`).
+  const pendingFresh = new Map<string, { used: number | null; trigger?: "auto" }>();
+  // Sessions with an auto compact in flight; the next compaction row consumes the mark.
+  const autoPending = new Set<string>();
   // Turn ends still being processed, so a status read waits for the warning they may write.
   const turnEnds = new Map<string, Promise<void>>();
 
-  async function startFresh(agentId: string, labels: Record<string, string>, used: number | null): Promise<ActResult> {
+  async function startFresh(
+    agentId: string,
+    labels: Record<string, string>,
+    used: number | null,
+    trigger?: "auto",
+  ): Promise<ActResult> {
     if (handingOver.has(agentId)) return { ok: false, error: "That session is already starting fresh.", agentId: null };
     handingOver.add(agentId);
     try {
       const result = await fresh.compact(agentId, keepList(labels));
-      pendingFresh.set(result.agentId, used);
+      pendingFresh.set(result.agentId, { used, ...(trigger ? { trigger } : {}) });
       // The old session is archived and sends no more turn ends.
       sessions.delete(agentId);
       return { ok: true, error: null, agentId: result.agentId };
@@ -225,7 +247,7 @@ export function createContextWatch(port: WatchPort) {
     state: SessionState,
     agent: WatchAgent,
     event: TelemetryEvent,
-    extra: Pick<TelemetryRow, "level" | "preTokens" | "explore"> = {},
+    extra: Pick<TelemetryRow, "level" | "preTokens" | "explore" | "trigger"> = {},
   ): Promise<void> {
     const { labels } = agent;
     const rawCycle = labels["loop-cycle"];
@@ -254,7 +276,7 @@ export function createContextWatch(port: WatchPort) {
     const state: SessionState = sessions.get(agentId) ?? {
       provider: event.agent.provider,
       reading: null,
-      memory: { warned: [], mode: "normal" },
+      memory: { warned: [], mode: "normal", auto: "armed" },
       cursor: null,
       split: null,
       explore: null,
@@ -285,6 +307,7 @@ export function createContextWatch(port: WatchPort) {
     }
     state.provider = event.agent.provider;
     state.reading = reading;
+    state.loop = countedStep(agent.labels) !== undefined;
     state.cursor = event.timeline.length;
 
     if (compaction) {
@@ -292,13 +315,21 @@ export function createContextWatch(port: WatchPort) {
       // smaller reading, and counts Claude's own auto-compacts the same way.
       await record(agentId, state, agent, `compact.${compaction.kind}`, {
         ...(compaction.preTokens === null ? {} : { preTokens: compaction.preTokens }),
+        ...(autoPending.delete(agentId) ? { trigger: "auto" as const } : {}),
       });
-      state.memory = { warned: [], mode: "normal" };
+      state.memory = {
+        warned: [],
+        mode: "normal",
+        auto: state.memory.auto === "skipped" ? "skipped" : "armed",
+      };
     }
     if (pendingFresh.has(agentId)) {
-      const preTokens = pendingFresh.get(agentId) ?? null;
+      const { used, trigger } = pendingFresh.get(agentId) ?? { used: null };
       pendingFresh.delete(agentId);
-      await record(agentId, state, agent, "compact.fresh", preTokens === null ? {} : { preTokens });
+      await record(agentId, state, agent, "compact.fresh", {
+        ...(used === null ? {} : { preTokens: used }),
+        ...(trigger ? { trigger } : {}),
+      });
     }
     // Only a loop or replay agent has an exploration count; null means the watch lost it.
     const loopStep = countedStep(agent.labels);
@@ -308,6 +339,35 @@ export function createContextWatch(port: WatchPort) {
     if (warning) {
       state.memory.warned.push(warning.level);
       await record(agentId, state, agent, "warning", { level: warning.level });
+    }
+    // The turn end that records a compaction re-arms the latch but never fires it: a reading still
+    // red right after a compaction would otherwise send /compact on every turn.
+    const fire = !compaction && shouldAutoCompact(state.memory, reading, {
+      enabled: await port.autoCompact(),
+      running: agent.running,
+      pendingPermissions: agent.pendingPermissions,
+      completed: (event.outcome?.kind ?? "completed") === "completed",
+      loop: loopStep !== undefined,
+    });
+    if (fire) {
+      state.memory.auto = "sent";
+      if (reading.strategy === "fresh") {
+        // A fresh handoff runs a long turn: start it after the rows are written and don't wait,
+        // so status reads aren't held up. startFresh never throws; it returns its failure, which no
+        // pill shows here, so log it. The latch stays "sent", so a failing handoff isn't retried every turn.
+        void startFresh(agentId, agent.labels, reading.used, "auto").then((result) => {
+          if (!result.ok) console.warn(`orchestrator: auto-compact of ${agentId} failed: ${result.error}`);
+        });
+      } else {
+        autoPending.add(agentId);
+        try {
+          await native.compact(agentId, keepList(agent.labels));
+        } catch (cause) {
+          // Nothing was sent, so a later manual compact must not be tagged auto.
+          autoPending.delete(agentId);
+          throw cause;
+        }
+      }
     }
   }
 
@@ -328,18 +388,22 @@ export function createContextWatch(port: WatchPort) {
     // turn end; one it has not is read now, with empty memory; a gone one is null.
     async sessions(agentIds: readonly string[]): Promise<(ContextStatus | null)[]> {
       const thresholds = await port.thresholds();
+      const enabled = await port.autoCompact();
       return Promise.all(
         agentIds.map(async (agentId): Promise<ContextStatus | null> => {
           await turnEnds.get(agentId);
           const state = sessions.get(agentId);
           let reading = state?.reading ?? null;
+          let loop = state?.loop ?? false;
           if (!reading) {
             const agent = await port.readAgent(agentId);
             if (!agent) return null;
             reading = readContext(agent, thresholds);
+            loop = countedStep(agent.labels) !== undefined;
           }
-          const memory = state?.memory ?? { warned: [], mode: "normal" };
-          return { agentId, reading, warned: [...memory.warned], mode: memory.mode, red: thresholds.red };
+          const memory = state?.memory ?? { warned: [], mode: "normal", auto: "armed" };
+          const auto = enabled && !loop && memory.mode !== "ignore" && memory.auto !== "skipped";
+          return { agentId, reading, warned: [...memory.warned], mode: memory.mode, red: thresholds.red, auto };
         }),
       );
     },
@@ -373,13 +437,14 @@ export function createContextWatch(port: WatchPort) {
       const state: SessionState = sessions.get(agentId) ?? {
         provider: "unknown",
         reading,
-        memory: { warned: [], mode: "normal" },
+        memory: { warned: [], mode: "normal", auto: "armed" },
         cursor: null,
         split: null,
         explore: null,
       };
       sessions.set(agentId, state);
-      state.memory.mode = action;
+      if (action === "skip-auto") state.memory.auto = "skipped";
+      else state.memory.mode = action;
       await record(agentId, state, agent, action);
       return { ok: true, error: null, agentId };
     },
