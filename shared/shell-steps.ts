@@ -52,7 +52,10 @@ export function tokenize(script: string): Command[] {
 
   for (let i = 0; i < script.length; i++) {
     const ch = script[i];
-    if (ch === "\\") {
+    if (ch === "#" && !inWord) {
+      // A comment runs to the line break, which is left for the separator branch.
+      while (i + 1 < script.length && script[i + 1] !== "\n") i += 1;
+    } else if (ch === "\\") {
       if (script[i + 1] === "\n") {
         i += 1;
         continue;
@@ -356,11 +359,11 @@ function classify(command: Command, dir: string): ShellCall[] {
   return writes.length > 0 ? writes : [other];
 }
 
-type State = { dir: string; vars: Map<string, string> };
+type State = { dir: string; vars: Map<string, string>; saved: string[] };
 
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
 // Words that open or close a compound command and are not commands themselves.
-const OPENERS = new Set(["do", "then", "else", "{", "("]);
+const OPENERS = new Set(["do", "then", "else", "if", "while", "until", "!", "{", "("]);
 const CLOSERS = new Set([")", "}", "done", "fi"]);
 
 // Replaces `$NAME` and `${NAME}` that are known; anything else (`$(…)`, unknown names) is left for
@@ -391,30 +394,42 @@ const isShell = (name: string): boolean => name === "bash" || name === "sh" || n
 
 function run(command: string, state: State, calls: ShellCall[]): void {
   for (const simple of tokenize(command)) {
-    let words = peel(simple.words);
-    while (words.length > 0 && !words[0].quoted) {
-      const match = ASSIGNMENT.exec(words[0].text);
-      if (!match) break;
-      state.vars.set(match[1], expand({ text: match[2], quoted: false, literal: words[0].literal }, state.vars).text);
-      words = words.slice(1);
-    }
-    if (words.length === 0) continue;
-    words = words.map((word) => expand(word, state.vars));
-    const name = words[0].text.split("/").pop() ?? "";
-    if (words[0].text === "cd") {
-      const target = operands(words.slice(1))[0];
-      if (target) state.dir = resolvable(target.text) ? resolve(state.dir, target.text) : "";
-      continue;
-    }
-    if (isShell(name)) {
-      const at = words.findIndex((word, index) => index > 0 && !word.quoted && /^-[A-Za-z]*c$/.test(word.text));
-      if (at !== -1 && words[at + 1]) {
-        run(words[at + 1].text, state, calls);
-        continue;
-      }
-    }
-    calls.push(...classify({ ...simple, words }, state.dir));
+    // A `cd` inside `( … )` ends with the subshell: remember the directory at each `(` and restore it at the `)`.
+    const head = simple.words[0];
+    const tail = simple.words[simple.words.length - 1];
+    const opens = head && !head.quoted ? /^\(*/.exec(head.text)![0].length : 0;
+    const closes = tail && !tail.quoted && !tail.text.includes("(") ? /\)*$/.exec(tail.text)![0].length : 0;
+    for (let n = 0; n < opens; n++) state.saved.push(state.dir);
+    step(simple, state, calls);
+    for (let n = 0; n < closes && state.saved.length > 0; n++) state.dir = state.saved.pop()!;
   }
+}
+
+function step(simple: Command, state: State, calls: ShellCall[]): void {
+  let words = peel(simple.words);
+  if (words.length > 1 && !words[0].quoted && /^(export|local|readonly)$/.test(words[0].text) && ASSIGNMENT.test(words[1].text)) words = words.slice(1);
+  while (words.length > 0 && !words[0].quoted) {
+    const match = ASSIGNMENT.exec(words[0].text);
+    if (!match) break;
+    state.vars.set(match[1], expand({ text: match[2], quoted: false, literal: words[0].literal }, state.vars).text);
+    words = words.slice(1);
+  }
+  if (words.length === 0) return;
+  words = words.map((word) => expand(word, state.vars));
+  const name = words[0].text.split("/").pop() ?? "";
+  if (words[0].text === "cd") {
+    const target = operands(words.slice(1))[0];
+    if (target) state.dir = resolvable(target.text) ? resolve(state.dir, target.text) : "";
+    return;
+  }
+  if (isShell(name)) {
+    const at = words.findIndex((word, index) => index > 0 && !word.quoted && /^-[A-Za-z]*c$/.test(word.text));
+    if (at !== -1 && words[at + 1]) {
+      run(words[at + 1].text, state, calls);
+      return;
+    }
+  }
+  calls.push(...classify({ ...simple, words }, state.dir));
 }
 
 // One call per simple command (plus one per file it redirects into), in order. `cd` only moves the directory later paths resolve against,
@@ -422,6 +437,6 @@ function run(command: string, state: State, calls: ShellCall[]): void {
 // `cwd` is where the shell started, when the host says.
 export function classifyShell(command: string, cwd?: string): ShellCall[] {
   const calls: ShellCall[] = [];
-  run(command, { dir: cwd ?? "", vars: new Map() }, calls);
+  run(command, { dir: cwd ?? "", vars: new Map(), saved: [] }, calls);
   return calls;
 }

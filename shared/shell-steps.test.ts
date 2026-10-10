@@ -179,3 +179,26 @@ test("real loop-transcript commands", () => {
   ];
   for (const [command, cwd, expected] of table) assert.deepEqual(classifyShell(command, cwd), expected, command);
 });
+
+test("comments are skipped, apostrophes and all", () => {
+  assert.deepEqual(classifyShell("# Let's check\ncat a.ts\nsed -i 's/x/y/' b.ts", "/repo"), [
+    { kind: "read", paths: ["/repo/a.ts"], text: null },
+    { kind: "edit", paths: ["/repo/b.ts"], text: null },
+  ]);
+  assert.deepEqual(classifyShell("cat a.ts # read it", "/repo"), [{ kind: "read", paths: ["/repo/a.ts"], text: null }]);
+  assert.deepEqual(classifyShell("cat a#b.ts", "/repo"), [{ kind: "read", paths: ["/repo/a#b.ts"], text: null }]);
+});
+
+test("a cd inside a subshell does not leak out", () => {
+  assert.deepEqual(classifyShell("(cd sub && cat a.ts); cat b.ts", "/repo"), [
+    { kind: "read", paths: ["/repo/sub/a.ts"], text: null },
+    { kind: "read", paths: ["/repo/b.ts"], text: null },
+  ]);
+});
+
+test("if/while/until/! openers and export assignments", () => {
+  assert.deepEqual(classifyShell("if grep -q foo f.ts; then echo y; fi"), [search, other].flat());
+  assert.deepEqual(classifyShell("while grep -q foo f.ts; do :; done")[0], search[0]);
+  assert.deepEqual(classifyShell("! grep -q foo f.ts")[0], search[0]);
+  assert.deepEqual(classifyShell("export D=/r; cat $D/a.ts"), read("/r/a.ts"));
+});
