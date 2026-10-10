@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { gh, prStatus, type PrStatus } from "./pr-checks";
-import { normalise } from "./voice-bridge";
+import { beforeRoger, normalise } from "./voice-bridge";
 
 // "Merge it" by voice: find the PR of the session that last finished a turn, check it, and speak a
 // short review. Nothing merges until the user says "confirm", and only the head that was reviewed.
@@ -118,7 +118,8 @@ export function createVoiceMerge(port: MergePort, now: () => number = Date.now) 
 
   return {
     async command(text: string): Promise<VoiceReply> {
-      const words = normalise(text);
+      // A habitual "roger" at the end, as voice replies use, is not part of the command.
+      const words = normalise(beforeRoger(text) ?? text);
       if (!words) return { said: "I didn't catch that.", listen: true };
       if (MERGE.has(words)) return review();
       if (CONFIRM.has(words)) return merge();

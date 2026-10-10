@@ -58,7 +58,7 @@ test("failing checks, conflicts and drafts are named before asking", () => {
 test("merge it reviews and listens; confirm merges the reviewed head", async () => {
   const { port, merged } = fakePort();
   const voice = createVoiceMerge(port);
-  const review = await voice.command("Just merge it.");
+  const review = await voice.command("Just merge it, roger.");
   assert.equal(review.listen, true);
   assert.match(review.said, /^PR 95: /);
   assert.deepEqual(await voice.command("Confirm"), { said: "Merged PR 95.", listen: false });
@@ -102,7 +102,7 @@ test("a failed merge is reported, not thrown", async () => {
 });
 
 test("http command needs the token and a text field", async () => {
-  const bridge = createVoiceBridge({ respond: async () => {} });
+  const bridge = createVoiceBridge({ respond: async () => {}, send: async () => {} });
   const merge = createVoiceMerge(fakePort().port);
   const call = (authorization: string, body: string) =>
     handleVoiceRequest(bridge, "t", { method: "POST", path: "/voice/command", authorization, body }, merge);
