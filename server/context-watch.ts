@@ -340,7 +340,9 @@ export function createContextWatch(port: WatchPort) {
       state.memory.warned.push(warning.level);
       await record(agentId, state, agent, "warning", { level: warning.level });
     }
-    const fire = shouldAutoCompact(state.memory, reading, {
+    // The turn end that records a compaction re-arms the latch but never fires it: a reading still
+    // red right after a compaction would otherwise send /compact on every turn.
+    const fire = !compaction && shouldAutoCompact(state.memory, reading, {
       enabled: await port.autoCompact(),
       running: agent.running,
       pendingPermissions: agent.pendingPermissions,
@@ -351,8 +353,11 @@ export function createContextWatch(port: WatchPort) {
       state.memory.auto = "sent";
       if (reading.strategy === "fresh") {
         // A fresh handoff runs a long turn: start it after the rows are written and don't wait,
-        // so status reads aren't held up. startFresh reports its own failure and never throws.
-        void startFresh(agentId, agent.labels, reading.used, "auto");
+        // so status reads aren't held up. startFresh never throws; it returns its failure, which no
+        // pill shows here, so log it. The latch stays "sent", so a failing handoff isn't retried every turn.
+        void startFresh(agentId, agent.labels, reading.used, "auto").then((result) => {
+          if (!result.ok) console.warn(`orchestrator: auto-compact of ${agentId} failed: ${result.error}`);
+        });
       } else {
         autoPending.add(agentId);
         try {

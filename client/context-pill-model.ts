@@ -129,15 +129,15 @@ export function usageChanged(prev: UsageSnapshot | undefined, next: UsageSnapsho
 
 export type SummaryTile = { label: string; value: string };
 
-// The dashboard card's tiles. Taken counts compacts someone chose (native + fresh); Claude's own
-// auto-compacts show apart so they don't inflate it.
+// The dashboard card's tiles. Taken counts native + fresh compacts, with the ones the watch started at
+// red in brackets; Claude's own compactions (inferred) show apart so they don't inflate it.
 export function summaryTiles(summary: ContextSummary): SummaryTile[] {
   const taken = summary.compactions.native + summary.compactions.fresh;
   return [
     { label: "Sessions over threshold", value: String(summary.sessionsOverThreshold) },
     { label: "Warnings", value: String(summary.warnings) },
     { label: "Compactions", value: `taken ${taken} (${summary.compactions.auto} auto) vs ignored ${summary.ignored}` },
-    { label: "Auto-compacts", value: String(summary.compactions.inferred) },
+    { label: "Claude's own compacts", value: String(summary.compactions.inferred) },
     { label: "Tokens avoided", value: formatTokens(summary.tokensAvoided) },
   ];
 }

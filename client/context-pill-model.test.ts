@@ -163,7 +163,7 @@ test("summaryTiles: over threshold, warnings, taken vs ignored, auto, tokens avo
     { label: "Sessions over threshold", value: "2" },
     { label: "Warnings", value: "3" },
     { label: "Compactions", value: "taken 3 (2 auto) vs ignored 1" },
-    { label: "Auto-compacts", value: "4" },
+    { label: "Claude's own compacts", value: "4" },
     { label: "Tokens avoided", value: "412k" },
   ]);
 });

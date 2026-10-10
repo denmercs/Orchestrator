@@ -655,6 +655,17 @@ test("auto-compact: after a compaction, a red turn sends again", async () => {
   assert.equal(sent.length, 2);
 });
 
+test("auto-compact: the turn end that records a compaction does not compact again, even if still red", async () => {
+  const agents = { a1: agent(160_000) };
+  const { port, sent } = fakePort(agents, true);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted]));
+  assert.equal(sent.length, 1);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted, user, reply]));
+  assert.equal(sent.length, 2);
+});
+
 test("auto-compact: nothing is sent for amber, a running agent, a pending permission, a loop label, a failed or canceled turn or the setting off", async () => {
   const cases: [string, WatchAgent, boolean, TurnEnded["outcome"]?][] = [
     ["amber", agent(120_000), true],
@@ -785,4 +796,21 @@ test("auto-compact: a /compact send that throws clears the auto mark, so a later
   agents.a1 = agent(30_000);
   await watch.onTurnEnded(turn("a1", [user, reply, user, compacted]));
   assert.equal(rows.find((r) => r.event === "compact.native")?.trigger, undefined);
+});
+
+test("auto-compact: a fresh auto compact that fails is logged and not retried on the next red turn", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const agents: Record<string, WatchAgent> = { a1: agent(160_000, {}, []) };
+  const { port, fresh } = fakePort(agents, true);
+  port.fresh.create = async () => {
+    throw new Error("no workspace");
+  };
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  await settle();
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(String(warn.mock.calls[0]?.arguments[0]), /auto-compact of a1 failed: no workspace/);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, reply]));
+  await settle();
+  assert.deepEqual(fresh, ["handoff a1"]);
 });
