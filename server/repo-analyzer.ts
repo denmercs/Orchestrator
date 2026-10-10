@@ -2,12 +2,12 @@ import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
-import { fileObservations, mergeCorrections, observationsAsOf, renderTopCorrections } from "../shared/corrections";
-import type { Classify, Filing, Observation } from "../shared/corrections";
-import { formatNote, noteId, parseNote, writeNote } from "../shared/memory";
-import type { Note } from "../shared/memory";
-import { readAreaNames, seedNotes } from "../shared/repo-facts";
-import type { Commit, Snapshot, SourceFile } from "../shared/repo-facts";
+import { fileObservations, mergeCorrections, observationsAsOf, renderTopCorrections } from "./corrections";
+import type { Classify, Filing, Observation } from "./corrections";
+import { formatNote, noteId, parseNote, writeNote } from "./memory";
+import type { Note } from "./memory";
+import { readAreaNames, seedNotes } from "./repo-facts";
+import type { Commit, Snapshot, SourceFile } from "./repo-facts";
 import { defaultApiKey, haikuClassifier } from "./correction-classifier";
 import { collectObservations } from "./correction-sources";
 

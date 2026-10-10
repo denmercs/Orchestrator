@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { CORRECTION_CATEGORIES, globToRegExp, type Note, noteId } from "./memory";
 import { emptyNote } from "./repo-facts";
-import { readOutcome } from "./story-outcome";
+import { readOutcome } from "../shared/story-outcome";
 
 export type ObservationSource = "finding" | "ci-check" | "blocked" | "review-comment";
 

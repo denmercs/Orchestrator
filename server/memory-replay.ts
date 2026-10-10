@@ -4,7 +4,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentCreateConfig } from "../shared/agent-runner";
-import { readMemory, type Memory } from "../shared/memory";
+import { readMemory, type Memory } from "./memory";
 import {
   ARMS,
   armBrief,
@@ -16,7 +16,7 @@ import {
   type Arm,
   type CorpusRow,
   type Outcome,
-} from "../shared/replay";
+} from "./replay";
 import { briefTag } from "./brief-install";
 import type { TelemetryRow } from "./context-telemetry";
 import type { Judge } from "./replay-judge";

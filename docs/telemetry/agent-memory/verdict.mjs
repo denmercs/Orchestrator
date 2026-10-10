@@ -2,8 +2,8 @@
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { ARMS } from "../../../shared/replay.ts";
-import { noteId, readMemory } from "../../../shared/memory.ts";
+import { ARMS } from "../../../server/replay.ts";
+import { noteId, readMemory } from "../../../server/memory.ts";
 
 // d1's minimum sample: complete failed and control rounds, per arm.
 const MIN_ROUNDS = 20;

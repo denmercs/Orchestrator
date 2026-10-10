@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { AgentCreateConfig } from "../shared/agent-runner";
-import type { CorpusRow } from "../shared/replay";
+import type { CorpusRow } from "./replay";
 import { stepPrompt } from "../shared/story-method";
 import type { TelemetryRow } from "./context-telemetry";
 import { mcpScopeFor } from "./mcp-scope";
