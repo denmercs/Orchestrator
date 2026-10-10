@@ -29,6 +29,8 @@ Both calls need `Authorization: Bearer <token>`.
   - Without `hold` a trailing "roger" is stripped, so "yes roger" approves.
   - With no `id` and nothing waiting, the reply goes to the agent you last answered, so you can start
     a new request. A bare "yes" or "no" is not sent. Otherwise `404`.
+- `POST /voice/command` with `{ text }` returns `{ said, listen }`. When `listen` is true, hear the
+  next reply and post it to the same endpoint.
 
 Replies to an ask:
 
@@ -46,6 +48,20 @@ Which replies are queued:
   queued when a turn completes, clipped to about 600 characters with markdown marks removed.
 - One reply per agent; a newer one replaces the older. A reply is dropped when its agent starts
   another turn, for example because you answered it in the Paseo app.
+
+## Merge by voice
+
+Say "merge it" (or "just merge it"). The bridge takes the PR for the branch of the session whose
+turn ended last. It checks for conflicts, CI, requested changes and drafts, and pipes the diff
+(`gh pr diff`) to the signed-in Claude Code CLI (`claude -p --model haiku`, no tools). Then it speaks
+the title, Haiku's two or three sentences on what the change does and anything that looks off, the
+size, and a verdict: "Looks good", or "I wouldn't merge it yet" and the reasons. If `claude` can't be
+found (set `CLAUDE_BIN` to its path) or the call fails, the first line of the PR body stands in.
+Say "confirm" within two minutes to merge it, or "no" to drop it. A trailing "roger" is ignored.
+
+The merge uses a merge commit when the repo allows one, then squash, then rebase. It only merges
+the commit that was reviewed: if something is pushed after the review, GitHub refuses and you hear
+that it didn't merge. The branch is not deleted.
 
 ## Tasker (Android)
 
@@ -70,7 +86,16 @@ Task **Voice answer**:
 To start a request with nothing waiting, run a copy of the task from action 5 with `%vid` empty
 (body `{"reply":"%gv_heard","hold":true}`); it goes to the agent you last answered.
 
-Profiles that run it:
+Task **Voice command** (start it from a home screen shortcut or widget):
+
+1. Get Voice (timeout 8s).
+2. HTTP Request: POST `http://100.x.y.z:4777/voice/command`, same header, body
+   `{"text":"%gv_heard"}`, content type `application/json`. Set its timeout to 60 seconds: reading
+   the diff takes a few.
+3. Say `%http_data.said`.
+4. If `%http_data.listen` ~ true, Goto action 1.
+
+Profiles that run **Voice answer**:
 
 - Event → Notification, owner application **Paseo** (fires when a session needs you or replies).
 - Time, every 2 minutes (catches anything the notification missed).
