@@ -332,7 +332,9 @@ function readRows(file) {
   return rows;
 }
 
-// Corrections from every per-story memory root under run/memory/, merged by note id: counts add, evidence joins.
+// Corrections from every per-story memory root under run/memory/, merged by note id. Each root is a cumulative
+// snapshot of history up to its story, so one correction recurs in later roots: evidence is de-duplicated and
+// count is the largest snapshot count (later snapshots only grow).
 function readRunMemory(dir) {
   const base = join(dir, "memory");
   const byId = new Map();
@@ -342,7 +344,8 @@ function readRunMemory(dir) {
       if (n.type !== "correction") continue;
       const id = noteId(n);
       const prev = byId.get(id);
-      byId.set(id, prev ? { ...prev, count: prev.count + n.count, evidence: [...prev.evidence, ...n.evidence] } : { ...n, evidence: [...n.evidence] });
+      const evidence = [...new Set([...(prev ? prev.evidence : []), ...n.evidence])];
+      byId.set(id, { ...(prev ?? n), evidence, count: Math.max(prev ? prev.count : 0, n.count) });
     }
   }
   return { notes: [...byId.values()] };
@@ -379,7 +382,7 @@ export function main(argv = [], { out = join(dirname(fileURLToPath(import.meta.u
     const memory = readRunMemory(dir);
     if (sample) {
       const file = join(dir, "dedupe-sample.md");
-      if (/^- \[[xX]\] (yes|no) —/m.test(readText(file))) {
+      if (Object.keys(parseDedupeLabels(readText(file))).length > 0) {
         log(`kept ${file} (already labelled)`);
         continue;
       }

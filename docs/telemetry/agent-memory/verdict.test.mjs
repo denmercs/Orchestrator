@@ -390,6 +390,31 @@ test("main: --dedupe-sample keeps a file the human has already labelled", () => 
   assert.match(readFileSync(file, "utf8"), /seen one \| seen two/, "an unlabelled file is regenerated");
 });
 
+test("main: --dedupe-sample keeps a file labelled the way its own instruction says (`- [ ] yes — <id>`)", () => {
+  const repo = mk(), outFile = join(mk(), "verdict.md");
+  fixtureRoot(repo);
+  const file = join(runDir(repo), "dedupe-sample.md");
+  const labelled = "# Dedupe sample\n\n- [ ] yes \u2014 corrections/testing/flaky: seen one | seen two\n";
+  writeFileSync(file, labelled);
+  main(["--root", repo, "--dedupe-sample"], { out: outFile, repoRoot: repo, log: () => {} });
+  assert.equal(readFileSync(file, "utf8"), labelled);
+});
+
+test("main: overlapping cumulative snapshots are not counted again per story", () => {
+  const repo = mk(), outFile = join(mk(), "verdict.md");
+  fixtureRoot(repo);
+  for (const story of ["i-S2", "i-S3"]) {
+    const dir = join(runDir(repo), "memory", story, ".harness", "memory", "corrections", "testing");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "flaky.md"), "---\ntype: correction\nstatus: active\ncategory: testing\narea: server\ncount: 2\nevidence:\n  - seen one\n  - seen two\n---\nbody\n");
+  }
+  main(["--root", repo, "--dedupe-sample"], { out: outFile, repoRoot: repo, log: () => {} });
+  const sample = readFileSync(join(runDir(repo), "dedupe-sample.md"), "utf8");
+  assert.match(sample, /flaky: seen one \| seen two\n/, "evidence is not repeated");
+  main([], { out: outFile, repoRoot: repo, log: () => {} });
+  assert.match(readFileSync(outFile, "utf8"), /overall 33% \(1 of 3\)/, "flaky 2 + once 1 = 1 repeat in 3, not 3 stories' worth added up");
+});
+
 test("render: the repeat definition follows the source", () => {
   const base = render({ rows: [], labels: {}, baseline });
   assert.match(base, /\(area, category\) was seen in an earlier story/);
