@@ -1,15 +1,16 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
-import type { VoiceMerge } from "./voice-merge";
+import { interpretMergeReply, type MergeQueue } from "./voice-merge";
 
 type AgentPermissionRequest = PluginLifecycleEvents["agent.permission_requested"]["request"];
 type AgentPermissionResponse = PluginLifecycleEvents["agent.permission_resolved"]["resolution"];
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 
 // Voice bridge: a phone (Tasker) asks for the oldest waiting item, speaks it with Android text to
-// speech, listens, and posts the reply back. An item is a blocked permission (ask) or the last
-// message of an agent the phone is talking to (reply). The user ends each message with "roger".
+// speech, listens, and posts the reply back. An item is a blocked permission (ask), the last
+// message of an agent the phone is talking to (reply), or a green story PR to merge (merge, after
+// both of the others). The user ends each message with "roger".
 // Off unless a token is in the Keychain; every call must carry it as a bearer token.
 
 export type VoiceAsk = {
@@ -153,7 +154,9 @@ const replyId = (agentId: string) => `reply:${agentId}`;
 
 export type VoiceAnswer = { said: string } | { listen: true };
 
-export function createVoiceBridge(port: VoicePort) {
+export type SpokenItem = { id: string; kind: VoiceItem["kind"] | "merge"; text: string };
+
+export function createVoiceBridge(port: VoicePort, merges?: MergeQueue) {
   // Insertion order is arrival order, so the first entry is the oldest item.
   const items = new Map<string, VoiceItem>();
   // Agents the phone has answered; only they get their replies read out.
@@ -173,6 +176,12 @@ export function createVoiceBridge(port: VoicePort) {
   };
   const apply = async (reply: string, id?: string): Promise<{ said: string } | null> => {
     const item = id ? items.get(id) : items.values().next().value;
+    if (!item && merges) {
+      // Without an id, only a merge or skip word answers the PR, so a spoken message still reaches the agent.
+      const target = id ?? (typeof interpretMergeReply(reply) === "object" ? undefined : merges.next()?.id);
+      const merged = target ? await merges.answer(target, reply) : null;
+      if (merged) return merged;
+    }
     if (!item) return !id && lastFollowed && !isVerdict(reply) ? sendTo(lastFollowed, reply) : null;
     if (item.kind === "reply") {
       if (!reply.trim()) return { said: "I didn't catch that." };
@@ -220,6 +229,13 @@ export function createVoiceBridge(port: VoicePort) {
     next(): VoiceItem | null {
       return items.values().next().value ?? null;
     },
+    // What the phone reads next: a blocked agent or a reply first, then a PR waiting to merge.
+    nextSpoken(): SpokenItem | null {
+      const item = this.next();
+      if (item) return { id: item.id, kind: item.kind, text: item.text };
+      const ready = merges?.next();
+      return ready ? { id: ready.id, kind: "merge", text: ready.text } : null;
+    },
     // With hold, chunks wait until one ends in "roger"; until then the phone keeps listening.
     async answer(reply: string, id?: string, hold = false): Promise<VoiceAnswer | null> {
       const message = beforeRoger(reply);
@@ -247,28 +263,17 @@ function tokenMatches(header: string | undefined, token: string): boolean {
   return given.length === want.length && timingSafeEqual(given, want);
 }
 
-function parseBody(body: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(body);
-    return parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
-}
-
 // GET /voice/next → the oldest item, or 204. POST /voice/answer {id?, reply, hold?} → { said } to
 // speak back, or { listen: true } while a held message waits for "roger".
-// POST /voice/command {text} → { said, listen }: "merge it" reviews the last session's PR, "confirm" merges it.
 export async function handleVoiceRequest(
   bridge: VoiceBridge,
   token: string,
   request: { method: string; path: string; authorization?: string; body: string },
-  merge?: VoiceMerge,
 ): Promise<VoiceHttpResult> {
   if (!token || !tokenMatches(request.authorization, token)) return { status: 401 };
   if (request.method === "GET" && request.path === "/voice/next") {
-    const item = bridge.next();
-    return item ? { status: 200, body: { id: item.id, kind: item.kind, text: item.text } } : { status: 204 };
+    const item = bridge.nextSpoken();
+    return item ? { status: 200, body: item } : { status: 204 };
   }
   if (request.method === "POST" && request.path === "/voice/answer") {
     let parsed: { id?: unknown; reply?: unknown; hold?: unknown };
@@ -281,12 +286,6 @@ export async function handleVoiceRequest(
     const id = typeof parsed.id === "string" && parsed.id ? parsed.id : undefined;
     const result = await bridge.answer(parsed.reply, id, parsed.hold === true);
     return result ? { status: 200, body: result } : { status: 404, body: { said: "Nothing is waiting." } };
-  }
-  if (merge && request.method === "POST" && request.path === "/voice/command") {
-    const parsed = parseBody(request.body);
-    if (!parsed) return { status: 400, body: { error: "Body must be JSON." } };
-    if (typeof parsed.text !== "string") return { status: 400, body: { error: "text is required." } };
-    return { status: 200, body: await merge.command(parsed.text) };
   }
   return { status: 404 };
 }
@@ -312,7 +311,7 @@ function readBody(req: IncomingMessage): Promise<string> {
 
 export function startVoiceServer(
   bridge: VoiceBridge,
-  options: { host: string; port: number; token: string; merge?: VoiceMerge },
+  options: { host: string; port: number; token: string },
 ) {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
@@ -323,7 +322,7 @@ export function startVoiceServer(
           path: (req.url ?? "/").split("?")[0],
           authorization: req.headers.authorization,
           body: req.method === "POST" ? await readBody(req) : "",
-        }, options.merge);
+        });
       } catch (error) {
         console.warn("orchestrator: voice request failed", error instanceof Error ? error.message : error);
         result = { status: 500, body: { said: "Something went wrong." } };

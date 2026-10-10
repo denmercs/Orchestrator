@@ -1,158 +1,248 @@
 import { execFile } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { access, constants } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { promisify } from "node:util";
+import { readSection } from "../shared/story-method";
+import { readOutcome } from "../shared/story-outcome";
+import { PHASES_DIR, dirsIn, initiativesDir, readStoryFiles } from "./harness-layout";
 import { gh, prStatus, type PrStatus } from "./pr-checks";
-import { beforeRoger, normalise } from "./voice-bridge";
 
-// "Merge it" by voice: find the PR of the session that last finished a turn, check it, and speak a
-// short review. Nothing merges until the user says "confirm", and only the head that was reviewed.
+// Voice merge: story PRs at the merge gate (open, CI green) are read out with a review, and "merge"
+// merges one after GitHub confirms again that it is green, conflict-free, clean and unchanged.
+// The review is Haiku's read of the diff, then the loop's own review. The plugin runs gh as you;
+// no agent merges, and nobody has to say which PR.
 
-export type PrFacts = {
-  number: number;
-  title: string;
-  body: string;
-  state: string;
-  isDraft: boolean;
-  mergeable: string;
-  reviewDecision: string;
-  additions: number;
-  deletions: number;
-  changedFiles: number;
-  headRefOid: string;
-};
+export type MergeReady = { id: string; storyId: string; title: string; pr: number; cwd: string; review: string };
 
 export type MergePort = {
-  // The session whose turn ended last, with its working directory, or null when none has.
-  lastSession(): Promise<{ title: string | null; cwd: string } | null>;
-  // The open PR for the current branch in `cwd`, or null when there is none.
-  pr(cwd: string): Promise<PrFacts | null>;
-  checks(cwd: string, number: number): Promise<PrStatus | null>;
+  // Every story PR at the merge gate, in order.
+  ready(): MergeReady[];
   // A few spoken sentences on what the diff does and what looks off, or null when it can't be had.
-  explain(cwd: string, facts: PrFacts): Promise<string | null>;
-  merge(cwd: string, number: number, headSha: string): Promise<void>;
+  explain(item: MergeReady): Promise<string | null>;
+  // Checks the PR with GitHub again and merges it; `said` is the result or why it did not merge.
+  merge(item: MergeReady): Promise<{ merged: boolean; said: string }>;
 };
 
-export type VoiceReply = { said: string; listen: boolean };
+const MERGE = new Set(["merge", "merge it", "merge now", "yes merge", "just merge it"]);
+const SKIP = new Set(["skip", "skip it", "no", "nope", "not now", "later", "wait"]);
 
-type Pending = { cwd: string; number: number; headSha: string; at: number };
+const MAX_SPOKEN = 160;
+// A skipped merge isn't offered again for an hour.
+export const SKIP_MS = 60 * 60 * 1000;
 
-const MERGE = new Set(["merge", "merge it", "just merge it", "merge that", "merge the pr", "merge the pull request", "go merge it"]);
-const CONFIRM = new Set(["confirm", "confirmed", "confirm it", "yes confirm", "confirm merge"]);
-const NO = new Set(["no", "nope", "stop", "cancel", "dont", "do not", "never mind", "nevermind"]);
+const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-// A confirm long after the review could be about a different moment; ask again instead.
-const CONFIRM_WINDOW_MS = 2 * 60_000;
-const MAX_SUMMARY = 160;
+const normalise = (reply: string) =>
+  reply
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
-// The first prose line of a PR body, skipping headings like "## Purpose".
-export function bodySummary(body: string): string {
-  const line = body
+// Spoken text clipped and without its own full stop, since the sentence adds one.
+function bare(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return (flat.length > MAX_SPOKEN ? `${flat.slice(0, MAX_SPOKEN)}…` : flat).replace(/[.!?]+$/, "");
+}
+
+// The first line of the PR body's Purpose, else its first line of prose.
+function purposeOf(prBody: string): string {
+  const lines = prBody.split("\n").map((line) => line.trim());
+  const inline = lines.map((line) => /^\**purpose\**:\**\s*(.+)$/i.exec(line)?.[1]).find(Boolean);
+  if (inline) return inline;
+  const heading = lines.findIndex((line) => /^#+\s*purpose\b|^\*\*purpose\*\*$/i.test(line));
+  const after = heading >= 0 ? lines.slice(heading + 1) : lines;
+  return after.find((line) => line && !line.startsWith("#")) ?? "";
+}
+
+function listed(lines: string[]): string {
+  return lines.length > 1 ? `${bare(lines[0])}, and ${lines.length - 1} more` : bare(lines[0]);
+}
+
+// What the loop's review found. failedRounds is the story's review_rounds.
+export function reviewSummary(input: { state: string; prBody: string; failedRounds: number; fixAttempts: number }): string {
+  const purpose = purposeOf(input.prBody);
+  if (!input.state.trim() && !purpose) return "No review on record.";
+  const findings = readSection(input.state, "Review findings")
     .split("\n")
-    .map((text) => text.replace(/^[-*>\s]+/, "").trim())
-    .find((text) => text && !text.startsWith("#") && !text.startsWith("<!--"));
-  if (!line) return "";
-  return line.length > MAX_SUMMARY ? `${line.slice(0, MAX_SUMMARY)}…` : line;
+    .map((line) => line.replace(/^\s*[-*]\s*/, "").trim())
+    .filter((line) => line && !/^(none|n\/a)\b/i.test(line));
+  const fixed = findings.filter((line) => /^fixed:/i.test(line));
+  const followUps = findings.filter((line) => /^follow-up:/i.test(line)).map((line) => line.replace(/^follow-up:\s*/i, ""));
+  const open = findings.filter((line) => !/^(fixed|follow-up):/i.test(line));
+  const parts = [
+    purpose ? `Purpose: ${bare(purpose)}.` : "",
+    input.state.trim()
+      ? input.failedRounds > 0
+        ? `Review passed after ${input.failedRounds + 1} rounds.`
+        : "Review passed on the first round."
+      : "",
+    fixed.length > 0 ? `${plural(fixed.length, "finding")} fixed.` : findings.length === 0 && input.state.trim() ? "No findings." : "",
+    open.length > 0 ? `Still open: ${listed(open)}.` : "",
+    followUps.length > 0 ? `Follow-up: ${listed(followUps)}.` : "",
+    input.fixAttempts > 0 ? `CI needed ${input.fixAttempts === 1 ? "1 fix" : `${input.fixAttempts} fixes`}.` : "",
+  ];
+  return parts.filter(Boolean).join(" ");
 }
 
-// What stands between this PR and a clean merge, worst first. Empty means it looks good.
-export function concerns(facts: PrFacts, checks: PrStatus | null): string[] {
-  const found: string[] = [];
-  if (facts.mergeable === "CONFLICTING") found.push("it has merge conflicts");
-  if (checks?.state === "failing") found.push(`checks are failing: ${checks.failing.map((check) => check.name).join(", ")}`);
-  if (facts.reviewDecision === "CHANGES_REQUESTED") found.push("a reviewer requested changes");
-  if (facts.isDraft) found.push("it is still a draft");
-  if (checks?.state === "pending") found.push("checks are still running");
-  if (!checks) found.push("I couldn't read its checks");
-  return found;
+export function mergeAskText(item: MergeReady, explained: string | null): string {
+  const diff = explained?.trim() ? `${explained.trim()} ` : "";
+  return `${item.title}, PR ${item.pr}. CI is green. ${diff}${item.review} Say merge to merge it, or skip.`;
 }
 
-// `explained` is the model's read of the diff; without it the body's first line stands in.
-export function spokenReview(facts: PrFacts, checks: PrStatus | null, explained: string | null = null): string {
-  const summary = explained?.trim() || bodySummary(facts.body);
-  const size = `${facts.changedFiles} ${facts.changedFiles === 1 ? "file" : "files"}, ${facts.additions} lines added, ${facts.deletions} removed.`;
-  const issues = concerns(facts, checks);
-  const status = checks?.state === "green" ? "Checks passed." : checks?.state === "no-checks" ? "It has no checks." : "";
-  const verdict = issues.length
-    ? `I wouldn't merge it yet: ${issues.join("; ")}. Say confirm to merge anyway, or no.`
-    : `${status} No conflicts. Looks good. Say confirm to merge, or no.`;
-  return [`PR ${facts.number}: ${facts.title}.`, summary, size, verdict].filter(Boolean).join(" ").replace(/\s+/g, " ");
+// Only "merge" merges a PR; yes and confirm don't, so a misheard approval can't merge anything.
+export function interpretMergeReply(reply: string): "merge" | "skip" | { said: string } {
+  const words = normalise(reply);
+  if (!words) return { said: "I didn't catch that." };
+  if (MERGE.has(words)) return "merge";
+  if (SKIP.has(words)) return "skip";
+  return { said: "Say merge to merge it, or skip." };
 }
 
-export function createVoiceMerge(port: MergePort, now: () => number = Date.now) {
-  let pending: Pending | null = null;
+// The PRs the phone offers. A PR is offered once Haiku's summary has settled (ready or failed), so a
+// poll never waits on the model; the next poll picks it up. A push takes CI back to pending, which
+// drops the PR and its summary, so a summary describes the head that went green.
+export function createMergeQueue(port: MergePort, now: () => number = Date.now) {
+  const summaries = new Map<string, string | null>();
+  const explaining = new Set<string>();
+  const skippedUntil = new Map<string, number>();
+  // Merged or merging here; the loop marks the story merged on its next tick.
+  const done = new Set<string>();
 
-  async function review(): Promise<VoiceReply> {
-    pending = null;
-    const session = await port.lastSession();
-    if (!session) return { said: "No session has finished yet, so I don't know which PR you mean.", listen: false };
-    const who = session.title?.trim() || "The last session";
-    const facts = await port.pr(session.cwd);
-    if (!facts || facts.state !== "OPEN") return { said: `${who} has no open PR.`, listen: false };
-    const [checks, explained] = await Promise.all([
-      port.checks(session.cwd, facts.number),
-      port.explain(session.cwd, facts).catch((error: unknown) => {
-        console.warn("orchestrator: voice PR summary failed", error instanceof Error ? error.message : error);
-        return null;
-      }),
-    ]);
-    pending = { cwd: session.cwd, number: facts.number, headSha: facts.headRefOid, at: now() };
-    return { said: spokenReview(facts, checks, explained), listen: true };
+  function refresh(): MergeReady[] {
+    const ready = port.ready();
+    const ids = new Set(ready.map((item) => item.id));
+    for (const id of [...summaries.keys()]) if (!ids.has(id)) summaries.delete(id);
+    for (const item of ready) {
+      if (summaries.has(item.id) || explaining.has(item.id)) continue;
+      explaining.add(item.id);
+      void port
+        .explain(item)
+        .catch((error: unknown) => {
+          console.warn("orchestrator: voice PR summary failed", error instanceof Error ? error.message : error);
+          return null;
+        })
+        .then((summary) => {
+          explaining.delete(item.id);
+          summaries.set(item.id, summary);
+        });
+    }
+    return ready;
   }
 
-  async function merge(): Promise<VoiceReply> {
-    const target = pending;
-    pending = null;
-    if (!target || now() - target.at > CONFIRM_WINDOW_MS) {
-      return { said: "There's nothing waiting to merge. Say merge it first.", listen: false };
-    }
-    try {
-      await port.merge(target.cwd, target.number, target.headSha);
-      return { said: `Merged PR ${target.number}.`, listen: false };
-    } catch (error) {
-      console.warn("orchestrator: voice merge failed", error instanceof Error ? error.message : error);
-      return { said: `GitHub didn't merge PR ${target.number}. Check it in the app.`, listen: false };
-    }
-  }
+  const offered = (item: MergeReady) =>
+    summaries.has(item.id) && !done.has(item.id) && (skippedUntil.get(item.id) ?? 0) <= now();
 
   return {
-    async command(text: string): Promise<VoiceReply> {
-      // A habitual "roger" at the end, as voice replies use, is not part of the command.
-      const words = normalise(beforeRoger(text) ?? text);
-      if (!words) return { said: "I didn't catch that.", listen: true };
-      if (MERGE.has(words)) return review();
-      if (CONFIRM.has(words)) return merge();
-      if (NO.has(words)) {
-        const had = pending;
-        pending = null;
-        return { said: had ? "Okay, not merging." : "Okay.", listen: false };
+    next(): { id: string; text: string } | null {
+      const item = refresh().find(offered);
+      return item ? { id: item.id, text: mergeAskText(item, summaries.get(item.id) ?? null) } : null;
+    },
+    // null when `id` is not a PR waiting to merge.
+    async answer(id: string, reply: string): Promise<{ said: string } | null> {
+      const item = port.ready().find((ready) => ready.id === id);
+      if (!item) return null;
+      const decision = interpretMergeReply(reply);
+      if (typeof decision === "object") return decision;
+      if (decision === "skip") {
+        skippedUntil.set(item.id, now() + SKIP_MS);
+        return { said: "Skipped." };
       }
-      return { said: "I can merge the last session's PR. Say merge it.", listen: false };
+      if (done.has(item.id)) return { said: `PR ${item.pr} is already merging.` };
+      done.add(item.id);
+      const result = await port.merge(item).catch(() => ({ merged: false, said: `PR ${item.pr} did not merge.` }));
+      if (!result.merged) done.delete(item.id);
+      return { said: result.said };
     },
   };
 }
 
-export type VoiceMerge = ReturnType<typeof createVoiceMerge>;
+export type MergeQueue = ReturnType<typeof createMergeQueue>;
 
-const PR_FIELDS = "number,title,body,state,isDraft,mergeable,reviewDecision,additions,deletions,changedFiles,headRefOid";
+// Every story PR at the merge gate in the loop's repos, in repo, initiative, phase and story order.
+export function readyToMerge(roots: string[]): MergeReady[] {
+  return roots.flatMap((root) =>
+    dirsIn(initiativesDir(root)).flatMap((slug) => {
+      const phases = join(initiativesDir(root), slug, PHASES_DIR);
+      return dirsIn(phases).flatMap((phase) =>
+        readStoryFiles(join(phases, phase)).flatMap((story) => {
+          const pr = Number(story.meta.pr);
+          if (story.meta.status !== "pr-open" || story.meta.ci !== "green" || !Number.isInteger(pr) || pr <= 0) return [];
+          const worktree = story.meta.worktree && existsSync(story.meta.worktree) ? story.meta.worktree : "";
+          const outcome = readOutcome(readText(story.path));
+          const review = reviewSummary({
+            state: worktree ? readText(join(worktree, ".harness", "state.md")) : "",
+            prBody: worktree ? readText(join(worktree, ".harness", "pr-body.md")) : "",
+            failedRounds: outcome.reviewRounds,
+            fixAttempts: outcome.fixAttempts,
+          });
+          return [
+            { id: `merge:${root}:${slug}:${story.id}:${pr}`, storyId: story.id, title: story.meta.title || story.id, pr, cwd: worktree || root, review },
+          ];
+        }),
+      );
+    }),
+  );
+}
+
+export type MergeView = { isDraft: boolean; mergeable: string; mergeStateStatus: string; headRefOid: string };
+
+// Why GitHub's current view of the PR rules out merging it, or null when it is safe to merge.
+export function mergeBlocker(status: PrStatus | null, view: MergeView): string | null {
+  if (!status) return "couldn't be checked with GitHub";
+  if (status.state === "merged") return "is already merged";
+  if (status.state === "closed") return "was closed";
+  if (status.state === "failing") return `has a failing check: ${status.failing.map((check) => check.name).join(", ")}`;
+  if (status.state === "pending") return "still has checks running";
+  if (status.state === "no-checks") return "has no CI checks";
+  if (view.headRefOid !== status.headSha) return "changed while it was being checked";
+  if (view.isDraft) return "is a draft";
+  if (view.mergeable === "CONFLICTING" || view.mergeStateStatus === "DIRTY") return "has conflicts with its base branch";
+  if (view.mergeable !== "MERGEABLE" || view.mergeStateStatus === "UNKNOWN") return "is still being checked by GitHub. Try again in a minute";
+  if (view.mergeStateStatus === "BEHIND") return "is behind its base branch";
+  if (view.mergeStateStatus === "BLOCKED") return "is blocked by a branch rule, such as a required review";
+  if (view.mergeStateStatus !== "CLEAN" && view.mergeStateStatus !== "HAS_HOOKS") return `can't merge yet: ${view.mergeStateStatus.toLowerCase()}`;
+  return null;
+}
+
+type MergeDeps = { status: typeof prStatus; gh: typeof gh };
 
 // Prefer a merge commit, as the repo history does, falling back to what the repo allows.
-async function mergeMethod(cwd: string): Promise<string> {
+async function mergeMethod(cwd: string, run: typeof gh): Promise<string> {
   try {
     const allowed = JSON.parse(
-      await gh(["repo", "view", "--json", "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"], cwd),
+      await run(["repo", "view", "--json", "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"], cwd),
     ) as { mergeCommitAllowed?: boolean; squashMergeAllowed?: boolean; rebaseMergeAllowed?: boolean };
     if (allowed.mergeCommitAllowed) return "--merge";
     if (allowed.squashMergeAllowed) return "--squash";
     if (allowed.rebaseMergeAllowed) return "--rebase";
   } catch {
-    // Fall through: GitHub refuses a disallowed method and the user hears that it didn't merge.
+    // Fall through: GitHub refuses a disallowed method and the user hears why.
   }
   return "--merge";
 }
 
-const execFileAsync = promisify(execFile);
+// Merges pinned to the head GitHub just checked, so a later push can't slip in.
+export async function mergeStoryPr(item: MergeReady, deps: MergeDeps = { status: prStatus, gh }) {
+  const pr = String(item.pr);
+  try {
+    const status = await deps.status(item.cwd, item.pr);
+    const view = JSON.parse(
+      await deps.gh(["pr", "view", pr, "--json", "isDraft,mergeable,mergeStateStatus,headRefOid"], item.cwd),
+    ) as MergeView;
+    const blocker = mergeBlocker(status, view);
+    if (blocker) return { merged: false, said: `PR ${pr} ${blocker}. Not merged.` };
+    const method = await mergeMethod(item.cwd, deps.gh);
+    await deps.gh(["pr", "merge", pr, method, "--match-head-commit", view.headRefOid], item.cwd, 60_000);
+    return { merged: true, said: `Merged PR ${pr}.` };
+  } catch (error) {
+    const stderr = (error as { stderr?: unknown }).stderr;
+    const line = typeof stderr === "string" ? stderr.trim().split("\n")[0] : "";
+    return { merged: false, said: `PR ${pr} did not merge${line ? `: ${bare(line)}` : ""}.` };
+  }
+}
 
 // Enough diff for a summary; past this the model sees the head of it and is told so.
 const MAX_DIFF_CHARS = 60_000;
@@ -203,45 +293,29 @@ const runClaude: RunClaude = async (args, input) => {
   });
 };
 
-export async function claudeExplain(facts: PrFacts, diff: string, run: RunClaude = runClaude): Promise<string | null> {
+export async function claudeExplain(
+  pr: { title: string; body: string },
+  diff: string,
+  run: RunClaude = runClaude,
+): Promise<string | null> {
   const clipped = diff.length > MAX_DIFF_CHARS ? `${diff.slice(0, MAX_DIFF_CHARS)}\n[diff cut off here]` : diff;
   // No tools and no MCP servers: it only reads what it is given, and starts faster.
   const args = ["-p", "--model", "haiku", "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", EXPLAIN_PROMPT];
-  const text = (await run(args, `Title: ${facts.title}\n\nDescription:\n${facts.body}\n\nDiff:\n${clipped}`))
+  const text = (await run(args, `Title: ${pr.title}\n\nDescription:\n${pr.body}\n\nDiff:\n${clipped}`))
     .replace(/\s+/g, " ")
     .trim();
   return text || null;
 }
 
-// "dm/voice-merge" for an upstream of "origin/dm/voice-merge", or null when there is none.
-async function upstreamBranch(cwd: string): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync("git", ["rev-parse", "--abbrev-ref", "@{u}"], { cwd, timeout: 5_000 });
-    return stdout.trim().replace(/^[^/]+\//, "") || null;
-  } catch {
-    return null;
-  }
+async function explainPr(item: MergeReady): Promise<string | null> {
+  const pr = String(item.pr);
+  const [view, diff] = await Promise.all([
+    gh(["pr", "view", pr, "--json", "title,body"], item.cwd),
+    gh(["pr", "diff", pr], item.cwd),
+  ]);
+  return claudeExplain(JSON.parse(view) as { title: string; body: string }, diff);
 }
 
-export const ghMergePort: Omit<MergePort, "lastSession"> = {
-  async pr(cwd) {
-    // A renamed local branch no longer matches the PR's head, so fall back to the upstream's name.
-    for (const branch of [null, await upstreamBranch(cwd)]) {
-      try {
-        return JSON.parse(await gh(["pr", "view", ...(branch ? [branch] : []), "--json", PR_FIELDS], cwd)) as PrFacts;
-      } catch {
-        // Try the next name.
-      }
-    }
-    return null;
-  },
-  checks: prStatus,
-  async explain(cwd, facts) {
-    const diff = await gh(["pr", "diff", String(facts.number)], cwd);
-    return claudeExplain(facts, diff);
-  },
-  async merge(cwd, number, headSha) {
-    // --match-head-commit: a push after the review makes GitHub refuse instead of merging unseen code.
-    await gh(["pr", "merge", String(number), await mergeMethod(cwd), "--match-head-commit", headSha], cwd, 60_000);
-  },
-};
+export function voiceMergePort(roots: () => string[]): MergePort {
+  return { ready: () => readyToMerge(roots()), explain: explainPr, merge: (item) => mergeStoryPr(item) };
+}

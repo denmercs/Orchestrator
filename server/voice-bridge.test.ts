@@ -10,6 +10,7 @@ import {
   spokenReply,
   type VoiceAsk,
 } from "./voice-bridge";
+import { createMergeQueue, type MergeReady } from "./voice-merge";
 
 type Request = Parameters<typeof isRisky>[0];
 
@@ -254,4 +255,68 @@ test("http answer passes hold through and next tags the item kind", async () => 
   assert.deepEqual((await call("GET", "/voice/next")).body, { id: "reply:a1", kind: "reply", text: "Story 4 says: done" });
   const held = await call("POST", "/voice/answer", JSON.stringify({ id: "reply:a1", reply: "ship it", hold: true }));
   assert.deepEqual(held, { status: 200, body: { listen: true } });
+});
+
+const greenPr: MergeReady = { id: "m1", storyId: "S3", title: "Add voice merge", pr: 95, cwd: "/repo", review: "No findings." };
+
+async function mergeBridge() {
+  const merged: number[] = [];
+  const sent: [string, string][] = [];
+  const queue = createMergeQueue({
+    ready: () => (merged.length ? [] : [greenPr]),
+    explain: async () => null,
+    merge: async (item) => {
+      merged.push(item.pr);
+      return { merged: true, said: `Merged PR ${item.pr}.` };
+    },
+  });
+  const bridge = createVoiceBridge(
+    {
+      respond: async () => undefined,
+      send: async (agentId, text) => {
+        sent.push([agentId, text]);
+      },
+    },
+    queue,
+  );
+  queue.next();
+  await new Promise((resolve) => setImmediate(resolve));
+  return { bridge, merged, sent };
+}
+
+test("a green PR is read after any waiting ask, as a merge item", async () => {
+  const { bridge } = await mergeBridge();
+  bridge.onRequested({ id: "a1", title: "Story 4" }, bash("npm test", "r1"));
+  assert.equal(bridge.nextSpoken()?.id, "r1");
+  bridge.onResolved("r1");
+  assert.deepEqual(bridge.nextSpoken(), {
+    id: "m1",
+    kind: "merge",
+    text: "Add voice merge, PR 95. CI is green. No findings. Say merge to merge it, or skip.",
+  });
+});
+
+test("http answer with the merge id and a roger merges the PR", async () => {
+  const { bridge, merged } = await mergeBridge();
+  const next = await handleVoiceRequest(bridge, "t", { method: "GET", path: "/voice/next", authorization: "Bearer t", body: "" });
+  assert.equal((next.body as { kind: string }).kind, "merge");
+  const answer = await handleVoiceRequest(bridge, "t", {
+    method: "POST",
+    path: "/voice/answer",
+    authorization: "Bearer t",
+    body: JSON.stringify({ id: "m1", reply: "Merge roger", hold: true }),
+  });
+  assert.deepEqual(answer, { status: 200, body: { said: "Merged PR 95." } });
+  assert.deepEqual(merged, [95]);
+});
+
+test("without an id, merge answers the PR but a message still reaches the followed agent", async () => {
+  const { bridge, merged, sent } = await mergeBridge();
+  bridge.onRequested({ id: "a1", title: "Story 4" }, bash("npm test", "r1"));
+  await bridge.answer("yes");
+  assert.deepEqual(await bridge.answer("use pnpm instead"), { said: "Sent." });
+  assert.deepEqual(sent, [["a1", "use pnpm instead"]]);
+  assert.deepEqual(merged, []);
+  assert.deepEqual(await bridge.answer("merge it"), { said: "Merged PR 95." });
+  assert.deepEqual(merged, [95]);
 });
