@@ -106,3 +106,7 @@ test("entriesUntil: keeps entries at or before the cutoff and ones without a tim
   ];
   assert.deepEqual(entriesUntil(entries, cutoff).map((e) => e.id), ["before", "at", "none"]);
 });
+
+test("render: snapshot line says transcript entries are cut at the cutoff too", () => {
+  assert.match(render(data), /^Snapshot: .*transcript entries .*up to 2026-10-09T14:01:28Z\./m);
+});
