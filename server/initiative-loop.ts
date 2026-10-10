@@ -115,7 +115,8 @@ export function nudgePrompt(why: string) {
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
 
-function readRegistry(): string[] {
+// The repos the loop has run in; the voice bridge looks there for PRs to merge.
+export function readRegistry(): string[] {
   try {
     const parsed: unknown = JSON.parse(readText(REGISTRY) || "[]");
     return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];

@@ -25,6 +25,15 @@ export type VoicePort = {
   respond(agentId: string, requestId: string, response: AgentPermissionResponse): Promise<void>;
 };
 
+// A story PR at the merge gate (open, CI green). Its review is read out before "merge" can merge it.
+export type MergeReady = { id: string; storyId: string; title: string; pr: number; cwd: string; review: string };
+
+export type MergePort = {
+  ready(): MergeReady[];
+  // Checks the PR with GitHub again and merges it; `said` is the result or why it did not merge.
+  merge(item: MergeReady): Promise<{ merged: boolean; said: string }>;
+};
+
 const RISKY = [
   /\bgit\s+push\b/,
   /--force\b|\s-f\b.*\bpush\b/,
@@ -43,7 +52,12 @@ const YES = new Set(["yes", "yeah", "yep", "sure", "ok", "okay", "allow", "appro
 const NO = new Set(["no", "nope", "deny", "stop", "cancel", "dont", "do not"]);
 const CONFIRM = new Set(["confirm", "confirmed", "confirm it", "yes confirm", "confirm allow"]);
 
+const MERGE = new Set(["merge", "merge it", "merge now", "yes merge"]);
+const SKIP = new Set(["skip", "skip it", "no", "nope", "not now", "later", "wait"]);
+
 const MAX_SPOKEN = 160;
+// A skipped merge isn't offered again for an hour.
+export const SKIP_MS = 60 * 60 * 1000;
 
 function commandOf(request: AgentPermissionRequest): string {
   const command = request.input?.command;
@@ -59,7 +73,7 @@ function questionOf(request: AgentPermissionRequest): string {
   return request.description ?? "";
 }
 
-function clip(text: string): string {
+export function clip(text: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > MAX_SPOKEN ? `${flat.slice(0, MAX_SPOKEN)}…` : flat;
 }
@@ -112,9 +126,39 @@ export function interpretReply(reply: string, ask: VoiceAsk): VoiceDecision {
   };
 }
 
-export function createVoiceBridge(port: VoicePort) {
+export function mergeAskText(item: MergeReady): string {
+  return `${item.title}, PR ${item.pr}. CI is green. ${item.review} Say merge to merge it, or skip.`;
+}
+
+// Only "merge" merges a PR; yes and confirm don't, so a misheard approval can't merge anything.
+export function interpretMergeReply(reply: string): "merge" | "skip" | { said: string } {
+  const words = normalise(reply);
+  if (!words) return { said: "I didn't catch that." };
+  if (MERGE.has(words)) return "merge";
+  if (SKIP.has(words)) return "skip";
+  return { said: "Say merge to merge it, or skip." };
+}
+
+export function createVoiceBridge(port: VoicePort, merges?: MergePort, now: () => number = Date.now) {
   // Insertion order is arrival order, so the first entry is the oldest ask.
   const asks = new Map<string, VoiceAsk>();
+  const skippedUntil = new Map<string, number>();
+  // Merged or merging here; the loop marks the story merged on its next tick.
+  const done = new Set<string>();
+  const offered = (item: MergeReady) => !done.has(item.id) && (skippedUntil.get(item.id) ?? 0) <= now();
+  async function answerMerge(merger: MergePort, item: MergeReady, reply: string) {
+    const decision = interpretMergeReply(reply);
+    if (typeof decision === "object") return decision;
+    if (decision === "skip") {
+      skippedUntil.set(item.id, now() + SKIP_MS);
+      return { said: "Skipped." };
+    }
+    if (done.has(item.id)) return { said: `PR ${item.pr} is already merging.` };
+    done.add(item.id);
+    const result = await merger.merge(item).catch(() => ({ merged: false, said: `PR ${item.pr} did not merge.` }));
+    if (!result.merged) done.delete(item.id);
+    return { said: result.said };
+  }
   return {
     onRequested(agent: { id: string; title: string | null }, request: AgentPermissionRequest) {
       const risky = isRisky(request);
@@ -134,9 +178,20 @@ export function createVoiceBridge(port: VoicePort) {
     next(): VoiceAsk | null {
       return asks.values().next().value ?? null;
     },
+    // What the phone reads next: a blocked agent first, then a PR waiting to merge.
+    nextSpoken(): { id: string; text: string } | null {
+      const ask = this.next();
+      if (ask) return { id: ask.id, text: ask.text };
+      const item = merges?.ready().find(offered);
+      return item ? { id: item.id, text: mergeAskText(item) } : null;
+    },
     async answer(reply: string, id?: string): Promise<{ said: string } | null> {
-      const ask = id ? asks.get(id) : this.next();
-      if (!ask) return null;
+      const target = id ?? this.nextSpoken()?.id;
+      const ask = target ? asks.get(target) : undefined;
+      if (!ask) {
+        const item = target ? merges?.ready().find((ready) => ready.id === target) : undefined;
+        return merges && item ? answerMerge(merges, item, reply) : null;
+      }
       const decision = interpretReply(reply, ask);
       if (decision.kind === "refuse") return { said: decision.said };
       await port.respond(ask.agentId, ask.id, decision.response);
@@ -164,8 +219,8 @@ export async function handleVoiceRequest(
 ): Promise<VoiceHttpResult> {
   if (!token || !tokenMatches(request.authorization, token)) return { status: 401 };
   if (request.method === "GET" && request.path === "/voice/next") {
-    const ask = bridge.next();
-    return ask ? { status: 200, body: { id: ask.id, text: ask.text } } : { status: 204 };
+    const ask = bridge.nextSpoken();
+    return ask ? { status: 200, body: ask } : { status: 204 };
   }
   if (request.method === "POST" && request.path === "/voice/answer") {
     let parsed: { id?: unknown; reply?: unknown };

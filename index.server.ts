@@ -19,7 +19,7 @@ import { stopPlanServer } from "./server/plan-server";
 import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { advancePipeline, closeMergedStories, startStory } from "./server/pipeline-advance";
 import { createLoopAdvance } from "./server/loop-advance";
-import { createInitiativeLoop } from "./server/initiative-loop";
+import { createInitiativeLoop, readRegistry } from "./server/initiative-loop";
 import { startTicket } from "./server/ticket-start";
 import { readBranchInitials } from "./server/git-identity";
 import { getBranchInitials } from "./shared/naming";
@@ -37,6 +37,7 @@ import { startMemoryReplay } from "./shared/replay-rpc";
 import { join } from "node:path";
 import { readKeychainSecret } from "./server/keychain";
 import { createVoiceBridge, startVoiceServer, VOICE_PORT } from "./server/voice-bridge";
+import { voiceMergePort } from "./server/voice-merge";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -392,12 +393,16 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   // Voice bridge for a phone: on only when the Keychain holds a token. It binds to localhost unless
   // `orchestrator-voice-bind` names another address, such as the Mac's Tailscale IP.
   let voicePaseo: Parameters<typeof arm>[0] | null = null;
-  const voice = createVoiceBridge({
-    respond: async (agentId, requestId, response) => {
-      if (!voicePaseo) throw new Error("No Paseo session yet");
-      await voicePaseo.agents.ref(agentId).respondToPermission({ requestId, response });
+  // It also reads out green story PRs in the loop's repos, review first, and merges one on "merge".
+  const voice = createVoiceBridge(
+    {
+      respond: async (agentId, requestId, response) => {
+        if (!voicePaseo) throw new Error("No Paseo session yet");
+        await voicePaseo.agents.ref(agentId).respondToPermission({ requestId, response });
+      },
     },
-  });
+    voiceMergePort(readRegistry),
+  );
   let stopVoice: (() => Promise<void>) | null = null;
   let voiceStopped = false;
   void Promise.all([readKeychainSecret("orchestrator-voice-token"), readKeychainSecret("orchestrator-voice-bind")]).then(

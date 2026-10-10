@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createVoiceBridge, handleVoiceRequest, interpretReply, isRisky, spokenAsk, type VoiceAsk } from "./voice-bridge";
+import {
+  SKIP_MS,
+  createVoiceBridge,
+  handleVoiceRequest,
+  interpretMergeReply,
+  interpretReply,
+  isRisky,
+  spokenAsk,
+  type MergeReady,
+  type VoiceAsk,
+} from "./voice-bridge";
 
 type Request = Parameters<typeof isRisky>[0];
 
@@ -146,4 +156,84 @@ test("http next returns the oldest ask and answer applies the reply", async () =
     body: JSON.stringify({ reply: "yes" }),
   });
   assert.equal(none.status, 404);
+});
+
+const green: MergeReady = { id: "m1", storyId: "S3", title: "Add voice merge", pr: 95, cwd: "/repo", review: "Review passed on the first round." };
+
+function mergeBridge(ready: MergeReady[], result = { merged: true, said: "Merged PR 95." }) {
+  const merged: number[] = [];
+  let clock = 0;
+  const bridge = createVoiceBridge(
+    { respond: async () => undefined },
+    {
+      ready: () => ready,
+      merge: async (item) => {
+        merged.push(item.pr);
+        return result;
+      },
+    },
+    () => clock,
+  );
+  return { bridge, merged, tick: (ms: number) => (clock += ms) };
+}
+
+test("only merge merges; yes and confirm don't, and skip or no skip", () => {
+  assert.equal(interpretMergeReply("Merge."), "merge");
+  assert.equal(interpretMergeReply("merge it"), "merge");
+  assert.equal(interpretMergeReply("Not now"), "skip");
+  assert.equal(interpretMergeReply("no"), "skip");
+  assert.deepEqual(interpretMergeReply("yes"), { said: "Say merge to merge it, or skip." });
+  assert.deepEqual(interpretMergeReply("confirm"), { said: "Say merge to merge it, or skip." });
+  assert.deepEqual(interpretMergeReply(""), { said: "I didn't catch that." });
+});
+
+test("a green PR is read out with its review before the merge question, after any blocked agent", () => {
+  const { bridge } = mergeBridge([green]);
+  bridge.onRequested({ id: "a1", title: "Story 4" }, bash("npm test", "r1"));
+  assert.equal(bridge.nextSpoken()?.id, "r1");
+  bridge.onResolved("r1");
+  assert.deepEqual(bridge.nextSpoken(), {
+    id: "m1",
+    text: "Add voice merge, PR 95. CI is green. Review passed on the first round. Say merge to merge it, or skip.",
+  });
+});
+
+test("saying merge merges the PR once and stops offering it", async () => {
+  const { bridge, merged } = mergeBridge([green]);
+  assert.deepEqual(await bridge.answer("yes", "m1"), { said: "Say merge to merge it, or skip." });
+  assert.deepEqual(merged, []);
+  assert.deepEqual(await bridge.answer("merge", "m1"), { said: "Merged PR 95." });
+  assert.deepEqual(merged, [95]);
+  assert.equal(bridge.nextSpoken(), null);
+  assert.deepEqual(await bridge.answer("merge", "m1"), { said: "PR 95 is already merging." });
+  assert.deepEqual(merged, [95]);
+});
+
+test("a merge GitHub refuses says why and is offered again", async () => {
+  const { bridge } = mergeBridge([green], { merged: false, said: "PR 95 has conflicts with its base branch. Not merged." });
+  assert.deepEqual(await bridge.answer("merge"), { said: "PR 95 has conflicts with its base branch. Not merged." });
+  assert.equal(bridge.nextSpoken()?.id, "m1");
+});
+
+test("a skipped PR comes back after an hour", async () => {
+  const { bridge, merged, tick } = mergeBridge([green]);
+  assert.deepEqual(await bridge.answer("skip", "m1"), { said: "Skipped." });
+  assert.equal(bridge.nextSpoken(), null);
+  tick(SKIP_MS);
+  assert.equal(bridge.nextSpoken()?.id, "m1");
+  assert.deepEqual(merged, []);
+});
+
+test("http next falls back to a green PR and answer merges it", async () => {
+  const { bridge, merged } = mergeBridge([green]);
+  const next = await handleVoiceRequest(bridge, "t", { method: "GET", path: "/voice/next", authorization: "Bearer t", body: "" });
+  assert.equal((next.body as { id: string }).id, "m1");
+  const answer = await handleVoiceRequest(bridge, "t", {
+    method: "POST",
+    path: "/voice/answer",
+    authorization: "Bearer t",
+    body: JSON.stringify({ id: "m1", reply: "merge" }),
+  });
+  assert.deepEqual(answer, { status: 200, body: { said: "Merged PR 95." } });
+  assert.deepEqual(merged, [95]);
 });
