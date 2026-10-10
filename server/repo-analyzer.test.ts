@@ -4,8 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { Classify, Observation } from "../shared/corrections";
-import { readAreaNames } from "../shared/repo-facts";
+import type { Classify, Observation } from "./corrections";
+import { readAreaNames } from "./repo-facts";
 import { analyze, snapshot } from "./repo-analyzer";
 
 function repo() {

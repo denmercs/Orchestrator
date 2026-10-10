@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { AgentCreateConfig } from "../shared/agent-runner";
-import type { CorpusRow } from "../shared/replay";
+import type { CorpusRow } from "./replay";
 import { installBrief } from "./brief-install";
 import { readTelemetry, type TelemetryRow } from "./context-telemetry";
 import { defaultApiKey } from "./correction-classifier";
@@ -75,6 +75,18 @@ export function realReplayPorts(getPaseo: () => PaseoApi | null, agentConfig: (p
 }
 
 export const corpusFile = (root: string) => join(root, ".harness", "replay", "corpus.jsonl");
+
+export const costCapFile = (root: string) => join(root, ".harness", "replay", "cost-cap");
+
+// The cap (US dollars) that `corpus.mjs --cap` left next to the corpus; undefined when absent or not a positive number.
+export function readCostCap(root: string): number | undefined {
+  try {
+    const cap = Number(readFileSync(costCapFile(root), "utf8").trim());
+    return Number.isFinite(cap) && cap > 0 ? cap : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // The corpus rows, keeping every failed round and the first `controls` control rounds (all of them when unset).
 export function readCorpus(root: string, controls?: number): CorpusRow[] {

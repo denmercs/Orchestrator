@@ -183,7 +183,7 @@ test("render: Tokens and exploration states n, the typed-calls note and a per-ar
   const text = render({ rows: tokRows, labels: {} });
   const section = text.slice(text.indexOf("## Tokens and exploration"));
   assert.match(section, /n = 3 complete rounds/);
-  assert.match(section, /Exploration counts typed calls only \(Read, Grep, Glob\) until S9 merges/);
+  assert.match(section, /Exploration counts typed calls and Bash commands classified as reads, searches or edits \(S9\)/);
   assert.match(section, /\| facts \| 250 \| 1100 \|/);
   assert.match(section, /\| none \| 200 \| 900 \|/);
 });

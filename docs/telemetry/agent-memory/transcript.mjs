@@ -1,6 +1,6 @@
 // Offline adapter: a Claude Code transcript (JSONL entries) -> S1's ToolStep[] (shared/exploration.ts).
-// Never imported by server/, client/ or shared/. Bash, Agent and every other tool are dropped, as the
-// live adapter drops shell and sub_agent.
+// Never imported by server/, client/ or shared/. Bash becomes a `shell` item, which `toolSteps` classifies
+// as live; Agent and every other tool are dropped, as the live adapter drops sub_agent.
 import { exploration, toolSteps } from "../../../shared/exploration.ts";
 
 const KIND = { Read: "read", Grep: "search", Glob: "search", Edit: "edit", MultiEdit: "edit", Write: "write" };
@@ -31,11 +31,12 @@ function toolCalls(entries) {
   return calls;
 }
 
-// The timeline item the live adapter would see for a typed call; null for Bash, Agent and the rest.
+// The timeline item the live adapter would see for a typed call or Bash; null for Agent and the rest.
 function callItem({ name, input, result }) {
-  if (!(name in KIND)) return null;
   const status = result && !result.is_error ? "completed" : "failed";
   const content = result ? resultText(result.content) : "";
+  if (name === "Bash") return { type: "tool_call", status, detail: { type: "shell", command: input.command, output: content } };
+  if (!(name in KIND)) return null;
   const kind = KIND[name];
   let detail;
   if (kind === "read") detail = { type: "read", filePath: input.file_path, content };
@@ -57,13 +58,13 @@ export function transcriptSteps(entries) {
 export function shellBeforeEdit(entries, { step }) {
   const total = { calls: 0, chars: 0 };
   for (const call of toolCalls(entries)) {
+    if (call.name === "Bash") {
+      total.calls += 1;
+      total.chars += call.result ? resultText(call.result.content).length : 0;
+      continue;
+    }
     const item = callItem(call);
-    if (item === null) {
-      if (call.name === "Bash") {
-        total.calls += 1;
-        total.chars += call.result ? resultText(call.result.content).length : 0;
-      }
-    } else if (exploration(toolSteps([item]), { step }).edited) break;
+    if (item !== null && exploration(toolSteps([item]), { step }).edited) break;
   }
   return total;
 }

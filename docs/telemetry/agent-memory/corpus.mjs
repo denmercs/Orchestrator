@@ -23,7 +23,7 @@ export function corpusRows({ stories = [], agents = [], prCommits = {}, findings
   const build = (story, agent, kind) => {
     const key = keyOf(story.initiative, story.id);
     const commits = prCommits[key] ?? [];
-    const head = commits.filter((c) => c.committedDate <= agent.createdAt).pop();
+    const head = commits.filter((c) => Date.parse(c.committedDate) <= Date.parse(agent.createdAt)).pop();
     if (!head) return null;
     return {
       initiative: story.initiative,
@@ -119,33 +119,44 @@ function planSections(entries) {
   return { plan: last("Plan"), cycles: last("Cycles") };
 }
 
-function main() {
-  const repo = resolve(run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: HERE }).trim(), "..");
-  const flag = process.argv.indexOf("--controls");
-  const controls = flag > 0 ? Number(process.argv[flag + 1]) : undefined;
+// deps (tests): loopAgents, run, exit, repo (default root when no --root).
+export function main(argv = process.argv, deps = {}) {
+  const { loopAgents: loadAgents = loopAgents, run: exec = run, exit = (code) => process.exit(code) } = deps;
+  const valueOf = (name) => { const i = argv.indexOf(name); return i > 0 ? argv[i + 1] : undefined; };
+  const repo = valueOf("--root")
+    ? resolve(valueOf("--root"))
+    : deps.repo ?? resolve(exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: HERE }).trim(), "..");
+  const controls = valueOf("--controls") === undefined ? undefined : Number(valueOf("--controls"));
   if (controls !== undefined && !(Number.isInteger(controls) && controls >= 0)) {
     console.error("--controls takes a whole number");
-    process.exit(1);
+    return exit(1);
+  }
+  const capArg = valueOf("--cap");
+  const cap = capArg === undefined ? undefined : Number(capArg);
+  if (cap !== undefined && !(Number.isFinite(cap) && cap > 0)) {
+    console.error("--cap takes a positive number of US dollars");
+    return exit(1);
   }
   const files = storyFiles(repo);
-  const all = loopAgents({ repo }).sort((a, b) => byText(a.createdAt ?? "", b.createdAt ?? "") || byText(a.id, b.id));
+  // No S11 cutoff: the replay corpus wants every loop agent, however recent.
+  const all = loadAgents({ repo, until: "9999" }).sort((a, b) => byText(a.createdAt ?? "", b.createdAt ?? "") || byText(a.id, b.id));
   const prCommits = {};
   try {
-    const prs = JSON.parse(run("gh", ["pr", "list", "--state", "merged", "--limit", "1000", "--json", "number,headRefName"], { cwd: repo }));
+    const prs = JSON.parse(exec("gh", ["pr", "list", "--state", "merged", "--limit", "1000", "--json", "number,headRefName"], { cwd: repo }));
     for (const f of files) {
       const pr = prs.find((p) => String(p.number) === f.fm.pr) ?? prs.find((p) => p.headRefName === f.fm.branch);
       if (!pr) continue;
-      const commits = (JSON.parse(run("gh", ["pr", "view", String(pr.number), "--json", "commits"], { cwd: repo })).commits ?? [])
+      const commits = (JSON.parse(exec("gh", ["pr", "view", String(pr.number), "--json", "commits"], { cwd: repo })).commits ?? [])
         .map((c) => ({ oid: c.oid, committedDate: c.committedDate }));
       if (!commits.length) continue;
       // gh's output has no parent; asOf (d5) is the parent's committer date.
-      commits[0].parent = run("git", ["rev-parse", `${commits[0].oid}^`], { cwd: repo }).trim();
-      commits[0].parentDate = run("git", ["show", "-s", "--format=%cI", commits[0].parent], { cwd: repo }).trim();
+      commits[0].parent = exec("git", ["rev-parse", `${commits[0].oid}^`], { cwd: repo }).trim();
+      commits[0].parentDate = exec("git", ["show", "-s", "--format=%cI", commits[0].parent], { cwd: repo }).trim();
       prCommits[keyOf(f.initiative, f.id)] = commits;
     }
   } catch (err) {
     console.error(`gh or git failed, nothing written: ${err.stderr || err.message}`);
-    process.exit(1);
+    return exit(1);
   }
 
   const findingsByRound = {};
@@ -173,6 +184,7 @@ function main() {
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, rows.map((r) => JSON.stringify(r)).join("\n") + (rows.length ? "\n" : ""));
   const failed = rows.filter((r) => r.kind === "failed").length;
+  if (cap !== undefined) writeFileSync(join(dirname(out), "cost-cap"), `${cap}\n`);
   console.log(`corpus.jsonl: ${failed} failed, ${rows.length - failed} control rows → ${out}`);
 }
 

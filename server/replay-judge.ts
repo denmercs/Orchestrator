@@ -1,6 +1,6 @@
 // The replay judge: Claude Haiku decides which replayed Review findings match the recorded ones.
-import { INPUT_USD_PER_TOKEN, MAX_TOKENS, MODEL, OUTPUT_USD_PER_TOKEN } from "../shared/corrections";
-import { type Match, parseJudge } from "../shared/replay";
+import { INPUT_USD_PER_TOKEN, MAX_TOKENS, MODEL, OUTPUT_USD_PER_TOKEN } from "./corrections";
+import { type Match, parseJudge } from "./replay";
 import type { HaikuOptions } from "./correction-classifier";
 
 const URL = "https://api.anthropic.com/v1/messages";

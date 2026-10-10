@@ -1,6 +1,4 @@
-// Pure helpers for the memory replay: which brief each arm gets. Also the judge outcome, the queue and cap planning, and the RPC contract.
-import { defineRpc } from "@getpaseo/plugin";
-import { z } from "zod";
+// Pure helpers for the memory replay: which brief each arm gets. Also the judge outcome, the queue and cap planning. The RPC contract is in ./replay-rpc, which the client bundle imports and must stay free of node: modules.
 import { briefFor, type Memory } from "./memory";
 
 export type Arm = "none" | "facts" | "facts+corrections";
@@ -102,15 +100,3 @@ export function replayQueue(corpus: CorpusRow[], done: ReadonlySet<string>): Que
 export function fits(spent: number, reserve: number, cap: number, arms: number): boolean {
   return spent + arms * reserve <= cap + 1e-9;
 }
-
-// Starts the replay over `<root>/.harness/replay/corpus.jsonl`. It returns once the run has started; progress is in
-// `<root>/.harness/replay/<run>/run.log` and `results.jsonl`. `costCap` overrides the default cap, `controls` limits the control rounds.
-export const startMemoryReplay = defineRpc({
-  name: "orchestration.replay.start",
-  input: z.object({
-    root: z.string().min(1),
-    costCap: z.number().positive().optional(),
-    controls: z.number().int().min(0).optional(),
-  }),
-  output: z.object({ run: z.string(), rounds: z.number(), costCap: z.number(), runDir: z.string() }),
-});

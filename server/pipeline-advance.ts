@@ -152,7 +152,7 @@ export async function advancePipeline(
     if (after.kind === "cycle") await start(phase("implement"), round, after.cycle);
     else await start(phase("review"), round);
   } else if (phaseId === "review" && marker === MARKERS.reviewDone) {
-    await openPr(cwd, ticket);
+    await openPr(cwd, ticket, commitSubject(state, "Commit remaining changes"));
   } else if (phaseId === "review" && marker === MARKERS.reviewFailed) {
     // Findings go back to a fresh Implement agent, up to the round limit; then wait for a human.
     if (round < config.reviewRounds) await start(phase("implement"), round + 1);
@@ -160,7 +160,7 @@ export async function advancePipeline(
 }
 
 // Review passed: Done is plain code. Commit leftovers, push, open the PR, then wait for the merge.
-async function openPr(cwd: string, ticket: Ticket) {
+async function openPr(cwd: string, ticket: Ticket, subject: string) {
   const dedupe = `${cwd}:${ticket.key}:pr`;
   if (started.has(dedupe)) {
     return;
@@ -168,7 +168,7 @@ async function openPr(cwd: string, ticket: Ticket) {
   started.add(dedupe);
   try {
     const branch = await currentBranch(cwd);
-    const pr = await openStoryPr(cwd, { id: ticket.key, title: ticket.title, jira: true, branch, base: BASE });
+    const pr = await openStoryPr(cwd, { id: ticket.key, title: ticket.title, jira: true, branch, base: BASE, subject });
     if (!pr) throw new Error(`${branch} has no commits over ${BASE}; there is nothing to open a PR for.`);
     setMarker(cwd, `${MARKERS.prDone}\n${pr.url}`);
   } catch (error) {

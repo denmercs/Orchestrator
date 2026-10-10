@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
-import { type Observation, type ReviewComment, reviewObservations, storyObservations } from "../shared/corrections";
+import { type Observation, type ReviewComment, reviewObservations, storyObservations } from "./corrections";
 import { dirsIn, initiativesDir, PHASES_DIR, readStoryFiles } from "./harness-layout";
 
 // The I/O behind corrections: story files on disk plus `gh` for merged PRs and their review comments.

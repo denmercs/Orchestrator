@@ -2,8 +2,8 @@
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { ARMS } from "../../../shared/replay.ts";
-import { noteId, readMemory } from "../../../shared/memory.ts";
+import { ARMS } from "../../../server/replay.ts";
+import { noteId, readMemory } from "../../../server/memory.ts";
 
 // d1's minimum sample: complete failed and control rounds, per arm.
 const MIN_ROUNDS = 20;
@@ -160,7 +160,7 @@ export function tokensAndExploration(data) {
   if (ok.length === 0) return [...out, "no replay data", "", "n = 0", ""];
   out.push(
     `n = ${new Set(ok.map(roundKey)).size} complete rounds. Deltas are the median per-round difference against \`none\` on the same round; null values are skipped.`,
-    "Exploration counts typed calls only (Read, Grep, Glob) until S9 merges.",
+    "Exploration counts typed calls and Bash commands classified as reads, searches or edits (S9).",
     "",
     "| Arm | Tokens median | Tokens total | Cost median | Cost total | Reads median | Reads total | Files median | Files total | Chars median | Chars total | Δ tokens | Δ cost | Δ chars |",
     "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
