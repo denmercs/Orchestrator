@@ -106,7 +106,7 @@ test("stuckCheck names the failing test when both signals hold", () => {
 
 const NOW = Date.parse("2026-01-01T12:00:00.000Z");
 const iso = (ms: number) => new Date(ms).toISOString();
-const midOpts = { now: NOW, mid: { fingerprint: "f1", changed: iso(NOW - 60_000) }, step: "implement", subagents: false };
+const midOpts = { now: NOW, mid: { fingerprint: "f1", changed: iso(NOW - 60_000) }, step: "implement", subagents: false, testRunning: false, lastRunMs: null };
 
 test("midTurnCheck names a test failing in 3 runs, with +N more, and a passing last run is progress", () => {
   const r = midTurnCheck({ ...midOpts, runs: [["a", "b"], ["a"], ["b", "a"]], fingerprint: "f1" });
@@ -157,4 +157,23 @@ test("midTurnCheck keeps a failing streak as evidence when the worktree also cha
   assert.equal(r.evidence, "a failed 3 test runs in a row");
   assert.equal(r.progressed, false);
   assert.deepEqual(r.mid, { fingerprint: "f2", changed: iso(NOW) });
+});
+
+test("midTurnCheck isn't idle while a brief run is going, and is again once it isn't", () => {
+  const old = { fingerprint: "f1", changed: iso(NOW - 2 * MID_TURN_IDLE_MS) };
+  const running = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", mid: old, testRunning: true });
+  assert.deepEqual(running, { mid: old, evidence: null, progressed: false });
+  // A run past the cap reaches here as not running, so idleness counts again.
+  const capped = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", mid: old, testRunning: false });
+  assert.equal(capped.evidence, "no file edits in 20 minutes");
+});
+
+test("midTurnCheck restarts the idle clock at the last finished run, pass or fail, without calling it progress", () => {
+  const old = { fingerprint: "f1", changed: iso(NOW - 2 * MID_TURN_IDLE_MS) };
+  const failed = midTurnCheck({ ...midOpts, runs: [["a"]], fingerprint: "f1", mid: old, lastRunMs: NOW - 60_000 });
+  assert.deepEqual(failed, { mid: old, evidence: null, progressed: false });
+  const passed = midTurnCheck({ ...midOpts, runs: [[]], fingerprint: "f1", mid: old, lastRunMs: NOW - 60_000 });
+  assert.deepEqual([passed.evidence, passed.progressed], [null, true]);
+  const stale = midTurnCheck({ ...midOpts, runs: [["a"]], fingerprint: "f1", mid: old, lastRunMs: NOW - MID_TURN_IDLE_MS });
+  assert.equal(stale.evidence, "no file edits in 20 minutes");
 });

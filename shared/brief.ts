@@ -67,6 +67,25 @@ const RUNNER = `(async () => {
   const child = args.length === 1 && args[0].includes(" ")
     ? spawn(args[0], { shell: true, stdio })
     : spawn(args[0], args.slice(1), { stdio });
+  // A marker per brief process says a run is going, so a long test suite doesn't read as idle.
+  const logs = path.resolve(path.dirname(process.argv[1]), "..", "logs");
+  const marker = path.join(logs, STEP + "-" + process.pid + ".running");
+  const unmark = () => {
+    try {
+      fs.rmSync(marker, { force: true });
+    } catch {}
+  };
+  try {
+    fs.mkdirSync(logs, { recursive: true });
+    fs.writeFileSync(marker, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+  } catch {}
+  process.on("exit", unmark);
+  for (const [signal, code] of [["SIGHUP", 129], ["SIGINT", 130], ["SIGTERM", 143]]) {
+    process.on(signal, () => {
+      child.kill(signal);
+      process.exit(code);
+    });
+  }
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   let output = "";
@@ -80,7 +99,7 @@ const RUNNER = `(async () => {
     child.on("close", (exit) => resolve(exit ?? 1));
   });
 
-  const logs = path.resolve(path.dirname(process.argv[1]), "..", "logs");
+  unmark();
   fs.mkdirSync(logs, { recursive: true });
   const file = STEP + "-" + new Date().toISOString().replace(/[:.]/g, "-") + ".log";
   fs.writeFileSync(path.join(logs, file), output);

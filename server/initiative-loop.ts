@@ -53,7 +53,7 @@ import {
 import { withMcpScope } from "./mcp-scope";
 import { installSkills, skillPaths } from "./skill-sources";
 import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
-import { briefRuns, worktreeFingerprint } from "./turn-progress";
+import { activeBriefRuns, briefRuns, worktreeFingerprint } from "./turn-progress";
 import { inHoldWindow, usageLimitResumeAt } from "./usage-limit";
 
 // The stuck evidence a step carries in its frontmatter; a new step or a reopen starts it clean.
@@ -91,6 +91,8 @@ const STUCK_CLEAR = {
 //                    The tick also reads a running turn from disk: 3 failing brief logs in a row, or (Implement
 //                    only) no change outside .harness/ for 20 minutes. The first time one nudge is steered into
 //                    the turn; evidence again after it blocks as `stuck` and interrupts the turn.
+//                    A brief run under an hour old isn't idle, a finished one restarts the clock, and a nudge
+//                    whose send fails still counts.
 // The story files are the state: the loop writes status, branch, workspace, agent, pr and ci into
 // their frontmatter, so it resumes from them after a restart. Paseo owns the worktrees and agents.
 
@@ -703,7 +705,8 @@ export function createInitiativeLoop(
 
   // Reads a running turn's progress from disk (the brief logs since it started). The first evidence is
   // one nudge steered into the running turn, so it isn't interrupted; the nudge is shared with the
-  // turn-end check (`stuck_nudged`). A send that fails records nothing, so the next tick tries again.
+  // turn-end check (`stuck_nudged`). A send that fails still records the nudge, so the next evidence
+// blocks rather than retrying the nudge every tick.
   async function midTurnWatch(
     api: PaseoApi,
     story: StoryFile,
@@ -724,12 +727,17 @@ export function createInitiativeLoop(
     // After the nudge, only runs made since it count as evidence again.
     const nudgedMs = carried ? Date.parse(meta.mid_nudged ?? "") : Number.NaN;
     const since = Number.isNaN(nudgedMs) ? turnStart : Math.max(turnStart, nudgedMs);
-    const runs = briefRuns(meta.worktree, step, since).map((run) => run.failures);
+    const logged = briefRuns(meta.worktree, step, since);
+    const runs = logged.map((run) => run.failures);
     const subagents = meta.cycles === "subagents";
+    const now = Date.now();
     // Only Implement judges idleness, so only it pays for the git work.
-    const fingerprint = step === "implement" && !subagents ? worktreeFingerprint(meta.worktree) : null;
+    const idleWatch = step === "implement" && !subagents;
+    const fingerprint = idleWatch ? worktreeFingerprint(meta.worktree) : null;
+    const testRunning = idleWatch && activeBriefRuns(meta.worktree, step, now).length > 0;
+    const lastRunMs = logged.length > 0 ? logged[logged.length - 1].mtimeMs : null;
     const stored = { fingerprint: carried ? meta.mid_fingerprint || null : null, changed: carried ? meta.mid_changed || null : null };
-    const { mid, evidence, progressed } = midTurnCheck({ runs, fingerprint, now: Date.now(), mid: stored, step, subagents });
+    const { mid, evidence, progressed } = midTurnCheck({ runs, fingerprint, now, mid: stored, step, subagents, testRunning, lastRunMs });
     if (mid.fingerprint !== stored.fingerprint || mid.changed !== stored.changed) {
       writeFrontmatter(story.path, { mid_fingerprint: mid.fingerprint, mid_changed: mid.changed });
     }
@@ -749,10 +757,10 @@ export function createInitiativeLoop(
       return;
     }
     const text = nudgePrompt(`You look stuck: ${evidence}.`);
-    const sent = await api.agents.ref(meta.agent).send(text, { activeTurnBehavior: "steer" }).then(() => true, () => false);
+    await api.agents.ref(meta.agent).send(text, { activeTurnBehavior: "steer" }).catch(() => undefined);
     // Idleness is judged again from the nudge, not from the stale edit time.
     const nudgedAt = new Date().toISOString();
-    if (sent) writeFrontmatter(story.path, { stuck_nudged: 1, mid_nudged: nudgedAt, mid_changed: nudgedAt });
+    writeFrontmatter(story.path, { stuck_nudged: 1, mid_nudged: nudgedAt, mid_changed: nudgedAt });
   }
 
   // A story's worktree was removed mid-step, so there is nothing to resume. Its work went somewhere,

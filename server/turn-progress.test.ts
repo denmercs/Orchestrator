@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { briefRuns, worktreeFingerprint } from "./turn-progress";
+import { BRIEF_RUN_CAP_MS, activeBriefRuns, briefRuns, worktreeFingerprint } from "./turn-progress";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, stdio: "pipe" });
@@ -96,6 +96,28 @@ test("briefRuns is empty when the logs dir is missing", () => {
   const dir = mkdtempSync(join(tmpdir(), "turn-progress-"));
   try {
     assert.deepEqual(briefRuns(dir, "implement", 0), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("activeBriefRuns keeps the step's markers with a live pid under the cap, and skips the rest", () => {
+  const dir = mkdtempSync(join(tmpdir(), "turn-progress-"));
+  try {
+    const logs = join(dir, ".harness", "logs");
+    mkdirSync(logs, { recursive: true });
+    const now = Date.parse("2026-01-01T12:00:00.000Z");
+    const mark = (name: string, pid: number, ageMs: number) =>
+      writeFileSync(join(logs, name), JSON.stringify({ pid, startedAt: new Date(now - ageMs).toISOString() }));
+    const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+    assert.equal(BRIEF_RUN_CAP_MS, 60 * 60_000);
+    mark(`implement-c1-${process.pid}.running`, process.pid, 5 * 60_000);
+    mark(`implement-c1-${dead}.running`, dead, 60_000);
+    mark("implement-c1-1.running", process.pid, BRIEF_RUN_CAP_MS);
+    mark(`review-${process.pid}.running`, process.pid, 60_000);
+    writeFileSync(join(logs, "implement-c1-2.running"), "not json");
+    assert.deepEqual(activeBriefRuns(dir, "implement", now), [{ pid: process.pid, startedMs: now - 5 * 60_000 }]);
+    assert.deepEqual(activeBriefRuns(join(dir, "missing"), "implement", now), []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

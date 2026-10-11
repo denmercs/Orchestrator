@@ -96,14 +96,17 @@ export type MidTurn = { fingerprint: string | null; changed: string | null };
 // [] = pass), the worktree fingerprint now (null = unknown) and the carried fingerprint state.
 // Returns the next state, the stuck evidence (null when none) and whether the step made progress
 // (a passing last run or a changed fingerprint, with no evidence). A failing test is named before
-// idleness; idleness counts on Implement only and not for subagent parents.
-export function midTurnCheck({ runs, fingerprint, now, mid, step, subagents }: {
+// idleness; idleness counts on Implement only and not for subagent parents. A brief run still going
+// (`testRunning`) isn't idle, and the last finished run (`lastRunMs`, pass or fail) restarts the idle clock.
+export function midTurnCheck({ runs, fingerprint, now, mid, step, subagents, testRunning, lastRunMs }: {
   runs: readonly string[][];
   fingerprint: string | null;
   now: number;
   mid: MidTurn;
   step: string | null;
   subagents: boolean;
+  testRunning: boolean;
+  lastRunMs: number | null;
 }): { mid: MidTurn; evidence: string | null; progressed: boolean } {
   const streak = foldRuns({ fail_tests: [], fail_runs: 0 }, runs);
   let progressed = runs.length > 0 && runs[runs.length - 1].length === 0;
@@ -113,8 +116,9 @@ export function midTurnCheck({ runs, fingerprint, now, mid, step, subagents }: {
     if (mid.fingerprint !== null) progressed = true;
   }
   let evidence = failEvidence(streak.fail_tests, streak.fail_runs);
+  const activeMs = Math.max(Date.parse(next.changed ?? ""), lastRunMs ?? -Infinity);
   if (evidence === null && fingerprint !== null && step === "implement" && !subagents && next.changed !== null
-    && fingerprint === mid.fingerprint && now - Date.parse(next.changed) >= MID_TURN_IDLE_MS) {
+    && fingerprint === mid.fingerprint && !testRunning && now - activeMs >= MID_TURN_IDLE_MS) {
     evidence = `no file edits in ${MID_TURN_IDLE_MS / 60_000} minutes`;
   }
   // As at a turn end, an edit doesn't excuse a test that keeps failing.

@@ -2079,3 +2079,54 @@ test("a turn with no start time counts runs from when the tick first saw it", as
   assert.equal(sent.length, 1);
   assert.deepEqual(sent[0].options, { activeTurnBehavior: "steer" });
 });
+
+test("a steered nudge that fails to send is still recorded, so the next evidence blocks", async () => {
+  const fx = idleFixture("t1", 21);
+  writeFrontmatter(fx.story, { mid_nudged: null });
+  const { api, sent } = fakePaseo(runningTurn(fx.labels));
+  const ref = api.agents.ref;
+  api.agents.ref = (id: string) => ({
+    ...ref(id),
+    send: async (text: string, options?: { activeTurnBehavior?: string }) => {
+      sent.push({ id, text, options });
+      if (options?.activeTurnBehavior === "steer") throw new Error("agent busy");
+    },
+  });
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.equal(sent.length, 1);
+  const meta = storyMeta(fx.story);
+  assert.equal(meta.stuck_nudged, "1");
+  assert.ok(Date.parse(meta.mid_nudged ?? ""));
+  assert.equal(meta.status, "implementing");
+
+  // Three failing runs since the nudge are evidence again: the story blocks instead of nudging again.
+  for (const stamp of ["01", "02", "03"]) failingLog(fx.worktree, `implement-2099-01-01T00-00-${stamp}.log`, "parses a turn");
+  await initiative.tick();
+
+  assert.equal(storyMeta(fx.story).status, "blocked");
+  assert.deepEqual(sent.map((item) => item.options?.activeTurnBehavior), ["steer", "interrupt"]);
+});
+
+test("a brief run still going keeps a 21-minute idle Implement turn from being nudged", async () => {
+  const fx = idleFixture("t1", 21);
+  writeFrontmatter(fx.story, { mid_nudged: null });
+  mkdirSync(join(fx.worktree, ".harness", "logs"), { recursive: true });
+  const marker = join(fx.worktree, ".harness", "logs", `implement-${process.pid}.running`);
+  writeFileSync(marker, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 21 * 60_000).toISOString() }), "utf8");
+  const { api, sent } = fakePaseo(runningTurn(fx.labels));
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+  assert.equal(sent.length, 0);
+
+  // Past the hour cap the run no longer excuses idleness.
+  writeFileSync(marker, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 61 * 60_000).toISOString() }), "utf8");
+  await initiative.tick();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /You look stuck: no file edits in 20 minutes/);
+});

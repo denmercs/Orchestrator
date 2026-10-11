@@ -59,3 +59,42 @@ export function briefRuns(worktree: string, step: string, sinceMs: number): { na
   }
   return runs.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
 }
+
+// Past this a brief run no longer counts as running, so a hung test reads as idle again.
+export const BRIEF_RUN_CAP_MS = 60 * 60_000;
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+// The step's brief runs still going: `.harness/logs/<step>-<pid>.running` markers whose process is
+// alive and that started under BRIEF_RUN_CAP_MS before `now`. Dead, over-cap and unreadable markers
+// are skipped.
+export function activeBriefRuns(worktree: string, step: string, now: number): { pid: number; startedMs: number }[] {
+  const dir = join(worktree, ".harness", "logs");
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const active: { pid: number; startedMs: number }[] = [];
+  for (const name of names) {
+    if (!name.startsWith(`${step}-`) || !name.endsWith(".running")) continue;
+    try {
+      const { pid, startedAt } = JSON.parse(readFileSync(join(dir, name), "utf8")) as { pid?: unknown; startedAt?: unknown };
+      const startedMs = Date.parse(String(startedAt));
+      if (!Number.isInteger(pid) || (pid as number) <= 0 || Number.isNaN(startedMs)) continue;
+      if (now - startedMs >= BRIEF_RUN_CAP_MS || !alive(pid as number)) continue;
+      active.push({ pid: pid as number, startedMs });
+    } catch {
+      continue;
+    }
+  }
+  return active;
+}
