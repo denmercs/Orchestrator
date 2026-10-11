@@ -37,7 +37,8 @@ function judgeJson(reply: string): unknown {
   return null;
 }
 
-// Reads the judge's reply (see judgeJson). Null when it is not the agreed shape or an index is out of range.
+// Reads the judge's reply (see judgeJson). A match or new index that is out of range or malformed is dropped and the
+// rest kept. Null when it is not the agreed shape, or when it had matches and every one was bad.
 export function parseJudge(reply: string, nReplay: number, nRecorded: number): JudgeVerdict | null {
   const data = judgeJson(reply);
   if (typeof data !== "object" || data === null) return null;
@@ -45,11 +46,10 @@ export function parseJudge(reply: string, nReplay: number, nRecorded: number): J
   if (!Array.isArray(matches) || !Array.isArray(fresh)) return null;
   const pairs: Match[] = [];
   for (const m of matches) {
-    if (!Array.isArray(m) || m.length !== 2 || !isIndex(m[0], nReplay) || !isIndex(m[1], nRecorded)) return null;
-    pairs.push([m[0], m[1]]);
+    if (Array.isArray(m) && m.length === 2 && isIndex(m[0], nReplay) && isIndex(m[1], nRecorded)) pairs.push([m[0], m[1]]);
   }
-  if (!fresh.every((i) => isIndex(i, nReplay))) return null;
-  return { matches: pairs, new: fresh as number[] };
+  if (matches.length > 0 && pairs.length === 0) return null;
+  return { matches: pairs, new: fresh.filter((i): i is number => isIndex(i, nReplay)) };
 }
 
 // Recorded findings the replay caught or missed, and replay findings that matched nothing recorded. Null when the judge gave no matches.
