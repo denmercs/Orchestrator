@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useRpc, useSettings } from "@getpaseo/plugin/client";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
+import { contextSettings } from "../shared/context";
+import { initiativeLoopSettings } from "../shared/initiative-loop";
+import { budgetSettings } from "../shared/settings";
 import {
   DEFAULT_PHASES,
   KIT_SOURCE,
@@ -27,6 +30,15 @@ import {
   type SkillSource,
   type SourceStatus,
 } from "../shared/pipeline";
+import {
+  capLabel,
+  MODE_LABEL,
+  POLICY_STEPS,
+  stepAct,
+  stepCap,
+  stepStuckTurns,
+  stepWarn,
+} from "./context-tab-model";
 import {
   ADD_MODES,
   DRAWER_TABS,
@@ -227,7 +239,9 @@ export function SkillsDrawer({
           </Pressable>
         </View>
         <ScrollView style={styles.flex1} contentContainerStyle={styles.bodyContent}>
-          {!values ? (
+          {tab === "context" ? (
+            <ContextTab styles={styles} />
+          ) : !values ? (
             pipeline.settingsError ? (
               <Text style={[styles.muted, styles.danger]}>{pipeline.settingsError}</Text>
             ) : (
@@ -237,13 +251,158 @@ export function SkillsDrawer({
             )
           ) : tab === "phases" ? (
             <PhasesTab pipeline={pipeline} values={values} styles={styles} />
-          ) : tab === "context" ? (
-            <Text style={styles.muted}>Context policy settings land here soon.</Text>
           ) : (
             <SourcesTab pipeline={pipeline} values={values} styles={styles} />
           )}
         </ScrollView>
       </View>
+    </View>
+  );
+}
+
+// ---------- Context ----------
+
+// Edits three host settings directly; every press saves. It reads its own settings, so it works even
+// when the pipeline settings fail to load.
+function ContextTab({ styles }: { styles: Styles }) {
+  const context = useSettings(contextSettings);
+  const loop = useSettings(initiativeLoopSettings);
+  const budget = useSettings(budgetSettings);
+
+  return (
+    <>
+      <Text style={styles.muted}>
+        What happens as a session fills up. Warnings show on the story pill; actions run on their own.
+      </Text>
+      {context.status !== "ready" ? (
+        <Text style={styles.muted}>{context.status === "loading" ? "Loading…" : context.error}</Text>
+      ) : (
+        POLICY_STEPS.map(({ key, label, note }) => {
+          const policy = context.values[key];
+          const save = (patch: Partial<typeof policy>) =>
+            void context.save({ ...context.values, [key]: { ...policy, ...patch } }, context.revision);
+          return (
+            <View key={key} style={styles.card}>
+              <Text style={styles.cardTitle}>{label}</Text>
+              <ValueRow label="Warn at" styles={styles}>
+                <ValueStepper
+                  text={`${policy.warn}%`}
+                  styles={styles}
+                  onStep={(d) => save({ warn: stepWarn(policy, d) })}
+                />
+              </ValueRow>
+              <ValueRow label="Act at" styles={styles}>
+                <ValueStepper
+                  text={`${policy.act}%`}
+                  styles={styles}
+                  onStep={(d) => save({ act: stepAct(policy, d) })}
+                />
+              </ValueRow>
+              <ValueRow label="Then" styles={styles}>
+                <View style={styles.chipRow}>
+                  {(["compact", "fresh"] as const).map((mode) => (
+                    <Chip
+                      key={mode}
+                      label={MODE_LABEL[mode]}
+                      active={policy.mode === mode}
+                      styles={styles}
+                      onPress={() => policy.mode !== mode && save({ mode })}
+                    />
+                  ))}
+                </View>
+              </ValueRow>
+              {note ? <Text style={styles.muted}>{note}</Text> : null}
+              {context.saveError ? <Text style={[styles.muted, styles.danger]}>{context.saveError}</Text> : null}
+            </View>
+          );
+        })
+      )}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Stuck detection</Text>
+        {loop.status !== "ready" ? (
+          <Text style={styles.muted}>{loop.status === "loading" ? "Loading…" : loop.error}</Text>
+        ) : (
+          <>
+            <ValueRow label="No changes" styles={styles}>
+              <ValueStepper
+                text={String(loop.values.stuckTurns)}
+                suffix="turns"
+                styles={styles}
+                onStep={(d) =>
+                  void loop.save(
+                    { ...loop.values, stuckTurns: stepStuckTurns(loop.values.stuckTurns, d) },
+                    loop.revision,
+                  )
+                }
+              />
+            </ValueRow>
+            <ValueRow label="Or" styles={styles}>
+              <Text style={styles.body}>same test fails 3× in a row</Text>
+            </ValueRow>
+            <ValueRow label="Then" styles={styles}>
+              <Text style={styles.body}>Nudge once, then pause and add to Needs you</Text>
+            </ValueRow>
+            {loop.saveError ? <Text style={[styles.muted, styles.danger]}>{loop.saveError}</Text> : null}
+          </>
+        )}
+      </View>
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Story cost cap</Text>
+        {budget.status !== "ready" ? (
+          <Text style={styles.muted}>{budget.status === "loading" ? "Loading…" : budget.error}</Text>
+        ) : (
+          <>
+            <ValueRow label="Limit" styles={styles}>
+              <ValueStepper
+                text={capLabel(budget.values.storyCapUsd)}
+                suffix="per story"
+                styles={styles}
+                onStep={(d) =>
+                  void budget.save(
+                    { ...budget.values, storyCapUsd: stepCap(budget.values.storyCapUsd, d) },
+                    budget.revision,
+                  )
+                }
+              />
+            </ValueRow>
+            <ValueRow label="When hit" styles={styles}>
+              <Text style={styles.body}>Pause the agent and add it to Needs you</Text>
+            </ValueRow>
+            {budget.saveError ? <Text style={[styles.muted, styles.danger]}>{budget.saveError}</Text> : null}
+          </>
+        )}
+      </View>
+    </>
+  );
+}
+
+function ValueRow({ label, styles, children }: { label: string; styles: Styles; children: ReactNode }) {
+  return (
+    <View style={styles.gridRow}>
+      <Text style={styles.label}>{label}</Text>
+      <View style={styles.flex1}>{children}</View>
+    </View>
+  );
+}
+
+// − value + with an optional trailing unit; `onStep` gets +1 or −1.
+function ValueStepper({
+  text,
+  suffix,
+  styles,
+  onStep,
+}: {
+  text: string;
+  suffix?: string;
+  styles: Styles;
+  onStep(direction: 1 | -1): void;
+}) {
+  return (
+    <View style={styles.rowWrap}>
+      <Chip label="−" styles={styles} onPress={() => onStep(-1)} />
+      <Text style={[styles.body, styles.stepValue]}>{text}</Text>
+      <Chip label="+" styles={styles} onPress={() => onStep(1)} />
+      {suffix ? <Text style={styles.muted}>{suffix}</Text> : null}
     </View>
   );
 }
@@ -1190,6 +1349,7 @@ function createStyles(theme: Theme, compact: boolean) {
     label: { width: 64, color: c.foregroundMuted, fontSize: 11.5, paddingTop: 4 },
     body: { color: c.foreground, fontSize: 13 },
     muted: { color: c.foregroundMuted, fontSize: 12 },
+    stepValue: { minWidth: 44, textAlign: "center" as const },
     warn: { color: c.foregroundMuted, fontSize: 12, fontStyle: "italic" as const },
     link: { color: c.accent, fontSize: 13 },
     rowWrap: {
