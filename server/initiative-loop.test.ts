@@ -149,6 +149,20 @@ test("handOver moves agent: only when it names the old id", async () => {
   assert.equal(storyMeta(story).agent, "a2");
 });
 
+test("stepActive: true only for the story's agent while its marker is <step>-running", async () => {
+  const { worktree, labels } = fixture("a1");
+  const initiative = loop();
+  assert.equal(await initiative.stepActive(labels, "a1"), true);
+  assert.equal(await initiative.stepActive(labels, "other"), false);
+
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1\n\n## Status\nimplement-done\n", "utf8");
+  assert.equal(await initiative.stepActive(labels, "a1"), false);
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1\n\n## Status\nreview-running\n", "utf8");
+  assert.equal(await initiative.stepActive(labels, "a1"), false);
+
+  assert.equal(await initiative.stepActive({ ...labels, "loop-story": "S99" }, "a1"), false);
+});
+
 test("resumePrompt is the step prompt plus the resume line", async () => {
   const { labels } = fixture();
   const prompt = await loop().resumePrompt(labels);

@@ -150,8 +150,8 @@ export const contextStatus = z.object({
   warned: z.array(z.enum(["amber", "red"])),
   mode: z.enum(["normal", "remind", "ignore"]),
   red: z.number(),
-  // Whether the session will compact on its own at red: false when skipped, on Ignore, for a loop
-  // agent or with the setting off.
+  // Whether the session will compact on its own at red: false when skipped, on Ignore, for a replay
+  // agent or with the setting off. A loop agent counts: it acts only while it owns its step.
   auto: z.boolean(),
 });
 

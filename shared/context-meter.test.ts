@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  actStrategy,
   detectCompaction,
   nextWarning,
   readContext,
@@ -196,7 +197,7 @@ test("detectCompaction: no previous reading and no item is no compaction", () =>
   assert.equal(detectCompaction(null, at(40_000), []), null);
 });
 
-const GO = { enabled: true, running: false, pendingPermissions: false, completed: true, loop: false };
+const GO = { enabled: true, running: false, pendingPermissions: false, completed: true, replay: false };
 
 test("shouldAutoCompact: red, armed and every guard clear compacts", () => {
   assert.equal(shouldAutoCompact(fresh, reading("red"), GO), true);
@@ -216,10 +217,25 @@ test("shouldAutoCompact: already sent or skipped does not compact", () => {
   assert.equal(shouldAutoCompact({ ...fresh, auto: "skipped" }, reading("red"), GO), false);
 });
 
-test("shouldAutoCompact: running, pending permission, unfinished turn, loop agent or setting off do not compact", () => {
+test("shouldAutoCompact: running, pending permission, unfinished turn, replay agent or setting off do not compact", () => {
   assert.equal(shouldAutoCompact(fresh, reading("red"), { ...GO, running: true }), false);
   assert.equal(shouldAutoCompact(fresh, reading("red"), { ...GO, pendingPermissions: true }), false);
   assert.equal(shouldAutoCompact(fresh, reading("red"), { ...GO, completed: false }), false);
-  assert.equal(shouldAutoCompact(fresh, reading("red"), { ...GO, loop: true }), false);
+  assert.equal(shouldAutoCompact(fresh, reading("red"), { ...GO, replay: true }), false);
   assert.equal(shouldAutoCompact(fresh, reading("red"), { ...GO, enabled: false }), false);
+});
+
+test("actStrategy: fresh mode starts fresh even with /compact", () => {
+  const reading = readContext(snapshot(150_000), THRESHOLDS);
+  assert.deepEqual(actStrategy("fresh", reading), { strategy: "fresh", fallback: false });
+});
+
+test("actStrategy: compact mode with /compact is native", () => {
+  const reading = readContext(snapshot(150_000), THRESHOLDS);
+  assert.deepEqual(actStrategy("compact", reading), { strategy: "native", fallback: false });
+});
+
+test("actStrategy: compact mode without /compact falls back to fresh", () => {
+  const reading = readContext(snapshot(150_000, []), THRESHOLDS);
+  assert.deepEqual(actStrategy("compact", reading), { strategy: "fresh", fallback: true });
 });

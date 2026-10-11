@@ -71,18 +71,30 @@ export function nextWarning(memory: WarningMemory, reading: ContextReading): War
   return memory.warned.includes(reading.level) ? null : { level: reading.level };
 }
 
+// What act % does: the step's mode, and `fallback` when `compact` had to start fresh because the
+// session has no `/compact`. `reading.strategy` is capability only, so a manual Compact ignores the mode.
+export function actStrategy(
+  mode: StepPolicy["mode"],
+  reading: ContextReading,
+): { strategy: CompactStrategy; fallback: boolean } {
+  if (mode === "fresh") return { strategy: "fresh", fallback: false };
+  return reading.strategy === "native"
+    ? { strategy: "native", fallback: false }
+    : { strategy: "fresh", fallback: true };
+}
+
 export type AutoCompactGuards = {
   enabled: boolean;
   running: boolean;
   pendingPermissions: boolean;
   completed: boolean;
-  loop: boolean;
+  replay: boolean;
 };
 
 // Compact on its own once per red crossing, only when nothing else is going on in the session.
 export function shouldAutoCompact(memory: WarningMemory, reading: ContextReading, guards: AutoCompactGuards): boolean {
   if (reading.level !== "red" || memory.mode === "ignore" || memory.auto !== "armed") return false;
-  return guards.enabled && !guards.running && !guards.pendingPermissions && guards.completed && !guards.loop;
+  return guards.enabled && !guards.running && !guards.pendingPermissions && guards.completed && !guards.replay;
 }
 
 // A timeline item as the meter sees it. Only `compaction` items matter; S2's watch passes just

@@ -808,6 +808,18 @@ export function createInitiativeLoop(
       });
     },
 
+    // Whether this session still owns its step: the story's `agent:` is it and the step's marker is
+    // `<step>-running`. A step that wrote `-done` or moved on is not, so the context watch leaves it alone.
+    stepActive(labels: Record<string, string>, agentId: string): Promise<boolean> {
+      return serial(async () => {
+        const found = labelledStory(labels);
+        const step = labels["loop-step"];
+        const worktree = found?.story.meta.worktree;
+        if (!found || !step || !worktree || found.story.meta.agent !== agentId) return false;
+        return readMarker(readText(stateFile(worktree))).marker === `${step}-running`;
+      });
+    },
+
     // A story's gate fields, from whichever phase holds it; null when the initiative or story isn't there.
     gateStory(input: StoryRef) {
       return serial(async () => {
