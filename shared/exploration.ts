@@ -79,6 +79,7 @@ export type ToolItem = {
   type: string;
   status?: string;
   detail?: { type: string; [field: string]: unknown };
+  error?: unknown;
 };
 
 const str = (value: unknown): string | null => (typeof value === "string" ? value : null);
