@@ -1,7 +1,7 @@
 // One-shot Claude Haiku calls through the Claude Code CLI the user is already signed into, so no API key is needed.
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { MODEL } from "./corrections";
+import { MAX_TOKENS, MODEL } from "./corrections";
 
 export type Ask = (system: string, prompt: string) => Promise<{ text: string; costUsd: number }>;
 // Runs `claude` with these args and the prompt on stdin; resolves with stdout.
@@ -27,10 +27,13 @@ export const cliArgs = (system: string) => [
   "--no-session-persistence",
 ];
 
+// Caps the reply at MAX_TOKENS, so the cost cap's worst case holds, and turns thinking off.
+export const CLI_ENV = { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(MAX_TOKENS), MAX_THINKING_TOKENS: "0" };
+
 // Runs from the temp dir so no project CLAUDE.md is read.
 export const runClaude: RunCli = (args, input) =>
   new Promise((resolve, reject) => {
-    const child = spawn("claude", args, { cwd: tmpdir(), timeout: TIMEOUT_MS });
+    const child = spawn("claude", args, { cwd: tmpdir(), timeout: TIMEOUT_MS, env: { ...process.env, ...CLI_ENV } });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => (stdout += chunk));
@@ -57,4 +60,13 @@ export function claudeCli(run: RunCli = runClaude): Ask {
     if (reply.is_error) throw Object.assign(new Error(`claude CLI failed: ${text.slice(0, 300)}`), { costUsd });
     return { text, costUsd };
   };
+}
+
+// Whether the Claude Code CLI is installed and signed in (`claude auth status`). Never throws.
+export async function claudeSignedIn(run: RunCli = runClaude): Promise<boolean> {
+  try {
+    return JSON.parse(await run(["auth", "status"], "")).loggedIn === true;
+  } catch {
+    return false;
+  }
 }

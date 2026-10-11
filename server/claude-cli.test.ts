@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { claudeCli, cliArgs, type RunCli } from "./claude-cli";
-import { MODEL } from "./corrections";
+import { CLI_ENV, claudeCli, claudeSignedIn, cliArgs, type RunCli } from "./claude-cli";
+import { MAX_TOKENS, MODEL } from "./corrections";
 
 function fakeRun(stdout: string) {
   const calls: { args: string[]; input: string }[] = [];
@@ -50,4 +50,21 @@ test("an error envelope throws with its message and its cost", async () => {
 test("output that is not JSON throws", async () => {
   const { run } = fakeRun("command not found");
   await assert.rejects(claudeCli(run)("s", "p"), /not JSON/);
+});
+
+test("caps the reply at MAX_TOKENS and turns thinking off", () => {
+  assert.equal(CLI_ENV.CLAUDE_CODE_MAX_OUTPUT_TOKENS, String(MAX_TOKENS));
+  assert.equal(CLI_ENV.MAX_THINKING_TOKENS, "0");
+});
+
+test("claudeSignedIn reads `claude auth status`", async () => {
+  const { run, calls } = fakeRun(JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }));
+  assert.equal(await claudeSignedIn(run), true);
+  assert.deepEqual(calls[0].args, ["auth", "status"]);
+  assert.equal(await claudeSignedIn(fakeRun(JSON.stringify({ loggedIn: false })).run), false);
+  assert.equal(await claudeSignedIn(fakeRun("not json").run), false);
+  const missing: RunCli = async () => {
+    throw new Error("could not run the claude CLI: spawn claude ENOENT");
+  };
+  assert.equal(await claudeSignedIn(missing), false);
 });

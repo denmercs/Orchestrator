@@ -88,7 +88,7 @@ type Fake = {
   replayed: unknown[];
 };
 
-function wired(pending: string[] = []) {
+function wired(pending: string[] = [], signedIn = true) {
   const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
   const listeners = new Map<string, (event: unknown, context: unknown) => unknown>();
   const noop = () => undefined;
@@ -113,7 +113,7 @@ function wired(pending: string[] = []) {
       return noop;
     },
   });
-  contribute(server, { replay: runner });
+  contribute(server, { replay: runner, signedIn: async () => signedIn });
   return { handlers, listeners, fake };
 }
 
@@ -162,6 +162,14 @@ test("startMemoryReplay says clearly when the corpus is missing", async () => {
   const handler = handlers.get(startMemoryReplay.name);
   assert.ok(handler);
   await assert.rejects(async () => handler({ root: repoWithCorpus(null) }, { paseo: {} }), /corpus\.jsonl.*corpus\.mjs/s);
+});
+
+test("startMemoryReplay refuses to start when Claude Code is signed out", async () => {
+  const { handlers, fake } = wired([], false);
+  const handler = handlers.get(startMemoryReplay.name);
+  assert.ok(handler);
+  await assert.rejects(async () => handler({ root: repoWithCorpus([row("S1", "failed")]) }, { paseo: {} }), /not signed in/);
+  assert.equal(fake.replayed.length, 0);
 });
 
 test("a memory-replay turn end reaches the runner and not the initiative loop", async () => {
