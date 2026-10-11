@@ -36,7 +36,13 @@ test("an unusable reply still reports its cost, with matches null", async () => 
     const result = await haikuJudge(ask)(recorded, replay);
     assert.equal(result.matches, null);
     assert.equal(result.costUsd, 0.0015);
+    assert.equal(result.reply, text);
   }
+});
+
+test("a usable reply is not echoed back", async () => {
+  const { ask } = fakeAsk('{"matches":[],"new":[0,1,2]}');
+  assert.equal((await haikuJudge(ask)(recorded, replay)).reply, undefined);
 });
 
 test("a failed ask propagates", async () => {

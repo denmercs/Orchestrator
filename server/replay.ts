@@ -20,15 +20,26 @@ function isIndex(v: unknown, limit: number): v is number {
   return typeof v === "number" && Number.isInteger(v) && v >= 0 && v < limit;
 }
 
-// Reads the judge's reply (bare or in a ```json fence). Null when it is not the agreed shape or an index is out of range.
-export function parseJudge(reply: string, nReplay: number, nRecorded: number): JudgeVerdict | null {
+// The JSON in a judge reply: bare, in a ```json fence, or the outermost {…} inside prose. Null when none parses.
+function judgeJson(reply: string): unknown {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(reply);
-  let data: unknown;
-  try {
-    data = JSON.parse((fenced ? fenced[1] : reply).trim());
-  } catch {
-    return null;
+  const start = reply.indexOf("{");
+  const end = reply.lastIndexOf("}");
+  const candidates = [fenced ? fenced[1] : reply, start >= 0 && end > start ? reply.slice(start, end + 1) : null];
+  for (const text of candidates) {
+    if (text === null) continue;
+    try {
+      return JSON.parse(text.trim());
+    } catch {
+      // try the next candidate
+    }
   }
+  return null;
+}
+
+// Reads the judge's reply (see judgeJson). Null when it is not the agreed shape or an index is out of range.
+export function parseJudge(reply: string, nReplay: number, nRecorded: number): JudgeVerdict | null {
+  const data = judgeJson(reply);
   if (typeof data !== "object" || data === null) return null;
   const { matches, new: fresh } = data as { matches?: unknown; new?: unknown };
   if (!Array.isArray(matches) || !Array.isArray(fresh)) return null;

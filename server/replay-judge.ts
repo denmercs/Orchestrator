@@ -2,7 +2,8 @@
 import { type Ask, claudeCli } from "./claude-cli";
 import { type Match, parseJudge } from "./replay";
 
-export type Judge = (recorded: string[], replay: string[]) => Promise<{ matches: Match[] | null; costUsd: number }>;
+// `reply` carries the raw text when it could not be read, so a run can show why a row has no outcome.
+export type Judge = (recorded: string[], replay: string[]) => Promise<{ matches: Match[] | null; costUsd: number; reply?: string }>;
 
 const SYSTEM = [
   "You compare two lists of code review findings: RECORDED (what a past review found) and REPLAY (what a replayed review found).",
@@ -18,6 +19,6 @@ export function haikuJudge(ask: Ask = claudeCli()): Judge {
     // An unusable reply was still billed: report the cost with no verdict.
     const { text, costUsd } = await ask(SYSTEM, `${list("RECORDED", recorded)}\n\n${list("REPLAY", replay)}`);
     const verdict = parseJudge(text, replay.length, recorded.length);
-    return { matches: verdict ? verdict.matches : null, costUsd };
+    return verdict ? { matches: verdict.matches, costUsd } : { matches: null, costUsd, reply: text };
   };
 }

@@ -384,6 +384,27 @@ test("a 'None' findings bullet is not a replay finding", async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+test("an unreadable judge reply is kept on the row", async () => {
+  const { root, runDir, calls, ports } = setup();
+  withCaps(ports);
+  ports.judge = async () => ({ matches: null, costUsd: 0.003, reply: "I think replay 0 matches." });
+  const replay = createMemoryReplay(ports);
+  const done = replay.replay([row], { run: "run1", root, runDir });
+  await tick();
+  await tick();
+  for (const id of replay.pendingAgents()) {
+    const dir = calls.workspaces.find((w) => w.id === calls.agents[Number(id.slice(2)) - 1].workspace)!.directory;
+    writeFileSync(join(dir, ".harness", "state.md"), reviewState("- parse has no test"), "utf8");
+    await replay.onTurnEnded({ agentId: id });
+  }
+  await done;
+  const first = rowsOf(runDir)[0];
+  assert.equal(first.outcome, null);
+  assert.equal(first.judgeCostUsd, 0.003);
+  assert.equal(first.judgeReply, "I think replay 0 matches.");
+  rmSync(root, { recursive: true, force: true });
+});
+
 test("a rerun retries error rows", async () => {
   const { root, runDir, calls, ports } = setup();
   withCaps(ports);

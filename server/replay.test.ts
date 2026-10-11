@@ -62,6 +62,11 @@ test("parseJudge tolerates a fenced json block", () => {
   assert.deepEqual(parseJudge(reply, 1, 1), { matches: [[0, 0]], new: [] });
 });
 
+test("parseJudge finds the JSON object inside surrounding prose", () => {
+  const reply = 'Comparing the lists:\n{"matches":[[0,0]],"new":[1]}\nReplay 1 is a separate problem.';
+  assert.deepEqual(parseJudge(reply, 2, 1), { matches: [[0, 0]], new: [1] });
+});
+
 test("parseJudge returns null for bad JSON, out-of-range indexes and wrong shapes", () => {
   assert.equal(parseJudge("not json", 1, 1), null);
   assert.equal(parseJudge('{"matches":[[2,0]],"new":[]}', 2, 1), null);
