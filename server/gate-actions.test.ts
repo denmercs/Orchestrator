@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   APPROVE_MESSAGE,
+  CONTINUE_MESSAGE,
   createGateActions,
   loopGatePort,
   NUDGE_MESSAGE,
@@ -23,6 +24,8 @@ function fakePort(
   retryResult: GateResult = { ok: true, error: null, agentId: "r1" },
   // The PR number a `pr` block's PR is still closed at, or null when it isn't closed.
   closed: number | null = null,
+  // Whether the story's step marker is still `<step>-running`.
+  running = true,
 ) {
   // Every port call in order, so a test can check what happened first.
   const calls: string[] = [];
@@ -55,6 +58,13 @@ function fakePort(
       calls.push("closedPr");
       return closed;
     },
+    raiseCap: async () => {
+      calls.push("raiseCap");
+    },
+    leaveStopped: async () => {
+      calls.push("leaveStopped");
+    },
+    stepRunning: async () => running,
   };
   return { port, sent, reopened, fresh, retried, calls };
 }
@@ -338,6 +348,16 @@ function realPort(agents: Record<string, { status: string; archivedAt?: string }
       looked.push(ref);
       return 45;
     },
+    raiseCap: async (ref: { repo: string; initiative: string; storyId: string }) => {
+      looked.push(ref);
+    },
+    leaveStopped: async (ref: { repo: string; initiative: string; storyId: string }) => {
+      looked.push(ref);
+    },
+    stepRunning: async (ref: { repo: string; initiative: string; storyId: string }) => {
+      looked.push(ref);
+      return true;
+    },
   };
   const paseo = {
     agents: {
@@ -417,3 +437,55 @@ test("loopGatePort: closedPr asks the loop with the split board key, and a bad k
   assert.equal(await port.closedPr({ board: "no-newline", storyId: "S12" }), null);
   assert.deepEqual(looked, [{ repo: "/repo", initiative: "orchestration-redesign", storyId: "S12" }]);
 });
+
+const capStory = (blockKind: GateStory["blockKind"] = "cost-cap"): Record<string, GateStory> => ({
+  S12: { status: "blocked", agent: "a1", waitingOn: null, blockKind },
+});
+
+test("continue: raises the cap, then messages an open session whose step is still running", async () => {
+  const { port, calls, sent, retried } = fakePort(capStory(), ["a1"]);
+  const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action: "continue" });
+  assert.deepEqual(result, { ok: true, error: null, agentId: "a1" });
+  assert.deepEqual(calls.slice(0, 1), ["raiseCap"]);
+  assert.deepEqual(sent, [["a1", CONTINUE_MESSAGE]]);
+  assert.deepEqual(retried, []);
+});
+
+test("continue: an ended session starts the step again, which raises the cap itself", async () => {
+  const { port, calls, sent, retried } = fakePort(capStory(), [], undefined, ["a1"]);
+  const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action: "continue" });
+  assert.deepEqual(result, { ok: true, error: null, agentId: "r1" });
+  assert.deepEqual(calls.filter((call) => call === "raiseCap" || call === "retryStep"), ["retryStep"]);
+  assert.deepEqual([sent, retried], [[], ["S12"]]);
+});
+
+test("continue: a step marker that is already done only raises the cap", async () => {
+  const { port, calls } = fakePort(capStory(), ["a1"], undefined, [], undefined, null, false);
+  const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action: "continue" });
+  assert.deepEqual(result, { ok: true, error: null, agentId: null });
+  assert.deepEqual(calls.filter((call) => call !== "stepRunning"), ["raiseCap"]);
+});
+
+test("leave: leaves a cost-cap block stopped and wakes nothing", async () => {
+  const { port, calls } = fakePort(capStory(), ["a1"]);
+  const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action: "leave" });
+  assert.deepEqual(result, { ok: true, error: null, agentId: null });
+  assert.deepEqual(calls, ["leaveStopped"]);
+});
+
+test("retry: a left cost-cap block behaves like continue", async () => {
+  const { port, calls, sent } = fakePort(capStory("cost-cap-left"), ["a1"]);
+  const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action: "retry" });
+  assert.deepEqual(result, { ok: true, error: null, agentId: "a1" });
+  assert.equal(calls[0], "raiseCap");
+  assert.deepEqual(sent, [["a1", CONTINUE_MESSAGE]]);
+});
+
+for (const action of ["continue", "leave"] as const) {
+  test(`${action}: refused on a block that is not a cost cap`, async () => {
+    const { port, calls } = fakePort({ S12: { status: "blocked", agent: "a1", waitingOn: null, blockKind: "step" } }, ["a1"]);
+    const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action });
+    assert.deepEqual(result, { ok: false, error: "S12 is not blocked on a cost cap.", agentId: null });
+    assert.deepEqual(calls, []);
+  });
+}

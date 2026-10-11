@@ -38,6 +38,22 @@ test("readStories returns blocked_from as blockedFrom, empty when unset", () => 
   }
 });
 
+test("readStories returns block_kind as blockKind, empty when unset", () => {
+  const dir = mkdtempSync(join(tmpdir(), "harness-layout-"));
+  try {
+    const stories = join(dir, "stories");
+    mkdirSync(stories);
+    writeFileSync(join(stories, "01-a.md"), "---\nid: S1\ntitle: A\nstatus: blocked\nblock_kind: cost-cap\n---\n");
+    writeFileSync(join(stories, "02-b.md"), "---\nid: S2\ntitle: B\nstatus: todo\n---\n");
+    assert.deepEqual(
+      readStories(dir).map((story) => story.blockKind),
+      ["cost-cap", ""],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("readStories returns track diagnose for track: diagnose frontmatter, plan otherwise", () => {
   const dir = mkdtempSync(join(tmpdir(), "harness-layout-"));
   try {

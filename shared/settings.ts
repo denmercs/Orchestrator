@@ -100,7 +100,7 @@ export const budgetSettings = defineSettings({
   scope: "host",
   version: 1,
   schema: z.object({
-    // Display only for now: the stats strip shows spend against these; nothing enforces them yet.
+    // The stats strip shows spend against dailyBudgetUsd (display only). storyCapUsd is enforced at each turn end.
     dailyBudgetUsd: z.number().default(25),
     storyCapUsd: z.number().default(5),
   }),

@@ -11,6 +11,9 @@ export const NUDGE_MESSAGE = "You look stuck: say what's blocking you, or take a
 export const RETRY_MESSAGE =
   "The block on this step is cleared. Carry on from `.harness/state.md` and write the step's marker when you finish.";
 
+export const CONTINUE_MESSAGE =
+  "The cost cap was raised. Carry on from `.harness/state.md` and write the step's marker when you finish.";
+
 export type GateResult = { ok: boolean; error: string | null; agentId: string | null };
 
 // What a gate action needs to know about a story. `blockKind` is absent or null for a block that
@@ -36,6 +39,12 @@ export type GatePort = {
   retryStep(ref: StoryRef): Promise<GateResult>;
   // The story's PR number while that PR is closed; null when it isn't closed, or there is none.
   closedPr(ref: StoryRef): Promise<number | null>;
+  // Continue on a cost-cap block: the story's cap goes up by the base cap and it reopens.
+  raiseCap(ref: StoryRef): Promise<void>;
+  // Leave stopped: the block becomes cost-cap-left, so it leaves Needs you.
+  leaveStopped(ref: StoryRef): Promise<void>;
+  // Whether the story's step marker in state.md is still `<step>-running`.
+  stepRunning(ref: StoryRef): Promise<boolean>;
 };
 
 // The gate each action belongs to: the status the story must still be at, and how a refusal names it.
@@ -45,10 +54,14 @@ const GATE_OF: Record<GateAction, { status: string; name: string }> = {
   nudge: { status: "blocked", name: "blocked" },
   restart: { status: "blocked", name: "blocked" },
   retry: { status: "blocked", name: "blocked" },
+  continue: { status: "blocked", name: "blocked" },
+  leave: { status: "blocked", name: "blocked" },
 };
 
 // Blocks with no agent to wake: reopening is enough, and the loop picks the story up again.
 const REOPEN_ONLY: ReadonlySet<BlockKind> = new Set(["start", "pr", "ci"]);
+
+const isCostCap = (story: GateStory) => story.blockKind === "cost-cap" || story.blockKind === "cost-cap-left";
 
 const refuse = (error: string): GateResult => ({ ok: false, error, agentId: null });
 
@@ -80,13 +93,42 @@ export function createGateActions(port: GatePort) {
     return { ok: true, error: null, agentId: story.agent };
   }
 
+  // Raise the cap, then wake the agent only if its step never finished: a message to an open session,
+  // the loop's fresh step for an ended one. A marker that is already done is left for the tick to act on.
+  async function continueCapped(ref: StoryRef, story: GateStory): Promise<GateResult> {
+    const running = await port.stepRunning(ref);
+    // An ended session starts a fresh step, and retryStep raises the cap itself: raiseCap would reopen the
+    // story and leave retryStep nothing blocked to start.
+    if (running && story.agent && (await port.session(story.agent)) !== "open") return port.retryStep(ref);
+    await port.raiseCap(ref);
+    if (!running || !story.agent) return { ok: true, error: null, agentId: null };
+    try {
+      await port.send(story.agent, CONTINUE_MESSAGE);
+    } catch (cause) {
+      const why = cause instanceof Error ? cause.message : String(cause);
+      return { ok: false, error: `${ref.storyId}'s cap is raised, but its session didn't get the continue message: ${why}`, agentId: story.agent };
+    }
+    return { ok: true, error: null, agentId: story.agent };
+  }
+
   return {
     async act({ board, storyId, action }: StoryRef & { action: GateAction }): Promise<GateResult> {
       const story = await port.story({ board, storyId });
       if (!story) return refuse(`${storyId} is not on that board.`);
       const gate = GATE_OF[action];
       if (story.status !== gate.status) return refuse(`${storyId} is now ${story.status}, not ${gate.name}.`);
-      if (action === "retry") return retry({ board, storyId }, story);
+      const ref = { board, storyId };
+      if (action === "continue" || action === "leave" || (action === "retry" && isCostCap(story))) {
+        if (!isCostCap(story) || (action === "leave" && story.blockKind !== "cost-cap")) {
+          return refuse(`${storyId} is not blocked on a cost cap.`);
+        }
+        if (action === "leave") {
+          await port.leaveStopped(ref);
+          return { ok: true, error: null, agentId: null };
+        }
+        return continueCapped(ref, story);
+      }
+      if (action === "retry") return retry(ref, story);
       if (story.waitingOn === "permission") {
         return refuse(`${storyId} is waiting on a permission; answer it in the session.`);
       }
@@ -125,6 +167,9 @@ type LoopFiles = {
   reopen(ref: { repo: string; initiative: string; storyId: string }): Promise<void>;
   retryStep(api: PaseoApi, ref: { repo: string; initiative: string; storyId: string }): Promise<GateResult>;
   closedPr(ref: { repo: string; initiative: string; storyId: string }): Promise<number | null>;
+  raiseCap(ref: { repo: string; initiative: string; storyId: string }): Promise<void>;
+  leaveStopped(ref: { repo: string; initiative: string; storyId: string }): Promise<void>;
+  stepRunning(ref: { repo: string; initiative: string; storyId: string }): Promise<boolean>;
 };
 type FreshAct = { act(input: { agentId: string; action: "fresh" }): Promise<ActResult> };
 
@@ -170,6 +215,18 @@ export function loopGatePort(loop: LoopFiles, paseo: PaseoApi, contextWatch: Fre
     async closedPr({ board, storyId }) {
       const split = splitBoard(board);
       return split ? loop.closedPr({ ...split, storyId }) : null;
+    },
+    async raiseCap({ board, storyId }) {
+      const split = splitBoard(board);
+      if (split) await loop.raiseCap({ ...split, storyId });
+    },
+    async leaveStopped({ board, storyId }) {
+      const split = splitBoard(board);
+      if (split) await loop.leaveStopped({ ...split, storyId });
+    },
+    async stepRunning({ board, storyId }) {
+      const split = splitBoard(board);
+      return split ? loop.stepRunning({ ...split, storyId }) : false;
     },
   };
 }

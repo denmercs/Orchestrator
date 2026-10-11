@@ -113,7 +113,7 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   server.registerUsageSource?.(kiroUsageSource());
   server.registerSettings(standupSettings);
   server.registerSettings(dashboardSettings);
-  server.registerSettings(budgetSettings);
+  const budget = server.registerSettings(budgetSettings);
   const runnerSettings = server.registerSettings(agentRunnerSettings);
   const readRunnerProfileId = async () => {
     const state = await runnerSettings.read();
@@ -177,6 +177,13 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
       return values ? { phases: values.phases, sources: values.sources } : { phases: DEFAULT_PHASES, sources: [] };
     },
     readInitials,
+    {
+      cap: async () => {
+        const state = await budget.read();
+        return state.status === "ready" ? state.values.storyCapUsd : 5 /* budgetSettings default */;
+      },
+      rows: () => readTelemetry(),
+    },
   );
   server.handle(startInitiativeLoop, (input, { paseo }) => initiativeLoop.start(paseo, input));
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
