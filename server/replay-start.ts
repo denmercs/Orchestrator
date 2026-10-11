@@ -17,6 +17,7 @@ type PaseoApi = PluginHandlerContext["paseo"];
 const execFileAsync = promisify(execFile);
 const git = (cwd: string, args: string[]) => execFileAsync("git", args, { cwd, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 });
 
+// The run a replay writes to when `.harness/replay/run-name` names none.
 export const REPLAY_RUN = "run";
 
 // The last `turn` or `turn.stopped` row for an agent in the telemetry file, or null. A failed replay agent's
@@ -86,6 +87,22 @@ export function readCostCap(root: string): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+export const runNameFile = (root: string) => join(root, ".harness", "replay", "run-name");
+
+// The run named in `.harness/replay/run-name`, so a replay that measures something new gets its own folder.
+// REPLAY_RUN when absent or empty; a name that is not one plain path segment throws.
+export function readRunName(root: string): string {
+  let name: string;
+  try {
+    name = readFileSync(runNameFile(root), "utf8").trim();
+  } catch {
+    return REPLAY_RUN;
+  }
+  if (!name) return REPLAY_RUN;
+  if (!/^[A-Za-z0-9][\w.-]*$/.test(name)) throw new Error(`${runNameFile(root)}: "${name}" is not a plain folder name`);
+  return name;
 }
 
 export const armsFile = (root: string) => join(root, ".harness", "replay", "arms");

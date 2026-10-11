@@ -157,6 +157,19 @@ test("startMemoryReplay takes the cap from the corpus's cost-cap file, and an ex
   assert.equal(explicit.costCap, 7);
 });
 
+test("startMemoryReplay writes to the run named in the run-name file", async () => {
+  const { handlers, fake } = wired();
+  const handler = handlers.get(startMemoryReplay.name);
+  assert.ok(handler);
+  const root = repoWithCorpus([row("S1", "failed")]);
+  writeFileSync(join(root, ".harness", "replay", "run-name"), "findings-only\n");
+  const result = (await handler({ root }, { paseo: {} })) as { run: string; runDir: string };
+  assert.equal(result.run, "findings-only");
+  assert.equal(result.runDir, join(root, ".harness", "replay", "findings-only"));
+  const opts = (fake.replayed[0] as { opts: { run: string; runDir: string } }).opts;
+  assert.deepEqual([opts.run, opts.runDir], ["findings-only", join(root, ".harness", "replay", "findings-only")]);
+});
+
 test("startMemoryReplay says clearly when the corpus is missing", async () => {
   const { handlers } = wired();
   const handler = handlers.get(startMemoryReplay.name);
