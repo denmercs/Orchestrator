@@ -33,7 +33,7 @@ import { kiroUsageSource } from "./server/kiro-usage";
 import { readPlanUsage } from "./server/plan-usage";
 import { planUsageRpc } from "./shared/plan-usage";
 import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay";
-import { readCorpus, readCostCap, realReplayPorts, REPLAY_RUN } from "./server/replay-start";
+import { readArms, readCorpus, readCostCap, realReplayPorts, REPLAY_RUN } from "./server/replay-start";
 import { claudeSignedIn } from "./server/claude-cli";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { join } from "node:path";
@@ -223,10 +223,11 @@ export default function contribute(
       throw new Error("Claude Code is not signed in, so the replay judge can't run. Run `claude` and log in, then start the replay again.");
     }
     const costCap = input.costCap ?? readCostCap(input.root) ?? DEFAULT_COST_CAP_USD;
+    const arms = readArms(input.root);
     const runDir = join(input.root, ".harness", "replay", REPLAY_RUN);
     replaying = true;
     void memoryReplay
-      .replay(corpus, { run: REPLAY_RUN, root: input.root, runDir, costCap })
+      .replay(corpus, { run: REPLAY_RUN, root: input.root, runDir, costCap, arms })
       .catch((error) => console.warn("orchestrator: memory replay failed", error))
       .finally(() => {
         replaying = false;

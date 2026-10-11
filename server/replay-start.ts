@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { AgentCreateConfig } from "../shared/agent-runner";
-import type { CorpusRow } from "./replay";
+import { ARMS, type Arm, type CorpusRow } from "./replay";
 import { installBrief } from "./brief-install";
 import { readTelemetry, type TelemetryRow } from "./context-telemetry";
 import type { ReplayPorts } from "./memory-replay";
@@ -86,6 +86,24 @@ export function readCostCap(root: string): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+export const armsFile = (root: string) => join(root, ".harness", "replay", "arms");
+
+// The arms named in `.harness/replay/arms` (whitespace-separated), in ARMS order; undefined when absent or naming none.
+// An unknown name throws, so a typo can't quietly drop an arm from the run.
+export function readArms(root: string): Arm[] | undefined {
+  let text: string;
+  try {
+    text = readFileSync(armsFile(root), "utf8");
+  } catch {
+    return undefined;
+  }
+  const names = text.split(/\s+/).filter(Boolean);
+  const unknown = names.filter((n) => !(ARMS as string[]).includes(n));
+  if (unknown.length) throw new Error(`${armsFile(root)}: unknown arm ${unknown.join(", ")} (known: ${ARMS.join(", ")})`);
+  const arms = ARMS.filter((arm) => names.includes(arm));
+  return arms.length ? arms : undefined;
 }
 
 // The corpus rows, keeping every failed round and the first `controls` control rounds (all of them when unset).

@@ -92,16 +92,16 @@ export function pairKey(row: Pick<CorpusRow, "initiative" | "story" | "round">, 
 
 export type QueuedRound = { row: CorpusRow; arms: Arm[] };
 
-// Rounds still to run, failed and control alternating (failed first). Done pairs are skipped; a round with no arms left is dropped.
-export function replayQueue(corpus: CorpusRow[], done: ReadonlySet<string>): QueuedRound[] {
+// Rounds still to run in `arms`, failed and control alternating (failed first). Done pairs are skipped; a round with no arms left is dropped.
+export function replayQueue(corpus: CorpusRow[], done: ReadonlySet<string>, arms: readonly Arm[] = ARMS): QueuedRound[] {
   const failed = corpus.filter((r) => r.kind === "failed");
   const control = corpus.filter((r) => r.kind === "control");
   const queue: QueuedRound[] = [];
   for (let i = 0; i < Math.max(failed.length, control.length); i++) {
     for (const row of [failed[i], control[i]]) {
       if (!row) continue;
-      const arms = ARMS.filter((arm) => !done.has(pairKey(row, arm)));
-      if (arms.length) queue.push({ row, arms });
+      const left = arms.filter((arm) => !done.has(pairKey(row, arm)));
+      if (left.length) queue.push({ row, arms: left });
     }
   }
   return queue;
