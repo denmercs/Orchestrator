@@ -46,6 +46,7 @@ import { pulseTabState } from "./prod-pulse-model";
 import { LoopProfilesToggle, LoopStepProfiles } from "./loop-step-profiles";
 import { NeedsYouQueue, StatsStrip } from "./needs-you";
 import { RunnerPicker } from "./runner-picker";
+import type { DrawerTab } from "./pipeline-drawer-model";
 import { SkillsDrawer, StoryPipelineButton } from "./skills-drawer";
 import { startJiraSession } from "./start-jira-session";
 import { StandupSection } from "./standup-section";
@@ -93,6 +94,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const { pulse, loaded: pulseLoaded, refresh: refreshPulse } = useProdPulse();
   const epic = useEpicBoards();
   const [skillsOpen, setSkillsOpen] = useState(false);
+  const [drawerTab, setDrawerTab] = useState<DrawerTab>("phases");
   const [loopProfilesOpen, setLoopProfilesOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const gates = useMemo(() => gatesOf(epic.boards ?? []), [epic.boards]);
@@ -478,7 +480,10 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
             theme={theme}
             compact={layout.compact}
             navigation={navigation}
-            onEditPolicy={() => setSkillsOpen(true)}
+            onEditPolicy={() => {
+              setDrawerTab("context");
+              setSkillsOpen(true);
+            }}
           />
         </>
       );
@@ -586,6 +591,8 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         theme={theme}
         compact={layout.compact}
         open={skillsOpen}
+        tab={drawerTab}
+        onTab={setDrawerTab}
         onClose={() => setSkillsOpen(false)}
       />
     </View>

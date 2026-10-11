@@ -25,8 +25,15 @@ import {
   type SkillRef,
   type SkillSource,
   type SourceStatus,
-  type Then,
 } from "../shared/pipeline";
+import {
+  DRAWER_TABS,
+  handoffChip,
+  nextOpen,
+  phaseSummary,
+  THEN_OPTION_LABEL,
+  type DrawerTab,
+} from "./pipeline-drawer-model";
 import { LoadingState } from "./loading-state";
 import { installsLabel, rowState } from "./registry-search-model";
 import { SkeletonRows } from "./skeleton";
@@ -41,12 +48,6 @@ type UpdateCheck = {
   error: string | null;
 };
 
-const THEN_LABEL: Record<Then, string> = {
-  you: "✋ wait for you",
-  auto: "⟳ auto",
-  pass: "✓ on PASS",
-  merge: "⏵ on merge",
-};
 const KIND_LABEL: Record<SourceKind, string> = {
   team: "Team",
   personal: "Personal",
@@ -145,16 +146,19 @@ export function SkillsDrawer({
   theme,
   compact,
   open,
+  tab,
+  onTab,
   onClose,
 }: {
   theme: Theme;
   compact: boolean;
   open: boolean;
+  tab: DrawerTab;
+  onTab(tab: DrawerTab): void;
   onClose(): void;
 }) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   const pipeline = usePipeline(open);
-  const [tab, setTab] = useState<"phases" | "sources">("phases");
 
   if (!open) {
     return null;
@@ -172,42 +176,52 @@ export function SkillsDrawer({
       />
       <View style={styles.drawer} accessibilityViewIsModal>
         <View style={styles.header}>
-          <Text style={styles.title}>Skills</Text>
+          <Text style={styles.title}>Story pipeline</Text>
           <View style={styles.headerActions}>
-            <Pressable
-              accessibilityRole="switch"
-              accessibilityState={{ checked: enabled }}
-              accessibilityLabel="Use the Story pipeline when starting stories"
-              disabled={!values}
-              onPress={() => void pipeline.save({ enabled: !enabled })}
-              style={[styles.headerButton, enabled ? styles.chipActive : null]}
-            >
-              <Text style={enabled ? styles.chipTextActive : styles.headerButtonText}>
-                Pipeline {enabled ? "on" : "off"}
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              disabled={pipeline.loading}
-              onPress={() => void pipeline.reload()}
-              style={styles.headerButton}
-            >
+            <Pressable accessibilityRole="button" disabled={pipeline.loading} onPress={() => void pipeline.reload()}>
               <Text style={styles.headerButtonText}>{pipeline.loading ? "Loading…" : "Reload"}</Text>
             </Pressable>
-            <Pressable accessibilityRole="button" onPress={onClose} style={styles.headerButton}>
-              <Text style={styles.headerButtonText}>Close</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={onClose}>
+              <Text style={styles.headerButtonText}>×</Text>
             </Pressable>
           </View>
         </View>
         <Text style={styles.hint}>
-          {enabled
-            ? "Start on a story card runs Plan in a fresh agent. Each phase starts the next when it writes <phase>-done under ## Status in .harness/state.md."
-            : "Pipeline off: Start keeps the single-agent session. Changes here are still saved."}
+          {enabled ? (
+            <>
+              Starting a story runs <Text style={styles.hintStrong}>Plan</Text> in a fresh agent; each phase hands off
+              when it writes <Text style={styles.hintMono}>{"<phase>-done"}</Text> to{" "}
+              <Text style={styles.hintMono}>.harness/state.md</Text>
+            </>
+          ) : (
+            "Pipeline off: Start keeps the single-agent session. Changes here are still saved."
+          )}
         </Text>
         {pipeline.error ? <Text style={[styles.hint, styles.danger]}>{pipeline.error}</Text> : null}
-        <View style={styles.tabs}>
-          <Chip label="Phases · Story pipeline" active={tab === "phases"} styles={styles} onPress={() => setTab("phases")} />
-          <Chip label="Sources" active={tab === "sources"} styles={styles} onPress={() => setTab("sources")} />
+        <View style={styles.tabRow}>
+          <View style={styles.segmented}>
+            {DRAWER_TABS.map((t) => (
+              <Pressable
+                key={t.id}
+                accessibilityRole="button"
+                accessibilityState={{ selected: tab === t.id }}
+                onPress={() => onTab(t.id)}
+                style={[styles.segment, tab === t.id ? styles.segmentActive : null]}
+              >
+                <Text style={tab === t.id ? styles.chipTextActive : styles.headerButtonText}>{t.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <Pressable
+            accessibilityRole="switch"
+            accessibilityState={{ checked: enabled }}
+            accessibilityLabel="Use the Story pipeline when starting stories"
+            disabled={!values}
+            onPress={() => void pipeline.save({ enabled: !enabled })}
+            style={[styles.switchTrack, enabled ? styles.switchTrackOn : null]}
+          >
+            <View style={[styles.switchThumb, enabled ? styles.switchThumbOn : null]} />
+          </Pressable>
         </View>
         <ScrollView style={styles.flex1} contentContainerStyle={styles.bodyContent}>
           {!values ? (
@@ -220,6 +234,8 @@ export function SkillsDrawer({
             )
           ) : tab === "phases" ? (
             <PhasesTab pipeline={pipeline} values={values} styles={styles} />
+          ) : tab === "context" ? (
+            <Text style={styles.muted}>Context policy settings land here soon.</Text>
           ) : (
             <SourcesTab pipeline={pipeline} values={values} styles={styles} />
           )}
@@ -232,25 +248,47 @@ export function SkillsDrawer({
 // ---------- Phases ----------
 
 function PhasesTab({ pipeline, values, styles }: { pipeline: Pipeline; values: PipelineConfig; styles: Styles }) {
+  const [open, setOpen] = useState<PhaseId | null>(null);
   function updatePhase(id: PhaseId, change: (phase: Phase) => Phase) {
     void pipeline.save({ phases: values.phases.map((phase) => (phase.id === id ? change(phase) : phase)) });
   }
   return (
     <>
-      {values.phases.map((phase, index) => (
-        <PhaseCard
-          key={phase.id}
-          index={index}
-          phase={phase}
-          pipeline={pipeline}
-          values={values}
-          styles={styles}
-          onChange={(change) => updatePhase(phase.id, change)}
-        />
-      ))}
-      <Pressable accessibilityRole="button" onPress={() => void pipeline.save({ phases: DEFAULT_PHASES })}>
-        <Text style={styles.link}>Reset phases to defaults</Text>
-      </Pressable>
+      {values.phases.map((phase, index) => {
+        const chip = handoffChip(values.phases, index);
+        const last = index === values.phases.length - 1;
+        return (
+          <View key={phase.id}>
+            <PhaseCard
+              index={index}
+              phase={phase}
+              expanded={open === phase.id}
+              onToggle={() => setOpen((current) => nextOpen(current, phase.id))}
+              pipeline={pipeline}
+              values={values}
+              styles={styles}
+              onChange={(change) => updatePhase(phase.id, change)}
+            />
+            <View style={styles.handoff}>
+              <View style={styles.handoffRule} />
+              {last ? null : (
+                <View style={styles.handoffChip}>
+                  <Text style={chip.auto ? styles.handoffTextAuto : styles.handoffText}>{chip.label}</Text>
+                </View>
+              )}
+            </View>
+          </View>
+        );
+      })}
+      <View style={styles.rowWrap}>
+        <View style={styles.closedCircle} />
+        <View style={styles.gap6}>
+          <Text style={styles.body}>Story closed</Text>
+          <Pressable accessibilityRole="button" onPress={() => void pipeline.save({ phases: DEFAULT_PHASES })}>
+            <Text style={styles.linkSmall}>Reset phases to defaults</Text>
+          </Pressable>
+        </View>
+      </View>
     </>
   );
 }
@@ -258,6 +296,8 @@ function PhasesTab({ pipeline, values, styles }: { pipeline: Pipeline; values: P
 function PhaseCard({
   phase,
   index,
+  expanded,
+  onToggle,
   pipeline,
   values,
   styles,
@@ -265,6 +305,8 @@ function PhaseCard({
 }: {
   phase: Phase;
   index: number;
+  expanded: boolean;
+  onToggle(): void;
   pipeline: Pipeline;
   values: PipelineConfig;
   styles: Styles;
@@ -273,112 +315,144 @@ function PhaseCard({
   const [picking, setPicking] = useState<"runs" | "extra" | null>(null);
   const [preview, setPreview] = useState(false);
   const skills = phaseSkills(phase);
+  const summary = phaseSummary(phase);
   const known = (ref: SkillRef) => pipeline.loading || pipeline.catalog.some((s) => matchesRef(s, ref));
 
   return (
     <View style={styles.card}>
-      <View style={styles.rowWrap}>
-        <Text style={styles.cardTitle}>
-          {index + 1} {phase.label}
-        </Text>
-        <Text style={[styles.muted, styles.pushRight]}>then {THEN_LABEL[phase.then]}</Text>
-      </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+        onPress={onToggle}
+        style={styles.cardHeader}
+      >
+        <View style={styles.badge}>
+          <Text style={styles.badgeText}>{index + 1}</Text>
+        </View>
+        <View style={styles.flex1}>
+          <Text style={styles.cardTitle}>{phase.label}</Text>
+          <Text style={styles.muted} numberOfLines={1}>
+            <Text style={styles.hintMono}>{summary.runs}</Text>
+            {summary.extras}
+          </Text>
+        </View>
+        <Text style={[styles.chevron, expanded ? styles.chevronOpen : null]}>›</Text>
+      </Pressable>
 
-      {phase.id === "done" ? null : (
-        <>
-          <View style={styles.rowWrap}>
-            <Text style={styles.label}>Runs</Text>
-            <Text style={styles.muted}>Story pipeline only</Text>
-            <Chip
-              label={phase.runs ? `${phase.runs.name} · ${sourceLabel(values, phase.runs.source)} ▾` : "built-in step ▾"}
-              active
-              styles={styles}
-              onPress={() => setPicking(picking === "runs" ? null : "runs")}
-            />
-            {phase.runs && !known(phase.runs) ? <Text style={styles.warn}>not found</Text> : null}
-            {phase.runs ? (
-              <Pressable accessibilityRole="button" onPress={() => onChange((p) => ({ ...p, runs: null }))}>
-                <Text style={styles.link}>use built-in</Text>
-              </Pressable>
-            ) : null}
-          </View>
-          {picking === "runs" ? (
-            <SkillPicker
-              pipeline={pipeline}
-              values={values}
-              styles={styles}
-              current={phase.runs ?? undefined}
-              onPick={(ref) => {
-                onChange((p) => ({ ...p, runs: ref, extras: p.extras.filter((e) => !sameRef(e, ref)) }));
-                setPicking(null);
-              }}
-              onCancel={() => setPicking(null)}
-            />
+      {expanded ? (
+        <View style={styles.cardBody}>
+          {phase.id === "done" ? null : (
+            <>
+              <View style={styles.gridRow}>
+                <Text style={styles.label}>Runs</Text>
+                <View style={styles.gridCell}>
+                  <View style={styles.chipRow}>
+                    <Chip
+                      label={
+                        phase.runs
+                          ? `${phase.runs.name} · ${sourceLabel(values, phase.runs.source)} ▾`
+                          : "built-in step ▾"
+                      }
+                      active
+                      styles={styles}
+                      onPress={() => setPicking(picking === "runs" ? null : "runs")}
+                    />
+                    {phase.runs && !known(phase.runs) ? <Text style={styles.warn}>not found</Text> : null}
+                    {phase.runs ? (
+                      <Pressable accessibilityRole="button" onPress={() => onChange((p) => ({ ...p, runs: null }))}>
+                        <Text style={styles.link}>use built-in</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                  {picking === "runs" ? (
+                    <SkillPicker
+                      pipeline={pipeline}
+                      values={values}
+                      styles={styles}
+                      current={phase.runs ?? undefined}
+                      onPick={(ref) => {
+                        onChange((p) => ({ ...p, runs: ref, extras: p.extras.filter((e) => !sameRef(e, ref)) }));
+                        setPicking(null);
+                      }}
+                      onCancel={() => setPicking(null)}
+                    />
+                  ) : null}
+                </View>
+              </View>
+
+              <View style={styles.gridRow}>
+                <Text style={styles.label}>Also loads</Text>
+                <View style={styles.gridCell}>
+                  <View style={styles.chipRow}>
+                    {skills.extras.map((extra) => (
+                      <Pressable
+                        key={`${extra.source}:${extra.name}`}
+                        accessibilityRole="button"
+                        disabled={extra.required}
+                        onPress={() => onChange((p) => ({ ...p, extras: p.extras.filter((e) => !sameRef(e, extra)) }))}
+                        style={styles.chip}
+                      >
+                        <Text style={styles.chipText}>
+                          {extra.name} · {sourceLabel(values, extra.source)}
+                          {known(extra) ? "" : " · not found"}
+                        </Text>
+                        {extra.required ? <Text style={styles.requiredTag}>required</Text> : <Text style={styles.muted}>×</Text>}
+                      </Pressable>
+                    ))}
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => setPicking(picking === "extra" ? null : "extra")}
+                      style={[styles.chip, styles.chipDashed]}
+                    >
+                      <Text style={styles.chipText}>+ Add skill</Text>
+                    </Pressable>
+                  </View>
+                  {picking === "extra" ? (
+                    <SkillPicker
+                      pipeline={pipeline}
+                      values={values}
+                      styles={styles}
+                      onPick={(ref) => {
+                        onChange((p) =>
+                          (p.runs !== null && sameRef(p.runs, ref)) || p.extras.some((e) => sameRef(e, ref))
+                            ? p
+                            : { ...p, extras: [...p.extras, ref] },
+                        );
+                        setPicking(null);
+                      }}
+                      onCancel={() => setPicking(null)}
+                    />
+                  ) : null}
+                </View>
+              </View>
+            </>
+          )}
+
+          <PhaseSettings phase={phase} pipeline={pipeline} values={values} styles={styles} />
+
+          {THEN_CHOICES[phase.id].length > 1 ? (
+            <View style={styles.gridRow}>
+              <Text style={styles.label}>Then</Text>
+              <View style={[styles.gridCell, styles.chipRow]}>
+                {THEN_CHOICES[phase.id].map((then) => (
+                  <Chip
+                    key={then}
+                    label={THEN_OPTION_LABEL[then]}
+                    active={phase.then === then}
+                    styles={styles}
+                    onPress={() => onChange((p) => ({ ...p, then }))}
+                  />
+                ))}
+              </View>
+            </View>
           ) : null}
 
-          <View style={styles.gap6}>
-            <View style={styles.rowWrap}>
-              <Text style={styles.label}>Also loads</Text>
-              <Text style={styles.muted}>Story pipeline and initiative loop</Text>
-            </View>
-            <View style={styles.chipRow}>
-              {skills.extras.map((extra) => (
-                <Chip
-                  key={`${extra.source}:${extra.name}`}
-                  label={`${extra.required ? "required · " : ""}${extra.name} · ${sourceLabel(values, extra.source)}${known(extra) ? "" : " · not found"}${extra.required ? "" : "  ×"}`}
-                  styles={styles}
-                  onPress={
-                    extra.required
-                      ? undefined
-                      : () => onChange((p) => ({ ...p, extras: p.extras.filter((e) => !sameRef(e, extra)) }))
-                  }
-                />
-              ))}
-              <Chip label="+ add skill" styles={styles} onPress={() => setPicking(picking === "extra" ? null : "extra")} />
-            </View>
-            {picking === "extra" ? (
-              <SkillPicker
-                pipeline={pipeline}
-                values={values}
-                styles={styles}
-                onPick={(ref) => {
-                  onChange((p) =>
-                    (p.runs !== null && sameRef(p.runs, ref)) || p.extras.some((e) => sameRef(e, ref))
-                      ? p
-                      : { ...p, extras: [...p.extras, ref] },
-                  );
-                  setPicking(null);
-                }}
-                onCancel={() => setPicking(null)}
-              />
-            ) : null}
-          </View>
-        </>
-      )}
-
-      <PhaseSettings phase={phase} pipeline={pipeline} values={values} styles={styles} />
-
-      {THEN_CHOICES[phase.id].length > 1 ? (
-        <View style={styles.gap6}>
-          <Text style={styles.label}>Then</Text>
-          <View style={styles.chipRow}>
-            {THEN_CHOICES[phase.id].map((then) => (
-              <Chip
-                key={then}
-                label={THEN_LABEL[then]}
-                active={phase.then === then}
-                styles={styles}
-                onPress={() => onChange((p) => ({ ...p, then }))}
-              />
-            ))}
-          </View>
+          <Pressable accessibilityRole="button" onPress={() => setPreview((v) => !v)}>
+            <Text style={styles.link}>{preview ? "Hide prompt" : "Preview prompt"}</Text>
+          </Pressable>
+          {preview ? <Text style={styles.code}>{phasePrompt(phase, PREVIEW_TICKET)}</Text> : null}
         </View>
       ) : null}
-
-      <Pressable accessibilityRole="button" onPress={() => setPreview((v) => !v)}>
-        <Text style={styles.link}>{preview ? "Hide prompt" : "Preview prompt"}</Text>
-      </Pressable>
-      {preview ? <Text style={styles.code}>{phasePrompt(phase, PREVIEW_TICKET)}</Text> : null}
     </View>
   );
 }
@@ -395,33 +469,43 @@ function PhaseSettings({
   styles: Styles;
 }) {
   if (phase.id === "implement") {
-    return (
-      <View style={styles.rowWrap}>
-        <Text style={styles.muted}>One fresh agent per cycle in ## Cycles; the plugin commits each one</Text>
-      </View>
-    );
+    return <Text style={styles.muted}>One fresh agent per cycle in ## Cycles; the plugin commits each one</Text>;
   }
   if (phase.id === "review") {
     return (
-      <View style={styles.rowWrap}>
-        <Text style={styles.muted}>Findings → fresh Implement agent</Text>
-        <Stepper label="max rounds" value={values.reviewRounds} styles={styles} onChange={(v) => void pipeline.save({ reviewRounds: v })} />
+      <View style={styles.gridRow}>
+        <Text style={styles.label}>Findings</Text>
+        <View style={[styles.gridCell, styles.rowWrap]}>
+          <Text style={styles.muted}>→ fresh Implement agent</Text>
+          <Stepper label="max rounds" value={values.reviewRounds} styles={styles} onChange={(v) => void pipeline.save({ reviewRounds: v })} />
+        </View>
       </View>
     );
   }
   if (phase.id === "done") {
     return (
-      <View style={styles.rowWrap}>
-        <Text style={styles.muted}>Red CI → fresh Fix CI agent</Text>
-        <Stepper label="max fixes" value={values.maxFixes} styles={styles} onChange={(v) => void pipeline.save({ maxFixes: v })} />
-        <Text style={styles.muted}>After merge</Text>
-        <Chip
-          label={values.closeOnMerge ? "✓ close the Jira story" : "leave Jira alone"}
-          active={values.closeOnMerge}
-          styles={styles}
-          onPress={() => void pipeline.save({ closeOnMerge: !values.closeOnMerge })}
-        />
-      </View>
+      <>
+        <View style={styles.gridRow}>
+          <Text style={styles.label}>After merge</Text>
+          <View style={styles.gridCell}>
+            <View style={styles.chipRow}>
+              <Chip
+                label={values.closeOnMerge ? "✓ close the Jira story" : "leave Jira alone"}
+                active={values.closeOnMerge}
+                styles={styles}
+                onPress={() => void pipeline.save({ closeOnMerge: !values.closeOnMerge })}
+              />
+            </View>
+          </View>
+        </View>
+        <View style={styles.gridRow}>
+          <Text style={styles.label}>Fix CI</Text>
+          <View style={[styles.gridCell, styles.rowWrap]}>
+            <Text style={styles.muted}>Red CI → fresh Fix CI agent</Text>
+            <Stepper label="max fixes" value={values.maxFixes} styles={styles} onChange={(v) => void pipeline.save({ maxFixes: v })} />
+          </View>
+        </View>
+      </>
     );
   }
   return null;
@@ -938,7 +1022,7 @@ function createStyles(theme: Theme, compact: boolean) {
       backgroundColor: "rgba(0, 0, 0, 0.32)",
     },
     drawer: {
-      width: compact ? ("100%" as const) : 600,
+      width: compact ? ("100%" as const) : 380,
       maxWidth: "100%" as const,
       height: "100%" as const,
       backgroundColor: c.surface0,
@@ -956,17 +1040,41 @@ function createStyles(theme: Theme, compact: boolean) {
     },
     title: { color: c.foreground, fontSize: 18, fontWeight: "600" as const },
     headerActions: { flexDirection: "row" as const, gap: 8, marginLeft: "auto" as const },
-    headerButton: {
-      borderWidth: 1,
-      borderColor: c.border,
-      borderRadius: 8,
-      paddingHorizontal: 10,
-      paddingVertical: 4,
-    },
     headerButtonText: { color: c.foregroundMuted, fontSize: 13 },
     hint: { color: c.foregroundMuted, fontSize: 12, paddingHorizontal: pad },
     danger: { color: c.statusDanger },
-    tabs: { flexDirection: "row" as const, gap: 8, paddingHorizontal: pad },
+    hintStrong: { color: c.foreground, fontWeight: "600" as const },
+    hintMono: { fontFamily: "monospace" },
+    tabRow: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      justifyContent: "space-between" as const,
+      paddingHorizontal: pad,
+    },
+    segmented: {
+      flexDirection: "row" as const,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 8,
+      backgroundColor: c.surface1,
+      padding: 2,
+      gap: 2,
+    },
+    segment: { borderRadius: 6, paddingHorizontal: 10, paddingVertical: 4 },
+    segmentActive: { backgroundColor: c.surface2 },
+    switchTrack: {
+      width: 30,
+      height: 18,
+      borderRadius: 9,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surface2,
+      justifyContent: "center" as const,
+      paddingHorizontal: 2,
+    },
+    switchTrackOn: { backgroundColor: c.statusSuccess, borderColor: c.statusSuccess },
+    switchThumb: { width: 12, height: 12, borderRadius: 6, backgroundColor: c.foregroundMuted },
+    switchThumbOn: { backgroundColor: c.surface0, alignSelf: "flex-end" as const },
     flex1: { flex: 1 },
     bodyContent: { padding: pad, gap: 12, paddingBottom: 40 },
     card: {
@@ -978,7 +1086,45 @@ function createStyles(theme: Theme, compact: boolean) {
       gap: 10,
     },
     cardTitle: { color: c.foreground, fontSize: 15, fontWeight: "600" as const },
+    cardHeader: { flexDirection: "row" as const, alignItems: "center" as const, gap: 10 },
+    cardBody: { gap: 10, paddingTop: 4 },
+    badge: {
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      backgroundColor: c.surface2,
+    },
+    badgeText: { color: c.foreground, fontSize: 12, fontWeight: "600" as const },
+    chevron: { color: c.foregroundMuted, fontSize: 18 },
+    chevronOpen: { transform: [{ rotate: "90deg" }] },
+    gridRow: { flexDirection: "row" as const, alignItems: "flex-start" as const, gap: 8 },
+    gridCell: { flex: 1, gap: 6 },
+    requiredTag: { color: c.statusSuccess, fontSize: 10, fontWeight: "600" as const },
+    chipDashed: { borderStyle: "dashed" as const },
+    handoff: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, paddingLeft: 21 },
+    handoffRule: { width: 1, height: 24, backgroundColor: c.border },
+    handoffChip: {
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 999,
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+    },
+    handoffText: { color: c.foregroundMuted, fontSize: 11 },
+    handoffTextAuto: { color: c.statusSuccess, fontSize: 11 },
+    closedCircle: {
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      borderWidth: 1,
+      borderStyle: "dashed" as const,
+      borderColor: c.foregroundMuted,
+    },
+    linkSmall: { color: c.accent, fontSize: 11 },
     label: {
+      width: 64,
       color: c.foregroundMuted,
       fontSize: 11,
       fontWeight: "700" as const,
@@ -999,6 +1145,9 @@ function createStyles(theme: Theme, compact: boolean) {
     gap6: { gap: 6 },
     chipRow: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 6 },
     chip: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 6,
       borderWidth: 1,
       borderColor: c.border,
       borderRadius: 999,
