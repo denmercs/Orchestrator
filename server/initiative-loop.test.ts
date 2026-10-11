@@ -2059,3 +2059,23 @@ test("idle evidence after a mid-turn nudge counts from the nudge, so it does not
   assert.equal(storyMeta(fx.story).status, "implementing");
   assert.ok(Date.now() - Date.parse(storyMeta(fx.story).mid_changed ?? "") < 60_000);
 });
+
+test("a turn with no start time counts runs from when the tick first saw it", async () => {
+  const { worktree, labels } = fixture("a1");
+  const old = new Date(Date.now() - 10 * 60_000);
+  for (const stamp of ["01", "02", "03"]) {
+    failingLog(worktree, `implement-2026-10-11T09-50-${stamp}.log`, "parses a turn");
+    utimesSync(join(worktree, ".harness", "logs", `implement-2026-10-11T09-50-${stamp}.log`), old, old);
+  }
+  const { api, sent } = fakePaseo([{ id: "a1", labels, status: "running", activeTurn: { turnId: "t1", startedAt: null } }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+  assert.equal(sent.length, 0);
+
+  for (const stamp of ["01", "02", "03"]) failingLog(worktree, `implement-2026-10-11T10-00-${stamp}.log`, "parses a turn");
+  await initiative.tick();
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].options, { activeTurnBehavior: "steer" });
+});

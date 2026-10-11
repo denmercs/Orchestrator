@@ -95,8 +95,8 @@ export type MidTurn = { fingerprint: string | null; changed: string | null };
 // The running turn's progress read from disk: the test runs since the turn started (failing names,
 // [] = pass), the worktree fingerprint now (null = unknown) and the carried fingerprint state.
 // Returns the next state, the stuck evidence (null when none) and whether the step made progress
-// (a passing last run or a changed fingerprint). A failing test is named before idleness; idleness
-// counts on Implement only and not for subagent parents.
+// (a passing last run or a changed fingerprint, with no evidence). A failing test is named before
+// idleness; idleness counts on Implement only and not for subagent parents.
 export function midTurnCheck({ runs, fingerprint, now, mid, step, subagents }: {
   runs: readonly string[][];
   fingerprint: string | null;
@@ -117,5 +117,6 @@ export function midTurnCheck({ runs, fingerprint, now, mid, step, subagents }: {
     && fingerprint === mid.fingerprint && now - Date.parse(next.changed) >= MID_TURN_IDLE_MS) {
     evidence = `no file edits in ${MID_TURN_IDLE_MS / 60_000} minutes`;
   }
-  return { mid: next, evidence, progressed };
+  // As at a turn end, an edit doesn't excuse a test that keeps failing.
+  return { mid: next, evidence, progressed: progressed && evidence === null };
 }

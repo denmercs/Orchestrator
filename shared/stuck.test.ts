@@ -150,3 +150,11 @@ test("midTurnCheck names the failing test before idleness", () => {
   const r = midTurnCheck({ ...midOpts, runs: [["a"], ["a"], ["a"]], fingerprint: "f1", mid: old });
   assert.equal(r.evidence, "a failed 3 test runs in a row");
 });
+
+test("midTurnCheck keeps a failing streak as evidence when the worktree also changed", () => {
+  const old = { fingerprint: "f1", changed: iso(NOW - 60_000) };
+  const r = midTurnCheck({ ...midOpts, runs: [["a"], ["a"], ["a"]], fingerprint: "f2", mid: old });
+  assert.equal(r.evidence, "a failed 3 test runs in a row");
+  assert.equal(r.progressed, false);
+  assert.deepEqual(r.mid, { fingerprint: "f2", changed: iso(NOW) });
+});

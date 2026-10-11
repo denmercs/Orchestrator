@@ -698,8 +698,8 @@ export function createInitiativeLoop(
     });
   }
 
-  // When each running turn was first seen, for a turn whose start time Paseo didn't report.
-  const turnSeen = new Map<string, number>();
+  // When each agent's running turn was first seen, for a turn whose start time Paseo didn't report.
+  const turnSeen = new Map<string, { turnId: string; at: number }>();
 
   // Reads a running turn's progress from disk (the brief logs since it started). The first evidence is
   // one nudge steered into the running turn, so it isn't interrupted; the nudge is shared with the
@@ -717,10 +717,10 @@ export function createInitiativeLoop(
       writeFrontmatter(story.path, { mid_turn: turn.turnId, mid_fingerprint: null, mid_changed: null, mid_nudged: null });
     }
     const carried = meta.mid_turn === turn.turnId;
-    const key = `${meta.agent}:${turn.turnId}`;
-    if (!turnSeen.has(key)) turnSeen.set(key, Date.now());
+    let seen = turnSeen.get(meta.agent);
+    if (seen?.turnId !== turn.turnId) turnSeen.set(meta.agent, (seen = { turnId: turn.turnId, at: Date.now() }));
     const startedMs = Date.parse(turn.startedAt ?? "");
-    const turnStart = Number.isNaN(startedMs) ? (turnSeen.get(key) as number) : startedMs;
+    const turnStart = Number.isNaN(startedMs) ? seen.at : startedMs;
     // After the nudge, only runs made since it count as evidence again.
     const nudgedMs = carried ? Date.parse(meta.mid_nudged ?? "") : Number.NaN;
     const since = Number.isNaN(nudgedMs) ? turnStart : Math.max(turnStart, nudgedMs);
