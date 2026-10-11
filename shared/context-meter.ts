@@ -12,7 +12,23 @@ export type ContextSnapshot = {
   commands: { name: string }[];
 };
 
+// Absolute token counts, as the pill and the story panel show them.
 export type Thresholds = { amber: number; red: number };
+
+// A step's policy: warn and act as a percent of the session's window, and what act does.
+export type StepPolicy = { warn: number; act: number; mode: "compact" | "fresh" };
+
+// The step's policy, and `default`'s for a session that reports no window.
+export type MeterPolicy = { step: StepPolicy; fallback: StepPolicy };
+
+export const FALLBACK_WINDOW = 200_000;
+
+// Percent of the window as tokens: the step's of `max`, else the fallback's of 200k.
+export function thresholdsFor(policy: MeterPolicy, max: number | null): Thresholds {
+  const { warn, act } = max === null ? policy.fallback : policy.step;
+  const window = max ?? FALLBACK_WINDOW;
+  return { amber: (window * warn) / 100, red: (window * act) / 100 };
+}
 
 export type ContextReading = {
   used: number | null;
@@ -22,11 +38,14 @@ export type ContextReading = {
   strategy: CompactStrategy;
 };
 
-export function readContext(snapshot: ContextSnapshot, thresholds: Thresholds): ContextReading {
+export function readContext(snapshot: ContextSnapshot, policy: MeterPolicy): ContextReading {
   const used = snapshot.usage?.contextWindowUsedTokens ?? null;
-  const max = snapshot.usage?.contextWindowMaxTokens ?? null;
+  // A window of 0 is no window: as a max it would make every reading red.
+  const reported = snapshot.usage?.contextWindowMaxTokens ?? null;
+  const max = reported !== null && reported > 0 ? reported : null;
   // Exact name match: `autocompact` and friends are not the native compact command.
   const hasCompact = snapshot.commands.some((command) => command.name === "compact");
+  const thresholds = thresholdsFor(policy, max);
   const level: Level =
     used === null ? "unknown" : used >= thresholds.red ? "red" : used >= thresholds.amber ? "amber" : "ok";
   const capability: Capability = used === null ? "basic" : hasCompact ? "full" : "partial";
@@ -52,18 +71,30 @@ export function nextWarning(memory: WarningMemory, reading: ContextReading): War
   return memory.warned.includes(reading.level) ? null : { level: reading.level };
 }
 
+// What act % does: the step's mode, and `fallback` when `compact` had to start fresh because the
+// session has no `/compact`. `reading.strategy` is capability only, so a manual Compact ignores the mode.
+export function actStrategy(
+  mode: StepPolicy["mode"],
+  reading: ContextReading,
+): { strategy: CompactStrategy; fallback: boolean } {
+  if (mode === "fresh") return { strategy: "fresh", fallback: false };
+  return reading.strategy === "native"
+    ? { strategy: "native", fallback: false }
+    : { strategy: "fresh", fallback: true };
+}
+
 export type AutoCompactGuards = {
   enabled: boolean;
   running: boolean;
   pendingPermissions: boolean;
   completed: boolean;
-  loop: boolean;
+  replay: boolean;
 };
 
 // Compact on its own once per red crossing, only when nothing else is going on in the session.
 export function shouldAutoCompact(memory: WarningMemory, reading: ContextReading, guards: AutoCompactGuards): boolean {
   if (reading.level !== "red" || memory.mode === "ignore" || memory.auto !== "armed") return false;
-  return guards.enabled && !guards.running && !guards.pendingPermissions && guards.completed && !guards.loop;
+  return guards.enabled && !guards.running && !guards.pendingPermissions && guards.completed && !guards.replay;
 }
 
 // A timeline item as the meter sees it. Only `compaction` items matter; S2's watch passes just

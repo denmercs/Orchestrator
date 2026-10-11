@@ -1,16 +1,17 @@
 import type { PluginHandlerContext, PluginTurnOutcome } from "@getpaseo/plugin/server";
 import {
+  actStrategy,
   detectCompaction,
   nextWarning,
   readContext,
   shouldAutoCompact,
+  thresholdsFor,
   type CompactionItem,
   type ContextReading,
   type ContextSnapshot,
-  type Thresholds,
   type WarningMemory,
 } from "../shared/context-meter";
-import type { ContextAction, ContextStatus } from "../shared/context";
+import { meterPolicy, type ContextAction, type ContextConfig, type ContextStatus } from "../shared/context";
 import { toolOutputChars, type SplitInput, type TimelineItem } from "../shared/context-panel";
 import { exploration, toolSteps, type Explore, type ToolItem, type ToolStep } from "../shared/exploration";
 import { freshCompactor, keepList, nativeCompactor, type FreshPort } from "./compactor";
@@ -40,12 +41,15 @@ export type WatchPort = {
   readAgent(agentId: string): Promise<WatchAgent | null>;
   send(agentId: string, text: string): Promise<void>;
   record(row: TelemetryRow): Promise<void>;
-  thresholds(): Promise<Thresholds>;
+  // The context setting: each step's warn/act percents.
+  policy(): Promise<ContextConfig>;
   // Whether the red threshold compacts on its own (the context setting).
   autoCompact(): Promise<boolean>;
   now(): string;
   // The fresh adapter's port.
   fresh: FreshPort;
+  // Whether a loop agent still owns its step (see LoopHandover.stepActive).
+  stepActive(labels: Record<string, string>, agentId: string): Promise<boolean>;
 };
 
 type PaseoApi = PluginHandlerContext["paseo"];
@@ -53,6 +57,9 @@ type PaseoApi = PluginHandlerContext["paseo"];
 // The initiative loop's side of a fresh compact (see server/initiative-loop.ts).
 export type LoopHandover = Pick<FreshPort, "handOver"> & {
   resumePrompt: FreshPort["loopPrompt"];
+  // The story's `agent:` is this session and its step's marker is `<step>-running`: only then may the
+  // watch compact or restart a loop agent, so a step that just wrote `-done` is left alone.
+  stepActive(labels: Record<string, string>, agentId: string): Promise<boolean>;
 };
 
 // The handoff turn gets this long before the fresh compact gives up.
@@ -109,7 +116,7 @@ function paseoFreshPort(paseo: () => PaseoApi | null, loop: LoopHandover): Fresh
 // event), so one watch can live for the plugin's lifetime.
 export function paseoPort(
   paseo: () => PaseoApi | null,
-  thresholds: () => Promise<Thresholds>,
+  policy: () => Promise<ContextConfig>,
   autoCompact: () => Promise<boolean>,
   loop: LoopHandover,
 ): WatchPort {
@@ -136,10 +143,11 @@ export function paseoPort(
       await connected(paseo).agents.ref(agentId).send(text);
     },
     record: (row) => recordTelemetry(row),
-    thresholds,
+    policy,
     autoCompact,
     now: () => new Date().toISOString(),
     fresh: paseoFreshPort(paseo, loop),
+    stepActive: (labels, agentId) => loop.stepActive(labels, agentId),
   };
 }
 
@@ -171,8 +179,10 @@ type SessionState = {
   memory: WarningMemory;
   // Timeline length at the last turn end; items past it are unseen. null until a turn end.
   cursor: number | null;
-  // Whether the agent is a loop or replay step, as of the last turn end (those never auto-compact).
-  loop?: boolean;
+  // Whether the agent is a replay step, as of the last turn end (those never auto-act).
+  replay?: boolean;
+  // The agent's labels as of the last turn end, which pick its step's policy.
+  labels?: Record<string, string>;
   // The `turnId` of the last turn end handled, so a repeat of it is skipped.
   lastTurnId: string | null;
   // The session's `costUsd` at its last turn end; null when unknown (first sight mid-session).
@@ -219,8 +229,9 @@ export function createContextWatch(port: WatchPort) {
   const handingOver = new Set<string>();
   // New sessions from a fresh compact → the old session's last `used`. Their first turn end writes
   // the `compact.fresh` row, so it has a real reading to count tokens avoided against.
-  // The entry also says whether the watch started it (`trigger: "auto"`).
-  const pendingFresh = new Map<string, { used: number | null; trigger?: "auto" }>();
+  // The entry also says whether the watch started it (`trigger: "auto"`) and whether it replaced a
+  // Compact the session could not run (`fallback: "fresh"`).
+  const pendingFresh = new Map<string, { used: number | null; trigger?: "auto"; fallback?: "fresh" }>();
   // Sessions with an auto compact in flight; the next compaction row consumes the mark.
   const autoPending = new Set<string>();
   // Turn ends still being processed, so a status read waits for the warning they may write.
@@ -231,12 +242,17 @@ export function createContextWatch(port: WatchPort) {
     labels: Record<string, string>,
     used: number | null,
     trigger?: "auto",
+    fallback?: "fresh",
   ): Promise<ActResult> {
     if (handingOver.has(agentId)) return { ok: false, error: "That session is already starting fresh.", agentId: null };
     handingOver.add(agentId);
     try {
       const result = await fresh.compact(agentId, keepList(labels));
-      pendingFresh.set(result.agentId, { used, ...(trigger ? { trigger } : {}) });
+      pendingFresh.set(result.agentId, {
+        used,
+        ...(trigger ? { trigger } : {}),
+        ...(fallback ? { fallback } : {}),
+      });
       // The old session is archived and sends no more turn ends.
       sessions.delete(agentId);
       return { ok: true, error: null, agentId: result.agentId };
@@ -252,7 +268,7 @@ export function createContextWatch(port: WatchPort) {
     state: SessionState,
     agent: WatchAgent,
     event: TelemetryEvent,
-    extra: Pick<TelemetryRow, "level" | "preTokens" | "explore" | "trigger" | "turnId" | "turnCostUsd"> = {},
+    extra: Pick<TelemetryRow, "level" | "preTokens" | "explore" | "trigger" | "fallback" | "turnId" | "turnCostUsd"> = {},
   ): Promise<void> {
     const { labels } = agent;
     const rawCycle = labels["loop-cycle"];
@@ -278,7 +294,8 @@ export function createContextWatch(port: WatchPort) {
     if (event.turnId !== null && sessions.get(agentId)?.lastTurnId === event.turnId) return;
     const agent = await port.readAgent(agentId);
     if (!agent) return;
-    const reading = readContext(agent, await port.thresholds());
+    const policy = meterPolicy(await port.policy(), agent.labels);
+    const reading = readContext(agent, policy);
     const state: SessionState = sessions.get(agentId) ?? {
       provider: event.agent.provider,
       reading: null,
@@ -316,7 +333,8 @@ export function createContextWatch(port: WatchPort) {
     }
     state.provider = event.agent.provider;
     state.reading = reading;
-    state.loop = countedStep(agent.labels) !== undefined;
+    state.replay = agent.labels["replay-step"] !== undefined;
+    state.labels = agent.labels;
     state.cursor = event.timeline.length;
     state.lastTurnId = event.turnId;
 
@@ -334,11 +352,12 @@ export function createContextWatch(port: WatchPort) {
       };
     }
     if (pendingFresh.has(agentId)) {
-      const { used, trigger } = pendingFresh.get(agentId) ?? { used: null };
+      const { used, trigger, fallback } = pendingFresh.get(agentId) ?? { used: null };
       pendingFresh.delete(agentId);
       await record(agentId, state, agent, "compact.fresh", {
         ...(used === null ? {} : { preTokens: used }),
         ...(trigger ? { trigger } : {}),
+        ...(fallback ? { fallback } : {}),
       });
     }
     // Only a loop or replay agent has an exploration count; null means the watch lost it.
@@ -361,20 +380,25 @@ export function createContextWatch(port: WatchPort) {
     }
     // The turn end that records a compaction re-arms the latch but never fires it: a reading still
     // red right after a compaction would otherwise send /compact on every turn.
-    const fire = !compaction && shouldAutoCompact(state.memory, reading, {
-      enabled: await port.autoCompact(),
-      running: agent.running,
-      pendingPermissions: agent.pendingPermissions,
-      completed: event.outcome.kind === "completed",
-      loop: loopStep !== undefined,
-    });
+    // A loop agent only acts while it still owns its step; that is asked last, for one that would fire.
+    const fire =
+      !compaction &&
+      shouldAutoCompact(state.memory, reading, {
+        enabled: await port.autoCompact(),
+        running: agent.running,
+        pendingPermissions: agent.pendingPermissions,
+        completed: event.outcome.kind === "completed",
+        replay: state.replay === true,
+      }) &&
+      (agent.labels["loop-step"] === undefined || (await port.stepActive(agent.labels, agentId)));
     if (fire) {
       state.memory.auto = "sent";
-      if (reading.strategy === "fresh") {
+      const act = actStrategy(policy.step.mode, reading);
+      if (act.strategy === "fresh") {
         // A fresh handoff runs a long turn: start it after the rows are written and don't wait,
         // so status reads aren't held up. startFresh never throws; it returns its failure, which no
         // pill shows here, so log it. The latch stays "sent", so a failing handoff isn't retried every turn.
-        void startFresh(agentId, agent.labels, reading.used, "auto").then((result) => {
+        void startFresh(agentId, agent.labels, reading.used, "auto", act.fallback ? "fresh" : undefined).then((result) => {
           if (!result.ok) console.warn(`orchestrator: auto-compact of ${agentId} failed: ${result.error}`);
         });
       } else {
@@ -407,23 +431,25 @@ export function createContextWatch(port: WatchPort) {
     // Each session's pill status. A session the watch has seen gives its reading from the last
     // turn end; one it has not is read now, with empty memory; a gone one is null.
     async sessions(agentIds: readonly string[]): Promise<(ContextStatus | null)[]> {
-      const thresholds = await port.thresholds();
+      const config = await port.policy();
       const enabled = await port.autoCompact();
       return Promise.all(
         agentIds.map(async (agentId): Promise<ContextStatus | null> => {
           await turnEnds.get(agentId);
           const state = sessions.get(agentId);
           let reading = state?.reading ?? null;
-          let loop = state?.loop ?? false;
+          let replay = state?.replay ?? false;
+          let policy = meterPolicy(config, state?.labels ?? {});
           if (!reading) {
             const agent = await port.readAgent(agentId);
             if (!agent) return null;
-            reading = readContext(agent, thresholds);
-            loop = countedStep(agent.labels) !== undefined;
+            policy = meterPolicy(config, agent.labels);
+            reading = readContext(agent, policy);
+            replay = agent.labels["replay-step"] !== undefined;
           }
           const memory = state?.memory ?? { warned: [], mode: "normal", auto: "armed" };
-          const auto = enabled && !loop && memory.mode !== "ignore" && memory.auto !== "skipped";
-          return { agentId, reading, warned: [...memory.warned], mode: memory.mode, red: thresholds.red, auto };
+          const auto = enabled && !replay && memory.mode !== "ignore" && memory.auto !== "skipped";
+          return { agentId, reading, warned: [...memory.warned], mode: memory.mode, red: thresholdsFor(policy, reading.max).red, auto };
         }),
       );
     },
@@ -436,7 +462,7 @@ export function createContextWatch(port: WatchPort) {
       const agent = await port.readAgent(agentId);
       if (!agent) return null;
       const state = sessions.get(agentId);
-      const reading = state?.reading ?? readContext(agent, await port.thresholds());
+      const reading = state?.reading ?? readContext(agent, meterPolicy(await port.policy(), agent.labels));
       return { agentId, reading, labels: agent.labels, split: state?.split ? { ...state.split } : null };
     },
 
@@ -446,9 +472,10 @@ export function createContextWatch(port: WatchPort) {
     async act({ agentId, action }: { agentId: string; action: ContextAction }): Promise<ActResult> {
       const agent = await port.readAgent(agentId);
       if (!agent) return { ok: false, error: "That session is no longer running.", agentId: null };
-      const reading = readContext(agent, await port.thresholds());
+      const reading = readContext(agent, meterPolicy(await port.policy(), agent.labels));
       if (action === "fresh" || (action === "compact" && reading.strategy === "fresh")) {
-        return startFresh(agentId, agent.labels, reading.used ?? sessions.get(agentId)?.reading?.used ?? null);
+        const used = reading.used ?? sessions.get(agentId)?.reading?.used ?? null;
+        return startFresh(agentId, agent.labels, used, undefined, action === "compact" ? "fresh" : undefined);
       }
       if (action === "compact") {
         const result = await native.compact(agentId, keepList(agent.labels));
@@ -457,6 +484,7 @@ export function createContextWatch(port: WatchPort) {
       const state: SessionState = sessions.get(agentId) ?? {
         provider: "unknown",
         reading,
+        labels: agent.labels,
         memory: { warned: [], mode: "normal", auto: "armed" },
         cursor: null,
         lastTurnId: null,

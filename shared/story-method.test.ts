@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
   LOOP_STEPS,
   MARKERS,
   afterImplement,
+  afterReview,
   commitSubject,
   formatSkills,
   readCycles,
   parseSkills,
+  readFindings,
   readMarker,
   readSection,
   stepPrompt,
@@ -98,6 +101,74 @@ test("a parent that ran every cycle moves on to review, else blocks on the first
   const after = afterImplement(state("- [x] Cycle 1 — A: a\n- [ ] Cycle 2 — B: b\n- [ ] Cycle 3 — C: c"), "all");
   assert.equal(after.kind, "blocked");
   assert.match(after.kind === "blocked" ? after.reason : "", /Cycle 2/);
+});
+
+const findings = (body: string) => `# S1 — Demo\n\n## Status\nreview-done\n\n## Review findings\n${body}\n\n## Preview\nnone\n`;
+
+test("readFindings reads the checklist: severity, done, text; follow-ups and plain lines are not findings", () => {
+  const text = findings(
+    [
+      "- [ ] blocking: src/a.ts:3 — drops the last row — use <=",
+      "- [x] non-blocking: src/b.ts:9 — unclear name — rename to rowCount",
+      "- [ ] src/c.ts:1 — untagged — counts as blocking",
+      "- [ ] Non-Blocking: src/d.ts:2 — any case",
+      "- follow-up: paging is slow elsewhere",
+      "Some prose the reviewer left.",
+    ].join("\n"),
+  );
+  assert.deepEqual(readFindings(text), [
+    { severity: "blocking", done: false, text: "src/a.ts:3 — drops the last row — use <=" },
+    { severity: "non-blocking", done: true, text: "src/b.ts:9 — unclear name — rename to rowCount" },
+    { severity: "blocking", done: false, text: "src/c.ts:1 — untagged — counts as blocking" },
+    { severity: "non-blocking", done: false, text: "src/d.ts:2 — any case" },
+  ]);
+});
+
+test("afterReview: an open finding of either severity goes back to a fix round; none opens the PR", () => {
+  const blocking = findings("- [ ] blocking: a — b — c");
+  const nonBlocking = findings("- [x] blocking: a — b — c\n- [ ] non-blocking: d — e — f");
+  const clean = findings("- [x] blocking: a — b — c\n- follow-up: later");
+  assert.deepEqual(afterReview(blocking, "review-done", 1, 3), { kind: "fix" });
+  assert.deepEqual(afterReview(nonBlocking, "review-done", 2, 3), { kind: "fix" });
+  assert.deepEqual(afterReview(clean, "review-done", 1, 3), { kind: "pr", unfixed: [] });
+  // The checklist decides, not the marker the reviewer picked.
+  assert.deepEqual(afterReview(clean, "review-failed", 1, 3), { kind: "pr", unfixed: [] });
+});
+
+test("afterReview at the round limit: blocking findings block; only non-blocking ones go to the PR as unfixed", () => {
+  assert.deepEqual(afterReview(findings("- [ ] blocking: a — b — c\n- [ ] non-blocking: d"), "review-done", 3, 3), {
+    kind: "blocked",
+    reason: "Review still has 1 blocking finding after 3 rounds; see ## Review findings in the worktree.",
+  });
+  assert.deepEqual(afterReview(findings("- [ ] non-blocking: d — e — f\n- [x] blocking: a"), "review-done", 3, 3), {
+    kind: "pr",
+    unfixed: ["d — e — f"],
+  });
+});
+
+test("afterReview: review-failed with no checklist (an older reviewer) still gets a fix round, then blocks", () => {
+  const legacy = findings("src/a.ts:3 — drops the last row — use <=");
+  assert.deepEqual(afterReview(legacy, "review-failed", 1, 3), { kind: "fix" });
+  assert.deepEqual(afterReview(legacy, "review-failed", 3, 3), {
+    kind: "blocked",
+    reason: "Review failed 3 times; see ## Review findings in the worktree.",
+  });
+  assert.deepEqual(afterReview(legacy, "review-done", 1, 3), { kind: "pr", unfixed: [] });
+});
+
+test("review prompts: round 1 asks for a tagged checklist; later rounds re-check ticked lines and add only blocking ones", () => {
+  const first = stepPrompt("review", story, { round: 1 });
+  assert.match(first, /- \[ \] blocking: file:line/);
+  assert.match(first, /- \[ \] non-blocking: file:line/);
+  assert.match(first, /set `## Status` to `review-done`/);
+  assert.doesNotMatch(first, /review-failed/);
+  const again = stepPrompt("review", story, { round: 2 });
+  assert.match(again, /re-review/);
+  assert.match(again, /untick it/);
+  assert.match(again, /Add only new `blocking:` lines/);
+  const fix = stepPrompt("implement", story, { round: 2 });
+  assert.match(fix, /blocking and non-blocking/);
+  assert.match(fix, /Tick each line you fixed/);
 });
 
 test("the commit subject is the cleaned line after the marker, else the fallback", () => {
@@ -222,7 +293,7 @@ test("two stories share a step prompt up to the story head", () => {
   const plain: Extra = (_s, round) => ({ round });
   const cases: [string, LoopStep, RegExp, Extra][] = [
     ["plan", "plan", /## This step: plan/, plain],
-    ["review", "review", /## This step: review/, plain],
+    ["review", "review", /## This step: (review|re-review)/, plain],
     ["pr", "pr", /## This step: open the pull request/, plain],
     ["implement", "implement", /## This step: (implement the story|fix the review findings)/, plain],
     [
@@ -291,13 +362,15 @@ test("review points at the base under Where it sits; pr carries the exact comman
   assert.ok(jira.includes('--title "KEY-1 | Add search"'), "Jira PR title");
 });
 
-test("review fixes its findings, non-blocking ones too, and fails only on what it could not fix", () => {
-  const review = stepPrompt("review", story, { round: 1 });
-  assert.doesNotMatch(review, /Do not fix anything/);
-  assert.match(review, /fix every finding you can, blocking and non-blocking alike/);
-  assert.match(review, /"fixed: <finding>"/);
-  assert.match(review, /only when a finding is left that must be fixed/);
-  assert.match(review, /commit subject/);
+test("review fixes its findings, non-blocking ones too, and leaves unticked only what it could not fix", () => {
+  for (const round of [1, 2]) {
+    const review = stepPrompt("review", story, { round });
+    assert.doesNotMatch(review, /Do not fix anything/);
+    assert.match(review, /fix every finding you can, blocking and non-blocking alike/);
+    assert.match(review, /Tick each line you fixed/);
+    assert.match(review, /Leave a\s+finding unticked when fixing it needs a human decision/);
+    assert.match(review, /commit subject/);
+  }
 });
 
 test("missing Plan paths go in the story section, after the head and before Where it sits", () => {
@@ -413,4 +486,59 @@ test("a memory brief adds a Memory brief block to the review step data and nothi
   const withBrief = stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] });
   assert.match(withBrief, /\n## Memory brief\n- area a: x\/\*\*\n- A fact\.\n/);
   assert.ok(withBrief.indexOf("## Memory brief") > withBrief.indexOf("Review for story S1"), "after the head");
+});
+
+// sha256 of the live Review prompts before findings-only existed; they must not move.
+test("the live Review prompts are unchanged", () => {
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  assert.equal(sha(stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] })), "795dcd37c9a5bda28f3b68c48b2c515572bdc68d074fe14a88a1c4b1692f7e42");
+  assert.equal(sha(stepPrompt("review", story, { round: 2 })), "aefc6688dbf38ca7569e1b30d6ba3817f436a00acb33f6b638aede4706ec5afe");
+  assert.equal(stepPrompt("review", story, { round: 1, findingsOnly: false }), stepPrompt("review", story, { round: 1 }));
+});
+
+test("a findings-only Review lists findings and does not fix, run the full suite or write Preview and pr-body", () => {
+  for (const round of [1, 2]) {
+    const live = stepPrompt("review", story, { round });
+    const only = stepPrompt("review", story, { round, findingsOnly: true });
+    assert.doesNotMatch(only, /then fix what you find|Then fix every finding|After fixing/);
+    assert.doesNotMatch(only, /run them; keep only the summary/);
+    assert.doesNotMatch(only, /Write `## Preview`|Write \.harness\/pr-body\.md|commit subject for your fixes/);
+    assert.match(only, /Do not fix anything/);
+    assert.match(only, /do not edit any file except \.harness\/state\.md/);
+    assert.match(only, /Do not run the full test suite, lint or build/);
+    assert.match(only, /set `## Status` to `review-done` with nothing after it/);
+    // Same checklist of what to look at, and the same findings format.
+    for (const line of [
+      "- Correctness: edge cases, error paths, concurrency, data loss.",
+      "- The repo's own conventions, and nothing changed outside the story's scope.",
+      "the base branch named under `## Where it sits`",
+    ]) {
+      assert.ok(live.includes(line) && only.includes(line), line);
+    }
+    assert.doesNotMatch(only, /review-failed/);
+  }
+  const first = stepPrompt("review", story, { round: 1, findingsOnly: true });
+  assert.match(first, /- \[ \] blocking: file:line — what is wrong — what would fix it/);
+  assert.match(first, /- \[ \] non-blocking: file:line — what could be better — how/);
+  const again = stepPrompt("review", story, { round: 2, findingsOnly: true });
+  assert.match(again, /Add only new `blocking:` lines/);
+  const withBrief = stepPrompt("review", story, { round: 1, findingsOnly: true, brief: ["area a: x/**", "A fact."] });
+  assert.match(withBrief, /\n## Memory brief\n- area a: x\/\*\*\n- A fact\.\n/);
+  assert.doesNotMatch(first, /## Memory brief/);
+});
+
+// A Review that splits state.md on `## Evidence` keeps the seeded Status and writes its own lower down.
+const twoStatuses = "## Status\nstarting\n\n## Plan\nx\n\n## Evidence\n\n## Status\nreview-done\nFix the thing\n\n## Review findings\n- a\n";
+
+test("the last ## Status section wins when a step wrote a second one", () => {
+  assert.deepEqual(readMarker(twoStatuses), { marker: "review-done", detail: "Fix the thing" });
+  assert.equal(commitSubject(twoStatuses, "A"), "Fix the thing");
+});
+
+test("writeMarker leaves one ## Status section when there were several", () => {
+  const written = writeMarker(twoStatuses, "fix-running");
+  assert.equal(written.match(/^##\s+Status\s*$/gm)?.length, 1);
+  assert.equal(readMarker(written).marker, "fix-running");
+  assert.match(written, /## Review findings\n- a/);
+  assert.match(written, /## Plan\nx/);
 });

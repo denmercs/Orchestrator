@@ -20,25 +20,36 @@ function isIndex(v: unknown, limit: number): v is number {
   return typeof v === "number" && Number.isInteger(v) && v >= 0 && v < limit;
 }
 
-// Reads the judge's reply (bare or in a ```json fence). Null when it is not the agreed shape or an index is out of range.
-export function parseJudge(reply: string, nReplay: number, nRecorded: number): JudgeVerdict | null {
+// The JSON in a judge reply: bare, in a ```json fence, or the outermost {…} inside prose. Null when none parses.
+function judgeJson(reply: string): unknown {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(reply);
-  let data: unknown;
-  try {
-    data = JSON.parse((fenced ? fenced[1] : reply).trim());
-  } catch {
-    return null;
+  const start = reply.indexOf("{");
+  const end = reply.lastIndexOf("}");
+  const candidates = [fenced ? fenced[1] : reply, start >= 0 && end > start ? reply.slice(start, end + 1) : null];
+  for (const text of candidates) {
+    if (text === null) continue;
+    try {
+      return JSON.parse(text.trim());
+    } catch {
+      // try the next candidate
+    }
   }
+  return null;
+}
+
+// Reads the judge's reply (see judgeJson). A match or new index that is out of range or malformed is dropped and the
+// rest kept. Null when it is not the agreed shape, or when it had matches and every one was bad.
+export function parseJudge(reply: string, nReplay: number, nRecorded: number): JudgeVerdict | null {
+  const data = judgeJson(reply);
   if (typeof data !== "object" || data === null) return null;
   const { matches, new: fresh } = data as { matches?: unknown; new?: unknown };
   if (!Array.isArray(matches) || !Array.isArray(fresh)) return null;
   const pairs: Match[] = [];
   for (const m of matches) {
-    if (!Array.isArray(m) || m.length !== 2 || !isIndex(m[0], nReplay) || !isIndex(m[1], nRecorded)) return null;
-    pairs.push([m[0], m[1]]);
+    if (Array.isArray(m) && m.length === 2 && isIndex(m[0], nReplay) && isIndex(m[1], nRecorded)) pairs.push([m[0], m[1]]);
   }
-  if (!fresh.every((i) => isIndex(i, nReplay))) return null;
-  return { matches: pairs, new: fresh as number[] };
+  if (matches.length > 0 && pairs.length === 0) return null;
+  return { matches: pairs, new: fresh.filter((i): i is number => isIndex(i, nReplay)) };
 }
 
 // Recorded findings the replay caught or missed, and replay findings that matched nothing recorded. Null when the judge gave no matches.
@@ -81,16 +92,16 @@ export function pairKey(row: Pick<CorpusRow, "initiative" | "story" | "round">, 
 
 export type QueuedRound = { row: CorpusRow; arms: Arm[] };
 
-// Rounds still to run, failed and control alternating (failed first). Done pairs are skipped; a round with no arms left is dropped.
-export function replayQueue(corpus: CorpusRow[], done: ReadonlySet<string>): QueuedRound[] {
+// Rounds still to run in `arms`, failed and control alternating (failed first). Done pairs are skipped; a round with no arms left is dropped.
+export function replayQueue(corpus: CorpusRow[], done: ReadonlySet<string>, arms: readonly Arm[] = ARMS): QueuedRound[] {
   const failed = corpus.filter((r) => r.kind === "failed");
   const control = corpus.filter((r) => r.kind === "control");
   const queue: QueuedRound[] = [];
   for (let i = 0; i < Math.max(failed.length, control.length); i++) {
     for (const row of [failed[i], control[i]]) {
       if (!row) continue;
-      const arms = ARMS.filter((arm) => !done.has(pairKey(row, arm)));
-      if (arms.length) queue.push({ row, arms });
+      const left = arms.filter((arm) => !done.has(pairKey(row, arm)));
+      if (left.length) queue.push({ row, arms: left });
     }
   }
   return queue;

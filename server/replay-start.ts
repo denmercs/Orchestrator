@@ -5,10 +5,9 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { AgentCreateConfig } from "../shared/agent-runner";
-import type { CorpusRow } from "./replay";
+import { ARMS, type Arm, type CorpusRow } from "./replay";
 import { installBrief } from "./brief-install";
 import { readTelemetry, type TelemetryRow } from "./context-telemetry";
-import { defaultApiKey } from "./correction-classifier";
 import type { ReplayPorts } from "./memory-replay";
 import { haikuJudge } from "./replay-judge";
 import { analyze } from "./repo-analyzer";
@@ -18,6 +17,7 @@ type PaseoApi = PluginHandlerContext["paseo"];
 const execFileAsync = promisify(execFile);
 const git = (cwd: string, args: string[]) => execFileAsync("git", args, { cwd, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 });
 
+// The run a replay writes to when `.harness/replay/run-name` names none.
 export const REPLAY_RUN = "run";
 
 // The last `turn` or `turn.stopped` row for an agent in the telemetry file, or null. A failed replay agent's
@@ -68,7 +68,7 @@ export function realReplayPorts(getPaseo: () => PaseoApi | null, agentConfig: (p
       },
     },
     analyze: (root, opts) => analyze(root, opts),
-    judge: haikuJudge({ apiKey: defaultApiKey }),
+    judge: haikuJudge(),
     telemetry: { lastTurn: (agentId) => lastTurn(agentId) },
     agentConfig: () => agentConfig(paseo()),
     installBrief,
@@ -87,6 +87,40 @@ export function readCostCap(root: string): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+export const runNameFile = (root: string) => join(root, ".harness", "replay", "run-name");
+
+// The run named in `.harness/replay/run-name`, so a replay that measures something new gets its own folder.
+// REPLAY_RUN when absent or empty; a name that is not one plain path segment throws.
+export function readRunName(root: string): string {
+  let name: string;
+  try {
+    name = readFileSync(runNameFile(root), "utf8").trim();
+  } catch {
+    return REPLAY_RUN;
+  }
+  if (!name) return REPLAY_RUN;
+  if (!/^[A-Za-z0-9][\w.-]*$/.test(name)) throw new Error(`${runNameFile(root)}: "${name}" is not a plain folder name`);
+  return name;
+}
+
+export const armsFile = (root: string) => join(root, ".harness", "replay", "arms");
+
+// The arms named in `.harness/replay/arms` (whitespace-separated), in ARMS order; undefined when absent or naming none.
+// An unknown name throws, so a typo can't quietly drop an arm from the run.
+export function readArms(root: string): Arm[] | undefined {
+  let text: string;
+  try {
+    text = readFileSync(armsFile(root), "utf8");
+  } catch {
+    return undefined;
+  }
+  const names = text.split(/\s+/).filter(Boolean);
+  const unknown = names.filter((n) => !(ARMS as string[]).includes(n));
+  if (unknown.length) throw new Error(`${armsFile(root)}: unknown arm ${unknown.join(", ")} (known: ${ARMS.join(", ")})`);
+  const arms = ARMS.filter((arm) => names.includes(arm));
+  return arms.length ? arms : undefined;
 }
 
 // The corpus rows, keeping every failed round and the first `controls` control rounds (all of them when unset).

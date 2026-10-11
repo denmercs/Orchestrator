@@ -17,9 +17,19 @@ test("stored loop settings without profiles or maxRetries still parse, with the 
     reviewRounds: 3,
     maxFixes: 3,
     maxRetries: 2,
+    stuckTurns: 8,
     holdFrom: null,
     holdUntil: null,
     profiles: emptyProfiles,
     subagentCycles: true,
   });
+});
+
+test("stuckTurns defaults to 8, parses within 3..30, and rejects 2 and 31", () => {
+  assert.equal(DEFAULT_LOOP_CONFIG.stuckTurns, 8);
+  assert.equal(initiativeLoopSettings.schema.parse({}).stuckTurns, 8);
+  assert.equal(initiativeLoopSettings.schema.parse({ stuckTurns: 3 }).stuckTurns, 3);
+  assert.equal(initiativeLoopSettings.schema.parse({ stuckTurns: 30 }).stuckTurns, 30);
+  assert.equal(initiativeLoopSettings.schema.safeParse({ stuckTurns: 2 }).success, false);
+  assert.equal(initiativeLoopSettings.schema.safeParse({ stuckTurns: 31 }).success, false);
 });

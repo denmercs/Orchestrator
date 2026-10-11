@@ -32,11 +32,13 @@ Plan ──you approve──► Implement ──► Review ──pass──► P
 
 - **Plan** waits for you. Question it, push back, or approve it.
 - **Implement** runs one fresh agent per checklist item, test-first. The plugin commits each one.
-- **Review** is a fresh critic that checks correctness, security, conventions and the full test gate, then fixes what it finds (non-blocking findings too). It fails the story back to Implement only for findings it could not fix.
-- **PR and CI** need no agent. The plugin pushes, opens the PR and polls checks every 2 minutes.
+- **Review** is a fresh critic that checks correctness, security, conventions and the full test gate. It writes each finding as a checklist line tagged blocking or non-blocking, then fixes what it can (non-blocking findings too) and ticks it. The plugin sends any finding still open, of either kind, to a fresh fix agent and reviews again. At the round limit, a blocking finding stops the story. Non-blocking ones that are left go into the PR body.
+- **PR and CI** need no agent. The plugin pushes, opens the PR and polls checks every 2 minutes. A red check starts a fresh Fix CI agent, and the plugin pushes its fix. The Board's Story pipeline watches its PRs the same way.
 - After a merge the next ready story starts. When a phase is done, the loop moves on to the next phase.
 
 If an agent stalls, dies or waits on a permission, the loop nudges it, restarts it or blocks the story with a reason. Work an agent finds outside its story becomes a new story. The agent doesn't do it in place.
+
+A Claude session can press **Start** for you: write `{"repo": "/abs/repo", "initiative": "<slug>"}` to `~/.orchestrator/initiative-loop-start.json`. Within about 5 seconds the plugin removes the file, starts the loop and writes the outcome to `~/.orchestrator/initiative-loop-start.result.json`.
 
 **3. Act on gates.** A story only needs you at three points: a plan to approve, a PR to merge, or a story that's stuck. The 🔔 bell lists them all.
 
@@ -87,11 +89,13 @@ Also planned: Kiro and Cursor as first-class providers.
 | Concern | File |
 |---|---|
 | Loop engine | `server/initiative-loop.ts` |
+| Start files (loop, replay) | `server/start-file.ts`, `server/loop-trigger.ts`, `server/replay-trigger.ts` |
 | How each step works (prompts) | `shared/story-method.ts` |
 | How architecture sessions plan | `server/architecture-method.ts` |
 | Folder layout | `server/harness-layout.ts` |
 | Plan page rendering and serving | `server/plan-render.ts`, `server/plan-server.ts` |
 | Context meter and telemetry | `shared/context-meter.ts`, `server/context-watch.ts`, `server/context-telemetry.ts` |
+| CI watch (both loops) | `server/ci-watch.ts`, `server/pr-checks.ts` |
 | Gates and step bar | `shared/gates.ts`, `shared/story-steps.ts` |
 | Skills drawer and sources | `server/skill-sources.ts`, `shared/pipeline.ts` |
 

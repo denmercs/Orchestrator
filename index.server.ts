@@ -1,4 +1,5 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { RpcInput } from "@getpaseo/plugin";
 import { loadDailyVerse } from "./server/bible-verse";
 import { listMergedPrs } from "./server/github-prs";
 import { pickMcpServers, readHostMcpServers } from "./server/host-mcp";
@@ -17,14 +18,15 @@ import { startPhaseArchitect } from "./server/harness-architect";
 import { openPhasePlan, refreshPhasePlan } from "./server/phase-plan";
 import { stopPlanServer } from "./server/plan-server";
 import { createHarnessEpic, listHarness } from "./server/harness-layout";
-import { advancePipeline, closeMergedStories, startStory } from "./server/pipeline-advance";
+import { advancePipeline, closeMergedStories, startStory, watchPipelinePrs } from "./server/pipeline-advance";
 import { createLoopAdvance } from "./server/loop-advance";
-import { createInitiativeLoop, readRegistry } from "./server/initiative-loop";
+import { createInitiativeLoop } from "./server/initiative-loop";
 import { startTicket } from "./server/ticket-start";
 import { readBranchInitials } from "./server/git-identity";
 import { getBranchInitials } from "./shared/naming";
 import { createContextWatch, paseoPort } from "./server/context-watch";
 import { createGateActions, loopGatePort } from "./server/gate-actions";
+import { createVoiceResume } from "./server/voice-resume";
 import { gateAct } from "./shared/gates";
 import { readTelemetry, summariseTelemetry } from "./server/context-telemetry";
 import { loadStoryContext } from "./server/story-context";
@@ -32,13 +34,13 @@ import { kiroUsageSource } from "./server/kiro-usage";
 import { readPlanUsage } from "./server/plan-usage";
 import { planUsageRpc } from "./shared/plan-usage";
 import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay";
-import { readCorpus, readCostCap, realReplayPorts, REPLAY_RUN } from "./server/replay-start";
+import { readArms, readCorpus, readCostCap, readRunName, realReplayPorts } from "./server/replay-start";
+import { claudeSignedIn } from "./server/claude-cli";
 import { startMemoryReplay } from "./shared/replay-rpc";
+import { REPLAY_START_FILE, REPLAY_START_POLL_MS, tickReplayStart } from "./server/replay-trigger";
+import { LOOP_START_FILE, LOOP_START_POLL_MS, tickLoopStart } from "./server/loop-trigger";
 import { join } from "node:path";
-import { readKeychainSecret } from "./server/keychain";
-import { createVoiceBridge, startVoiceServer, VOICE_PORT } from "./server/voice-bridge";
-import { createMergeQueue, voiceMergePort } from "./server/voice-merge";
-import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, storyContextRpc } from "./shared/context";
+import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
   initiativeLoopSettings,
@@ -107,8 +109,17 @@ import {
 
 type ReplayRunner = ReturnType<typeof createMemoryReplay>;
 
-// `deps.replay` lets tests stand in for the memory replay runner.
-export default function contribute(server: PluginServerContext, deps: { replay?: ReplayRunner } = {}) {
+// `deps.replay` and `deps.signedIn` let tests stand in for the memory replay runner and the Claude Code login check;
+// `deps.replayStart` and `deps.loopStart` move the replay and initiative loop start files and their polls.
+export default function contribute(
+  server: PluginServerContext,
+  deps: {
+    replay?: ReplayRunner;
+    signedIn?: () => Promise<boolean>;
+    replayStart?: { file: string; everyMs: number };
+    loopStart?: { file: string; everyMs: number };
+  } = {},
+) {
   // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
   server.registerUsageSource?.(kiroUsageSource());
   server.registerSettings(standupSettings);
@@ -185,7 +196,10 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
       rows: () => readTelemetry(),
     },
   );
-  server.handle(startInitiativeLoop, (input, { paseo }) => initiativeLoop.start(paseo, input));
+  // The Initiatives tab and the loop start file both start the loop here.
+  const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: Parameters<typeof initiativeLoop.start>[0]) =>
+    initiativeLoop.start(paseo, input);
+  server.handle(startInitiativeLoop, (input, { paseo }) => startLoop(input, paseo));
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
   server.handle(startTicketRpc, (input, { paseo }) =>
     startTicket(input, {
@@ -218,31 +232,39 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
       ),
     );
   let replaying = false;
-  server.handle(startMemoryReplay, async (input, { paseo }) => {
+  // The ⌘K RPC and the start file both start the replay here, so they make the same checks.
+  const startReplay = async (input: RpcInput<typeof startMemoryReplay>, paseo: NonNullable<typeof contextPaseo>) => {
     replayPaseo = paseo;
     contextPaseo = paseo;
     if (replaying || memoryReplay.pendingAgents().length > 0) throw new Error("A memory replay is already running.");
     const corpus = readCorpus(input.root, input.controls);
+    // The judge runs on the Claude Code CLI; signed out, every round would come back with no verdict.
+    if (!(await (deps.signedIn ?? claudeSignedIn)())) {
+      throw new Error("Claude Code is not signed in, so the replay judge can't run. Run `claude` and log in, then start the replay again.");
+    }
     const costCap = input.costCap ?? readCostCap(input.root) ?? DEFAULT_COST_CAP_USD;
-    const runDir = join(input.root, ".harness", "replay", REPLAY_RUN);
+    const arms = readArms(input.root);
+    const run = readRunName(input.root);
+    const runDir = join(input.root, ".harness", "replay", run);
     replaying = true;
     void memoryReplay
-      .replay(corpus, { run: REPLAY_RUN, root: input.root, runDir, costCap })
+      .replay(corpus, { run, root: input.root, runDir, costCap, arms })
       .catch((error) => console.warn("orchestrator: memory replay failed", error))
       .finally(() => {
         replaying = false;
       });
-    return { run: REPLAY_RUN, rounds: corpus.length, costCap, runDir };
-  });
-  const readThresholds = async () => {
+    return { run, rounds: corpus.length, costCap, runDir };
+  };
+  server.handle(startMemoryReplay, (input, { paseo }) => startReplay(input, paseo));
+  const readPolicy = async () => {
     const state = await context.read();
-    return state.status === "ready" ? state.values : { amber: 100_000, red: 150_000 };
+    return state.status === "ready" ? state.values : DEFAULT_CONTEXT_CONFIG;
   };
   const readAutoCompact = async () => {
     const state = await context.read();
     return state.status === "ready" ? state.values.autoCompact : true;
   };
-  const contextWatch = createContextWatch(paseoPort(() => contextPaseo, readThresholds, readAutoCompact, initiativeLoop));
+  const contextWatch = createContextWatch(paseoPort(() => contextPaseo, readPolicy, readAutoCompact, initiativeLoop));
   server.handle(contextAct, (input, { paseo }) => {
     contextPaseo = paseo;
     return contextWatch.act(input);
@@ -263,7 +285,7 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
     return loadStoryContext(input, {
       live: (agentId) => contextWatch.live(agentId),
       rows: () => readTelemetry(),
-      thresholds: readThresholds,
+      policy: readPolicy,
     });
   });
   const readPipeline = async () => {
@@ -357,9 +379,18 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   const offWorkspaceCreated = server.on("workspace.created", ({ workspace }) => {
     scopeWorkerWorkspace(workspace);
   });
-  // The voice bridge's Paseo handle.
+  // The Story pipeline's CI watch runs on the tick, with the handle the last event gave.
+  let pipelinePaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
+  // Set on every turn event: the resume fires later, from a timer, after the event has gone.
   let voicePaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
+  const voiceResume = createVoiceResume({
+    send: async (agentId, text) => {
+      if (voicePaseo) await voicePaseo.agents.ref(agentId).send(text);
+    },
+  });
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
+    voicePaseo = paseo;
+    voiceResume.onTurnEnded(event);
     // A memory replay's agent is the runner's business only: the telemetry row first, then its result row.
     if (memoryReplay.pendingAgents().includes(event.agent.id)) {
       replayPaseo = paseo;
@@ -379,8 +410,7 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
       return;
     }
     loop.rememberPaseo(paseo);
-    voicePaseo = paseo;
-    voice.onTurnEnded(event);
+    pipelinePaseo = paseo;
     void loop.onTurnEnded(event);
     void advancePipeline(paseo, event, readPipeline, readAgentConfig).catch((error) => {
       console.warn("orchestrator: pipeline advance failed", error);
@@ -399,47 +429,24 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   const arm = (paseo: Parameters<typeof loop.rememberPaseo>[0]) => {
     loop.rememberPaseo(paseo);
     initiativeLoop.rememberPaseo(paseo);
+    pipelinePaseo = paseo;
   };
   const offSessionOpen = server.before("agent.session_open", (_input, { paseo }) => {
     arm(paseo);
   });
   const offTurnStarted = server.on("agent.turn_started", (event, { paseo }) => {
     arm(paseo);
-    voice.onTurnStarted(event.agent.id);
+    voiceResume.onTurnStarted(event.agent.id);
   });
   const offAgentCreated = server.on("agent.created", (_event, { paseo }) => arm(paseo));
-  // Voice bridge for a phone: on only when the Keychain holds a token. It binds to localhost unless
-  // `orchestrator-voice-bind` names another address, such as the Mac's Tailscale IP.
-  // It also reads out green story PRs in the loop's repos, with a review, and merges one on "merge".
-  const voice = createVoiceBridge({
-    respond: async (agentId, requestId, response) => {
-      if (!voicePaseo) throw new Error("No Paseo session yet");
-      await voicePaseo.agents.ref(agentId).respondToPermission({ requestId, response });
-    },
-    send: async (agentId, text) => {
-      if (!voicePaseo) throw new Error("No Paseo session yet");
-      await voicePaseo.agents.ref(agentId).send(text);
-    },
-  }, createMergeQueue(voiceMergePort(readRegistry)));
-  let stopVoice: (() => Promise<void>) | null = null;
-  let voiceStopped = false;
-  void Promise.all([readKeychainSecret("orchestrator-voice-token"), readKeychainSecret("orchestrator-voice-bind")]).then(
-    ([token, bind]) => {
-      if (!token || voiceStopped) return;
-      stopVoice = startVoiceServer(voice, { host: bind || "127.0.0.1", port: VOICE_PORT, token });
-    },
-  );
   const offPermissionRequested = server.on("agent.permission_requested", (event, { paseo }) => {
     arm(paseo);
-    voicePaseo = paseo;
-    voice.onRequested(event.agent, event.request);
     void initiativeLoop.onPermissionRequested(paseo, event).catch((error) => {
       console.warn("orchestrator: loop permission request failed", error);
     });
   });
   const offPermissionResolved = server.on("agent.permission_resolved", (event, { paseo }) => {
     arm(paseo);
-    voice.onResolved(event.requestId);
     void initiativeLoop.onPermissionResolved(paseo, event).catch((error) => {
       console.warn("orchestrator: loop permission resolve failed", error);
     });
@@ -448,8 +455,30 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   const timer = setInterval(() => {
     void loop.pollMergedPrs();
     void initiativeLoop.tick();
+    if (pipelinePaseo) {
+      void watchPipelinePrs(pipelinePaseo, readPipeline, readAgentConfig).catch((error) => {
+        console.warn("orchestrator: pipeline CI watch failed", error);
+      });
+    }
   }, PR_POLL_MS);
   timer.unref?.();
+  // A Claude session starts the replay by writing the start file; any Paseo handle we have seen will do.
+  const replayStart = deps.replayStart ?? { file: REPLAY_START_FILE, everyMs: REPLAY_START_POLL_MS };
+  const paseoNow = () => contextPaseo ?? pipelinePaseo;
+  const replayStartTimer = setInterval(() => {
+    void tickReplayStart(replayStart.file, () => paseoNow() !== null, (input) => startReplay(input, paseoNow()!)).catch(
+      (error) => console.warn("orchestrator: replay start file failed", error),
+    );
+  }, replayStart.everyMs);
+  replayStartTimer.unref?.();
+  // The same for the initiative loop.
+  const loopStart = deps.loopStart ?? { file: LOOP_START_FILE, everyMs: LOOP_START_POLL_MS };
+  const loopStartTimer = setInterval(() => {
+    void tickLoopStart(loopStart.file, () => paseoNow() !== null, (input) => startLoop(input, paseoNow()!)).catch(
+      (error) => console.warn("orchestrator: initiative loop start file failed", error),
+    );
+  }, loopStart.everyMs);
+  loopStartTimer.unref?.();
   return () => {
     offPulseSettings();
     stopPlanServer();
@@ -461,8 +490,9 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
     offAgentCreated();
     offPermissionRequested();
     offPermissionResolved();
-    voiceStopped = true;
-    void stopVoice?.();
     clearInterval(timer);
+    clearInterval(replayStartTimer);
+    clearInterval(loopStartTimer);
+    voiceResume.stop();
   };
 }

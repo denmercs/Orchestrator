@@ -142,6 +142,23 @@ for (const c of prCases) {
   });
 }
 
+test("non-blocking review findings left unfixed are listed under the body from .harness/pr-body.md", async () => {
+  const { dir, created, flag, done } = prRepo();
+  try {
+    mkdirSync(join(dir, ".harness"));
+    writeFileSync(join(dir, ".harness", "pr-body.md"), "## Purpose\nFind things.\n");
+    const unfixed = ["src/a.ts:3 — unclear name — rename", "src/b.ts:9 — long function — split"];
+    await openStoryPr(dir, { id: "S1", title: "Add search", jira: false, branch: "feature/s1", base: "origin/main", unfixed });
+    const [args] = created();
+    assert.equal(
+      flag(args, "--body"),
+      "Story: S1 — Add search\n\n## Purpose\nFind things.\n\n## Not fixed in review (non-blocking)\n- src/a.ts:3 — unclear name — rename\n- src/b.ts:9 — long function — split",
+    );
+  } finally {
+    done();
+  }
+});
+
 test("leftovers are committed as \"Commit remaining changes\" before the PR opens", async () => {
   const { dir, git, done } = prRepo();
   try {

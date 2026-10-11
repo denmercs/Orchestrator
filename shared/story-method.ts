@@ -64,6 +64,8 @@ export type StepExtra = {
   missing?: string[];
   // Review: memory brief lines, shown as `## Memory brief`. Absent or empty leaves the prompt unchanged.
   brief?: string[];
+  // Review: list findings only, no fixing or full suite. The memory replay uses it; the live loop never does.
+  findingsOnly?: boolean;
 };
 
 export type StepSkill = { name: string; path?: string };
@@ -217,6 +219,81 @@ from an earlier agent; check what is already there before you start.
 Do not touch \`## Status\` or tick \`## Cycles\`; the parent does both. Report fail → pass, or why you
 cannot go on.`;
 
+// What to look at. The live Review also runs the full suite; a findings-only one does not.
+const REVIEW_LOOK = `Check:
+- Every acceptance check is met, and each cycle has a test that would fail without its change.
+- Correctness: edge cases, error paths, concurrency, data loss.
+- Security: input validation, injection, auth and permission checks, secrets in code or logs, unsafe shell or
+  file paths, new dependencies.
+- The repo's own conventions, and nothing changed outside the story's scope.`;
+
+const REVIEW_CHECKS = `${REVIEW_LOOK}
+- The full test suite, lint and build pass (run them; keep only the summary and any failures).`;
+
+// The plugin reads the checklist, not the marker, to decide between a fix round and the PR (afterReview).
+const REVIEW_END = `After fixing, run the full test suite, lint and build again.
+Write \`## Preview\`: one line per app route or screen the story changes, "- <route> — what to look at", or
+\`none — <why>\` when nothing is visible.
+Write .harness/pr-body.md: a short Purpose, the Changes Made as bullets, and how it was tested.
+When the review is written, set \`## Status\` to \`${MARKERS.reviewDone}\`. If you changed code, put a commit subject
+for your fixes on the next line: plain words, imperative mood, under 72 characters, no story id. The plugin reads
+the checklist: any unticked line goes to a fresh agent to fix, and when none is left the plugin commits and opens
+the PR.`;
+
+// Review fixes what it finds (blocking and non-blocking alike) and ticks it; it leaves unticked only what needs a
+// human decision or work outside the story.
+const REVIEW_FIX = `Then fix every finding you can, blocking and non-blocking alike, inside the story's scope. A behaviour fix gets a
+test that fails before it; add one line per fix to \`## Evidence\`. Tick each line you fixed (\`- [x]\`). Leave a
+finding unticked when fixing it needs a human decision or work outside the story.`;
+
+// Replaces the fix and end parts when the Review only lists findings (the memory replay).
+const FINDINGS_END = `Do not fix anything, and do not edit any file except ${STATE}. Do not run the full test suite, lint or build;
+reading code, and running one targeted test to confirm a suspected bug, is fine. Do not write \`## Preview\` or
+.harness/pr-body.md.
+When the findings are written, set \`## Status\` to \`${MARKERS.reviewDone}\` with nothing after it.`;
+
+const REVIEW_DIFF = `Review the diff against the base branch named under \`## Where it sits\` (\`git diff <base>...HEAD\`): check it
+against the story, its acceptance, \`## Plan\` and \`## Cycles\`.`;
+
+const REVIEW_FORMAT = `Replace what is under \`## Review findings\` with one checklist line per problem, keeping "follow-up:" lines:
+- \`- [ ] blocking: file:line — what is wrong — what would fix it\` when it is wrong: an acceptance check not met,
+  a bug, a security gap, a failing test, lint or build.
+- \`- [ ] non-blocking: file:line — what could be better — how\` when it works but should improve: naming,
+  readability, a missing edge-case test, a repo convention.`;
+
+const REVIEW = `## This step: review the change as a fresh critic, then fix what you find
+${REVIEW_DIFF} Finish the whole review before you fix anything.
+${REVIEW_CHECKS}
+${REVIEW_FORMAT}
+${REVIEW_FIX}
+${REVIEW_END}`;
+
+const REVIEW_FINDINGS = `## This step: review the change as a fresh critic and list what you find
+${REVIEW_DIFF}
+${REVIEW_LOOK}
+${REVIEW_FORMAT}
+${FINDINGS_END}`;
+
+const REREVIEW_STEPS = `1. For each ticked line, check the fix in the diff against the base branch named under \`## Where it sits\`
+   (\`git diff <base>...HEAD\`). If it isn't fixed, untick it and say why at the end of the line. A
+   "won't fix" line you disagree with is unticked too.
+2. Review the whole diff again. Add only new \`blocking:\` lines (\`- [ ] blocking: file:line — what is wrong — what
+   would fix it\`): something the fixes broke, or a real defect missed before. Do not add new non-blocking lines.`;
+
+const REREVIEW = `## This step: re-review the change after the fixes, then fix what you find
+\`## Review findings\` holds the last review's checklist; the fix agent ticked each line it fixed. Finish the whole
+re-review before you fix anything.
+${REREVIEW_STEPS}
+${REVIEW_CHECKS}
+${REVIEW_FIX}
+${REVIEW_END}`;
+
+const REREVIEW_FINDINGS = `## This step: re-review the change after the fixes and list what you find
+\`## Review findings\` holds the last review's checklist; the fix agent ticked each line it fixed.
+${REREVIEW_STEPS}
+${REVIEW_LOOK}
+${FINDINGS_END}`;
+
 function planData(plan: string | undefined) {
   const planLines = (plan ?? "").trim().split("\n");
   const planText = planLines.slice(0, PLAN_LINES).join("\n") + (planLines.length > PLAN_LINES ? "\n…" : "");
@@ -284,9 +361,11 @@ the next line.`,
     }
     if (round > 1) {
       return `## This step: fix the review findings
-Review found problems. Fix every item under \`## Review findings\` (skip "follow-up:" and "fixed:" lines), each with a test
-that fails before the fix, and add one line per fix to \`## Evidence\`. Do not work unticked cycles; fresh agents
-take those. Then set \`## Status\` to ${DONE}.
+Review found problems. Fix every unticked line under \`## Review findings\`, blocking and non-blocking (skip
+"follow-up:" lines). Give each fix to behaviour a test that fails before the fix, and add one line per fix to
+\`## Evidence\`. Tick each line you fixed (\`- [x]\`). If a non-blocking line is wrong, tick it and end it with
+"— won't fix: <why>"; the next review can reopen it. Do not work unticked cycles; fresh agents take those.
+Then set \`## Status\` to ${DONE}.
 If you cannot go on, set it to \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
     }
     // No checklist in ## Cycles: one agent does the whole change.
@@ -299,28 +378,10 @@ Then set \`## Status\` to ${DONE}.
 If you cannot go on, set it to \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
   },
 
-  review: () => `## This step: review the change as a fresh critic, then fix what you find
-Review the diff against the base branch named under \`## Where it sits\` (\`git diff <base>...HEAD\`): check it
-against the story, its acceptance, \`## Plan\` and \`## Cycles\`. Finish the whole review before you fix anything.
-Check:
-- Every acceptance check is met, and each cycle has a test that would fail without its change.
-- Correctness: edge cases, error paths, concurrency, data loss.
-- Security: input validation, injection, auth and permission checks, secrets in code or logs, unsafe shell or
-  file paths, new dependencies.
-- The repo's own conventions, and nothing changed outside the story's scope.
-- The full test suite, lint and build pass (run them; keep only the summary and any failures).
-Write each problem under \`## Review findings\` as one line: file:line — what is wrong — what would fix it.
-Then fix every finding you can, blocking and non-blocking alike, inside the story's scope. A behaviour fix gets a
-test that fails before it; add one line per fix to \`## Evidence\`. Rewrite each fixed line as
-"fixed: <finding>". Leave a finding as it is when fixing it needs a human decision or work outside the story.
-After fixing, run the full test suite, lint and build again.
-Write \`## Preview\`: one line per app route or screen the story changes, "- <route> — what to look at", or
-\`none — <why>\` when nothing is visible.
-Write .harness/pr-body.md: a short Purpose, the Changes Made as bullets, and how it was tested.
-Set \`## Status\` to \`${MARKERS.reviewFailed}\` only when a finding is left that must be fixed, or the gate fails;
-otherwise set it to \`${MARKERS.reviewDone}\`. If you changed code, put a commit subject for your fixes on the next
-line: plain words, imperative mood, under 72 characters, no story id. The plugin commits and opens the PR after a
-pass.`,
+  review: ({ round, findingsOnly }) => {
+    if (findingsOnly) return round > 1 ? REREVIEW_FINDINGS : REVIEW_FINDINGS;
+    return round > 1 ? REREVIEW : REVIEW;
+  },
 
   // Kept for stories that were already at this step; new stories get their PR from the plugin.
   pr: () => `## This step: open the pull request
@@ -358,19 +419,30 @@ ${failing ?? "(see the PR's checks)"}`,
 - Open: \`gh pr create --base ${story.base.replace(/^origin\//, "")} --head ${story.branch} --title "${prTitle({ ...story, jira: isJira(story) }).replace(/"/g, "'")}" --body-file .harness/pr-body.md\``,
 };
 
-// The first non-empty line under `## Status`, and the lines after it (a reason or a URL).
+// The first non-empty line under the last `## Status`, and the lines after it (a reason or a URL).
 export function readMarker(state: string) {
-  const lines = readSection(state, "Status")
+  const lines = statusSection(state)
     .split("\n")
     .map((line) => line.trim().replace(/^`|`$/g, ""))
     .filter(Boolean);
   return { marker: lines[0]?.toLowerCase() ?? null, detail: lines.slice(1).join(" ") };
 }
 
-// Replaces the body of `## Status` with one line.
+// Replaces the body of `## Status` with one line. Extra Status sections (an agent that wrote its own) are dropped.
 export function writeMarker(state: string, marker: string) {
   if (!/^##\s+Status\s*$/m.test(state)) return `${state.trimEnd()}\n\n## Status\n${marker}\n`;
-  return state.replace(/^(##\s+Status\s*\n)([\s\S]*?)(?=^##\s|(?![\s\S]))/m, `$1${marker}\n\n`);
+  let first = true;
+  return state.replace(/^(##\s+Status\s*\n)([\s\S]*?)(?=^##\s|(?![\s\S]))/gm, (_match, head: string) => {
+    if (!first) return "";
+    first = false;
+    return `${head}${marker}\n\n`;
+  });
+}
+
+// The body of the last `## Status` section. A step that rewrites state.md may leave the seeded one above its own.
+export function statusSection(state: string) {
+  const bodies = [...state.matchAll(/^##\s+Status\s*\n([\s\S]*?)(?=^##\s|(?![\s\S]))/gm)];
+  return bodies.at(-1)?.[1] ?? "";
 }
 
 // The body of a `## <heading>` section, or "" when it is missing.
@@ -426,9 +498,55 @@ export function afterImplement(state: string, finished: number | "all" | null): 
   return next ? { kind: "cycle", cycle: next } : { kind: "review" };
 }
 
+export type Finding = { severity: "blocking" | "non-blocking"; done: boolean; text: string };
+
+// The checklist under `## Review findings`: `- [ ] blocking: …` and `- [ ] non-blocking: …` lines.
+// An untagged checklist line counts as blocking. "follow-up:" lines and prose are not findings.
+export function readFindings(state: string): Finding[] {
+  const findings: Finding[] = [];
+  for (const raw of readSection(state, "Review findings").split("\n")) {
+    const item = /^\s*[-*]\s*\[([ xX])\]\s*(.+)$/.exec(raw);
+    if (!item) continue;
+    const tagged = /^(blocking|non-blocking)\s*:\s*(.*)$/i.exec(item[2].trim());
+    findings.push({
+      severity: tagged?.[1].toLowerCase() === "non-blocking" ? "non-blocking" : "blocking",
+      done: item[1] !== " ",
+      text: (tagged ? tagged[2] : item[2]).trim(),
+    });
+  }
+  return findings;
+}
+
+export type AfterReview =
+  | { kind: "fix" }
+  | { kind: "pr"; unfixed: string[] }
+  | { kind: "blocked"; reason: string };
+
+// What follows a Review agent that wrote review-done (or review-failed). The checklist decides, not the
+// marker: any unticked finding, blocking or not, goes to a fresh fix agent until `maxRounds`. At the
+// limit, open blocking findings block the story and open non-blocking ones go into the PR as unfixed.
+// A review-failed with no checklist (a reviewer from before it) still gets a fix round.
+export function afterReview(state: string, marker: string, round: number, maxRounds: number): AfterReview {
+  const findings = readFindings(state);
+  const open = findings.filter((finding) => !finding.done);
+  const legacy = marker === MARKERS.reviewFailed && findings.length === 0;
+  if (!open.length && !legacy) return { kind: "pr", unfixed: [] };
+  if (round < maxRounds) return { kind: "fix" };
+  if (legacy) return { kind: "blocked", reason: `Review failed ${round} times; see ## Review findings in the worktree.` };
+  const blocking = open.filter((finding) => finding.severity === "blocking").length;
+  if (blocking) {
+    const noun = blocking === 1 ? "finding" : "findings";
+    return {
+      kind: "blocked",
+      reason: `Review still has ${blocking} blocking ${noun} after ${round} rounds; see ## Review findings in the worktree.`,
+    };
+  }
+  return { kind: "pr", unfixed: open.map((finding) => finding.text) };
+}
+
 // The commit subject a finished step wrote on the line after its marker, cleaned; else `fallback`.
 export function commitSubject(state: string, fallback: string) {
-  const line = readSection(state, "Status")
+  const line = statusSection(state)
     .split("\n")
     .map((text) => text.trim())
     .filter(Boolean)[1];

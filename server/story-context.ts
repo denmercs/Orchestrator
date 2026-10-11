@@ -1,6 +1,6 @@
 import { join } from "node:path";
-import type { Thresholds } from "../shared/context-meter";
-import type { StoryContext } from "../shared/context";
+import { thresholdsFor } from "../shared/context-meter";
+import { meterPolicy, type ContextConfig, type StoryContext } from "../shared/context";
 import { contextPanel } from "../shared/context-panel";
 import { storyCost, storyHistory, type TelemetryRow } from "./context-telemetry";
 import type { LiveSession } from "./context-watch";
@@ -13,7 +13,7 @@ import { initiativeAt } from "./initiative-loop";
 export type StoryContextDeps = {
   live: (agentId: string) => Promise<LiveSession | null>;
   rows: () => Promise<TelemetryRow[]>;
-  thresholds: () => Promise<Thresholds>;
+  policy: () => Promise<ContextConfig>;
 };
 
 export type StoryContextInput = { repo: string; initiative: string; storyId: string };
@@ -44,11 +44,13 @@ export async function loadStoryContext(input: StoryContextInput, deps: StoryCont
     step,
     cycle: rawCycle !== undefined && /^\d+$/.test(rawCycle) ? Number(rawCycle) : null,
   });
+  const policy = meterPolicy(await deps.policy(), session.labels);
   const panel = contextPanel({
     reading: session.reading,
     turns: history.turns,
-    thresholds: await deps.thresholds(),
-    strategy: session.reading.strategy,
+    thresholds: thresholdsFor(policy, session.reading.max),
+    // A fresh step hands off at act whatever the session could do natively.
+    strategy: policy.step.mode === "fresh" ? "fresh" : session.reading.strategy,
     split: session.split,
   });
   return {

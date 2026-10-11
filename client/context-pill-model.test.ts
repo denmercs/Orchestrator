@@ -41,7 +41,7 @@ test("pillView: used/max with the level as tone and the strategy in the title", 
   assert.equal(amber.label, "120k / 200k");
   assert.equal(amber.tone, "amber");
   assert.match(amber.title, /amber/);
-  assert.match(amber.title, /Compact: fresh session/);
+  assert.match(amber.title, /Compact unavailable, starting fresh/);
 
   assert.equal(pillView(status({ used: 160_000, level: "red" })).tone, "red");
 });

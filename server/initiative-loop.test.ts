@@ -9,8 +9,9 @@ import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { FALLBACK_AGENT_CONFIG } from "../shared/agent-runner";
 import { DEFAULT_PHASES, type SkillSource } from "../shared/pipeline";
 import { readMarker } from "../shared/story-method";
+import { gatesOf } from "../shared/gates";
 import type { TelemetryRow } from "./context-telemetry";
-import { frontmatter, writeFrontmatter } from "./harness-layout";
+import { frontmatter, readStories, writeFrontmatter } from "./harness-layout";
 import { sourceId } from "./skill-sources";
 
 // The loop's registry lives under the home folder, so each run gets its own.
@@ -21,9 +22,18 @@ const ghReply = join(home, "gh-reply.json");
 process.env.GH_BIN = join(home, "gh");
 writeFileSync(process.env.GH_BIN, `#!/bin/sh\n[ -f "${ghReply}" ] && cat "${ghReply}" || exit 1\n`, "utf8");
 chmodSync(process.env.GH_BIN, 0o755);
-const ghPr = (state: string | null, statusCheckRollup: unknown[] = [], mergedAt?: string) => {
-  if (state) writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid: "abc", statusCheckRollup, mergedAt }), "utf8");
+const ghPr = (state: string | null, statusCheckRollup: unknown[] = [], mergedAt?: string, headRefOid = "abc") => {
+  if (state) writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid, statusCheckRollup, mergedAt }), "utf8");
   else rmSync(ghReply, { force: true });
+};
+const failedCheck = {
+  __typename: "CheckRun",
+  name: "test",
+  workflowName: "CI",
+  status: "COMPLETED",
+  conclusion: "FAILURE",
+  detailsUrl: "https://gh/actions/runs/9/job/1",
+  completedAt: "2026-10-08T12:00:00Z",
 };
 const { createInitiativeLoop, RESUME_LINE, RESTART_LINE, nudgePrompt } = await import("./initiative-loop");
 
@@ -139,6 +149,20 @@ test("handOver moves agent: only when it names the old id", async () => {
 
   await initiative.handOver(labels, "a1", "a3");
   assert.equal(storyMeta(story).agent, "a2");
+});
+
+test("stepActive: true only for the story's agent while its marker is <step>-running", async () => {
+  const { worktree, labels } = fixture("a1");
+  const initiative = loop();
+  assert.equal(await initiative.stepActive(labels, "a1"), true);
+  assert.equal(await initiative.stepActive(labels, "other"), false);
+
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1\n\n## Status\nimplement-done\n", "utf8");
+  assert.equal(await initiative.stepActive(labels, "a1"), false);
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1\n\n## Status\nreview-running\n", "utf8");
+  assert.equal(await initiative.stepActive(labels, "a1"), false);
+
+  assert.equal(await initiative.stepActive({ ...labels, "loop-story": "S99" }, "a1"), false);
 });
 
 test("resumePrompt is the step prompt plus the resume line", async () => {
@@ -371,6 +395,35 @@ test("a Diagnose blocked by the retry limit that then writes diagnose-done is re
 
   assert.deepEqual(fx.created.map((agent) => agent.labels["loop-step"]), ["implement"]);
   assert.deepEqual([storyMeta(fx.story).status, storyMeta(fx.story).block_kind], ["implementing", undefined]);
+});
+
+test("starting a new step clears the stuck counters and the nudge", async () => {
+  const fx = diagnoseEnded("diagnose-done");
+  writeFrontmatter(fx.story, { idle_turns: 2, fail_tests: '["a"]', fail_runs: 2, stuck_nudged: 1 });
+
+  await loop().onTurnEnded(fx.api, fx.turnEnded("a1"));
+
+  assert.deepEqual(fx.created.map((agent) => agent.labels["loop-step"]), ["implement"]);
+  const meta = storyMeta(fx.story);
+  assert.deepEqual([meta.idle_turns, meta.fail_tests, meta.fail_runs, meta.stuck_nudged], [undefined, undefined, undefined, undefined]);
+});
+
+test("reopen clears the stuck counters and the nudge", async () => {
+  const { root, story } = fixture("a1");
+  writeFrontmatter(story, {
+    status: "blocked",
+    blocked_from: "implementing",
+    block_kind: "stuck",
+    idle_turns: 3,
+    fail_tests: '["a"]',
+    fail_runs: 3,
+    stuck_nudged: 1,
+  });
+
+  await loop().reopen({ repo: root, initiative: "demo", storyId: "S1" });
+
+  const meta = storyMeta(story);
+  assert.deepEqual([meta.idle_turns, meta.fail_tests, meta.fail_runs, meta.stuck_nudged], [undefined, undefined, undefined, undefined]);
 });
 
 test("the parent's implement-done commits once and starts Review; with a cycle unticked the story blocks", async () => {
@@ -645,7 +698,8 @@ test("an unreadable pipeline doesn't stop the step; its error goes on the story"
 });
 
 type TurnEnded = Parameters<ReturnType<typeof loop>["onTurnEnded"]>[1];
-const ended = (id: string, outcome: Record<string, unknown>) => ({ agent: { id }, outcome }) as unknown as TurnEnded;
+const ended = (id: string, outcome: Record<string, unknown>, timeline: unknown[] = []) =>
+  ({ agent: { id }, outcome, timeline }) as unknown as TurnEnded;
 
 test("a failed turn marks the step stalled; the tick nudges that session once and counts a retry", async () => {
   const { story, labels } = fixture("a1");
@@ -771,6 +825,123 @@ test("a turn that ends without the step's marker is nudged by the tick", async (
   assert.deepEqual(sent.map((item) => item.id), ["a1"]);
   assert.match(sent[0].text, /^It ended its turn without writing the step's marker\./);
   assert.equal(storyMeta(story).retries, "1");
+});
+
+const stuckLoop = () =>
+  createInitiativeLoop(async () => ({ ...DEFAULT_LOOP_CONFIG, stuckTurns: 3 }), async () => FALLBACK_AGENT_CONFIG, noExtras);
+const readCall = { type: "tool_call", status: "completed", detail: { type: "read", filePath: "a.ts", content: "abc" } };
+const failingRun = {
+  type: "tool_call",
+  status: "completed",
+  detail: { type: "shell", command: ".harness/bin/brief npm test", output: "brief: exit 1\nnot ok 1 - parses a turn\n# tests 5\n# fail 1" },
+};
+
+test("an Implement turn end with no edit at stuckTurns sends one stuck nudge, with no retry and no stall", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { idle_turns: 2 });
+  const { api, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = stuckLoop();
+
+  await initiative.onTurnEnded(api, ended("a1", { kind: "completed" }, [{ type: "user_message" }, readCall]));
+  await initiative.tick();
+
+  assert.deepEqual(sent, [{ id: "a1", text: nudgePrompt("You look stuck: no file edits in 3 turns.") }]);
+  const meta = storyMeta(story);
+  assert.equal(meta.stuck_nudged, "1");
+  assert.equal(meta.idle_turns, "3");
+  assert.equal(meta.retries, undefined);
+  assert.equal(meta.stalled, undefined);
+});
+
+test("three brief runs failing the same test in one turn send one stuck nudge naming it", async () => {
+  const { story, labels } = fixture("a1");
+  const { api, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = stuckLoop();
+  const edit = { type: "tool_call", status: "completed", detail: { type: "edit", filePath: "src/a.ts", newString: "x" } };
+
+  await initiative.onTurnEnded(api, ended("a1", { kind: "completed" }, [{ type: "user_message" }, edit, failingRun, failingRun, failingRun]));
+  await initiative.tick();
+
+  assert.deepEqual(sent, [{ id: "a1", text: nudgePrompt("You look stuck: parses a turn failed 3 test runs in a row.") }]);
+  const meta = storyMeta(story);
+  assert.equal(meta.stuck_nudged, "1");
+  assert.equal(meta.fail_runs, "3");
+  assert.equal(meta.retries, undefined);
+  assert.equal(meta.stalled, undefined);
+});
+
+test("a stuck nudge that can't be sent leaves the step stalled for the tick", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { idle_turns: 2 });
+  const { api } = fakePaseo([{ id: "a1", labels }]);
+  const failing = {
+    ...api,
+    agents: {
+      ...api.agents,
+      ref: (id: string) => ({
+        ...api.agents.ref(id),
+        send: async () => {
+          throw new Error("daemon gone");
+        },
+      }),
+    },
+  };
+
+  await stuckLoop().onTurnEnded(failing, ended("a1", { kind: "completed" }, [{ type: "user_message" }, readCall]));
+
+  const meta = storyMeta(story);
+  assert.equal(meta.stuck_nudged, undefined);
+  assert.equal(meta.stalled, "You look stuck: no file edits in 3 turns.");
+});
+
+test("still stuck on the next turn end blocks the story as a stuck gate", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { idle_turns: 3, stuck_nudged: 1 });
+  const { api, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = stuckLoop();
+
+  await initiative.onTurnEnded(api, ended("a1", { kind: "completed" }, [{ type: "user_message" }, readCall]));
+
+  assert.deepEqual(sent, []);
+  const meta = storyMeta(story);
+  assert.equal(meta.status, "blocked");
+  assert.equal(meta.blocked_reason, "stuck: no file edits in 4 turns");
+  assert.equal(meta.block_kind, "stuck");
+  assert.equal(meta.retries, undefined);
+  const board = { repo: "r", initiative: "demo", state: { initiative: "Demo", epic: { id: "1" }, repoUrl: "", stories: readStories(join(dirname(story), "..")) } };
+  const gates = gatesOf([board as unknown as Parameters<typeof gatesOf>[0][number]]);
+  assert.deepEqual(gates.map((gate) => [gate.kind, gate.text]), [["stuck", "stuck: no file edits in 4 turns"]]);
+});
+
+test("an edit after the nudge clears it instead of blocking", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { idle_turns: 3, stuck_nudged: 1 });
+  const { api, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = stuckLoop();
+  const edit = { type: "tool_call", status: "completed", detail: { type: "edit", filePath: "src/a.ts", newString: "x" } };
+
+  await initiative.onTurnEnded(api, ended("a1", { kind: "completed" }, [{ type: "user_message" }, edit]));
+
+  assert.deepEqual(sent, []);
+  const meta = storyMeta(story);
+  assert.equal(meta.status, "implementing");
+  assert.equal(meta.stuck_nudged, undefined);
+  assert.equal(meta.idle_turns, undefined);
+});
+
+test("a no-marker turn with no stuck evidence still stalls and counts a retry", async () => {
+  const { story, labels } = fixture("a1");
+  const { api, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = stuckLoop();
+  const edit = { type: "tool_call", status: "completed", detail: { type: "edit", filePath: "src/a.ts", newString: "x" } };
+
+  await initiative.onTurnEnded(api, ended("a1", { kind: "completed" }, [{ type: "user_message" }, edit]));
+  await initiative.tick();
+
+  assert.equal(sent.length, 1);
+  const meta = storyMeta(story);
+  assert.equal(meta.retries, "1");
+  assert.equal(meta.status, "implementing");
 });
 
 test("a turn you cancel is left alone", async () => {
@@ -981,6 +1152,61 @@ test("a dead subagent-cycles parent comes back as a parent with only the open cy
   assert.match(created[0].prompt ?? "", /Cycle 2 — Warns/);
   assert.doesNotMatch(created[0].prompt ?? "", /Cycle 1 — Reads/);
   assert.equal(storyMeta(story).cycles, "subagents");
+});
+
+test("review-done with only a non-blocking finding open starts a fix round; at the round limit a blocking one blocks", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  const reviewLabels = { ...labels, "loop-step": "review" };
+  writeFrontmatter(story, { status: "reviewing", step: "review", round: 1 });
+  const findings = (body: string) =>
+    writeFileSync(join(worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\nreview-done\n\n## Review findings\n${body}\n`, "utf8");
+  findings("- [x] blocking: a.ts:1 — off by one — use <=\n- [ ] non-blocking: b.ts:2 — unclear name — rename");
+  const { api, created } = fakePaseo([{ id: "a1", labels: reviewLabels }]);
+  const initiative = loop();
+
+  await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as never);
+
+  assert.deepEqual(created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"]]), [["implement", "2"]]);
+  assert.match(created[0].prompt ?? "", /fix the review findings/);
+
+  writeFrontmatter(story, { status: "reviewing", step: "review", round: DEFAULT_LOOP_CONFIG.reviewRounds, agent: "a2" });
+  findings("- [ ] blocking: a.ts:1 — still off by one — use <=");
+  const { api: later } = fakePaseo([{ id: "a2", labels: { ...reviewLabels, "loop-round": "3" } }]);
+  await initiative.onTurnEnded(later, { agent: { id: "a2" }, outcome: { kind: "completed" } } as never);
+
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(
+    storyMeta(story).blocked_reason,
+    `Review still has 1 blocking finding after ${DEFAULT_LOOP_CONFIG.reviewRounds} rounds; see ## Review findings in the worktree.`,
+  );
+});
+
+test("an open PR's failing head gets one Fix CI agent; a new failing head gets the next; past maxFixes it blocks", async (t) => {
+  t.after(() => ghPr(null));
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { status: "pr-open", step: "pr", agent: null, pr: 45, ci: "pending" });
+  const { api, created } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  ghPr("OPEN", [failedCheck], undefined, "abc");
+  await initiative.tick();
+  await initiative.tick();
+  assert.deepEqual(created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"]]), [["fix", "1"]]);
+  assert.match(created[0].prompt ?? "", /CI \/ test/);
+  assert.deepEqual([storyMeta(story).ci, storyMeta(story).fixed_sha, storyMeta(story).fix_attempts], ["failing", "abc", "1"]);
+
+  writeFrontmatter(story, { fix_attempts: DEFAULT_LOOP_CONFIG.maxFixes - 1, status: "pr-open" });
+  ghPr("OPEN", [failedCheck], undefined, "def");
+  await initiative.tick();
+  assert.equal(created.length, 2);
+  writeFrontmatter(story, { status: "pr-open" });
+
+  ghPr("OPEN", [failedCheck], undefined, "ghi");
+  await initiative.tick();
+  assert.equal(created.length, 2);
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(storyMeta(story).blocked_reason, `CI still failing after ${DEFAULT_LOOP_CONFIG.maxFixes} fix attempts: CI / test`);
 });
 
 test("a step whose worktree is gone and whose PR merged is recorded merged and its workspace archived", async (t) => {

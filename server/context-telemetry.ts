@@ -65,6 +65,9 @@ export type TelemetryRow = {
   // On `compact.*` rows the watch started on its own at the red threshold; absent for a pill
   // Compact and for Claude's own compactions.
   trigger?: "auto";
+  // On `compact.fresh` rows where Compact was asked for but the session has no `/compact`, so it
+  // started fresh instead.
+  fallback?: "fresh";
   // On `turn` and `turn.stopped` rows: Paseo's id for the turn (null when the provider gives none), so duplicates
   // can be found.
   turnId?: string | null;

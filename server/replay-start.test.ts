@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { TelemetryRow } from "./context-telemetry";
-import { lastTurn } from "./replay-start";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { lastTurn, readArms, readRunName } from "./replay-start";
 
 const row = (agentId: string, event: TelemetryRow["event"], costUsd: number): TelemetryRow => ({
   at: "2026-10-10T00:00:00.000Z",
@@ -18,4 +21,34 @@ test("lastTurn: the agent's last turn or turn.stopped row, skipping other events
   const rows = [row("a1", "turn", 1), row("a1", "turn.stopped", 2), row("a1", "warning", 3), row("b1", "turn", 4)];
   assert.equal((await lastTurn("a1", async () => rows))?.costUsd, 2);
   assert.equal(await lastTurn("c1", async () => rows), null);
+});
+
+test("readArms: the arms file in ARMS order, undefined when absent or empty, and an unknown arm throws", () => {
+  const root = mkdtempSync(join(tmpdir(), "replay-arms-"));
+  mkdirSync(join(root, ".harness", "replay"), { recursive: true });
+  const file = join(root, ".harness", "replay", "arms");
+  assert.equal(readArms(root), undefined);
+  writeFileSync(file, "facts\nnone\n");
+  assert.deepEqual(readArms(root), ["none", "facts"]);
+  writeFileSync(file, "  \n");
+  assert.equal(readArms(root), undefined);
+  writeFileSync(file, "facts fact+corrections");
+  assert.throws(() => readArms(root), /unknown arm fact\+corrections/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("readRunName: the run-name file's name, \"run\" when absent or empty, and a name that is not one plain path segment throws", () => {
+  const root = mkdtempSync(join(tmpdir(), "replay-run-name-"));
+  mkdirSync(join(root, ".harness", "replay"), { recursive: true });
+  const file = join(root, ".harness", "replay", "run-name");
+  assert.equal(readRunName(root), "run");
+  writeFileSync(file, "findings-only\n");
+  assert.equal(readRunName(root), "findings-only");
+  writeFileSync(file, "  \n");
+  assert.equal(readRunName(root), "run");
+  for (const bad of ["../escape", "a/b", ".hidden", "two words"]) {
+    writeFileSync(file, bad);
+    assert.throws(() => readRunName(root), /run-name/);
+  }
+  rmSync(root, { recursive: true, force: true });
 });

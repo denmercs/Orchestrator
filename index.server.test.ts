@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "./index.server";
 import { startMemoryReplay } from "./shared/replay-rpc";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -88,7 +88,12 @@ type Fake = {
   replayed: unknown[];
 };
 
-function wired(pending: string[] = []) {
+function wired(
+  pending: string[] = [],
+  signedIn = true,
+  replayStart?: { file: string; everyMs: number },
+  loopStart?: { file: string; everyMs: number },
+) {
   const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
   const listeners = new Map<string, (event: unknown, context: unknown) => unknown>();
   const noop = () => undefined;
@@ -108,13 +113,14 @@ function wired(pending: string[] = []) {
       if (key === "handle") return (rpc: { name: string }, h: never) => void handlers.set(rpc.name, h);
       if (key === "on") return (name: string, h: never) => (listeners.set(name, h), noop);
       if (key === "registerSettings") {
-        return () => new Proxy({}, { get: (_t, k) => (k === "read" ? async () => ({ status: "loading" }) : noop) });
+        return () => new Proxy({}, { get: (_t, k) => (k === "read" ? async () => ({ status: "loading" }) : () => noop) });
       }
-      return noop;
+      // Anything else hands back an unsubscribe, so the cleanup contribute returns can run.
+      return () => noop;
     },
   });
-  contribute(server, { replay: runner });
-  return { handlers, listeners, fake };
+  const stop = contribute(server, { replay: runner, signedIn: async () => signedIn, replayStart, loopStart });
+  return { handlers, listeners, fake, stop };
 }
 
 function repoWithCorpus(rows: object[] | null): string {
@@ -157,11 +163,32 @@ test("startMemoryReplay takes the cap from the corpus's cost-cap file, and an ex
   assert.equal(explicit.costCap, 7);
 });
 
+test("startMemoryReplay writes to the run named in the run-name file", async () => {
+  const { handlers, fake } = wired();
+  const handler = handlers.get(startMemoryReplay.name);
+  assert.ok(handler);
+  const root = repoWithCorpus([row("S1", "failed")]);
+  writeFileSync(join(root, ".harness", "replay", "run-name"), "findings-only\n");
+  const result = (await handler({ root }, { paseo: {} })) as { run: string; runDir: string };
+  assert.equal(result.run, "findings-only");
+  assert.equal(result.runDir, join(root, ".harness", "replay", "findings-only"));
+  const opts = (fake.replayed[0] as { opts: { run: string; runDir: string } }).opts;
+  assert.deepEqual([opts.run, opts.runDir], ["findings-only", join(root, ".harness", "replay", "findings-only")]);
+});
+
 test("startMemoryReplay says clearly when the corpus is missing", async () => {
   const { handlers } = wired();
   const handler = handlers.get(startMemoryReplay.name);
   assert.ok(handler);
   await assert.rejects(async () => handler({ root: repoWithCorpus(null) }, { paseo: {} }), /corpus\.jsonl.*corpus\.mjs/s);
+});
+
+test("startMemoryReplay refuses to start when Claude Code is signed out", async () => {
+  const { handlers, fake } = wired([], false);
+  const handler = handlers.get(startMemoryReplay.name);
+  assert.ok(handler);
+  await assert.rejects(async () => handler({ root: repoWithCorpus([row("S1", "failed")]) }, { paseo: {} }), /not signed in/);
+  assert.equal(fake.replayed.length, 0);
 });
 
 test("a memory-replay turn end reaches the runner and not the initiative loop", async () => {
@@ -183,4 +210,60 @@ test("a memory-replay turn end reaches the runner and not the initiative loop", 
   await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual(fake.calls, ["turn:replay-1", "failed:replay-1:boom"], "a stranger never reaches the runner");
   assert.ok(looked > replayLooks / 2, `the initiative loop looks at other agents (${looked} vs ${replayLooks / 2})`);
+});
+
+const until = async (done: () => boolean) => {
+  for (let i = 0; i < 100 && !done(); i++) await new Promise((r) => setTimeout(r, 5));
+};
+
+test("a start file starts the replay with the same opts the RPC gives, once Paseo is known", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "replay-start-")), "replay-start.json");
+  const { listeners, fake, stop } = wired([], true, { file, everyMs: 5 });
+  try {
+    const root = repoWithCorpus([row("S1", "failed"), row("S2", "control")]);
+    writeFileSync(join(root, ".harness", "replay", "cost-cap"), "50\n");
+    writeFileSync(join(root, ".harness", "replay", "run-name"), "findings-only\n");
+    writeFileSync(join(root, ".harness", "replay", "arms"), "facts\n");
+    writeFileSync(file, JSON.stringify({ root, controls: 0 }));
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(existsSync(file), true, "the file waits while there is no Paseo API");
+    assert.equal(fake.replayed.length, 0);
+    const created = listeners.get("agent.created");
+    assert.ok(created);
+    created({ agent: { id: "a" } }, { paseo: {} });
+    await until(() => existsSync(file.replace(/\.json$/, ".result.json")));
+    assert.equal(existsSync(file), false);
+    const call = fake.replayed[0] as { corpus: { story: string }[]; opts: object };
+    assert.deepEqual(call.corpus.map((r) => r.story), ["S1"]);
+    const runDir = join(root, ".harness", "replay", "findings-only");
+    assert.deepEqual(call.opts, { run: "findings-only", root, runDir, costCap: 50, arms: ["facts"] });
+    const result = JSON.parse(readFileSync(file.replace(/\.json$/, ".result.json"), "utf8"));
+    assert.deepEqual({ ...result, at: undefined }, { at: undefined, ok: true, run: "findings-only", rounds: 1, costCap: 50, runDir });
+  } finally {
+    stop();
+  }
+});
+
+test("a loop start file starts the initiative loop with that input, once Paseo is known", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "loop-start-")), "initiative-loop-start.json");
+  const { listeners, stop } = wired([], true, undefined, { file, everyMs: 5 });
+  try {
+    // An initiative that isn't there, so the loop's own check answers without touching the repo registry.
+    const repo = mkdtempSync(join(tmpdir(), "loop-repo-"));
+    writeFileSync(file, JSON.stringify({ repo, initiative: "nope" }));
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(existsSync(file), true, "the file waits while there is no Paseo API");
+    const created = listeners.get("agent.created");
+    assert.ok(created);
+    created({ agent: { id: "a" } }, { paseo: {} });
+    const result = file.replace(/\.json$/, ".result.json");
+    await until(() => existsSync(result));
+    assert.equal(existsSync(file), false);
+    assert.deepEqual(
+      { ...JSON.parse(readFileSync(result, "utf8")), at: undefined },
+      { at: undefined, ok: false, error: `nope is not an initiative in ${repo}.`, started: [], reason: "" },
+    );
+  } finally {
+    stop();
+  }
 });
