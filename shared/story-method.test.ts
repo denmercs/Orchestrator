@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
   LOOP_STEPS,
@@ -485,6 +486,45 @@ test("a memory brief adds a Memory brief block to the review step data and nothi
   const withBrief = stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] });
   assert.match(withBrief, /\n## Memory brief\n- area a: x\/\*\*\n- A fact\.\n/);
   assert.ok(withBrief.indexOf("## Memory brief") > withBrief.indexOf("Review for story S1"), "after the head");
+});
+
+// sha256 of the live Review prompts before findings-only existed; they must not move.
+test("the live Review prompts are unchanged", () => {
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  assert.equal(sha(stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] })), "795dcd37c9a5bda28f3b68c48b2c515572bdc68d074fe14a88a1c4b1692f7e42");
+  assert.equal(sha(stepPrompt("review", story, { round: 2 })), "aefc6688dbf38ca7569e1b30d6ba3817f436a00acb33f6b638aede4706ec5afe");
+  assert.equal(stepPrompt("review", story, { round: 1, findingsOnly: false }), stepPrompt("review", story, { round: 1 }));
+});
+
+test("a findings-only Review lists findings and does not fix, run the full suite or write Preview and pr-body", () => {
+  for (const round of [1, 2]) {
+    const live = stepPrompt("review", story, { round });
+    const only = stepPrompt("review", story, { round, findingsOnly: true });
+    assert.doesNotMatch(only, /then fix what you find|Then fix every finding|After fixing/);
+    assert.doesNotMatch(only, /run them; keep only the summary/);
+    assert.doesNotMatch(only, /Write `## Preview`|Write \.harness\/pr-body\.md|commit subject for your fixes/);
+    assert.match(only, /Do not fix anything/);
+    assert.match(only, /do not edit any file except \.harness\/state\.md/);
+    assert.match(only, /Do not run the full test suite, lint or build/);
+    assert.match(only, /set `## Status` to `review-done` with nothing after it/);
+    // Same checklist of what to look at, and the same findings format.
+    for (const line of [
+      "- Correctness: edge cases, error paths, concurrency, data loss.",
+      "- The repo's own conventions, and nothing changed outside the story's scope.",
+      "the base branch named under `## Where it sits`",
+    ]) {
+      assert.ok(live.includes(line) && only.includes(line), line);
+    }
+    assert.doesNotMatch(only, /review-failed/);
+  }
+  const first = stepPrompt("review", story, { round: 1, findingsOnly: true });
+  assert.match(first, /- \[ \] blocking: file:line — what is wrong — what would fix it/);
+  assert.match(first, /- \[ \] non-blocking: file:line — what could be better — how/);
+  const again = stepPrompt("review", story, { round: 2, findingsOnly: true });
+  assert.match(again, /Add only new `blocking:` lines/);
+  const withBrief = stepPrompt("review", story, { round: 1, findingsOnly: true, brief: ["area a: x/**", "A fact."] });
+  assert.match(withBrief, /\n## Memory brief\n- area a: x\/\*\*\n- A fact\.\n/);
+  assert.doesNotMatch(first, /## Memory brief/);
 });
 
 // A Review that splits state.md on `## Evidence` keeps the seeded Status and writes its own lower down.

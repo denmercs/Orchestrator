@@ -64,6 +64,8 @@ export type StepExtra = {
   missing?: string[];
   // Review: memory brief lines, shown as `## Memory brief`. Absent or empty leaves the prompt unchanged.
   brief?: string[];
+  // Review: list findings only, no fixing or full suite. The memory replay uses it; the live loop never does.
+  findingsOnly?: boolean;
 };
 
 export type StepSkill = { name: string; path?: string };
@@ -217,12 +219,15 @@ from an earlier agent; check what is already there before you start.
 Do not touch \`## Status\` or tick \`## Cycles\`; the parent does both. Report fail → pass, or why you
 cannot go on.`;
 
-const REVIEW_CHECKS = `Check:
+// What to look at. The live Review also runs the full suite; a findings-only one does not.
+const REVIEW_LOOK = `Check:
 - Every acceptance check is met, and each cycle has a test that would fail without its change.
 - Correctness: edge cases, error paths, concurrency, data loss.
 - Security: input validation, injection, auth and permission checks, secrets in code or logs, unsafe shell or
   file paths, new dependencies.
-- The repo's own conventions, and nothing changed outside the story's scope.
+- The repo's own conventions, and nothing changed outside the story's scope.`;
+
+const REVIEW_CHECKS = `${REVIEW_LOOK}
 - The full test suite, lint and build pass (run them; keep only the summary and any failures).`;
 
 // The plugin reads the checklist, not the marker, to decide between a fix round and the PR (afterReview).
@@ -241,29 +246,53 @@ const REVIEW_FIX = `Then fix every finding you can, blocking and non-blocking al
 test that fails before it; add one line per fix to \`## Evidence\`. Tick each line you fixed (\`- [x]\`). Leave a
 finding unticked when fixing it needs a human decision or work outside the story.`;
 
-const REVIEW = `## This step: review the change as a fresh critic, then fix what you find
-Review the diff against the base branch named under \`## Where it sits\` (\`git diff <base>...HEAD\`): check it
-against the story, its acceptance, \`## Plan\` and \`## Cycles\`. Finish the whole review before you fix anything.
-${REVIEW_CHECKS}
-Replace what is under \`## Review findings\` with one checklist line per problem, keeping "follow-up:" lines:
+// Replaces the fix and end parts when the Review only lists findings (the memory replay).
+const FINDINGS_END = `Do not fix anything, and do not edit any file except ${STATE}. Do not run the full test suite, lint or build;
+reading code, and running one targeted test to confirm a suspected bug, is fine. Do not write \`## Preview\` or
+.harness/pr-body.md.
+When the findings are written, set \`## Status\` to \`${MARKERS.reviewDone}\` with nothing after it.`;
+
+const REVIEW_DIFF = `Review the diff against the base branch named under \`## Where it sits\` (\`git diff <base>...HEAD\`): check it
+against the story, its acceptance, \`## Plan\` and \`## Cycles\`.`;
+
+const REVIEW_FORMAT = `Replace what is under \`## Review findings\` with one checklist line per problem, keeping "follow-up:" lines:
 - \`- [ ] blocking: file:line — what is wrong — what would fix it\` when it is wrong: an acceptance check not met,
   a bug, a security gap, a failing test, lint or build.
 - \`- [ ] non-blocking: file:line — what could be better — how\` when it works but should improve: naming,
-  readability, a missing edge-case test, a repo convention.
+  readability, a missing edge-case test, a repo convention.`;
+
+const REVIEW = `## This step: review the change as a fresh critic, then fix what you find
+${REVIEW_DIFF} Finish the whole review before you fix anything.
+${REVIEW_CHECKS}
+${REVIEW_FORMAT}
 ${REVIEW_FIX}
 ${REVIEW_END}`;
+
+const REVIEW_FINDINGS = `## This step: review the change as a fresh critic and list what you find
+${REVIEW_DIFF}
+${REVIEW_LOOK}
+${REVIEW_FORMAT}
+${FINDINGS_END}`;
+
+const REREVIEW_STEPS = `1. For each ticked line, check the fix in the diff against the base branch named under \`## Where it sits\`
+   (\`git diff <base>...HEAD\`). If it isn't fixed, untick it and say why at the end of the line. A
+   "won't fix" line you disagree with is unticked too.
+2. Review the whole diff again. Add only new \`blocking:\` lines (\`- [ ] blocking: file:line — what is wrong — what
+   would fix it\`): something the fixes broke, or a real defect missed before. Do not add new non-blocking lines.`;
 
 const REREVIEW = `## This step: re-review the change after the fixes, then fix what you find
 \`## Review findings\` holds the last review's checklist; the fix agent ticked each line it fixed. Finish the whole
 re-review before you fix anything.
-1. For each ticked line, check the fix in the diff against the base branch named under \`## Where it sits\`
-   (\`git diff <base>...HEAD\`). If it isn't fixed, untick it and say why at the end of the line. A
-   "won't fix" line you disagree with is unticked too.
-2. Review the whole diff again. Add only new \`blocking:\` lines (\`- [ ] blocking: file:line — what is wrong — what
-   would fix it\`): something the fixes broke, or a real defect missed before. Do not add new non-blocking lines.
+${REREVIEW_STEPS}
 ${REVIEW_CHECKS}
 ${REVIEW_FIX}
 ${REVIEW_END}`;
+
+const REREVIEW_FINDINGS = `## This step: re-review the change after the fixes and list what you find
+\`## Review findings\` holds the last review's checklist; the fix agent ticked each line it fixed.
+${REREVIEW_STEPS}
+${REVIEW_LOOK}
+${FINDINGS_END}`;
 
 function planData(plan: string | undefined) {
   const planLines = (plan ?? "").trim().split("\n");
@@ -349,7 +378,10 @@ Then set \`## Status\` to ${DONE}.
 If you cannot go on, set it to \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
   },
 
-  review: ({ round }) => (round > 1 ? REREVIEW : REVIEW),
+  review: ({ round, findingsOnly }) => {
+    if (findingsOnly) return round > 1 ? REREVIEW_FINDINGS : REVIEW_FINDINGS;
+    return round > 1 ? REREVIEW : REVIEW;
+  },
 
   // Kept for stories that were already at this step; new stories get their PR from the plugin.
   pr: () => `## This step: open the pull request

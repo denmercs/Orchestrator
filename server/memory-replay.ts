@@ -198,7 +198,7 @@ export function createMemoryReplay(ports: ReplayPorts) {
       await ports.installBrief(dir, briefTag("review", row.round)).catch((error) => console.warn("replay: install brief", error));
 
       const brief = await briefOf(memoryRoot, arm, paths);
-      const prompt = stepPrompt("review", story, { round: row.round, plan: row.plan, ...(brief.length ? { brief } : {}) });
+      const prompt = stepPrompt("review", story, { round: row.round, plan: row.plan, findingsOnly: true, ...(brief.length ? { brief } : {}) });
       const config = await ports.agentConfig();
       const labels = {
         kind: REPLAY_KIND,
