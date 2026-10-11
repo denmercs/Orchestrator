@@ -38,6 +38,8 @@ Plan ──you approve──► Implement ──► Review ──pass──► P
 
 If an agent stalls, dies or waits on a permission, the loop nudges it, restarts it or blocks the story with a reason. Work an agent finds outside its story becomes a new story. The agent doesn't do it in place.
 
+A Claude session can press **Start** for you: write `{"repo": "/abs/repo", "initiative": "<slug>"}` to `~/.orchestrator/initiative-loop-start.json`. Within about 5 seconds the plugin removes the file, starts the loop and writes the outcome to `~/.orchestrator/initiative-loop-start.result.json`.
+
 **3. Act on gates.** A story only needs you at three points: a plan to approve, a PR to merge, or a story that's stuck. The 🔔 bell lists them all.
 
 ## What lives where
@@ -87,6 +89,7 @@ Also planned: Kiro and Cursor as first-class providers.
 | Concern | File |
 |---|---|
 | Loop engine | `server/initiative-loop.ts` |
+| Start files (loop, replay) | `server/start-file.ts`, `server/loop-trigger.ts`, `server/replay-trigger.ts` |
 | How each step works (prompts) | `shared/story-method.ts` |
 | How architecture sessions plan | `server/architecture-method.ts` |
 | Folder layout | `server/harness-layout.ts` |

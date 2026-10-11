@@ -38,6 +38,7 @@ import { readArms, readCorpus, readCostCap, readRunName, realReplayPorts } from 
 import { claudeSignedIn } from "./server/claude-cli";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { REPLAY_START_FILE, REPLAY_START_POLL_MS, tickReplayStart } from "./server/replay-trigger";
+import { LOOP_START_FILE, LOOP_START_POLL_MS, tickLoopStart } from "./server/loop-trigger";
 import { join } from "node:path";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
@@ -109,13 +110,14 @@ import {
 type ReplayRunner = ReturnType<typeof createMemoryReplay>;
 
 // `deps.replay` and `deps.signedIn` let tests stand in for the memory replay runner and the Claude Code login check;
-// `deps.replayStart` moves the replay start file and its poll.
+// `deps.replayStart` and `deps.loopStart` move the replay and initiative loop start files and their polls.
 export default function contribute(
   server: PluginServerContext,
   deps: {
     replay?: ReplayRunner;
     signedIn?: () => Promise<boolean>;
     replayStart?: { file: string; everyMs: number };
+    loopStart?: { file: string; everyMs: number };
   } = {},
 ) {
   // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
@@ -187,7 +189,10 @@ export default function contribute(
     },
     readInitials,
   );
-  server.handle(startInitiativeLoop, (input, { paseo }) => initiativeLoop.start(paseo, input));
+  // The Initiatives tab and the loop start file both start the loop here.
+  const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: Parameters<typeof initiativeLoop.start>[0]) =>
+    initiativeLoop.start(paseo, input);
+  server.handle(startInitiativeLoop, (input, { paseo }) => startLoop(input, paseo));
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
   server.handle(startTicketRpc, (input, { paseo }) =>
     startTicket(input, {
@@ -452,13 +457,21 @@ export default function contribute(
   timer.unref?.();
   // A Claude session starts the replay by writing the start file; any Paseo handle we have seen will do.
   const replayStart = deps.replayStart ?? { file: REPLAY_START_FILE, everyMs: REPLAY_START_POLL_MS };
-  const replayPaseoNow = () => contextPaseo ?? pipelinePaseo;
+  const paseoNow = () => contextPaseo ?? pipelinePaseo;
   const replayStartTimer = setInterval(() => {
-    void tickReplayStart(replayStart.file, () => replayPaseoNow() !== null, (input) => startReplay(input, replayPaseoNow()!)).catch(
+    void tickReplayStart(replayStart.file, () => paseoNow() !== null, (input) => startReplay(input, paseoNow()!)).catch(
       (error) => console.warn("orchestrator: replay start file failed", error),
     );
   }, replayStart.everyMs);
   replayStartTimer.unref?.();
+  // The same for the initiative loop.
+  const loopStart = deps.loopStart ?? { file: LOOP_START_FILE, everyMs: LOOP_START_POLL_MS };
+  const loopStartTimer = setInterval(() => {
+    void tickLoopStart(loopStart.file, () => paseoNow() !== null, (input) => startLoop(input, paseoNow()!)).catch(
+      (error) => console.warn("orchestrator: initiative loop start file failed", error),
+    );
+  }, loopStart.everyMs);
+  loopStartTimer.unref?.();
   return () => {
     offPulseSettings();
     stopPlanServer();
@@ -472,6 +485,7 @@ export default function contribute(
     offPermissionResolved();
     clearInterval(timer);
     clearInterval(replayStartTimer);
+    clearInterval(loopStartTimer);
     voiceResume.stop();
   };
 }

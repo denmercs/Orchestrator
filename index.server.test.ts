@@ -88,7 +88,12 @@ type Fake = {
   replayed: unknown[];
 };
 
-function wired(pending: string[] = [], signedIn = true, replayStart?: { file: string; everyMs: number }) {
+function wired(
+  pending: string[] = [],
+  signedIn = true,
+  replayStart?: { file: string; everyMs: number },
+  loopStart?: { file: string; everyMs: number },
+) {
   const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
   const listeners = new Map<string, (event: unknown, context: unknown) => unknown>();
   const noop = () => undefined;
@@ -114,7 +119,7 @@ function wired(pending: string[] = [], signedIn = true, replayStart?: { file: st
       return () => noop;
     },
   });
-  const stop = contribute(server, { replay: runner, signedIn: async () => signedIn, replayStart });
+  const stop = contribute(server, { replay: runner, signedIn: async () => signedIn, replayStart, loopStart });
   return { handlers, listeners, fake, stop };
 }
 
@@ -234,6 +239,30 @@ test("a start file starts the replay with the same opts the RPC gives, once Pase
     assert.deepEqual(call.opts, { run: "findings-only", root, runDir, costCap: 50, arms: ["facts"] });
     const result = JSON.parse(readFileSync(file.replace(/\.json$/, ".result.json"), "utf8"));
     assert.deepEqual({ ...result, at: undefined }, { at: undefined, ok: true, run: "findings-only", rounds: 1, costCap: 50, runDir });
+  } finally {
+    stop();
+  }
+});
+
+test("a loop start file starts the initiative loop with that input, once Paseo is known", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "loop-start-")), "initiative-loop-start.json");
+  const { listeners, stop } = wired([], true, undefined, { file, everyMs: 5 });
+  try {
+    // An initiative that isn't there, so the loop's own check answers without touching the repo registry.
+    const repo = mkdtempSync(join(tmpdir(), "loop-repo-"));
+    writeFileSync(file, JSON.stringify({ repo, initiative: "nope" }));
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(existsSync(file), true, "the file waits while there is no Paseo API");
+    const created = listeners.get("agent.created");
+    assert.ok(created);
+    created({ agent: { id: "a" } }, { paseo: {} });
+    const result = file.replace(/\.json$/, ".result.json");
+    await until(() => existsSync(result));
+    assert.equal(existsSync(file), false);
+    assert.deepEqual(
+      { ...JSON.parse(readFileSync(result, "utf8")), at: undefined },
+      { at: undefined, ok: false, error: `nope is not an initiative in ${repo}.`, started: [], reason: "" },
+    );
   } finally {
     stop();
   }
