@@ -486,3 +486,19 @@ test("a memory brief adds a Memory brief block to the review step data and nothi
   assert.match(withBrief, /\n## Memory brief\n- area a: x\/\*\*\n- A fact\.\n/);
   assert.ok(withBrief.indexOf("## Memory brief") > withBrief.indexOf("Review for story S1"), "after the head");
 });
+
+// A Review that splits state.md on `## Evidence` keeps the seeded Status and writes its own lower down.
+const twoStatuses = "## Status\nstarting\n\n## Plan\nx\n\n## Evidence\n\n## Status\nreview-done\nFix the thing\n\n## Review findings\n- a\n";
+
+test("the last ## Status section wins when a step wrote a second one", () => {
+  assert.deepEqual(readMarker(twoStatuses), { marker: "review-done", detail: "Fix the thing" });
+  assert.equal(commitSubject(twoStatuses, "A"), "Fix the thing");
+});
+
+test("writeMarker leaves one ## Status section when there were several", () => {
+  const written = writeMarker(twoStatuses, "fix-running");
+  assert.equal(written.match(/^##\s+Status\s*$/gm)?.length, 1);
+  assert.equal(readMarker(written).marker, "fix-running");
+  assert.match(written, /## Review findings\n- a/);
+  assert.match(written, /## Plan\nx/);
+});

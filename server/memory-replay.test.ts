@@ -526,3 +526,110 @@ test("the arms option limits a run to those arms", async () => {
   await done;
   rmSync(root, { recursive: true, force: true });
 });
+
+// ---- A second ## Status section, and re-judging without a rerun ----
+
+test("a Review that wrote a second ## Status below the seeded one records its own marker", async () => {
+  const { root, runDir, calls, ports } = setup();
+  withCaps(ports);
+  const replay = createMemoryReplay(ports);
+  const done = replay.replay([row], { run: "run1", root, runDir, arms: ["facts"] });
+  await tick();
+  await tick();
+  const dir = calls.workspaces[0].directory;
+  const state = "## Status\nstarting\n\n## Plan\nx\n\n## Evidence\n\n## Status\nreview-done\nFix the thing\n\n## Review findings\n- parse has no test\n";
+  writeFileSync(join(dir, ".harness", "state.md"), state, "utf8");
+  await replay.onTurnEnded({ agentId: replay.pendingAgents()[0] });
+  await done;
+  const [first] = rowsOf(runDir);
+  assert.equal(first.marker, "review-done");
+  assert.equal(first.error, undefined);
+  assert.ok(first.outcome);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a judge failure row carries the replay's findings", async () => {
+  const { root, runDir, calls, ports } = setup();
+  withCaps(ports);
+  ports.judge = async () => ({ matches: null, costUsd: 0.003 });
+  const replay = createMemoryReplay(ports);
+  const done = replay.replay([row], { run: "run1", root, runDir, arms: ["facts"] });
+  await tick();
+  await tick();
+  writeFileSync(join(calls.workspaces[0].directory, ".harness", "state.md"), reviewState("- parse has no test"), "utf8");
+  await replay.onTurnEnded({ agentId: replay.pendingAgents()[0] });
+  await done;
+  const [first] = rowsOf(runDir);
+  assert.equal(first.error, "judge gave no verdict");
+  assert.deepEqual(first.replayFindings, ["parse has no test"]);
+  rmSync(root, { recursive: true, force: true });
+});
+
+const judgeFailed = (arm: string, extra: object = {}) => ({
+  run: "run1",
+  initiative: row.initiative,
+  story: "S7",
+  round: 2,
+  kind: "failed",
+  arm,
+  outcome: null,
+  explore: { reads: 1, searches: 0, files: 1, chars: 10, edited: false },
+  tokens: { used: 1, costUsd: 0.9 },
+  judgeCostUsd: 0.003,
+  marker: "review-done",
+  error: "judge gave no verdict",
+  ...extra,
+});
+
+test("a rerun re-judges a judge failure row instead of rerunning its review", async () => {
+  const { root, runDir, calls, ports } = setup();
+  withCaps(ports);
+  writeFileSync(join(runDir, "results.jsonl"), `${JSON.stringify(judgeFailed("facts", { replayFindings: ["parse has no test"] }))}\n`, "utf8");
+  const replay = createMemoryReplay(ports);
+  const result = await replay.replay([row], { run: "run1", root, runDir, arms: ["facts"] });
+  assert.equal(calls.agents.length, 0);
+  assert.equal(result.started, 0);
+  assert.deepEqual(calls.judged, [{ recorded: row.findings, replay: ["parse has no test"] }]);
+  const rows = rowsOf(runDir);
+  assert.equal(rows.length, 2);
+  const last = rows[1];
+  assert.equal(last.error, undefined);
+  assert.equal(last.marker, "review-done");
+  assert.deepEqual(last.outcome, { caught: ["missing test for parse"], notCaught: ["uses any in the loader"], new: [] });
+  assert.deepEqual(last.tokens, { used: null, costUsd: null });
+  assert.equal(last.judgeCostUsd, 0.002);
+  assert.deepEqual(last.explore, judgeFailed("facts").explore);
+  assert.deepEqual(last.replayFindings, ["parse has no test"]);
+  assert.match(readFileSync(join(runDir, "run.log"), "utf8"), /re-judged agent-memory\/S7 r2 facts/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a re-judge that fails again writes another judge failure row for the next run", async () => {
+  const { root, runDir, calls, ports } = setup();
+  withCaps(ports);
+  ports.judge = async () => ({ matches: null, costUsd: 0.004 });
+  writeFileSync(join(runDir, "results.jsonl"), `${JSON.stringify(judgeFailed("facts", { replayFindings: ["parse has no test"] }))}\n`, "utf8");
+  await createMemoryReplay(ports).replay([row], { run: "run1", root, runDir, arms: ["facts"] });
+  assert.equal(calls.agents.length, 0);
+  const last = rowsOf(runDir)[1];
+  assert.equal(last.error, "judge gave no verdict");
+  assert.deepEqual(last.replayFindings, ["parse has no test"]);
+  assert.deepEqual(last.tokens, { used: null, costUsd: null });
+  assert.equal(last.judgeCostUsd, 0.004);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a judge failure row without replay findings is rerun as a full review", async () => {
+  const { root, runDir, calls, ports } = setup();
+  withCaps(ports);
+  writeFileSync(join(runDir, "results.jsonl"), `${JSON.stringify(judgeFailed("facts"))}\n`, "utf8");
+  const replay = createMemoryReplay(ports);
+  const done = replay.replay([row], { run: "run1", root, runDir, arms: ["facts"] });
+  await tick();
+  await tick();
+  assert.equal(calls.agents.length, 1);
+  assert.equal(calls.judged.length, 0);
+  await replay.onTurnEnded({ agentId: replay.pendingAgents()[0] });
+  await done;
+  rmSync(root, { recursive: true, force: true });
+});

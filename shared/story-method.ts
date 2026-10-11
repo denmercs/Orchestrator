@@ -387,19 +387,30 @@ ${failing ?? "(see the PR's checks)"}`,
 - Open: \`gh pr create --base ${story.base.replace(/^origin\//, "")} --head ${story.branch} --title "${prTitle({ ...story, jira: isJira(story) }).replace(/"/g, "'")}" --body-file .harness/pr-body.md\``,
 };
 
-// The first non-empty line under `## Status`, and the lines after it (a reason or a URL).
+// The first non-empty line under the last `## Status`, and the lines after it (a reason or a URL).
 export function readMarker(state: string) {
-  const lines = readSection(state, "Status")
+  const lines = statusSection(state)
     .split("\n")
     .map((line) => line.trim().replace(/^`|`$/g, ""))
     .filter(Boolean);
   return { marker: lines[0]?.toLowerCase() ?? null, detail: lines.slice(1).join(" ") };
 }
 
-// Replaces the body of `## Status` with one line.
+// Replaces the body of `## Status` with one line. Extra Status sections (an agent that wrote its own) are dropped.
 export function writeMarker(state: string, marker: string) {
   if (!/^##\s+Status\s*$/m.test(state)) return `${state.trimEnd()}\n\n## Status\n${marker}\n`;
-  return state.replace(/^(##\s+Status\s*\n)([\s\S]*?)(?=^##\s|(?![\s\S]))/m, `$1${marker}\n\n`);
+  let first = true;
+  return state.replace(/^(##\s+Status\s*\n)([\s\S]*?)(?=^##\s|(?![\s\S]))/gm, (_match, head: string) => {
+    if (!first) return "";
+    first = false;
+    return `${head}${marker}\n\n`;
+  });
+}
+
+// The body of the last `## Status` section. A step that rewrites state.md may leave the seeded one above its own.
+export function statusSection(state: string) {
+  const bodies = [...state.matchAll(/^##\s+Status\s*\n([\s\S]*?)(?=^##\s|(?![\s\S]))/gm)];
+  return bodies.at(-1)?.[1] ?? "";
 }
 
 // The body of a `## <heading>` section, or "" when it is missing.
@@ -503,7 +514,7 @@ export function afterReview(state: string, marker: string, round: number, maxRou
 
 // The commit subject a finished step wrote on the line after its marker, cleaned; else `fallback`.
 export function commitSubject(state: string, fallback: string) {
-  const line = readSection(state, "Status")
+  const line = statusSection(state)
     .split("\n")
     .map((text) => text.trim())
     .filter(Boolean)[1];
