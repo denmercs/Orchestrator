@@ -25,7 +25,7 @@ export function pillView(status: ContextStatus | null): PillView {
   if (!reading || reading.level === "unknown" || reading.used === null) return UNKNOWN;
   const used = formatTokens(reading.used);
   const label = reading.max === null ? used : `${used} / ${formatTokens(reading.max)}`;
-  const strategy = reading.strategy === "native" ? "Compact: /compact in place" : "Compact: fresh session";
+  const strategy = reading.strategy === "native" ? "Compact: /compact in place" : "Compact unavailable, starting fresh";
   return { label, tone: reading.level, title: `Context ${reading.level} · ${label} · ${strategy}` };
 }
 
