@@ -180,7 +180,7 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
     {
       cap: async () => {
         const state = await budget.read();
-        return state.status === "ready" ? state.values.storyCapUsd : 5 /* budgetSettings default */;
+        return (state.status === "ready" ? state.values : budgetSettings.schema.parse({})).storyCapUsd;
       },
       rows: () => readTelemetry(),
     },

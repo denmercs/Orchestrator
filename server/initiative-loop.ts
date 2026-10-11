@@ -209,6 +209,11 @@ function recordOutcome(story: StoryFile, event: OutcomeEvent) {
 export type BlockKind = "start" | "pr" | "ci" | "retry-limit" | "step" | "cost-cap" | "cost-cap-left";
 // What the cost cap needs: the base cap in dollars and the telemetry rows to total a story's spend from.
 export type ReadCost = { cap: () => number | Promise<number>; rows: () => TelemetryRow[] | Promise<TelemetryRow[]> };
+// A story's cost cap: its own `cost_cap_usd` once Continue has raised it, else the base cap.
+function storyCap(story: StoryFile, base: number) {
+  const own = Number(story.meta.cost_cap_usd);
+  return own > 0 ? own : base;
+}
 // A permission wait is answered in the session, so it passes `record = false` and stays out of ## Outcome.
 function block(story: StoryFile, reason: string, kind?: BlockKind, record = true) {
   if (record) recordOutcome(story, { kind: "blocked", reason });
@@ -860,9 +865,8 @@ export function createInitiativeLoop(
         if (!story || !readCost || story.meta.status !== "blocked" || (kind !== "cost-cap" && kind !== "cost-cap-left")) return;
         if (!story.meta.blocked_from) return;
         const base = await readCost.cap();
-        const own = Number(story.meta.cost_cap_usd);
         writeFrontmatter(story.path, {
-          cost_cap_usd: (own > 0 ? own : base) + base,
+          cost_cap_usd: storyCap(story, base) + base,
           status: story.meta.blocked_from,
           blocked_reason: null,
           blocked_from: null,
@@ -903,8 +907,7 @@ export function createInitiativeLoop(
         // A cost-cap block raises its cap first, so the fresh step isn't blocked again on its first turn end.
         if (readCost && (meta.block_kind === "cost-cap" || meta.block_kind === "cost-cap-left")) {
           const base = await readCost.cap();
-          const own = Number(meta.cost_cap_usd);
-          writeFrontmatter(story.path, { cost_cap_usd: (own > 0 ? own : base) + base });
+          writeFrontmatter(story.path, { cost_cap_usd: storyCap(story, base) + base });
         }
         try {
           const state = meta.worktree ? readText(stateFile(meta.worktree)) : "";
@@ -955,16 +958,16 @@ export function createInitiativeLoop(
         if ((labels["loop-cycle"] ?? "") !== (story.meta.cycle ?? "")) return;
         if ((labels["loop-cycles"] ?? "") !== (story.meta.cycles ?? "")) return;
         // The cost cap: a story at or over it blocks before anything new starts. This turn's cost is the
-        // agent's live figure, since the context watch may not have written its row yet.
-        if (readCost && story.meta.status !== "pr-open") {
+        // agent's live figure, since the context watch may not have written its row yet. A story that is
+        // already blocked keeps the block it has, so Retry still knows what to redo.
+        if (readCost && story.meta.status !== "pr-open" && story.meta.status !== "blocked") {
           const live = refreshed?.lastUsage?.totalCostUsd;
           const spent = storyCost(
             await readCost.rows(),
             { initiative: labels["loop-initiative"], story: story.id },
             typeof live === "number" ? { agentId: event.agent.id, costUsd: live } : undefined,
           );
-          const own = Number(story.meta.cost_cap_usd);
-          const cap = own > 0 ? own : await readCost.cap();
+          const cap = storyCap(story, await readCost.cap());
           if (spent !== null && cap > 0 && spent >= cap) {
             block(story, `cost cap ($${spent.toFixed(2)} of ${budgetMoney(cap)})`, "cost-cap");
             return;

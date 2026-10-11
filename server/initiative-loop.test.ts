@@ -1562,6 +1562,16 @@ test("a story's cost_cap_usd overrides the base cap; no cost data and a pr-open 
   assert.notEqual(storyMeta(open.story).block_kind, "cost-cap");
 });
 
+test("a turn ending on a story that is already blocked keeps its block, even over the cap", async () => {
+  const fx = capped(6, 5, "failed", "implement-running");
+  writeFrontmatter(fx.story, { status: "blocked", blocked_from: "implementing", block_kind: "retry-limit", blocked_reason: "Gave up" });
+  await fx.end();
+  const meta = storyMeta(fx.story);
+  assert.equal(meta.block_kind, "retry-limit");
+  assert.equal(meta.blocked_from, "implementing");
+  assert.equal(meta.blocked_reason, "Gave up");
+});
+
 // Continue and Leave stopped on a cost-cap block.
 function capBlocked(kind: string, extra: Record<string, unknown> = {}) {
   const fx = fixture("a1");
