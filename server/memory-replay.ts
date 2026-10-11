@@ -83,6 +83,7 @@ export type ResultRow = {
   explore: TelemetryRow["explore"] | null;
   tokens: { used: number | null; costUsd: number | null };
   judgeCostUsd: number;
+  judgeReply?: string;
   marker: string | null;
   plan: boolean;
   at: string;
@@ -303,6 +304,7 @@ export function createMemoryReplay(ports: ReplayPorts) {
             const verdict = await ports.judge(row.findings, replayFindings);
             matches = verdict.matches;
             fields.judgeCostUsd = verdict.costUsd;
+            if (verdict.reply !== undefined) fields.judgeReply = verdict.reply.slice(0, 2000);
           } catch (error) {
             console.warn("replay: judge", error);
             matches = null;
