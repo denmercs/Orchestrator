@@ -25,6 +25,7 @@ import { readBranchInitials } from "./server/git-identity";
 import { getBranchInitials } from "./shared/naming";
 import { createContextWatch, paseoPort } from "./server/context-watch";
 import { createGateActions, loopGatePort } from "./server/gate-actions";
+import { createVoiceResume } from "./server/voice-resume";
 import { gateAct } from "./shared/gates";
 import { readTelemetry, summariseTelemetry } from "./server/context-telemetry";
 import { loadStoryContext } from "./server/story-context";
@@ -347,7 +348,16 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   const offWorkspaceCreated = server.on("workspace.created", ({ workspace }) => {
     scopeWorkerWorkspace(workspace);
   });
+  // Set on every turn event: the resume fires later, from a timer, after the event has gone.
+  let voicePaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
+  const voiceResume = createVoiceResume({
+    send: async (agentId, text) => {
+      if (voicePaseo) await voicePaseo.agents.ref(agentId).send(text);
+    },
+  });
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
+    voicePaseo = paseo;
+    voiceResume.onTurnEnded(event);
     // A memory replay's agent is the runner's business only: the telemetry row first, then its result row.
     if (memoryReplay.pendingAgents().includes(event.agent.id)) {
       replayPaseo = paseo;
@@ -391,6 +401,7 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   });
   const offTurnStarted = server.on("agent.turn_started", (event, { paseo }) => {
     arm(paseo);
+    voiceResume.onTurnStarted(event.agent.id);
   });
   const offAgentCreated = server.on("agent.created", (_event, { paseo }) => arm(paseo));
   const offPermissionRequested = server.on("agent.permission_requested", (event, { paseo }) => {
@@ -423,5 +434,6 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
     offPermissionRequested();
     offPermissionResolved();
     clearInterval(timer);
+    voiceResume.stop();
   };
 }

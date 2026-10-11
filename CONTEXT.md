@@ -251,3 +251,9 @@ What the harness has learned about a repo, kept as plain files in `.harness/memo
 Code: `server/memory.ts` (`parseNote`, `formatNote`, `notePath`, `writeNote`, `readMemory`, `briefFor`, citation helpers). Pure: no Paseo imports, no model. The analyzer is `server/repo-facts.ts` (pure) and `server/repo-analyzer.ts` (git and writes); its corrections pass is `server/corrections.ts`, `server/correction-sources.ts` and `server/correction-classifier.ts`.
 
 _Avoid_: knowledge base, lessons (for the folder).
+
+## Voice resume
+
+Paseo stops a spoken reply the moment its mic hears any sound, and cancels the agent's turn with it. When the sound was only noise, no transcript follows and the agent goes quiet mid-sentence. Voice resume spots a **cut**: a canceled turn whose last tool call is a `speak` that didn't complete. It then waits `RESUME_QUIET_MS` (10s). A new turn in that window means you really spoke, so it does nothing; otherwise it sends the agent `RESUME_MESSAGE` to finish what it was saying. A resume that is cut again isn't resumed, so noise can't loop it. It can't stop the cut itself: Paseo does that before the plugin sees anything. A Stop you press mid-speech looks the same, so it is resumed too. Code: `server/voice-resume.ts`.
+
+_Avoid_: barge-in fix, noise filter.
