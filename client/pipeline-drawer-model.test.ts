@@ -138,6 +138,10 @@ test("sourceRows: a failing status shows its error in place of the count and fla
   assert.equal(row?.error, true);
 });
 
+test("sourceRows: a failing status with no message says error", () => {
+  assert.equal(sourceRows([src()], [status({ ok: false, error: null })], 0)[1]?.meta, "Pinned @ abc1234 · error");
+});
+
 test("draftKind: a draft starting with / or ~ is a folder, anything else is github", () => {
   assert.equal(draftKind("/x"), "folder");
   assert.equal(draftKind("~/x"), "folder");

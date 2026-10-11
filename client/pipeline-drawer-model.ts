@@ -56,12 +56,14 @@ const plural = (n: number) => `${n} ${n === 1 ? "skill" : "skills"}`;
 // First 7 characters of a commit.
 const short = (sha: string) => sha.slice(0, 7);
 
+export type SourceIcon = "machine" | "github" | "folder";
+
 // One row per place skills come from: this machine first, then each connected source.
 export function sourceRows(sources: SkillSource[], statuses: SourceStatus[], machineCount: number) {
   const machine = {
     id: MACHINE_SOURCE,
     name: "This machine",
-    icon: "machine" as "machine" | "github" | "folder",
+    icon: "machine" as SourceIcon,
     scope: "Global",
     detail: "~/.claude/skills · ~/.agents/skills · ~/.claude/commands",
     meta: `${plural(machineCount)} · already global, nothing copied`,
@@ -76,7 +78,7 @@ export function sourceRows(sources: SkillSource[], statuses: SourceStatus[], mac
     return {
       id: source.id,
       name: source.label,
-      icon: (source.pin ? "github" : "folder") as "machine" | "github" | "folder",
+      icon: (source.pin ? "github" : "folder") as SourceIcon,
       scope: SCOPE_LABEL[source.kind],
       detail: source.location,
       meta: `${lead} · ${count}${source.enabled ? "" : " · off"}`,

@@ -34,10 +34,12 @@ import {
   nextOpen,
   phaseSummary,
   repoHint,
+  SCOPE_LABEL,
   sourceRows,
   THEN_OPTION_LABEL,
   type AddMode,
   type DrawerTab,
+  type SourceIcon,
 } from "./pipeline-drawer-model";
 import { LoadingState } from "./loading-state";
 import { installsLabel, rowState } from "./registry-search-model";
@@ -53,11 +55,6 @@ type UpdateCheck = {
   error: string | null;
 };
 
-const KIND_LABEL: Record<SourceKind, string> = {
-  team: "Team",
-  personal: "Personal",
-  imported: "Imported",
-};
 const PREVIEW_TICKET = { key: "KEY-123", title: "Example story", url: null };
 
 function sameRef(a: SkillRef, b: SkillRef) {
@@ -606,7 +603,7 @@ function SourcesTab({ pipeline, values, styles }: { pipeline: Pipeline; values: 
   );
 }
 
-const ICON_NAME = { machine: "Monitor", github: "Github", folder: "Folder" } as const;
+const ICON_NAME: Record<SourceIcon, string> = { machine: "Monitor", github: "Github", folder: "Folder" };
 
 function SourceRow({
   row,
@@ -712,7 +709,7 @@ function SourceRow({
             {(["team", "personal", "imported"] as const).map((kind) => (
               <Chip
                 key={kind}
-                label={KIND_LABEL[kind]}
+                label={SCOPE_LABEL[kind]}
                 active={source.kind === kind}
                 styles={styles}
                 onPress={() => void onChange((s) => ({ ...s, kind }))}
@@ -983,7 +980,7 @@ function ConnectSource({ connector, styles }: { connector: Connector; styles: St
       <View style={styles.rowWrap}>
         <Text style={styles.muted}>Label as</Text>
         {(["team", "personal", "imported"] as const).map((k) => (
-          <Chip key={k} label={KIND_LABEL[k]} active={kind === k} styles={styles} onPress={() => setKind(k)} />
+          <Chip key={k} label={SCOPE_LABEL[k]} active={kind === k} styles={styles} onPress={() => setKind(k)} />
         ))}
       </View>
       <Text style={styles.muted}>{repoHint(draft)}</Text>
