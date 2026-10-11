@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useRpc, useSettings } from "@getpaseo/plugin/client";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
+import { Icon, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
 import {
   DEFAULT_PHASES,
   MACHINE_SOURCE,
@@ -27,11 +27,16 @@ import {
   type SourceStatus,
 } from "../shared/pipeline";
 import {
+  ADD_MODES,
   DRAWER_TABS,
+  draftKind,
   handoffChips,
   nextOpen,
   phaseSummary,
+  repoHint,
+  sourceRows,
   THEN_OPTION_LABEL,
+  type AddMode,
   type DrawerTab,
 } from "./pipeline-drawer-model";
 import { LoadingState } from "./loading-state";
@@ -570,6 +575,7 @@ function SkillPicker({
 function SourcesTab({ pipeline, values, styles }: { pipeline: Pipeline; values: PipelineConfig; styles: Styles }) {
   const machineCount = pipeline.catalog.filter((s) => s.source === MACHINE_SOURCE).length;
   const connector = useConnectSource(pipeline, values);
+  const rows = sourceRows(values.sources, pipeline.statuses, machineCount);
 
   function updateSource(id: string, change: (source: SkillSource) => SkillSource) {
     return pipeline.save({ sources: values.sources.map((s) => (s.id === id ? change(s) : s)) });
@@ -577,42 +583,44 @@ function SourcesTab({ pipeline, values, styles }: { pipeline: Pipeline; values: 
 
   return (
     <>
-      <View style={styles.card}>
-        <View style={styles.rowWrap}>
-          <Text style={styles.cardTitle}>This machine</Text>
-          <Text style={[styles.muted, styles.pushRight]}>always on</Text>
-        </View>
-        <Text style={styles.muted}>
-          ~/.claude/skills · ~/.agents/skills · ~/.claude/commands · {machineCount} skills · already global, nothing is copied
-        </Text>
+      <Text style={styles.sectionLabel}>Connected · {pipeline.catalog.length} skills</Text>
+      <View style={styles.list}>
+        {rows.map((row, index) => {
+          const source = values.sources.find((s) => s.id === row.id);
+          return (
+            <SourceRow
+              key={row.id}
+              row={row}
+              source={source}
+              first={index === 0}
+              values={values}
+              pipeline={pipeline}
+              styles={styles}
+              onChange={(change) => updateSource(row.id, change)}
+            />
+          );
+        })}
       </View>
-      {values.sources.map((source) => (
-        <SourceCard
-          key={source.id}
-          source={source}
-          status={pipeline.statuses.find((s) => s.id === source.id)}
-          values={values}
-          pipeline={pipeline}
-          styles={styles}
-          onChange={(change) => updateSource(source.id, change)}
-        />
-      ))}
-      <RegistrySearch connector={connector} sources={values.sources} styles={styles} />
-      <ConnectSource connector={connector} styles={styles} />
+      <AddSource connector={connector} sources={values.sources} styles={styles} />
     </>
   );
 }
 
-function SourceCard({
+const ICON_NAME = { machine: "Monitor", github: "Github", folder: "Folder" } as const;
+
+function SourceRow({
+  row,
   source,
-  status,
+  first,
   values,
   pipeline,
   styles,
   onChange,
 }: {
-  source: SkillSource;
-  status: SourceStatus | undefined;
+  row: ReturnType<typeof sourceRows>[number];
+  // Undefined for the fixed machine row, which has nothing to configure.
+  source: SkillSource | undefined;
+  first: boolean;
   values: PipelineConfig;
   pipeline: Pipeline;
   styles: Styles;
@@ -620,17 +628,18 @@ function SourceCard({
 }) {
   const check = useRpc(checkSkillSource);
   const remove = useRpc(removeSkillSource);
+  const [open, setOpen] = useState(false);
   const [checking, setChecking] = useState(false);
   const [update, setUpdate] = useState<UpdateCheck | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const usedBy = values.phases
-    .filter((p) => [p.runs, ...p.extras].some((ref) => ref?.source === source.id))
+    .filter((p) => [p.runs, ...p.extras].some((ref) => ref?.source === row.id))
     .map((p) => p.label);
 
   async function runCheck() {
     setChecking(true);
     try {
-      const result = await check({ id: source.id });
+      const result = await check({ id: row.id });
       setUpdate({ head: result.head, commits: result.commits, changedSkills: result.changedSkills, error: result.error });
     } catch (cause) {
       setUpdate({ head: null, commits: [], changedSkills: [], error: cause instanceof Error ? cause.message : "Check failed." });
@@ -640,96 +649,116 @@ function SourceCard({
   }
 
   async function removeSource() {
-    const saved = await pipeline.save({ sources: values.sources.filter((s) => s.id !== source.id) });
+    const saved = await pipeline.save({ sources: values.sources.filter((s) => s.id !== row.id) });
     if (saved) {
-      await remove({ id: source.id }).catch(() => undefined);
+      await remove({ id: row.id }).catch(() => undefined);
     }
   }
 
   return (
-    <View style={styles.card}>
+    <View style={[styles.sourceRow, first ? null : styles.sourceRowRule]}>
       <View style={styles.rowWrap}>
-        <Text style={styles.cardTitle}>{source.label}</Text>
-        <Text style={styles.muted}>{KIND_LABEL[source.kind]}</Text>
-        <View style={styles.pushRight}>
-          <Chip
-            label={source.enabled ? "On" : "Off"}
-            active={source.enabled}
-            styles={styles}
-            onPress={() => void onChange((s) => ({ ...s, enabled: !s.enabled }))}
-          />
-        </View>
-      </View>
-      <Text style={styles.muted}>
-        {source.location} · {source.pin ? `pinned ${shortSha(source.pin)}` : "live folder"}
-        {status ? (status.ok ? ` · ${status.skillCount} skills` : "") : ""}
-        {usedBy.length > 0 ? ` · used by ${usedBy.join(", ")}` : ""}
-      </Text>
-      {status && !status.ok ? <Text style={[styles.muted, styles.danger]}>{status.error}</Text> : null}
-
-      <View style={styles.chipRow}>
-        {(["team", "personal", "imported"] as const).map((kind) => (
-          <Chip
-            key={kind}
-            label={KIND_LABEL[kind]}
-            active={source.kind === kind}
-            styles={styles}
-            onPress={() => void onChange((s) => ({ ...s, kind }))}
-          />
-        ))}
-      </View>
-
-      <View style={styles.rowWrap}>
-        {source.pin ? (
-          <Chip label={checking ? "Checking…" : "Check for updates"} styles={styles} onPress={checking ? undefined : () => void runCheck()} />
-        ) : null}
-        {confirmRemove ? (
-          <>
-            <Text style={styles.warn}>
-              Remove {source.label}?{usedBy.length > 0 ? ` ${usedBy.join(", ")} will show "not found".` : ""}
+        <Pressable
+          accessibilityRole="button"
+          disabled={row.fixed}
+          onPress={() => setOpen((v) => !v)}
+          style={[styles.rowWrap, styles.flex1, styles.noWrap]}
+        >
+          <View style={styles.iconTile}>
+            <Icon name={ICON_NAME[row.icon]} size={16} color={styles.iconMuted.color} />
+          </View>
+          <View style={styles.flex1}>
+            <View style={styles.rowWrap}>
+              <Text style={styles.cardTitle}>{row.name}</Text>
+              <View style={styles.pill}>
+                <Text style={styles.pillText}>{row.scope}</Text>
+              </View>
+            </View>
+            <Text style={styles.mono} numberOfLines={1}>
+              {row.detail}
             </Text>
-            <Chip label="Remove" styles={styles} onPress={() => void removeSource()} />
-            <Chip label="Keep" styles={styles} onPress={() => setConfirmRemove(false)} />
-          </>
+            <Text style={[styles.muted, row.error ? styles.danger : null]}>{row.meta}</Text>
+          </View>
+        </Pressable>
+        {row.fixed ? (
+          <Text style={styles.muted}>always on</Text>
         ) : (
-          <Chip label="Remove" styles={styles} onPress={() => setConfirmRemove(true)} />
+          <Pressable accessibilityRole="button" accessibilityLabel={`Disconnect ${row.name}`} onPress={() => setConfirmRemove(true)}>
+            <Icon name="X" size={16} color={styles.iconMuted.color} />
+          </Pressable>
         )}
       </View>
 
-      {update ? (
-        <View style={styles.picker}>
-          {update.error ? (
-            <Text style={[styles.muted, styles.danger]}>{update.error}</Text>
-          ) : update.commits.length === 0 ? (
-            <Text style={styles.muted}>Up to date.</Text>
-          ) : (
-            <>
-              <Text style={styles.body}>
-                {update.commits.length} new commit{update.commits.length === 1 ? "" : "s"}
-                {update.changedSkills.length > 0 ? ` · changes ${update.changedSkills.join(", ")}` : ""}
-              </Text>
-              {update.commits.slice(0, 10).map((commit) => (
-                <Text key={commit.sha} style={styles.muted}>
-                  {shortSha(commit.sha)} {commit.subject}
-                </Text>
-              ))}
-              <Text style={styles.muted}>
-                Skills are instructions agents follow, often with auto-accept. Read the changes before updating.
-              </Text>
+      {confirmRemove ? (
+        <View style={styles.rowWrap}>
+          <Text style={styles.warn}>
+            Disconnect {row.name}?{usedBy.length > 0 ? ` Used by ${usedBy.join(", ")}; they will show "not found".` : ""}
+          </Text>
+          <Chip label="Disconnect" styles={styles} onPress={() => void removeSource()} />
+          <Chip label="Keep" styles={styles} onPress={() => setConfirmRemove(false)} />
+        </View>
+      ) : null}
+
+      {open && source ? (
+        <View style={styles.cardBody}>
+          {usedBy.length > 0 ? <Text style={styles.muted}>used by {usedBy.join(", ")}</Text> : null}
+          <View style={styles.chipRow}>
+            <Chip
+              label={source.enabled ? "On" : "Off"}
+              active={source.enabled}
+              styles={styles}
+              onPress={() => void onChange((s) => ({ ...s, enabled: !s.enabled }))}
+            />
+            {(["team", "personal", "imported"] as const).map((kind) => (
               <Chip
-                label={`Update to ${shortSha(update.head)}`}
+                key={kind}
+                label={KIND_LABEL[kind]}
+                active={source.kind === kind}
                 styles={styles}
-                onPress={() => {
-                  const head = update.head;
-                  void onChange((s) => ({ ...s, pin: head })).then((saved) => {
-                    if (saved) {
-                      setUpdate(null);
-                    }
-                  });
-                }}
+                onPress={() => void onChange((s) => ({ ...s, kind }))}
               />
-            </>
-          )}
+            ))}
+            {source.pin ? (
+              <Chip label={checking ? "Checking…" : "Check for updates"} styles={styles} onPress={checking ? undefined : () => void runCheck()} />
+            ) : null}
+          </View>
+
+          {update ? (
+            <View style={styles.picker}>
+              {update.error ? (
+                <Text style={[styles.muted, styles.danger]}>{update.error}</Text>
+              ) : update.commits.length === 0 ? (
+                <Text style={styles.muted}>Up to date.</Text>
+              ) : (
+                <>
+                  <Text style={styles.body}>
+                    {update.commits.length} new commit{update.commits.length === 1 ? "" : "s"}
+                    {update.changedSkills.length > 0 ? ` · changes ${update.changedSkills.join(", ")}` : ""}
+                  </Text>
+                  {update.commits.slice(0, 10).map((commit) => (
+                    <Text key={commit.sha} style={styles.muted}>
+                      {shortSha(commit.sha)} {commit.subject}
+                    </Text>
+                  ))}
+                  <Text style={styles.muted}>
+                    Skills are instructions agents follow, often with auto-accept. Read the changes before updating.
+                  </Text>
+                  <Chip
+                    label={`Update to ${shortSha(update.head)}`}
+                    styles={styles}
+                    onPress={() => {
+                      const head = update.head;
+                      void onChange((s) => ({ ...s, pin: head })).then((saved) => {
+                        if (saved) {
+                          setUpdate(null);
+                        }
+                      });
+                    }}
+                  />
+                </>
+              )}
+            </View>
+          ) : null}
         </View>
       ) : null}
     </View>
@@ -844,8 +873,7 @@ function RegistrySearch({
   }, [query, search, sourcesKey]);
 
   return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>Search skills.sh</Text>
+    <View style={styles.cardBody}>
       <Text style={styles.muted}>Find a skill, then connect the repo that holds it. Nothing is installed.</Text>
       <TextInput
         accessibilityLabel="Search skills.sh"
@@ -882,6 +910,42 @@ function RegistrySearch({
   );
 }
 
+// The "Add a source" card: a switch between connecting a repo or folder and searching skills.sh.
+function AddSource({
+  connector,
+  sources,
+  styles,
+}: {
+  connector: Connector;
+  sources: SkillSource[];
+  styles: Styles;
+}) {
+  const [mode, setMode] = useState<AddMode>("repo");
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>Add a source</Text>
+      <View style={[styles.segmented, styles.selfStart]}>
+        {ADD_MODES.map((m) => (
+          <Pressable
+            key={m.id}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: mode === m.id }}
+            onPress={() => setMode(m.id)}
+            style={[styles.segment, mode === m.id ? styles.segmentActive : null]}
+          >
+            <Text style={mode === m.id ? styles.chipTextActive : styles.headerButtonText}>{m.label}</Text>
+          </Pressable>
+        ))}
+      </View>
+      {mode === "repo" ? (
+        <ConnectSource connector={connector} styles={styles} />
+      ) : (
+        <RegistrySearch connector={connector} sources={sources} styles={styles} />
+      )}
+    </View>
+  );
+}
+
 function ConnectSource({ connector, styles }: { connector: Connector; styles: Styles }) {
   const busy = connector.connecting !== null;
   const error = connector.error?.from === "field" ? connector.error.message : null;
@@ -895,34 +959,34 @@ function ConnectSource({ connector, styles }: { connector: Connector; styles: St
   }
 
   return (
-    <View style={styles.card}>
-      <Text style={styles.cardTitle}>Connect a skill repo</Text>
-      <Text style={styles.muted}>
-        owner/repo, a git URL, or an absolute folder path. Git repos are cloned and pinned to the current
-        commit; folders are read live.
-      </Text>
-      <View style={styles.chipRow}>
-        {(["team", "personal", "imported"] as const).map((k) => (
-          <Chip key={k} label={KIND_LABEL[k]} active={kind === k} styles={styles} onPress={() => setKind(k)} />
-        ))}
-      </View>
+    <View style={styles.cardBody}>
       <View style={styles.rowWrap}>
-        <TextInput
-          accessibilityLabel="Skill repo to connect"
-          placeholder="owner/repo or /path/to/folder"
-          value={draft}
-          onChangeText={setDraft}
-          onSubmitEditing={() => void connect()}
-          autoCapitalize="none"
-          autoCorrect={false}
-          style={[styles.input, styles.flex1]}
-        />
+        <View style={[styles.inputWrap, styles.flex1]}>
+          <Icon name={draftKind(draft) === "folder" ? "Folder" : "Github"} size={16} color={styles.iconMuted.color} />
+          <TextInput
+            accessibilityLabel="Skill repo to connect"
+            placeholder="owner/repo, git URL, or /path/to/folder"
+            value={draft}
+            onChangeText={setDraft}
+            onSubmitEditing={() => void connect()}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={[styles.inputBare, styles.flex1]}
+          />
+        </View>
         <Chip
           label={connector.connecting?.from === "field" ? "Connecting…" : "Connect"}
           styles={styles}
           onPress={busy ? undefined : () => void connect()}
         />
       </View>
+      <View style={styles.rowWrap}>
+        <Text style={styles.muted}>Label as</Text>
+        {(["team", "personal", "imported"] as const).map((k) => (
+          <Chip key={k} label={KIND_LABEL[k]} active={kind === k} styles={styles} onPress={() => setKind(k)} />
+        ))}
+      </View>
+      <Text style={styles.muted}>{repoHint(draft)}</Text>
       {error ? <Text style={[styles.muted, styles.danger]}>{error}</Text> : null}
     </View>
   );
@@ -1134,6 +1198,47 @@ function createStyles(theme: Theme, compact: boolean) {
       gap: 8,
     },
     pushRight: { marginLeft: "auto" as const },
+    noWrap: { flexWrap: "nowrap" as const },
+    selfStart: { alignSelf: "flex-start" as const },
+    iconMuted: { color: c.foregroundMuted },
+    sectionLabel: { color: c.foregroundMuted, fontSize: 12, fontWeight: "600" as const },
+    list: {
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 12,
+      backgroundColor: c.surface1,
+      overflow: "hidden" as const,
+    },
+    sourceRow: { padding: 12, gap: 8 },
+    sourceRowRule: { borderTopWidth: 1, borderTopColor: c.border },
+    iconTile: {
+      width: 32,
+      height: 32,
+      borderRadius: 8,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      backgroundColor: c.surface2,
+    },
+    pill: {
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 999,
+      paddingHorizontal: 8,
+      paddingVertical: 1,
+    },
+    pillText: { color: c.foregroundMuted, fontSize: 11 },
+    mono: { fontFamily: "monospace", fontSize: 11.5, color: c.foregroundMuted },
+    inputWrap: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      gap: 8,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 8,
+      paddingHorizontal: 10,
+      backgroundColor: c.surface0,
+    },
+    inputBare: { paddingVertical: 6, color: c.foreground },
     gap6: { gap: 6 },
     chipRow: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 6 },
     chip: {
