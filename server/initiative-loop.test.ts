@@ -148,6 +148,8 @@ test("stepActive: true only for the story's agent while its marker is <step>-run
 
   writeFileSync(join(worktree, ".harness", "state.md"), "# S1\n\n## Status\nimplement-done\n", "utf8");
   assert.equal(await initiative.stepActive(labels, "a1"), false);
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1\n\n## Status\nreview-running\n", "utf8");
+  assert.equal(await initiative.stepActive(labels, "a1"), false);
 
   assert.equal(await initiative.stepActive({ ...labels, "loop-story": "S99" }, "a1"), false);
 });
