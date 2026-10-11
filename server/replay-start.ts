@@ -8,7 +8,6 @@ import type { AgentCreateConfig } from "../shared/agent-runner";
 import type { CorpusRow } from "./replay";
 import { installBrief } from "./brief-install";
 import { readTelemetry, type TelemetryRow } from "./context-telemetry";
-import { defaultApiKey } from "./correction-classifier";
 import type { ReplayPorts } from "./memory-replay";
 import { haikuJudge } from "./replay-judge";
 import { analyze } from "./repo-analyzer";
@@ -68,7 +67,7 @@ export function realReplayPorts(getPaseo: () => PaseoApi | null, agentConfig: (p
       },
     },
     analyze: (root, opts) => analyze(root, opts),
-    judge: haikuJudge({ apiKey: defaultApiKey }),
+    judge: haikuJudge(),
     telemetry: { lastTurn: (agentId) => lastTurn(agentId) },
     agentConfig: () => agentConfig(paseo()),
     installBrief,

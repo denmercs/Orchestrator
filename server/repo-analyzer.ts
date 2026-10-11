@@ -8,7 +8,7 @@ import { formatNote, noteId, parseNote, writeNote } from "./memory";
 import type { Note } from "./memory";
 import { readAreaNames, seedNotes } from "./repo-facts";
 import type { Commit, Snapshot, SourceFile } from "./repo-facts";
-import { defaultApiKey, haikuClassifier } from "./correction-classifier";
+import { haikuClassifier } from "./correction-classifier";
 import { collectObservations } from "./correction-sources";
 
 // Reads a repo as of one commit, never the working tree: uncommitted edits and later commits seed nothing.
@@ -199,7 +199,7 @@ const topCorrectionsOf = (summary: string) => /^## Top corrections\n[\s\S]*?(?=^
  * slug is never overwritten; seeded notes in areas/, decisions/ and notes/ that this run did not produce are removed.
  * After the facts, a corrections pass files observations (cost cap first in the log), writes seeded `corrections/` notes,
  * removes stale seeded ones (unless the run stopped early), and appends `## Top corrections` to SUMMARY.md.
- * Without `classify` and without an API key the pass is skipped.
+ * Without `classify` it files through Haiku on the Claude Code CLI.
  */
 export async function analyze(root: string, opts: AnalyzeOptions = {}): Promise<AnalyzeResult> {
   const log = opts.log ?? (() => {});
@@ -280,14 +280,7 @@ async function correctionsPass(
   result: AnalyzeResult,
 ): Promise<Note[] | null> {
   const memory = join(outRoot, ".harness", "memory");
-  let classify = opts.classify;
-  if (!classify) {
-    if (!(await defaultApiKey())) {
-      log("corrections skipped: no API key (set ANTHROPIC_API_KEY or the anthropic-api-key Keychain item)");
-      return null;
-    }
-    classify = haikuClassifier({ fetch: globalThis.fetch, apiKey: defaultApiKey });
-  }
+  const classify = opts.classify ?? haikuClassifier();
 
   let all: Observation[];
   let partial = false;

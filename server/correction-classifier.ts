@@ -1,26 +1,7 @@
-// The default cheap-model classifier: Claude Haiku over the Messages API, with an injected `fetch` and key source.
-import {
-  type Classify,
-  INPUT_USD_PER_TOKEN,
-  MAX_TOKENS,
-  MODEL,
-  OUTPUT_USD_PER_TOKEN,
-} from "./corrections";
+// The default cheap-model classifier: Claude Haiku through the Claude Code CLI (see claude-cli.ts).
+import { type Ask, claudeCli } from "./claude-cli";
+import type { Classify } from "./corrections";
 import { CORRECTION_CATEGORIES } from "./memory";
-import { readKeychainSecret } from "./keychain";
-
-const URL = "https://api.anthropic.com/v1/messages";
-const API_VERSION = "2023-06-01";
-
-export type HaikuOptions = {
-  fetch?: typeof globalThis.fetch;
-  apiKey: string | (() => string | Promise<string>);
-};
-
-// Env first, then the macOS Keychain item `anthropic-api-key`. "" when neither has it. Never log the value.
-export async function defaultApiKey(): Promise<string> {
-  return process.env.ANTHROPIC_API_KEY?.trim() || (await readKeychainSecret("anthropic-api-key"));
-}
 
 function systemPrompt(areas: string[], phrases: Record<string, string[]>): string {
   const vocabulary = Object.entries(phrases)
@@ -38,34 +19,18 @@ function systemPrompt(areas: string[], phrases: Record<string, string[]>): strin
 
 const unfence = (text: string) => text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
 
-export function haikuClassifier(options: HaikuOptions): Classify {
-  const doFetch = options.fetch ?? globalThis.fetch;
+export function haikuClassifier(ask: Ask = claudeCli()): Classify {
   return async (batch, context) => {
-    const key = typeof options.apiKey === "function" ? await options.apiKey() : options.apiKey;
-    if (!key) throw new Error("Anthropic API key is missing (set ANTHROPIC_API_KEY or the anthropic-api-key Keychain item)");
-
-    const response = await doFetch(URL, {
-      method: "POST",
-      headers: { "x-api-key": key, "anthropic-version": API_VERSION, "content-type": "application/json" },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: MAX_TOKENS,
-        system: systemPrompt(context.areas, context.phrases),
-        messages: [{ role: "user", content: batch.map((o) => `[${o.id}] ${o.text}`).join("\n") }],
-      }),
-    });
-    const raw = await response.text();
-    if (!response.ok) throw new Error(`Anthropic API returned ${response.status}: ${raw.slice(0, 300)}`);
-
-    let reply: { content?: { type?: string; text?: string }[]; usage?: { input_tokens?: number; output_tokens?: number } } = {};
+    const { text, costUsd } = await ask(
+      systemPrompt(context.areas, context.phrases),
+      batch.map((o) => `[${o.id}] ${o.text}`).join("\n"),
+    );
     let parsed: { filings?: unknown };
-    const cost = () => (reply.usage?.input_tokens ?? 0) * INPUT_USD_PER_TOKEN + (reply.usage?.output_tokens ?? 0) * OUTPUT_USD_PER_TOKEN;
     try {
-      reply = JSON.parse(raw);
-      parsed = JSON.parse(unfence(reply.content?.[0]?.text ?? ""));
+      parsed = JSON.parse(unfence(text));
     } catch {
       // The call was billed even though its text is unusable, so the error carries the cost.
-      throw Object.assign(new Error(`Anthropic reply was not valid JSON: ${raw.slice(0, 300)}`), { costUsd: cost() });
+      throw Object.assign(new Error(`Haiku reply was not valid JSON: ${text.slice(0, 300)}`), { costUsd });
     }
     const list = Array.isArray(parsed.filings) ? parsed.filings : [];
     const filings = list.flatMap((entry: { id?: unknown; category?: unknown; area?: unknown; phrase?: unknown }) =>
@@ -73,6 +38,6 @@ export function haikuClassifier(options: HaikuOptions): Classify {
         ? [{ id: entry.id, category: String(entry.category ?? ""), area: typeof entry.area === "string" ? entry.area : null, phrase: entry.phrase }]
         : [],
     );
-    return { filings, costUsd: cost() };
+    return { filings, costUsd };
   };
 }
