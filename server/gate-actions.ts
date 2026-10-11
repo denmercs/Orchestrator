@@ -1,17 +1,21 @@
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { GateAction } from "../shared/gates";
 import type { ActResult } from "./context-watch";
+import type { BlockKind } from "./initiative-loop";
 
 // Gate actions (see CONTEXT.md, "Gate action"): the rules for acting on a story's gate from outside
 // its session. Everything outside this file reaches it through GatePort.
 
 export const APPROVE_MESSAGE = "Approved. Go ahead.";
 export const NUDGE_MESSAGE = "You look stuck: say what's blocking you, or take a different approach.";
+export const RETRY_MESSAGE =
+  "The block on this step is cleared. Carry on from `.harness/state.md` and write the step's marker when you finish.";
 
 export type GateResult = { ok: boolean; error: string | null; agentId: string | null };
 
-// What a gate action needs to know about a story.
-export type GateStory = { status: string; agent: string | null; waitingOn: string | null };
+// What a gate action needs to know about a story. `blockKind` is absent or null for a block that
+// predates block kinds, and for a permission wait.
+export type GateStory = { status: string; agent: string | null; waitingOn: string | null; blockKind?: BlockKind | null };
 
 export type StoryRef = { board: string; storyId: string };
 
@@ -28,6 +32,10 @@ export type GatePort = {
   startFresh(agentId: string): Promise<GateResult>;
   // Back to `blocked_from`, with the block fields cleared.
   reopen(ref: StoryRef): Promise<void>;
+  // The loop starts the story's step again in a fresh session; `agentId` in the result is that session.
+  retryStep(ref: StoryRef): Promise<GateResult>;
+  // The story's PR number while that PR is closed; null when it isn't closed, or there is none.
+  closedPr(ref: StoryRef): Promise<number | null>;
 };
 
 // The gate each action belongs to: the status the story must still be at, and how a refusal names it.
@@ -36,17 +44,49 @@ const GATE_OF: Record<GateAction, { status: string; name: string }> = {
   changes: { status: "awaiting-approval", name: "awaiting approval" },
   nudge: { status: "blocked", name: "blocked" },
   restart: { status: "blocked", name: "blocked" },
+  retry: { status: "blocked", name: "blocked" },
 };
+
+// Blocks with no agent to wake: reopening is enough, and the loop picks the story up again.
+const REOPEN_ONLY: ReadonlySet<BlockKind> = new Set(["start", "pr", "ci"]);
 
 const refuse = (error: string): GateResult => ({ ok: false, error, agentId: null });
 
 export function createGateActions(port: GatePort) {
+  // Retry a blocked story by its block kind: reopen only, or wake its agent (a message to an open
+  // session, the loop's fresh step for an ended or unknown one).
+  async function retry(ref: StoryRef, story: GateStory): Promise<GateResult> {
+    // A PR block whose PR is still closed would only block again on the next tick.
+    if (story.blockKind === "pr") {
+      const closed = await port.closedPr(ref);
+      if (closed !== null) return refuse(`PR #${closed} is still closed; reopen it on GitHub, then retry ${ref.storyId}.`);
+    }
+    if ((story.blockKind && REOPEN_ONLY.has(story.blockKind)) || !story.agent) {
+      await port.reopen(ref);
+      return { ok: true, error: null, agentId: null };
+    }
+    if ((await port.session(story.agent)) !== "open") return port.retryStep(ref);
+    if (story.waitingOn === "permission") {
+      return refuse(`${ref.storyId} is waiting on a permission; answer it in the session.`);
+    }
+    // Reopen first: it sets the step's marker back to running before the agent can write its own.
+    await port.reopen(ref);
+    try {
+      await port.send(story.agent, RETRY_MESSAGE);
+    } catch (cause) {
+      const why = cause instanceof Error ? cause.message : String(cause);
+      return { ok: false, error: `${ref.storyId} is unblocked, but its session didn't get the retry message: ${why}`, agentId: story.agent };
+    }
+    return { ok: true, error: null, agentId: story.agent };
+  }
+
   return {
     async act({ board, storyId, action }: StoryRef & { action: GateAction }): Promise<GateResult> {
       const story = await port.story({ board, storyId });
       if (!story) return refuse(`${storyId} is not on that board.`);
       const gate = GATE_OF[action];
       if (story.status !== gate.status) return refuse(`${storyId} is now ${story.status}, not ${gate.name}.`);
+      if (action === "retry") return retry({ board, storyId }, story);
       if (story.waitingOn === "permission") {
         return refuse(`${storyId} is waiting on a permission; answer it in the session.`);
       }
@@ -83,6 +123,8 @@ type PaseoApi = PluginHandlerContext["paseo"];
 type LoopFiles = {
   gateStory(ref: { repo: string; initiative: string; storyId: string }): Promise<GateStory | null>;
   reopen(ref: { repo: string; initiative: string; storyId: string }): Promise<void>;
+  retryStep(api: PaseoApi, ref: { repo: string; initiative: string; storyId: string }): Promise<GateResult>;
+  closedPr(ref: { repo: string; initiative: string; storyId: string }): Promise<number | null>;
 };
 type FreshAct = { act(input: { agentId: string; action: "fresh" }): Promise<ActResult> };
 
@@ -120,6 +162,14 @@ export function loopGatePort(loop: LoopFiles, paseo: PaseoApi, contextWatch: Fre
     async reopen({ board, storyId }) {
       const split = splitBoard(board);
       if (split) await loop.reopen({ ...split, storyId });
+    },
+    async retryStep({ board, storyId }) {
+      const split = splitBoard(board);
+      return split ? loop.retryStep(paseo, { ...split, storyId }) : refuse(`${storyId} is not on that board.`);
+    },
+    async closedPr({ board, storyId }) {
+      const split = splitBoard(board);
+      return split ? loop.closedPr({ ...split, storyId }) : null;
     },
   };
 }

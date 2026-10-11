@@ -9,6 +9,9 @@ import { LOOP_AGENT_KIND, type LoopConfig } from "../shared/initiative-loop";
 import { branchName } from "../shared/naming";
 import { phaseLabel } from "../shared/orchestration";
 import { DEFAULT_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
+import type { ToolItem } from "../shared/exploration";
+import { stuckCheck, type StuckCounters } from "../shared/stuck";
+import { appendOutcome, type OutcomeEvent } from "../shared/story-outcome";
 import {
   PHASES_DIR,
   PHASE_FILE,
@@ -47,7 +50,11 @@ import {
 } from "../shared/story-method";
 import { withMcpScope } from "./mcp-scope";
 import { installSkills, skillPaths } from "./skill-sources";
-import { commitStory, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
+import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
+import { inHoldWindow, usageLimitResumeAt } from "./usage-limit";
+
+// The stuck evidence a step carries in its frontmatter; a new step or a reopen starts it clean.
+const STUCK_CLEAR = { idle_turns: null, fail_tests: null, fail_runs: null, stuck_nudged: null };
 
 // The initiative loop, driven by Paseo events rather than a long-running process:
 //   Start            marks the initiative loop: on and starts every ready story of its active phase.
@@ -61,8 +68,14 @@ import { commitStory, openStoryPr, pushStoryFix, uniqueBranch } from "./story-gi
 //                    session; a session that is gone, closed or errored is replaced by a fresh one. After
 //                    maxRetries the story blocks, and resumes if the step's marker arrives late. A story
 //                    whose worktree is gone goes to its branch's PR.
+//                    A failed turn that hit the plan's usage limit isn't a retry: the story is paused until
+//                    the reset time in the message (an hour on if it names none), then nudged.
 //                    A permission request blocks the story until it's answered.
 //                    A turn you cancel is left alone.
+//                    Stuck evidence is read from each completed turn: no file edits for stuckTurns turns, or the
+//                    same test failing 3 brief test runs in a row. The first time, one nudge names it (no
+//                    retry counted); if it still holds on a later turn the story blocks as `stuck`. Progress
+//                    resets it; a new step or a reopen starts clean.
 // The story files are the state: the loop writes status, branch, workspace, agent, pr and ci into
 // their frontmatter, so it resumes from them after a restart. Paseo owns the worktrees and agents.
 
@@ -81,16 +94,18 @@ const ACTIVE = new Set(["planning", "awaiting-approval", "implementing", "review
 // The statuses whose step session the loop supervises. awaiting-approval waits on you and pr-open
 // has its own watcher.
 const SUPERVISED = new Set(["planning", "implementing", "reviewing"]);
-const SUPERVISED_STEPS = new Set<string>(["plan", "implement", "review"]);
+const SUPERVISED_STEPS = new Set<string>(["plan", "diagnose", "implement", "review"]);
 // The markers a supervised step answers with; reconcile acts on each of them.
 const STEP_ANSWERS: Record<string, string[]> = {
   plan: [MARKERS.planDone],
+  diagnose: [MARKERS.diagnoseDone, MARKERS.diagnoseBlocked],
   implement: [MARKERS.implementDone, MARKERS.implementBlocked],
   review: [MARKERS.reviewDone, MARKERS.reviewFailed],
 };
 const PERMISSION = "permission";
 const STATUS_FOR: Record<LoopStep, string> = {
   plan: "planning",
+  diagnose: "planning",
   implement: "implementing",
   review: "reviewing",
   pr: "reviewing",
@@ -173,7 +188,8 @@ function storyContext(init: Initiative, phaseDir: string, story: StoryFile): Sto
     id: story.id,
     title: story.meta.title || story.id,
     body: story.body,
-    ticketUrl: null,
+    ticketKey: story.meta.jira || null,
+    ticketUrl: story.meta.jira_url || null,
     storyFile: story.path,
     storiesDir: join(phaseDir, "stories"),
     phaseLabel: phaseLabel(meta.phase ?? ""),
@@ -188,8 +204,19 @@ function storyContext(init: Initiative, phaseDir: string, story: StoryFile): Sto
 
 const stateFile = (worktree: string) => join(worktree, ".harness", "state.md");
 
-// `kind` names who blocked it, so the loop can tell its own give-up from the rest; the others clear it.
-function block(story: StoryFile, reason: string, kind?: "retry-limit") {
+// Keeps what happened to a story in its own file (## Outcome and its counters), which outlives the worktree.
+function recordOutcome(story: StoryFile, event: OutcomeEvent) {
+  const text = readText(story.path);
+  const next = appendOutcome(text, event);
+  if (next !== text) writeFileSync(story.path, next, "utf8");
+}
+
+// `kind` names what blocked it, so the loop can tell its own give-up from the rest and Retry knows what
+// to redo: `start` and `pr` and `ci` need no agent, `retry-limit`, `step` and `stuck` do. A permission wait has none.
+export type BlockKind = "start" | "pr" | "ci" | "retry-limit" | "step" | "stuck";
+// A permission wait is answered in the session, so it passes `record = false` and stays out of ## Outcome.
+function block(story: StoryFile, reason: string, kind?: BlockKind, record = true) {
+  if (record) recordOutcome(story, { kind: "blocked", reason });
   writeFrontmatter(story.path, {
     status: "blocked",
     blocked_reason: reason,
@@ -248,7 +275,8 @@ export function createInitiativeLoop(
     step: LoopStep,
     round: number,
     // attempt: a supervised restart of a step whose session died; it keeps the story's retry count.
-    extra: { failing?: string; cycle?: Cycle; cycles?: Cycle[]; attempt?: number } = {},
+    // retry: a Retry from the board, labelled with its time so a closed earlier session doesn't match.
+    extra: { failing?: string; cycle?: Cycle; cycles?: Cycle[]; attempt?: number; retry?: string } = {},
   ) {
     const { workspace, worktree } = story.meta;
     if (!workspace || !worktree) throw new Error(`${story.id} has no workspace.`);
@@ -263,6 +291,7 @@ export function createInitiativeLoop(
       ...(extra.cycle ? { "loop-cycle": String(extra.cycle.number) } : {}),
       ...(extra.cycles ? { "loop-cycles": "subagents" } : {}),
       ...(extra.attempt ? { "loop-attempt": String(extra.attempt) } : {}),
+      ...(extra.retry ? { "loop-retry": extra.retry } : {}),
     };
     const key = Object.values(labels).join("|");
     if (started.has(key)) return null;
@@ -321,8 +350,10 @@ export function createInitiativeLoop(
         blocked_from: null,
         block_kind: null,
         stalled: null,
+        paused_until: null,
         waiting_on: null,
         ...(extra.attempt ? {} : { retries: null }),
+        ...STUCK_CLEAR,
         skill_warnings: warnings.join(" · ") || null,
         // The first prompt's skills line, so a resumed agent gets the same one.
         step_skills: formatSkills(skills) || null,
@@ -334,7 +365,7 @@ export function createInitiativeLoop(
     }
   }
 
-  // Creates (or reuses) the story's worktree workspace and starts its Plan agent.
+  // Creates (or reuses) the story's worktree workspace and starts its first step: Diagnose on the diagnose track, else Plan.
   async function startStory(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile) {
     const base = story.meta.base || (await baseBranch(init));
     const branch =
@@ -371,7 +402,7 @@ export function createInitiativeLoop(
     writeFrontmatter(story.path, { branch, base, workspace: workspaceId, worktree });
     const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
     if (!existsSync(stateFile(worktree))) writeFileSync(stateFile(worktree), seedState(storyContext(init, phaseDir, fresh)), "utf8");
-    return startStep(api, config, init, phaseDir, fresh, "plan", 1);
+    return startStep(api, config, init, phaseDir, fresh, fresh.meta.track === "diagnose" ? "diagnose" : "plan", 1);
   }
 
   // Moves an in-flight story to its next step from the marker its current step wrote.
@@ -405,13 +436,17 @@ export function createInitiativeLoop(
       if (marker === MARKERS.planDone) await nextImplement(readCycles(state).find((cycle) => !cycle.done));
       // The planner ended its turn without approval: it is asking you.
       else if (turnEnded && meta.status === "planning") writeFrontmatter(story.path, { status: "awaiting-approval" });
+    } else if (step === "diagnose") {
+      // No gate: Diagnose hands its plan straight to Implement. A turn end without a marker is a stall.
+      if (marker === MARKERS.diagnoseDone) await nextImplement(readCycles(state).find((cycle) => !cycle.done));
+      else if (marker === MARKERS.diagnoseBlocked) block(story, detail || "Diagnose is blocked; open its session.", "step");
     } else if (step === "implement") {
       if (marker === MARKERS.implementDone) {
         // A parent that ran the cycles in subagents must have ticked them all.
         const finished = meta.cycles === "subagents" ? "all" : meta.cycle ? Number(meta.cycle) : null;
         const after = afterImplement(state, finished);
         if (after.kind === "blocked") {
-          block(story, after.reason);
+          block(story, after.reason, "step");
           return;
         }
         const cycle = typeof finished === "number" ? (readCycles(state).find((item) => item.number === finished) ?? null) : null;
@@ -419,18 +454,22 @@ export function createInitiativeLoop(
         await commitStory(meta.worktree, commitSubject(state, fallback));
         if (after.kind === "cycle") await (round === 1 ? nextImplement(after.cycle) : next("implement", round, after.cycle));
         else await next("review", round);
-      } else if (marker === MARKERS.implementBlocked) block(story, detail || "Implement is blocked; open its session.");
+      } else if (marker === MARKERS.implementBlocked) block(story, detail || "Implement is blocked; open its session.", "step");
     } else if (step === "review") {
       if (marker === MARKERS.reviewDone || marker === MARKERS.reviewFailed) {
+        // The checklist under ## Review findings decides, not the marker (afterReview).
         const after = afterReview(state, marker, round, config.reviewRounds);
+        if (after.kind !== "pr") {
+          recordOutcome(story, { kind: "review-failed", round, findings: readSection(state, "Review findings").split("\n") });
+        }
         if (after.kind === "fix") await next("implement", round + 1);
-        else if (after.kind === "blocked") block(story, after.reason);
+        else if (after.kind === "blocked") block(story, after.reason, "step");
         else if (on) await openPr(init, phaseDir, story, after.unfixed);
       }
     } else if (step === "pr" && marker === MARKERS.prDone) {
       const pr = await prForBranch(meta.worktree, meta.branch ?? "");
       if (pr) writeFrontmatter(story.path, { status: "pr-open", pr: pr.number, ci: "pending" });
-      else if (turnEnded) block(story, `Open PR finished but there is no open PR for ${meta.branch}.`);
+      else if (turnEnded) block(story, `Open PR finished but there is no open PR for ${meta.branch}.`, "pr");
     }
   }
 
@@ -447,6 +486,7 @@ export function createInitiativeLoop(
       blocked_from: null,
       retries: null,
       stalled: null,
+      paused_until: null,
       block_kind: null,
     });
     return readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
@@ -458,11 +498,27 @@ export function createInitiativeLoop(
     if (!meta.worktree) return;
     const ctx = storyContext(init, phaseDir, story);
     try {
-      const pr = await openStoryPr(meta.worktree, { id: story.id, title: ctx.title, jira: false, branch: meta.branch ?? "", base: ctx.base, unfixed });
+      const subject = commitSubject(readText(stateFile(meta.worktree)), "Commit remaining changes");
+      const pr = await openStoryPr(meta.worktree, { id: story.id, title: ctx.title, jira: false, branch: meta.branch ?? "", base: ctx.base, subject, unfixed });
+      // Nothing to ship: the work is already on the base, so the story is done and its dependents can go.
+      if (!pr) {
+        recordOutcome(story, { kind: "no-change" });
+        writeFrontmatter(story.path, {
+          status: "merged",
+          merged_at: new Date().toISOString(),
+          step: "pr",
+          round: 1,
+          cycle: null,
+          agent: null,
+          ci: null,
+        });
+        refreshInitiativeIndex(init.dir);
+        return;
+      }
       writeFileSync(stateFile(meta.worktree), writeMarker(readText(stateFile(meta.worktree)), `${MARKERS.prDone}\n${pr.url}`), "utf8");
       writeFrontmatter(story.path, { status: "pr-open", step: "pr", round: 1, cycle: null, agent: null, pr: pr.number, ci: "pending" });
     } catch (error) {
-      block(story, `Could not open the PR: ${error instanceof Error ? error.message : String(error)}`);
+      block(story, `Could not open the PR: ${failureText(error)}`, "pr");
     }
   }
 
@@ -475,7 +531,7 @@ export function createInitiativeLoop(
     try {
       await pushStoryFix(meta.worktree, commitSubject(state, "Fix failing CI checks"));
     } catch (error) {
-      block(story, `Could not push the CI fix: ${error instanceof Error ? error.message : String(error)}`);
+      block(story, `Could not push the CI fix: ${failureText(error)}`, "ci");
     }
   }
 
@@ -487,22 +543,25 @@ export function createInitiativeLoop(
     if (!pr) return;
     const action = ciAction(pr, { fixedSha: meta.fixed_sha ?? null, attempts: Number(meta.fix_attempts) || 0 }, config.maxFixes);
     if (action.kind === "merged") {
-      writeFrontmatter(story.path, { status: "merged", ci: null, agent: null });
+      recordOutcome(story, { kind: "merged" });
+      writeFrontmatter(story.path, { status: "merged", merged_at: pr.mergedAt || new Date().toISOString(), ci: null, agent: null });
       if (meta.workspace) await api.workspaces.archive(meta.workspace).catch(() => undefined);
       refreshInitiativeIndex(init.dir);
       return;
     }
     if (action.kind === "closed") {
-      block(story, `PR #${pr.number} was closed without merging.`);
+      block(story, `PR #${pr.number} was closed without merging.`, "pr");
       return;
     }
     if (meta.ci !== action.ci) writeFrontmatter(story.path, { ci: action.ci });
     if (action.kind === "wait" || initiativeLoopState(init.dir) !== "on") return;
     if (action.kind === "give-up") {
-      block(story, action.reason);
+      block(story, action.reason, "ci");
       return;
     }
-    writeFrontmatter(story.path, { fixed_sha: action.headSha, fix_attempts: action.attempt });
+    // The outcome entry counts the attempt (fix_attempts); the head is kept so it isn't fixed twice.
+    recordOutcome(story, { kind: "fix", attempt: action.attempt, checks: pr.failing.map((check) => check.name) });
+    writeFrontmatter(story.path, { fixed_sha: action.headSha });
     const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
     await startStep(api, config, init, phaseDir, fresh, "fix", action.attempt, { failing: await failureReport(cwd, pr.failing) });
   }
@@ -517,8 +576,15 @@ export function createInitiativeLoop(
       return { started: startedNow, reason };
     }
     if (!phaseDir) return { started: startedNow, reason };
+    if (inHoldWindow(config.holdFrom, config.holdUntil, new Date())) {
+      return { started: startedNow, reason: `holding new stories from ${config.holdFrom}:00 to ${config.holdUntil}:00` };
+    }
     const merged = new Set(phaseDirs(init).flatMap((dir) => readStoryFiles(dir).filter(isMerged).map((story) => story.id)));
     const stories = readStoryFiles(phaseDir);
+    // A step stopped by the plan's usage limit says the next one would stop too.
+    if (stories.some((story) => Date.parse(story.meta.paused_until ?? "") > Date.now())) {
+      return { started: startedNow, reason: "paused until the usage limit resets" };
+    }
     // A story blocked on a permission request still has its session open, so it keeps its slot.
     const inFlight = stories.filter(
       (story) => ACTIVE.has(story.meta.status ?? "") || story.meta.waiting_on === PERMISSION,
@@ -534,7 +600,7 @@ export function createInitiativeLoop(
         const agentId = await startStory(api, config, init, phaseDir, story);
         if (agentId) startedNow.push({ story: story.id, agentId });
       } catch (error) {
-        block(story, `Could not start: ${error instanceof Error ? error.message : String(error)}`);
+        block(story, `Could not start: ${error instanceof Error ? error.message : String(error)}`, "start");
       }
     }
     const running = inFlight + startedNow.length;
@@ -559,6 +625,10 @@ export function createInitiativeLoop(
     const state = readText(stateFile(meta.worktree));
     // Any other marker is the step's own answer, and reconcile acts on it.
     if (readMarker(state).marker !== `${step}-running`) return;
+    // Stopped by the plan's usage limit: wait out the reset (and any hold), then nudge without counting a retry.
+    const pausedUntil = Date.parse(meta.paused_until ?? "");
+    const resuming = !Number.isNaN(pausedUntil);
+    if (resuming && (Date.now() < pausedUntil || inHoldWindow(config.holdFrom, config.holdUntil, new Date()))) return;
     const session = await api.agents
       .ref(meta.agent)
       .refresh()
@@ -567,18 +637,23 @@ export function createInitiativeLoop(
     if (session === undefined) return;
     if (session?.status === "running" || session?.status === "initializing") return;
     const dead = !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
-    if (!dead && !meta.stalled) return;
+    if (!dead && !meta.stalled && !resuming) return;
     const why = dead
       ? session?.lastError
         ? `Its session failed: ${session.lastError}.`
         : "Its session is gone."
-      : meta.stalled ?? "";
+      : meta.stalled || "The usage limit has reset.";
+    if (resuming && !dead) {
+      writeFrontmatter(story.path, { paused_until: null, stalled: null });
+      await api.agents.ref(meta.agent).send(nudgePrompt(why));
+      return;
+    }
     const retries = Number(meta.retries) || 0;
     if (retries >= config.maxRetries) {
       block(story, `${STEP_LABELS[step]}: ${why} Gave up after ${retries} ${retries === 1 ? "retry" : "retries"}.`, "retry-limit");
       return;
     }
-    writeFrontmatter(story.path, { retries: retries + 1, stalled: null });
+    writeFrontmatter(story.path, { retries: retries + 1, stalled: null, paused_until: null });
     if (!dead) {
       await api.agents.ref(meta.agent).send(nudgePrompt(why));
       return;
@@ -602,12 +677,12 @@ export function createInitiativeLoop(
     const { meta } = story;
     const pr = meta.branch ? await prStatus(init.root, meta.branch) : null;
     if (pr?.state === "closed") {
-      block(story, `Its worktree is gone and PR #${pr.number} was closed without merging.`);
+      block(story, `Its worktree is gone and PR #${pr.number} was closed without merging.`, "pr");
       return;
     }
     if (!pr) {
       const retries = Number(meta.retries) || 0;
-      if (retries >= config.maxRetries) block(story, `Its worktree is gone and ${meta.branch || "its branch"} has no PR.`);
+      if (retries >= config.maxRetries) block(story, `Its worktree is gone and ${meta.branch || "its branch"} has no PR.`, "pr");
       else writeFrontmatter(story.path, { retries: retries + 1 });
       return;
     }
@@ -649,8 +724,8 @@ export function createInitiativeLoop(
     return story ? { init, phaseDir, story } : null;
   }
 
-  // A story by its id in any phase of the initiative, or null when either isn't there.
-  function findStory(input: StoryRef) {
+  // A story by its id in any phase of the initiative, with both, or null when either isn't there.
+  function locateStory(input: StoryRef) {
     let init: Initiative;
     try {
       init = initiativeAt(input.repo, input.initiative);
@@ -659,10 +734,12 @@ export function createInitiativeLoop(
     }
     for (const phaseDir of phaseDirs(init)) {
       const story = readStoryFiles(phaseDir).find((item) => item.id === input.storyId);
-      if (story) return story;
+      if (story) return { init, phaseDir, story };
     }
     return null;
   }
+
+  const findStory = (input: StoryRef) => locateStory(input)?.story ?? null;
 
   return {
     rememberPaseo(next: PaseoApi) {
@@ -736,28 +813,86 @@ export function createInitiativeLoop(
       return serial(async () => {
         const story = findStory(input);
         if (!story) return null;
-        return { status: story.meta.status ?? "", agent: story.meta.agent || null, waitingOn: story.meta.waiting_on || null };
+        return {
+          status: story.meta.status ?? "",
+          agent: story.meta.agent || null,
+          waitingOn: story.meta.waiting_on || null,
+          blockKind: (story.meta.block_kind || null) as BlockKind | null,
+        };
       });
     },
 
     // A gate action got the agent going again: the story goes back to the step it blocked from, with
-    // its retries reset, so the marker flow and supervision pick it up. Only a blocked story that
-    // knows where it came from moves; anything else is left alone.
+    // its retries reset, so the marker flow and supervision pick it up. A CI block gets a fresh fix
+    // budget, and a step block's marker goes back to running so reconcile doesn't block it again.
+    // Only a blocked story that knows where it came from moves; anything else is left alone.
     reopen(input: StoryRef): Promise<void> {
       return serial(async () => {
         const story = findStory(input);
         if (story?.meta.status !== "blocked" || !story.meta.blocked_from) return;
+        const kind = story.meta.block_kind;
+        if (kind === "step" && story.meta.step && story.meta.worktree) {
+          const state = readText(stateFile(story.meta.worktree));
+          if (state) writeFileSync(stateFile(story.meta.worktree), writeMarker(state, `${story.meta.step}-running`), "utf8");
+        }
         writeFrontmatter(story.path, {
           status: story.meta.blocked_from,
           blocked_reason: null,
           blocked_from: null,
+          block_kind: null,
+          waiting_on: null,
           stalled: null,
+          paused_until: null,
           retries: null,
+          ...STUCK_CLEAR,
+          ...(kind === "ci" ? { fix_attempts: null, fixed_sha: null } : {}),
         });
       });
     },
 
-    onTurnEnded(api: PaseoApi, event: { agent: PluginHookAgent; outcome: PluginTurnOutcome }) {
+    // Retry on a blocked step whose session ended or is gone: the step starts again in a fresh session,
+    // same step, round and cycle, as supervise does for a dead session. startStep clears the block.
+    // Anything but a blocked agent step is refused and left alone; startStep's own error comes back as is.
+    retryStep(api: PaseoApi, input: StoryRef): Promise<{ ok: boolean; error: string | null; agentId: string | null }> {
+      paseo = api;
+      return serial(async () => {
+        const found = locateStory(input);
+        if (!found) return { ok: false, error: `${input.storyId} isn't on that board.`, agentId: null };
+        const { init, phaseDir, story } = found;
+        const { meta } = story;
+        if (meta.status !== "blocked") return { ok: false, error: `${story.id} isn't blocked.`, agentId: null };
+        const step = meta.step as LoopStep | undefined;
+        if (!step || !SUPERVISED_STEPS.has(step)) {
+          return { ok: false, error: `${story.id} has no step to start again.`, agentId: null };
+        }
+        try {
+          const state = meta.worktree ? readText(stateFile(meta.worktree)) : "";
+          const cycle = meta.cycle ? readCycles(state).find((item) => String(item.number) === meta.cycle) : undefined;
+          const cycles = meta.cycles === "subagents" ? readCycles(state).filter((item) => !item.done) : undefined;
+          const agentId = await startStep(api, await readConfig(), init, phaseDir, story, step, Number(meta.round) || 1, {
+            cycle,
+            cycles,
+            retry: new Date().toISOString(),
+          });
+          if (!agentId) return { ok: false, error: `${story.id}'s ${STEP_LABELS[step]} is already starting.`, agentId: null };
+          return { ok: true, error: null, agentId };
+        } catch (cause) {
+          return { ok: false, error: cause instanceof Error ? cause.message : String(cause), agentId: null };
+        }
+      });
+    },
+
+    // The story's PR number while that PR is closed, so Retry doesn't reopen a PR block that would
+    // block again; null when it's open, merged, unknown or there is none. gh runs outside the chain.
+    async closedPr(input: StoryRef): Promise<number | null> {
+      const found = await serial(async () => locateStory(input));
+      const target = found ? found.story.meta.pr || found.story.meta.branch : "";
+      if (!found || !target) return null;
+      const pr = await prStatus(found.init.root, target);
+      return pr?.state === "closed" ? pr.number : null;
+    },
+
+    onTurnEnded(api: PaseoApi, event: { agent: PluginHookAgent; outcome: PluginTurnOutcome; timeline?: readonly unknown[] }) {
       paseo = api;
       // You stopped it: the loop leaves it to you.
       if (event.outcome.kind === "canceled") return Promise.resolve();
@@ -777,10 +912,17 @@ export function createInitiativeLoop(
         if (labels["loop-step"] !== story.meta.step) return;
         if ((labels["loop-cycle"] ?? "") !== (story.meta.cycle ?? "")) return;
         if ((labels["loop-cycles"] ?? "") !== (story.meta.cycles ?? "")) return;
-        // A failed turn is retried by the tick, which gives a rate limit or outage time to clear.
+        // A failed turn is retried by the tick, which gives a rate limit or outage time to clear. One
+        // that hit the plan's usage limit waits for the reset instead, and isn't a retry.
         if (outcome.kind === "failed") {
           if (story.meta.agent === event.agent.id && SUPERVISED.has(story.meta.status ?? "")) {
-            writeFrontmatter(story.path, { stalled: `Its last turn failed: ${outcome.error.message}` });
+            const resumeAt = usageLimitResumeAt(outcome.error.message, new Date());
+            writeFrontmatter(
+              story.path,
+              resumeAt
+                ? { paused_until: resumeAt.toISOString(), stalled: null }
+                : { stalled: `Its last turn failed: ${outcome.error.message}` },
+            );
           }
           return;
         }
@@ -794,7 +936,44 @@ export function createInitiativeLoop(
           SUPERVISED_STEPS.has(after.meta.step ?? "") &&
           readMarker(readText(stateFile(after.meta.worktree))).marker === `${after.meta.step}-running`
         ) {
-          writeFrontmatter(after.path, { stalled: "It ended its turn without writing the step's marker." });
+          // This turn's items are those after the last user message.
+          const items = (event.timeline ?? []) as readonly ToolItem[];
+          const lastUser = items.map((item) => item.type).lastIndexOf("user_message");
+          let failTests: string[] = [];
+          try {
+            const parsed: unknown = JSON.parse(after.meta.fail_tests || "[]");
+            if (Array.isArray(parsed)) failTests = parsed.filter((name): name is string => typeof name === "string");
+          } catch {
+            // an unreadable list restarts the streak
+          }
+          const carried: StuckCounters = {
+            idle_turns: Number(after.meta.idle_turns) || 0,
+            fail_tests: failTests,
+            fail_runs: Number(after.meta.fail_runs) || 0,
+          };
+          const config = await readConfig();
+          const { counters, evidence } = stuckCheck(carried, items.slice(lastUser + 1), {
+            step: after.meta.step ?? null,
+            subagents: after.meta.cycles === "subagents",
+            stuckTurns: config.stuckTurns,
+          });
+          const progressed = !evidence && after.meta.stuck_nudged;
+          writeFrontmatter(after.path, {
+            idle_turns: counters.idle_turns || null,
+            fail_tests: counters.fail_tests.length ? JSON.stringify(counters.fail_tests) : null,
+            fail_runs: counters.fail_runs || null,
+            ...(progressed ? { stuck_nudged: null } : {}),
+          });
+          if (evidence && after.meta.stuck_nudged) {
+            block(after, `stuck: ${evidence}`, "stuck");
+          } else if (evidence) {
+            const why = `You look stuck: ${evidence}.`;
+            // Unsent, the session would sit idle with nothing for the tick to act on: stall it instead.
+            const sent = await api.agents.ref(event.agent.id).send(nudgePrompt(why)).then(() => true, () => false);
+            writeFrontmatter(after.path, sent ? { stuck_nudged: 1 } : { stalled: why });
+          } else {
+            writeFrontmatter(after.path, { stalled: "It ended its turn without writing the step's marker." });
+          }
         }
         await advance(api, await readConfig(), init);
       });
@@ -807,7 +986,7 @@ export function createInitiativeLoop(
       return serial(async () => {
         const found = labelledStory((await api.agents.ref(event.agent.id).refresh())?.agent.labels ?? {});
         if (!found || found.story.meta.agent !== event.agent.id || !SUPERVISED.has(found.story.meta.status ?? "")) return;
-        block(found.story, `Waiting on permission: ${event.request.title || event.request.name}. Answer it in the session.`);
+        block(found.story, `Waiting on permission: ${event.request.title || event.request.name}. Answer it in the session.`, undefined, false);
         writeFrontmatter(found.story.path, { waiting_on: PERMISSION });
       });
     },

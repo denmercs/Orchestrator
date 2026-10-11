@@ -17,6 +17,8 @@ export { LOOP_STEPS, STEP_LABELS, type LoopStep };
 // The marker each step writes as the first line under `## Status` in .harness/state.md.
 export const MARKERS = {
   planDone: "plan-done",
+  diagnoseDone: "diagnose-done",
+  diagnoseBlocked: "diagnose-blocked",
   implementDone: "implement-done",
   implementBlocked: "implement-blocked",
   reviewDone: "review-done",
@@ -30,6 +32,8 @@ export type StoryContext = {
   title: string;
   // Story file text for initiative stories; empty for Jira tickets, which the agent reads itself.
   body: string;
+  // The Jira key and link: a Jira ticket's own, or the bug a Diagnose story fixes.
+  ticketKey: string | null;
   ticketUrl: string | null;
   // Initiative stories only.
   storyFile: string | null;
@@ -58,6 +62,8 @@ export type StepExtra = {
   skills?: StepSkill[];
   // Existing-path entries in `## Plan` that aren't in the worktree.
   missing?: string[];
+  // Review: memory brief lines, shown as `## Memory brief`. Absent or empty leaves the prompt unchanged.
+  brief?: string[];
 };
 
 export type StepSkill = { name: string; path?: string };
@@ -220,32 +226,43 @@ const REVIEW_CHECKS = `Check:
 - The full test suite, lint and build pass (run them; keep only the summary and any failures).`;
 
 // The plugin reads the checklist, not the marker, to decide between a fix round and the PR (afterReview).
-const REVIEW_END = `Write \`## Preview\`: one line per app route or screen the story changes, "- <route> — what to look at", or
+const REVIEW_END = `After fixing, run the full test suite, lint and build again.
+Write \`## Preview\`: one line per app route or screen the story changes, "- <route> — what to look at", or
 \`none — <why>\` when nothing is visible.
 Write .harness/pr-body.md: a short Purpose, the Changes Made as bullets, and how it was tested.
-When the review is written, set \`## Status\` to \`${MARKERS.reviewDone}\`. The plugin reads the checklist: any
-unticked line goes to a fresh agent to fix, and when none is left the plugin opens the PR.`;
+When the review is written, set \`## Status\` to \`${MARKERS.reviewDone}\`. If you changed code, put a commit subject
+for your fixes on the next line: plain words, imperative mood, under 72 characters, no story id. The plugin reads
+the checklist: any unticked line goes to a fresh agent to fix, and when none is left the plugin commits and opens
+the PR.`;
 
-const REVIEW = `## This step: review the change as a fresh critic
+// Review fixes what it finds (blocking and non-blocking alike) and ticks it; it leaves unticked only what needs a
+// human decision or work outside the story.
+const REVIEW_FIX = `Then fix every finding you can, blocking and non-blocking alike, inside the story's scope. A behaviour fix gets a
+test that fails before it; add one line per fix to \`## Evidence\`. Tick each line you fixed (\`- [x]\`). Leave a
+finding unticked when fixing it needs a human decision or work outside the story.`;
+
+const REVIEW = `## This step: review the change as a fresh critic, then fix what you find
 Review the diff against the base branch named under \`## Where it sits\` (\`git diff <base>...HEAD\`): check it
-against the story, its acceptance, \`## Plan\` and \`## Cycles\`. Do not fix anything.
+against the story, its acceptance, \`## Plan\` and \`## Cycles\`. Finish the whole review before you fix anything.
 ${REVIEW_CHECKS}
 Replace what is under \`## Review findings\` with one checklist line per problem, keeping "follow-up:" lines:
 - \`- [ ] blocking: file:line — what is wrong — what would fix it\` when it is wrong: an acceptance check not met,
   a bug, a security gap, a failing test, lint or build.
 - \`- [ ] non-blocking: file:line — what could be better — how\` when it works but should improve: naming,
   readability, a missing edge-case test, a repo convention.
+${REVIEW_FIX}
 ${REVIEW_END}`;
 
-const REREVIEW = `## This step: re-review the change after the fixes
-\`## Review findings\` holds the last review's checklist; the fix agent ticked each line it fixed. Do not fix
-anything.
+const REREVIEW = `## This step: re-review the change after the fixes, then fix what you find
+\`## Review findings\` holds the last review's checklist; the fix agent ticked each line it fixed. Finish the whole
+re-review before you fix anything.
 1. For each ticked line, check the fix in the diff against the base branch named under \`## Where it sits\`
    (\`git diff <base>...HEAD\`). If it isn't fixed, untick it and say why at the end of the line. A
    "won't fix" line you disagree with is unticked too.
 2. Review the whole diff again. Add only new \`blocking:\` lines (\`- [ ] blocking: file:line — what is wrong — what
    would fix it\`): something the fixes broke, or a real defect missed before. Do not add new non-blocking lines.
 ${REVIEW_CHECKS}
+${REVIEW_FIX}
 ${REVIEW_END}`;
 
 function planData(plan: string | undefined) {
@@ -291,6 +308,20 @@ const STEPS: Record<LoopStep, (extra: StepExtra, jira: boolean) => string> = {
 6. Summarise the plan and the open decisions for the human, then ask them to approve it. Answer questions and
    rewrite the plan as they push back.
 7. Only when they explicitly approve, set \`## Status\` to \`${MARKERS.planDone}\`. Waiting for them is expected.`,
+
+  diagnose: () => `## This step: diagnose the bug, then plan the fix
+The bug's Jira ticket is under \`## Bug\` below the story head.
+1. Read the ticket and the code it touches. Reproduce the bug: a failing test where you can, else exact steps.
+2. Then find the cause. Note what you ruled out on the way.
+3. Write \`## Plan\` in ${STATE}: the cause and the fix in a few lines, then the same labelled lines a plan has
+   (\`**Files:**\`, \`**Calls:**\`, \`**Commands:**\`, \`**Out of scope:**\`), then how the fix will be checked.
+4. Write \`## Cycles\` as test-first checklist lines,
+   \`- [ ] Cycle N — <name>: <failing test to write> → <smallest change that passes it>\`, each with its command.
+   The first cycle is a failing regression test that reproduces the bug.
+5. Do not write production code or tests.
+6. When both are written, set \`## Status\` to \`${MARKERS.diagnoseDone}\` without waiting for approval; Implement starts from your plan.
+If you cannot reproduce the bug or find its cause, set it to \`${MARKERS.diagnoseBlocked}\` and put the reason on
+the next line.`,
 
   implement: ({ round, cycle, cycles }) => {
     if (cycle) {
@@ -342,10 +373,13 @@ on the line after \`${MARKERS.fixDone}\`.`,
 
 // Story-specific data a step needs, placed after the head so it does not break the shared prefix.
 const STEP_DATA: Partial<Record<LoopStep, (story: StoryContext, extra: StepExtra) => string>> = {
+  diagnose: (story) => `## Bug
+${[story.ticketKey, story.ticketUrl].filter(Boolean).join(" — ") || "(no ticket; the story body describes the bug)"}`,
   implement: (_story, { round, cycle, cycles, plan }) => {
     if (cycle) return cycleData(cycle, plan);
     return cycles?.length && round === 1 ? cyclesData(cycles, plan) : "";
   },
+  review: (_story, { brief }) => (brief?.length ? `## Memory brief\n${brief.map((l) => `- ${l}`).join("\n")}` : ""),
   fix: (_story, { failing }) => `## Failing checks
 ${failing ?? "(see the PR's checks)"}`,
   pr: (story) => `## PR commands

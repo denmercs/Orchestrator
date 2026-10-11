@@ -36,7 +36,7 @@ import { closeIssue } from "./jira";
 import { withMcpScope } from "./mcp-scope";
 import { failureReport, prStatus } from "./pr-checks";
 import { installSkills } from "./skill-sources";
-import { commitStory, currentBranch, openStoryPr, pushStoryFix } from "./story-git";
+import { commitStory, currentBranch, failureText, openStoryPr, pushStoryFix } from "./story-git";
 
 type PaseoApi = PluginHandlerContext["paseo"];
 type Labels = Record<string, string>;
@@ -180,7 +180,7 @@ export async function advancePipeline(
     const after = afterReview(state, marker, round, config.reviewRounds);
     if (after.kind === "fix") await start(phase("implement"), round + 1);
     else if (after.kind === "blocked") setMarker(cwd, `review-blocked\n${after.reason}`);
-    else await openPr(cwd, ticket, after.unfixed);
+    else await openPr(cwd, ticket, commitSubject(state, "Commit remaining changes"), after.unfixed);
   } else if (phaseId === FIX_CI.id && marker === MARKERS.fixDone) {
     await finishFix(cwd, state);
   }
@@ -192,7 +192,7 @@ async function finishFix(cwd: string, state: string) {
     await pushStoryFix(cwd, commitSubject(state, "Fix failing CI checks"));
     setMarker(cwd, `${MARKERS.prDone}\n${readCi(cwd)?.url ?? ""}`);
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = failureText(error);
     setMarker(cwd, `fix-failed\n${reason}`);
     console.warn("orchestrator: unable to push the CI fix", cwd, reason);
   }
@@ -240,7 +240,7 @@ export async function watchPipelinePrs(paseo: PaseoApi, readConfig: ReadConfig, 
 }
 
 // Review passed: Done is plain code. Commit leftovers, push, open the PR, then wait for the merge.
-async function openPr(cwd: string, ticket: Ticket, unfixed: string[] = []) {
+async function openPr(cwd: string, ticket: Ticket, subject: string, unfixed: string[] = []) {
   const dedupe = `${cwd}:${ticket.key}:pr`;
   if (started.has(dedupe)) {
     return;
@@ -248,7 +248,8 @@ async function openPr(cwd: string, ticket: Ticket, unfixed: string[] = []) {
   started.add(dedupe);
   try {
     const branch = await currentBranch(cwd);
-    const pr = await openStoryPr(cwd, { id: ticket.key, title: ticket.title, jira: true, branch, base: BASE, unfixed });
+    const pr = await openStoryPr(cwd, { id: ticket.key, title: ticket.title, jira: true, branch, base: BASE, subject, unfixed });
+    if (!pr) throw new Error(`${branch} has no commits over ${BASE}; there is nothing to open a PR for.`);
     setMarker(cwd, `${MARKERS.prDone}\n${pr.url}`);
     if (readCi(cwd)?.pr !== pr.number) writeCi(cwd, { pr: pr.number, url: pr.url, fixedSha: null, attempts: 0 });
   } catch (error) {

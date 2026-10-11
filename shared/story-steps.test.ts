@@ -19,6 +19,7 @@ function story(fields: Partial<EpicStory> = {}): EpicStory {
     workspace: "",
     agent: "",
     ready: false,
+    track: "plan",
     ...fields,
   };
 }

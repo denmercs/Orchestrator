@@ -240,6 +240,7 @@ export function phaseSkills(phase: Phase) {
 // The drawer phase whose extras each loop step loads. Fix reworks code, so it uses Implement's.
 export const STEP_PHASES: Record<LoopStep, PhaseId> = {
   plan: "plan",
+  diagnose: "plan",
   implement: "implement",
   fix: "implement",
   review: "review",
@@ -258,6 +259,7 @@ export function pipelineStory(ticket: Ticket, branch = "", base = "origin/main")
     id: ticket.key,
     title: ticket.title,
     body: "",
+    ticketKey: ticket.key,
     ticketUrl: ticket.url,
     storyFile: null,
     storiesDir: null,

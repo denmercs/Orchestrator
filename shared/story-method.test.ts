@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   LOOP_STEPS,
+  MARKERS,
   afterImplement,
   afterReview,
   commitSubject,
@@ -23,6 +24,7 @@ const story: StoryContext = {
   id: "S1",
   title: "Add search",
   body: "Users can search.",
+  ticketKey: null,
   ticketUrl: null,
   storyFile: "/repo/.harness/initiatives/x/phases/1-p/stories/01-search.md",
   storiesDir: "/repo/.harness/initiatives/x/phases/1-p/stories",
@@ -359,6 +361,17 @@ test("review points at the base under Where it sits; pr carries the exact comman
   assert.ok(jira.includes('--title "KEY-1 | Add search"'), "Jira PR title");
 });
 
+test("review fixes its findings, non-blocking ones too, and leaves unticked only what it could not fix", () => {
+  for (const round of [1, 2]) {
+    const review = stepPrompt("review", story, { round });
+    assert.doesNotMatch(review, /Do not fix anything/);
+    assert.match(review, /fix every finding you can, blocking and non-blocking alike/);
+    assert.match(review, /Tick each line you fixed/);
+    assert.match(review, /Leave a\s+finding unticked when fixing it needs a human decision/);
+    assert.match(review, /commit subject/);
+  }
+});
+
 test("missing Plan paths go in the story section, after the head and before Where it sits", () => {
   const line = "These paths in ## Plan don't exist: src/a.ts, src/b.ts. Find the right ones and correct ## Plan.";
   const review = stepPrompt("review", story, { round: 1, missing: ["src/a.ts", "src/b.ts"] });
@@ -387,11 +400,29 @@ test("the Plan step asks for the brief lines, and the rules start every step fro
   }
 });
 
+test("the Diagnose step reproduces the bug, plans the fix and hands off without waiting for approval", () => {
+  const bug = { ...story, ticketKey: "BUG-7", ticketUrl: "https://x.atlassian.net/browse/BUG-7" };
+  const prompt = stepPrompt("diagnose", bug, { round: 1 });
+  assert.match(prompt, /## This step: diagnose/);
+  assert.match(prompt, /[Rr]eproduce/);
+  assert.match(prompt, /find the cause/);
+  assert.match(prompt, /`## Plan`/);
+  assert.match(prompt, /`## Cycles`/);
+  assert.match(prompt, /first cycle is a failing regression test/);
+  assert.match(prompt, /set `## Status` to `diagnose-done` without waiting for approval/);
+  assert.match(prompt, /`diagnose-blocked`/);
+  assert.match(prompt, /BUG-7/);
+  assert.ok(prompt.includes("https://x.atlassian.net/browse/BUG-7"), "names the ticket url");
+  assert.equal(MARKERS.diagnoseDone, "diagnose-done");
+  assert.equal(MARKERS.diagnoseBlocked, "diagnose-blocked");
+});
+
 test("Jira stories point at the ticket and file follow-ups as review findings", () => {
   const jira: StoryContext = {
     ...story,
     id: "KEY-1",
     body: "",
+    ticketKey: "KEY-1",
     ticketUrl: "https://example.atlassian.net/browse/KEY-1",
     storyFile: null,
     storiesDir: null,
@@ -445,4 +476,13 @@ test("parseSkills reads back what formatSkills wrote", () => {
   assert.equal(formatSkills(skills), "tdd (.agents/skills/tdd/SKILL.md), ss-security-audit, review (.claude/commands/review.md)");
   assert.deepEqual(parseSkills(formatSkills(skills)), skills);
   assert.deepEqual(parseSkills(""), []);
+});
+
+test("a memory brief adds a Memory brief block to the review step data and nothing else changes without it", () => {
+  const plain = stepPrompt("review", story, { round: 1 });
+  assert.equal(stepPrompt("review", story, { round: 1, brief: undefined }), plain);
+  assert.doesNotMatch(plain, /## Memory brief/);
+  const withBrief = stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] });
+  assert.match(withBrief, /\n## Memory brief\n- area a: x\/\*\*\n- A fact\.\n/);
+  assert.ok(withBrief.indexOf("## Memory brief") > withBrief.indexOf("Review for story S1"), "after the head");
 });

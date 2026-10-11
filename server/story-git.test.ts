@@ -26,7 +26,7 @@ if (cmd === "pr" && sub === "view") {
   "utf8",
 );
 chmodSync(process.env.GH_BIN, 0o755);
-const { commitStory, openStoryPr, uniqueBranch } = await import("./story-git");
+const { commitStory, failureText, openStoryPr, uniqueBranch } = await import("./story-git");
 
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), "story-git-"));
@@ -170,6 +170,18 @@ test("leftovers are committed as \"Commit remaining changes\" before the PR open
   }
 });
 
+test("leftovers take the given subject, such as a reviewer's fixes", async () => {
+  const { dir, git, done } = prRepo();
+  try {
+    writeFileSync(join(dir, "search.ts"), "export const x = 1;\n");
+    const input = { id: "S1", title: "Add search", jira: false, branch: "feature/s1", base: "origin/main" };
+    await openStoryPr(dir, { ...input, subject: "Guard the empty query" });
+    assert.equal(git("log", "-1", "--format=%s"), "Guard the empty query");
+  } finally {
+    done();
+  }
+});
+
 test("an already-open PR is returned as it is, without creating another", async () => {
   const { dir, created, done } = prRepo();
   try {
@@ -180,6 +192,28 @@ test("an already-open PR is returned as it is, without creating another", async 
   } finally {
     done();
   }
+});
+
+test("a branch with no commits over its base opens no PR and pushes nothing", async () => {
+  const { dir, git, created, done } = prRepo();
+  try {
+    git("push", "-q", "origin", "HEAD:refs/heads/main");
+    git("fetch", "-q", "origin");
+    assert.equal(await openStoryPr(dir, { id: "S1", title: "Add search", jira: false, branch: "feature/s1", base: "origin/main" }), null);
+    assert.deepEqual(created(), []);
+    assert.equal(git("ls-remote", "--heads", "origin", "feature/s1"), "");
+  } finally {
+    done();
+  }
+});
+
+test("failureText keeps what the command printed and drops the command line", () => {
+  const failed = Object.assign(new Error("Command failed: gh pr create --body <a long PR body>"), {
+    stderr: "pull request create failed: GraphQL: No commits between main and feature/s1\n",
+  });
+  assert.equal(failureText(failed), "pull request create failed: GraphQL: No commits between main and feature/s1");
+  assert.equal(failureText(Object.assign(new Error("timed out"), { stderr: "" })), "timed out");
+  assert.equal(failureText("plain"), "plain");
 });
 
 test("uniqueBranch adds -2, -3 when the name exists locally or on origin", async () => {

@@ -32,7 +32,7 @@ Plan ──you approve──► Implement ──► Review ──pass──► P
 
 - **Plan** waits for you. Question it, push back, or approve it.
 - **Implement** runs one fresh agent per checklist item, test-first. The plugin commits each one.
-- **Review** is a fresh critic that checks correctness, security, conventions and the full test gate. It tags each finding blocking or non-blocking. The plugin sends any open finding, of either kind, to a fresh fix agent and reviews again. At the round limit, a blocking finding stops the story. Non-blocking ones that are left go into the PR body.
+- **Review** is a fresh critic that checks correctness, security, conventions and the full test gate. It writes each finding as a checklist line tagged blocking or non-blocking, then fixes what it can (non-blocking findings too) and ticks it. The plugin sends any finding still open, of either kind, to a fresh fix agent and reviews again. At the round limit, a blocking finding stops the story. Non-blocking ones that are left go into the PR body.
 - **PR and CI** need no agent. The plugin pushes, opens the PR and polls checks every 2 minutes. A red check starts a fresh Fix CI agent, and the plugin pushes its fix. The Board's Story pipeline watches its PRs the same way.
 - After a merge the next ready story starts. When a phase is done, the loop moves on to the next phase.
 
@@ -78,7 +78,7 @@ Every session also gets a **context pill** with its size (for example `82k / 200
 - **Knowledge.** Facts about each area of the code, with file citations, written after each merge.
 - **Corrections.** Review findings that keep coming back, counted, de-duplicated and approved by you.
 
-The plugin, not the agent, picks the few lines that match a story's files and hands them over as a short brief. A no-memory holdout keeps it honest: if memory doesn't improve results, it switches itself off. See `.harness/initiatives/agent-memory/`.
+The plugin, not the agent, picks the few lines that match a story's files and hands them over as a short brief. A no-memory holdout keeps it honest: if memory doesn't improve results, it switches itself off. See [docs/telemetry/agent-memory/README.md](docs/telemetry/agent-memory/README.md) for the plan, decisions and status.
 
 Also planned: Kiro and Cursor as first-class providers.
 

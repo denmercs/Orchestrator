@@ -19,7 +19,7 @@ import {
   type HarnessTracker,
 } from "../shared/orchestration";
 import { contextSessionsRpc, type ContextStatus } from "../shared/context";
-import { needsYou } from "../shared/gates";
+import { gateAct, needsYou } from "../shared/gates";
 import { initiativeStatus, stepBar, type InitiativeBadge, type Segment as StepSegment } from "../shared/story-steps";
 import { harnessSettings } from "../shared/settings";
 import { startInitiativeLoop, stopInitiativeLoop } from "../shared/initiative-loop";
@@ -477,13 +477,14 @@ function Legend({ theme, styles, compact }: { theme: Theme; styles: Styles; comp
   );
 }
 
-// A story's five-segment step bar (Plan, Implement, Review, PR, CI watch).
+// A story's five-segment step bar (Plan or Diagnose, Implement, Review, PR, CI watch).
 function StepBarView({ story, stories, theme, styles }: { story: EpicStory; stories: EpicStory[]; theme: Theme; styles: Styles }) {
+  const bar = stepBar(story, story.track, stories);
   return (
-    <View style={styles.barRow} accessibilityLabel="Phases: Plan · Implement · Review · PR · CI watch">
+    <View style={styles.barRow} accessibilityLabel={`Phases: ${bar.labels.join(" · ")}`}>
       <Text style={styles.barGlyph}>▸</Text>
       <View style={styles.segments}>
-        {stepBar(story, "plan", stories).segments.map((seg, i) => (
+        {bar.segments.map((seg, i) => (
           <View key={i} style={[styles.segment4, SEGMENT_STYLES[seg](theme)]} />
         ))}
       </View>
@@ -518,6 +519,8 @@ export function StoryDrawer({ epic, theme, compact, navigation }: ViewProps) {
     <StoryDrawerView
       story={story}
       state={open.board.state}
+      board={boardKey(board)}
+      onChanged={() => void epic.refresh()}
       theme={theme}
       styles={styles}
       onClose={() => (compact ? epic.select(board, null) : epic.showDetails(false))}
@@ -755,7 +758,7 @@ function InitiativePanel({
   const card = (item: EpicStory, at: { x: number; y: number } | undefined) => {
     const kind = nodeKind(item);
     const tone = kindTone(kind, theme);
-    const bar = stepBar(item, "plan", stories);
+    const bar = stepBar(item, item.track, stories);
     const ctx = item.agent ? nodeContext(context.get(item.agent) ?? null) : null;
     const isSelected = item.id === selected;
     return (
@@ -815,7 +818,7 @@ function InitiativePanel({
 
   const row = (item: EpicStory, index: number) => {
     const tone = toneOf(item.status, theme);
-    const bar = stepBar(item, "plan", stories);
+    const bar = stepBar(item, item.track, stories);
     return (
       <Pressable
         key={item.id}
@@ -1038,6 +1041,8 @@ function InitiativePanel({
 function StoryDrawerView({
   story,
   state,
+  board,
+  onChanged,
   theme,
   styles,
   onClose,
@@ -1046,6 +1051,9 @@ function StoryDrawerView({
 }: {
   story: EpicStory;
   state: EpicBoardState;
+  // The board key (boardKey), for gate actions.
+  board: string;
+  onChanged(): void;
   theme: Theme;
   styles: Styles;
   onClose(): void;
@@ -1055,6 +1063,26 @@ function StoryDrawerView({
   const tone = toneOf(story.status, theme);
   const neededBy = state.stories.filter((item) => item.dependsOn.includes(story.id));
   const prUrl = story.pr && state.repoUrl ? `${state.repoUrl}/pull/${story.pr}` : "";
+  const gate = useRpc(gateAct);
+  const toast = useToast();
+  const [retrying, setRetrying] = useState(false);
+  const blocked = story.status === "blocked";
+
+  // Retry a blocked story (see CONTEXT.md, "Gate action"), then re-read the boards.
+  async function retry() {
+    if (retrying) return;
+    setRetrying(true);
+    try {
+      const result = await gate({ board, storyId: story.id, action: "retry" });
+      if (!result.ok) toast.error(result.error ?? "Could not retry.");
+      else toast.show(`Retrying ${story.id}.`, { variant: "success" });
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : "Could not retry.");
+    } finally {
+      setRetrying(false);
+      onChanged();
+    }
+  }
 
   return (
     <View style={styles.overlay}>
@@ -1075,8 +1103,11 @@ function StoryDrawerView({
           {story.status === "awaiting-approval" ? (
             <Text style={styles.muted}>The plan is ready. Open its session to ask questions, push back, or approve it.</Text>
           ) : null}
-          {prUrl || (navigation && (story.agent || story.workspace)) ? (
+          {blocked || prUrl || (navigation && (story.agent || story.workspace)) ? (
             <View style={styles.actions}>
+              {blocked ? (
+                <Button label={retrying ? "Retrying…" : "Retry"} disabled={retrying} styles={styles} onPress={() => void retry()} />
+              ) : null}
               {navigation && story.agent && story.status !== "merged" ? (
                 <Button label="Open session" primary styles={styles} onPress={() => navigation.openAgent({ agentId: story.agent })} />
               ) : null}

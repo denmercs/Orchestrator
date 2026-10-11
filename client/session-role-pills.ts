@@ -2,6 +2,7 @@ import type { PluginButton, PluginButtonRegistration, PluginClientContext } from
 import { contextAct, contextSessionsRpc, type ContextAction, type ContextStatus } from "../shared/context";
 import { createContextPillIcon } from "./context-pill-icon";
 import { createRequestSequence, createToastQueue, pillMenu, pillView, usageChanged } from "./context-pill-model";
+import { RECAP_COMMAND, recapPill } from "./recap-pill-model";
 
 // Paseo stamps spawned sessions with this label; the protocol package does not export it.
 const PARENT_LABEL = "paseo.parent-agent-id";
@@ -92,8 +93,8 @@ function reconcile(
   }
 }
 
-// Two pills share one agent subscription: the role pill (harness/worker) and the context pill
-// (see CONTEXT.md, "Context pill").
+// Three pills share one agent subscription: the role pill (harness/worker), the context pill
+// (see CONTEXT.md, "Context pill") and the recap pill.
 export function contributeSessionRolePills(client: PluginClientContext) {
   // Composer pills arrived after this plugin's minimum Paseo version; skip on older apps.
   if (typeof client.addComposerPill !== "function") {
@@ -103,6 +104,7 @@ export function contributeSessionRolePills(client: PluginClientContext) {
   const agents = new Map<string, Agent>();
   const rolePills = new Map<string, Pill>();
   const contextPills = new Map<string, Pill>();
+  const recapPills = new Map<string, Pill>();
   const statuses = new Map<string, ContextStatus | null>();
   const toasts = createToastQueue();
   const requests = createRequestSequence();
@@ -188,6 +190,22 @@ export function contributeSessionRolePills(client: PluginClientContext) {
     };
   }
 
+  function recap(agentId: string) {
+    void client.paseo.agents
+      .ref(agentId)
+      .send(RECAP_COMMAND)
+      .catch((cause: unknown) => {
+        toasts.fail(agentId, cause instanceof Error ? cause.message : String(cause));
+        changed();
+      });
+  }
+
+  function recapButton(agent: Agent): PluginButton | null {
+    const view = recapPill(agent);
+    if (!view) return null;
+    return { ...view, icon: "History", behavior: { kind: "action", onPress: () => recap(agent.id) } };
+  }
+
   function sync() {
     const live = [...agents.values()].filter(isLive);
     const childCounts = new Map<string, number>();
@@ -200,6 +218,7 @@ export function contributeSessionRolePills(client: PluginClientContext) {
 
     const roleButtons = new Map<string, { workspaceId: string; button: PluginButton }>();
     const contextButtons = new Map<string, { workspaceId: string; button: PluginButton }>();
+    const recapButtons = new Map<string, { workspaceId: string; button: PluginButton }>();
     for (const agent of live) {
       if (!agent.workspaceId) {
         continue;
@@ -209,9 +228,14 @@ export function contributeSessionRolePills(client: PluginClientContext) {
         roleButtons.set(agent.id, { workspaceId: agent.workspaceId, button });
       }
       contextButtons.set(agent.id, { workspaceId: agent.workspaceId, button: contextButton(agent) });
+      const recapPillButton = recapButton(agent);
+      if (recapPillButton) {
+        recapButtons.set(agent.id, { workspaceId: agent.workspaceId, button: recapPillButton });
+      }
     }
     reconcile(client, "session-role", rolePills, roleButtons);
     reconcile(client, "session-context", contextPills, contextButtons);
+    reconcile(client, "session-recap", recapPills, recapButtons);
   }
 
   function replace(entries: AgentList["entries"]) {
@@ -258,11 +282,12 @@ export function contributeSessionRolePills(client: PluginClientContext) {
     stopped = true;
     clearTimeout(fetchTimer);
     void subscription?.release();
-    for (const pill of [...rolePills.values(), ...contextPills.values()]) {
+    for (const pill of [...rolePills.values(), ...contextPills.values(), ...recapPills.values()]) {
       pill.registration.remove();
     }
     rolePills.clear();
     contextPills.clear();
+    recapPills.clear();
     listeners.clear();
   };
 }

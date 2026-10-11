@@ -35,6 +35,13 @@ test("budget settings are host-scoped at version 1", () => {
   assert.equal(budgetSettings.version, 1);
 });
 
-test("budget settings default to a $25 day and a $5 story cap", () => {
+test("budget settings default to a $25 daily budget and a $5 story cap", () => {
   assert.deepEqual(budgetSettings.schema.parse({}), { dailyBudgetUsd: 25, storyCapUsd: 5 });
+});
+
+test("budget settings keep given values", () => {
+  assert.deepEqual(budgetSettings.schema.parse({ dailyBudgetUsd: 40, storyCapUsd: 7.5 }), {
+    dailyBudgetUsd: 40,
+    storyCapUsd: 7.5,
+  });
 });

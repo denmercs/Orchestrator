@@ -55,19 +55,37 @@ export async function pushStoryFix(cwd: string, message: string) {
   return committed;
 }
 
+// What a failed git or gh call said, without the command line: execFile's message repeats every
+// argument, PR body included. Falls back to the message when the command printed nothing.
+export function failureText(error: unknown) {
+  const stderr = (error as { stderr?: unknown } | null)?.stderr;
+  if (typeof stderr === "string" && stderr.trim()) return stderr.trim();
+  return error instanceof Error ? error.message : String(error);
+}
+
 export type OpenedPr = { number: number; url: string };
 
-// Commits leftovers, pushes the branch and opens the PR (or keeps the one already open). `unfixed` is
-// the non-blocking review findings still open after the last review round; the body lists them.
+// How many commits HEAD has that `base` doesn't; null when `base` doesn't resolve here.
+async function commitsAhead(cwd: string, base: string) {
+  return git(cwd, ["rev-list", "--count", `${base}..HEAD`]).then(Number, () => null);
+}
+
+// Commits leftovers (under `subject` when given), pushes the branch and opens the PR (or keeps the one
+// already open). Returns null, without pushing, when the branch has no commits over its base: the work was
+// already there, and gh refuses a PR with no commits. `unfixed` is the non-blocking review findings still
+// open after the last review round; the body lists them.
 export async function openStoryPr(
   cwd: string,
-  input: { id: string; title: string; jira: boolean; branch: string; base: string; unfixed?: string[] },
-): Promise<OpenedPr> {
+  input: { id: string; title: string; jira: boolean; branch: string; base: string; subject?: string; unfixed?: string[] },
+): Promise<OpenedPr | null> {
   const base = input.base.replace(/^origin\//, "");
   if (!input.branch || input.branch === "HEAD" || input.branch === base) {
     throw new Error(`Refusing to open a PR from "${input.branch || "no branch"}".`);
   }
-  await commitStory(cwd, "Commit remaining changes");
+  await commitStory(cwd, input.subject ?? "Commit remaining changes");
+  if ((await commitsAhead(cwd, input.base)) === 0) {
+    return null;
+  }
   await git(cwd, ["push", "-u", "origin", input.branch], 120_000);
   const existing = await prForBranch(cwd, input.branch);
   if (existing) {

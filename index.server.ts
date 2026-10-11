@@ -9,6 +9,7 @@ import {
   loadJiraBoard,
   loadJiraPullRequests,
   moveIssueToColumn,
+  readIssueStatuses,
 } from "./server/jira";
 import { deleteInitiative, loadHarnessBoards } from "./server/harness-board";
 import { loadRunnerConfig, loadStepConfig } from "./server/agent-runner";
@@ -19,14 +20,23 @@ import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { advancePipeline, closeMergedStories, startStory, watchPipelinePrs } from "./server/pipeline-advance";
 import { createLoopAdvance } from "./server/loop-advance";
 import { createInitiativeLoop } from "./server/initiative-loop";
+import { startTicket } from "./server/ticket-start";
 import { readBranchInitials } from "./server/git-identity";
 import { getBranchInitials } from "./shared/naming";
 import { createContextWatch, paseoPort } from "./server/context-watch";
 import { createGateActions, loopGatePort } from "./server/gate-actions";
+import { createVoiceResume } from "./server/voice-resume";
 import { gateAct } from "./shared/gates";
 import { readTelemetry, summariseTelemetry } from "./server/context-telemetry";
 import { loadStoryContext } from "./server/story-context";
-import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, storyContextRpc } from "./shared/context";
+import { kiroUsageSource } from "./server/kiro-usage";
+import { readPlanUsage } from "./server/plan-usage";
+import { planUsageRpc } from "./shared/plan-usage";
+import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay";
+import { readCorpus, readCostCap, realReplayPorts, REPLAY_RUN } from "./server/replay-start";
+import { startMemoryReplay } from "./shared/replay-rpc";
+import { join } from "node:path";
+import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
   initiativeLoopSettings,
@@ -44,6 +54,7 @@ import { listParents, listSchedules } from "./server/orchestration";
 import { listFolders, listStandupTodos, saveStandupTodos, upsertStandupNote } from "./server/standup";
 import {
   createHarnessEpicRpc,
+  startTicketRpc,
   deleteEpicInitiative,
   detectOrchestrationObsidian,
   getDailyVerse,
@@ -92,7 +103,12 @@ import {
   startPipelineStory,
 } from "./shared/pipeline";
 
-export default function contribute(server: PluginServerContext) {
+type ReplayRunner = ReturnType<typeof createMemoryReplay>;
+
+// `deps.replay` lets tests stand in for the memory replay runner.
+export default function contribute(server: PluginServerContext, deps: { replay?: ReplayRunner } = {}) {
+  // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
+  server.registerUsageSource?.(kiroUsageSource());
   server.registerSettings(standupSettings);
   server.registerSettings(dashboardSettings);
   server.registerSettings(budgetSettings);
@@ -162,6 +178,12 @@ export default function contribute(server: PluginServerContext) {
   );
   server.handle(startInitiativeLoop, (input, { paseo }) => initiativeLoop.start(paseo, input));
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
+  server.handle(startTicketRpc, (input, { paseo }) =>
+    startTicket(input, {
+      readIssue: async (key) => (await readIssueStatuses([key])).get(key),
+      startLoop: (loop) => initiativeLoop.start(paseo, loop),
+    }),
+  );
   server.handle(openPhasePlanRpc, openPhasePlan);
   server.handle(refreshPhasePlanRpc, refreshPhasePlan);
   server.handle(registerMcpScopeRpc, (input) => {
@@ -170,11 +192,48 @@ export default function contribute(server: PluginServerContext) {
   });
   const context = server.registerSettings(contextSettings);
   let contextPaseo: Parameters<typeof loadRunnerConfig>[0] | null = null;
-  const readThresholds = async () => {
+  let replayPaseo: Parameters<typeof loadRunnerConfig>[0] | null = null;
+  const memoryReplay =
+    deps.replay ??
+    createMemoryReplay(
+      realReplayPorts(
+        () => replayPaseo,
+        async (paseo) =>
+          // The replayed Review runs on the loop's Review profile.
+          loadStepConfig(
+            paseo,
+            await loopSettings.read().then((state) => (state.status === "ready" ? state.values : DEFAULT_LOOP_CONFIG)),
+            "review",
+            await readRunnerProfileId(),
+          ),
+      ),
+    );
+  let replaying = false;
+  server.handle(startMemoryReplay, async (input, { paseo }) => {
+    replayPaseo = paseo;
+    contextPaseo = paseo;
+    if (replaying || memoryReplay.pendingAgents().length > 0) throw new Error("A memory replay is already running.");
+    const corpus = readCorpus(input.root, input.controls);
+    const costCap = input.costCap ?? readCostCap(input.root) ?? DEFAULT_COST_CAP_USD;
+    const runDir = join(input.root, ".harness", "replay", REPLAY_RUN);
+    replaying = true;
+    void memoryReplay
+      .replay(corpus, { run: REPLAY_RUN, root: input.root, runDir, costCap })
+      .catch((error) => console.warn("orchestrator: memory replay failed", error))
+      .finally(() => {
+        replaying = false;
+      });
+    return { run: REPLAY_RUN, rounds: corpus.length, costCap, runDir };
+  });
+  const readPolicy = async () => {
     const state = await context.read();
-    return state.status === "ready" ? state.values : { amber: 100_000, red: 150_000 };
+    return state.status === "ready" ? state.values : DEFAULT_CONTEXT_CONFIG;
   };
-  const contextWatch = createContextWatch(paseoPort(() => contextPaseo, readThresholds, initiativeLoop));
+  const readAutoCompact = async () => {
+    const state = await context.read();
+    return state.status === "ready" ? state.values.autoCompact : true;
+  };
+  const contextWatch = createContextWatch(paseoPort(() => contextPaseo, readPolicy, readAutoCompact, initiativeLoop));
   server.handle(contextAct, (input, { paseo }) => {
     contextPaseo = paseo;
     return contextWatch.act(input);
@@ -189,12 +248,13 @@ export default function contribute(server: PluginServerContext) {
     return contextWatch.sessions(agentIds);
   });
   server.handle(contextSummaryRpc, ({ since, today }) => summariseTelemetry(since, undefined, today));
+  server.handle(planUsageRpc, (_input, { paseo }) => readPlanUsage(paseo));
   server.handle(storyContextRpc, (input, { paseo }) => {
     contextPaseo = paseo;
     return loadStoryContext(input, {
       live: (agentId) => contextWatch.live(agentId),
       rows: () => readTelemetry(),
-      thresholds: readThresholds,
+      policy: readPolicy,
     });
   });
   const readPipeline = async () => {
@@ -290,7 +350,34 @@ export default function contribute(server: PluginServerContext) {
   });
   // The Story pipeline's CI watch runs on the tick, with the handle the last event gave.
   let pipelinePaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
+  // Set on every turn event: the resume fires later, from a timer, after the event has gone.
+  let voicePaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
+  const voiceResume = createVoiceResume({
+    send: async (agentId, text) => {
+      if (voicePaseo) await voicePaseo.agents.ref(agentId).send(text);
+    },
+  });
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
+    voicePaseo = paseo;
+    voiceResume.onTurnEnded(event);
+    // A memory replay's agent is the runner's business only: the telemetry row first, then its result row.
+    if (memoryReplay.pendingAgents().includes(event.agent.id)) {
+      replayPaseo = paseo;
+      contextPaseo = paseo;
+      void contextWatch
+        .onTurnEnded(event)
+        .catch((error) => console.warn("orchestrator: context watch failed", error))
+        .then(() =>
+          event.outcome.kind === "completed"
+            ? memoryReplay.onTurnEnded({ agentId: event.agent.id })
+            : memoryReplay.onAgentFailed({
+                agentId: event.agent.id,
+                error: event.outcome.kind === "failed" ? event.outcome.error.message : `canceled: ${event.outcome.reason}`,
+              }),
+        )
+        .catch((error) => console.warn("orchestrator: memory replay failed", error));
+      return;
+    }
     loop.rememberPaseo(paseo);
     pipelinePaseo = paseo;
     void loop.onTurnEnded(event);
@@ -316,7 +403,10 @@ export default function contribute(server: PluginServerContext) {
   const offSessionOpen = server.before("agent.session_open", (_input, { paseo }) => {
     arm(paseo);
   });
-  const offTurnStarted = server.on("agent.turn_started", (_event, { paseo }) => arm(paseo));
+  const offTurnStarted = server.on("agent.turn_started", (event, { paseo }) => {
+    arm(paseo);
+    voiceResume.onTurnStarted(event.agent.id);
+  });
   const offAgentCreated = server.on("agent.created", (_event, { paseo }) => arm(paseo));
   const offPermissionRequested = server.on("agent.permission_requested", (event, { paseo }) => {
     arm(paseo);
@@ -353,5 +443,6 @@ export default function contribute(server: PluginServerContext) {
     offPermissionRequested();
     offPermissionResolved();
     clearInterval(timer);
+    voiceResume.stop();
   };
 }

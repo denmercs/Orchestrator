@@ -412,6 +412,8 @@ export const epicStory = z.object({
   agent: z.string(),
   // todo, every dependency merged, and not blocked.
   ready: z.boolean(),
+  // From frontmatter `track:`; anything but "diagnose" is "plan". Names the step bar's first label.
+  track: z.enum(["plan", "diagnose"]),
 });
 
 // A phase is stored by number (phases/<n>-<name>); people read it as "Phase <n>".
@@ -508,6 +510,20 @@ export const createHarnessEpicRpc = defineRpc({
     epic: z.string().nullable(),
     agentId: z.string().nullable(),
     warning: z.string().nullable(),
+  }),
+});
+
+// Writes a one-story initiative for a Jira key in `repo` (reusing one already there) and starts
+// its loop. `track` is "diagnose" for a Bug, else "plan".
+export const startTicketRpc = defineRpc({
+  name: "orchestration.start-ticket",
+  input: z.object({ repo: z.string(), key: z.string() }),
+  output: z.object({
+    ok: z.boolean(),
+    error: z.string().nullable(),
+    initiative: z.string().nullable(),
+    track: z.enum(["plan", "diagnose"]).nullable(),
+    agentId: z.string().nullable(),
   }),
 });
 

@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FreshPort } from "./compactor";
+import type { ContextAction, ContextConfig } from "../shared/context";
 import type { TelemetryRow } from "./context-telemetry";
 import { createContextWatch, type TurnEnded, type WatchAgent, type WatchPort } from "./context-watch";
 
 type Item = TurnEnded["timeline"][number];
 
 // A fake port: agents are set per test, and every row and sent message is captured.
-function fakePort(agents: Record<string, WatchAgent>) {
+const HALF: ContextConfig["default"] = { warn: 50, act: 75, mode: "fresh" };
+
+// Every step at 50/75, which is 100k/150k on the 200k window these tests use.
+const ALL_HALF: ContextConfig = { default: HALF, plan: HALF, implement: HALF, review: HALF, autoCompact: true };
+
+function fakePort(agents: Record<string, WatchAgent>, autoCompact = false, config: ContextConfig = ALL_HALF) {
   const rows: TelemetryRow[] = [];
   const sent: [string, string][] = [];
   const fresh: string[] = [];
@@ -40,7 +46,8 @@ function fakePort(agents: Record<string, WatchAgent>) {
     record: async (row) => {
       rows.push(row);
     },
-    thresholds: async () => ({ amber: 100_000, red: 150_000 }),
+    policy: async () => config,
+    autoCompact: async () => autoCompact,
     now: () => "2026-10-07T12:00:00.000Z",
     fresh: freshPort,
   };
@@ -61,6 +68,7 @@ function agent(
   commands = ["compact"],
   model: string | null = null,
   costUsd: number | null = null,
+  busy: { running?: boolean; pendingPermissions?: boolean } = {},
 ): WatchAgent {
   return {
     usage: used === null ? null : { contextWindowUsedTokens: used, contextWindowMaxTokens: 200_000 },
@@ -68,11 +76,17 @@ function agent(
     labels,
     model,
     costUsd,
+    running: busy.running ?? false,
+    pendingPermissions: busy.pendingPermissions ?? false,
   };
 }
 
-function turn(id: string, timeline: Item[] = []): TurnEnded {
-  return { agent: { id, provider: "claude" }, timeline };
+function turn(
+  id: string,
+  timeline: Item[] = [],
+  { turnId = null, outcome = { kind: "completed" } }: Partial<Pick<TurnEnded, "turnId" | "outcome">> = {},
+): TurnEnded {
+  return { agent: { id, provider: "claude" }, timeline, turnId, outcome };
 }
 
 test("onTurnEnded: one turn end writes one turn row with provider and step", async () => {
@@ -101,8 +115,22 @@ test("onTurnEnded: one turn end writes one turn row with provider and step", asy
       story: "S2",
       initiative: "telemetry",
       costUsd: 0.42,
+      explore: { reads: 0, searches: 0, files: 0, chars: 0, edited: false },
+      turnId: null,
+      turnCostUsd: 0.42,
     },
   ]);
+});
+
+test("onTurnEnded: the same turn end twice, at once or later, writes one turn row", async () => {
+  const { port, rows } = fakePort({ a1: agent(40_000) });
+  const watch = createContextWatch(port);
+  await Promise.all([watch.onTurnEnded(turn("a1", [], { turnId: "t1" })), watch.onTurnEnded(turn("a1", [], { turnId: "t1" }))]);
+  await watch.onTurnEnded(turn("a1", [], { turnId: "t1" }));
+  assert.deepEqual(rows.map((r) => [r.event, r.turnId]), [["turn", "t1"]]);
+
+  await watch.onTurnEnded(turn("a1", [], { turnId: "t2" }));
+  assert.deepEqual(rows.map((r) => [r.event, r.turnId]), [["turn", "t1"], ["turn", "t2"]]);
 });
 
 test("onTurnEnded: a turn row's cost is null when the agent reports none", async () => {
@@ -196,6 +224,77 @@ test("onTurnEnded: an unknown agent writes no row", async () => {
 const user: Item = { type: "user_message" };
 const reply: Item = { type: "assistant_message" };
 const compacted: Item = { type: "compaction", status: "completed", preTokens: 160_000 };
+
+test("onTurnEnded: a canceled or failed turn end writes turn.stopped, not turn, and still counts its items and warns", async () => {
+  const agents = { a1: agent(160_000) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  agents.a1 = agent(30_000);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted], { outcome: { kind: "canceled", reason: "x" } }));
+  agents.a1 = agent(160_000);
+  await watch.onTurnEnded(
+    turn("a1", [user, reply, user, compacted, user], { outcome: { kind: "failed", error: { message: "boom" } } }),
+  );
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted, user, reply]));
+
+  // The compaction is counted once and re-arms the warning; only completed turn ends write a turn row.
+  assert.deepEqual(
+    rows.map((r) => [r.event, r.used]),
+    [
+      ["turn", 160_000],
+      ["warning", 160_000],
+      ["compact.native", 30_000],
+      ["turn.stopped", 30_000],
+      ["turn.stopped", 160_000],
+      ["warning", 160_000],
+      ["turn", 160_000],
+    ],
+  );
+});
+
+test("onTurnEnded: turnCostUsd is this turn's share of the session's running costUsd", async () => {
+  const agents = { a1: agent(40_000, {}, ["compact"], null, 0.5) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  agents.a1 = agent(40_000, {}, ["compact"], null, 1.25);
+  // A canceled turn's spend goes on its own turn.stopped row, so an agent whose last turn fails still counts.
+  await watch.onTurnEnded(turn("a1", [user, reply, user], { outcome: { kind: "canceled", reason: "x" } }));
+  agents.a1 = agent(40_000, {}, ["compact"], null, 2);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, user, reply]));
+
+  assert.deepEqual(
+    rows.map((r) => [r.event, r.costUsd, r.turnCostUsd]),
+    [["turn", 0.5, 0.5], ["turn.stopped", 1.25, 0.75], ["turn", 2, 0.75]],
+  );
+  assert.equal(rows.reduce((sum, r) => sum + (r.turnCostUsd ?? 0), 0), rows[rows.length - 1].costUsd);
+});
+
+test("onTurnEnded: turnCostUsd is null when the cost is null or the session was first seen mid-way", async () => {
+  const agents = { none: agent(40_000), mid: agent(40_000, {}, ["compact"], null, 3) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("none", [user, reply]));
+  await watch.onTurnEnded(turn("mid", [user, reply, user, reply]));
+  agents.mid = agent(40_000, {}, ["compact"], null, 3.5);
+  await watch.onTurnEnded(turn("mid", [user, reply, user, reply, user, reply]));
+
+  assert.deepEqual(
+    rows.map((r) => [r.agentId, r.costUsd, r.turnCostUsd]),
+    [["none", null, null], ["mid", 3, null], ["mid", 3.5, 0.5]],
+  );
+});
+
+test("onTurnEnded: only turn rows carry turnCostUsd", async () => {
+  const { port, rows } = fakePort({ a1: agent(160_000, {}, ["compact"], null, 1) });
+  await createContextWatch(port).onTurnEnded(turn("a1", [user, reply]));
+
+  assert.deepEqual(
+    rows.map((r) => [r.event, "turnCostUsd" in r]),
+    [["turn", true], ["warning", false]],
+  );
+});
 
 test("onTurnEnded: a new completed compaction item writes compact.native and re-arms warnings", async () => {
   const agents = { a1: agent(160_000) };
@@ -412,6 +511,7 @@ test("sessions: a seen agent's stored reading and memory, an unseen one read on 
       warned: ["red"],
       mode: "remind",
       red: 150_000,
+      auto: false,
     },
     {
       agentId: "new",
@@ -419,6 +519,7 @@ test("sessions: a seen agent's stored reading and memory, an unseen one read on 
       warned: [],
       mode: "normal",
       red: 150_000,
+      auto: false,
     },
     null,
   ]);
@@ -530,4 +631,311 @@ test("live: split goes null when the timeline is replaced by a shorter one", asy
   await watch.onTurnEnded(turn("a", [user]));
 
   assert.equal((await watch.live("a"))?.split, null);
+});
+
+const readOf = (filePath: string, content: string): Item => ({
+  type: "tool_call",
+  status: "completed",
+  detail: { type: "read", filePath, content },
+});
+const editOf = (filePath: string): Item => ({
+  type: "tool_call",
+  status: "completed",
+  detail: { type: "edit", filePath, newString: "x" },
+});
+
+test("explore: a loop agent's count runs across turns, then freezes at its first code edit", async () => {
+  const agents = { a: agent(20_000, { "loop-step": "implement" }) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  const first = [user, readOf("a.ts", "12345")];
+  await watch.onTurnEnded(turn("a", first));
+  const second = [...first, readOf("b.ts", "123"), editOf("src/b.ts")];
+  await watch.onTurnEnded(turn("a", second));
+  await watch.onTurnEnded(turn("a", [...second, readOf("c.ts", "1234567890")]));
+
+  assert.deepEqual(
+    rows.filter((r) => r.event === "turn").map((r) => r.explore),
+    [
+      { reads: 1, searches: 0, files: 1, chars: 5, edited: false },
+      { reads: 2, searches: 0, files: 2, chars: 8, edited: true },
+      { reads: 2, searches: 0, files: 2, chars: 8, edited: true },
+    ],
+  );
+});
+
+test("explore: an agent without a loop-step label has no explore field, and neither do other events", async () => {
+  const agents = { a: agent(120_000), b: agent(120_000, { "loop-step": "plan" }) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a", [user, readOf("a.ts", "x")]));
+  await watch.onTurnEnded(turn("b", [user, readOf("a.ts", "x")]));
+
+  assert.equal("explore" in rows.find((r) => r.agentId === "a" && r.event === "turn")!, false);
+  assert.deepEqual(
+    rows.filter((r) => r.agentId === "b").map((r) => [r.event, "explore" in r]),
+    [
+      ["turn", true],
+      ["warning", false],
+    ],
+  );
+});
+
+test("explore: a replay agent's turn rows are counted by its replay-step label while step stays null", async () => {
+  const agents = { a: agent(20_000, { "replay-step": "review" }) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a", [user, readOf("a.ts", "12345")]));
+
+  const turns = rows.filter((r) => r.event === "turn");
+  assert.equal(turns[0].step, null);
+  assert.deepEqual(turns[0].explore, { reads: 1, searches: 0, files: 1, chars: 5, edited: false });
+});
+
+test("explore: first sight mid-session records null from then on", async () => {
+  const agents = { a: agent(20_000, { "loop-step": "implement" }) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  const seen = [user, readOf("a.ts", "x"), reply, user, readOf("b.ts", "y")];
+  await watch.onTurnEnded(turn("a", seen));
+  await watch.onTurnEnded(turn("a", [...seen, readOf("c.ts", "z")]));
+
+  assert.deepEqual(
+    rows.filter((r) => r.event === "turn").map((r) => r.explore),
+    [null, null],
+  );
+});
+
+test("explore: a timeline replaced by a shorter one records null from then on", async () => {
+  const agents = { a: agent(20_000, { "loop-step": "implement" }) };
+  const { port, rows } = fakePort(agents);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a", [user, readOf("a.ts", "x"), readOf("b.ts", "y")]));
+  await watch.onTurnEnded(turn("a", [user]));
+  await watch.onTurnEnded(turn("a", [user, readOf("c.ts", "z")]));
+
+  assert.deepEqual(
+    rows.filter((r) => r.event === "turn").map((r) => r.explore),
+    [{ reads: 2, searches: 0, files: 2, chars: 2, edited: false }, null, null],
+  );
+});
+
+const AUTO = [["a1", "/compact Keep: .harness/state.md, files changed this session, failing tests and their output."]];
+
+test("auto-compact: a red turn end sends /compact with the keep-list once", async () => {
+  const { port, sent } = fakePort({ a1: agent(160_000) }, true);
+  await createContextWatch(port).onTurnEnded(turn("a1", [user, reply]));
+  assert.deepEqual(sent, AUTO);
+});
+
+test("auto-compact: a second red turn sends nothing", async () => {
+  const { port, sent } = fakePort({ a1: agent(160_000) }, true);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  await watch.onTurnEnded(turn("a1", [user, reply, user, reply]));
+  assert.equal(sent.length, 1);
+});
+
+test("auto-compact: after a compaction, a red turn sends again", async () => {
+  const agents = { a1: agent(160_000) };
+  const { port, sent } = fakePort(agents, true);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  agents.a1 = agent(30_000);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted]));
+  agents.a1 = agent(160_000);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted, user, reply]));
+  assert.equal(sent.length, 2);
+});
+
+test("auto-compact: the turn end that records a compaction does not compact again, even if still red", async () => {
+  const agents = { a1: agent(160_000) };
+  const { port, sent } = fakePort(agents, true);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted]));
+  assert.equal(sent.length, 1);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted, user, reply]));
+  assert.equal(sent.length, 2);
+});
+
+test("auto-compact: nothing is sent for amber, a running agent, a pending permission, a loop label, a failed or canceled turn or the setting off", async () => {
+  const cases: [string, WatchAgent, boolean, TurnEnded["outcome"]?][] = [
+    ["amber", agent(120_000), true],
+    ["running", agent(160_000, {}, ["compact"], null, null, { running: true }), true],
+    ["permission", agent(160_000, {}, ["compact"], null, null, { pendingPermissions: true }), true],
+    ["loop-step", agent(160_000, { "loop-step": "implement" }), true],
+    ["replay-step", agent(160_000, { "replay-step": "implement" }), true],
+    ["failed", agent(160_000), true, { kind: "failed", error: { message: "boom" } }],
+    ["canceled", agent(160_000), true, { kind: "canceled", reason: "x" }],
+    ["setting off", agent(160_000), false],
+  ];
+  for (const [name, a, on, outcome] of cases) {
+    const { port, sent } = fakePort({ a1: a }, on);
+    await createContextWatch(port).onTurnEnded(turn("a1", [user, reply], { outcome }));
+    assert.deepEqual(sent, [], name);
+  }
+});
+
+test("auto-compact: a session on Ignore sends nothing", async () => {
+  const { port, sent } = fakePort({ a1: agent(120_000) }, true);
+  const watch = createContextWatch(port);
+  await watch.act({ agentId: "a1", action: "ignore" });
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  assert.deepEqual(sent, []);
+});
+
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+test("auto-compact: a red session without /compact starts fresh, not awaited by the turn end or sessions()", async () => {
+  const agents: Record<string, WatchAgent> = { a1: agent(160_000, {}, []) };
+  const { port, rows, sent, fresh, holdHandoff } = fakePort(agents, true);
+  let release = () => {};
+  holdHandoff(new Promise<void>((resolve) => (release = resolve)));
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  // The turn end's rows are written and the held handoff blocks neither it nor a status read.
+  assert.deepEqual(rows.map((r) => r.event), ["turn", "warning"]);
+  assert.equal((await watch.sessions(["a1"]))[0]?.agentId, "a1");
+  await settle();
+  assert.deepEqual(fresh, ["handoff a1"]);
+  assert.deepEqual(sent, []);
+  release();
+  await settle();
+  assert.deepEqual(fresh, ["handoff a1", "create a1", "archive a1"]);
+});
+
+test("auto-compact: the new session's compact.fresh row has trigger auto, a pill fresh's has none", async () => {
+  for (const auto of [true, false]) {
+    const agents: Record<string, WatchAgent> = { a1: agent(160_000, {}, []) };
+    const { port, rows } = fakePort(agents, auto);
+    const watch = createContextWatch(port);
+    if (auto) {
+      await watch.onTurnEnded(turn("a1", [user, reply]));
+      await settle();
+    } else {
+      await watch.act({ agentId: "a1", action: "compact" });
+    }
+    agents.f1 = agent(20_000, { "context-from": "a1" }, []);
+    await watch.onTurnEnded(turn("f1", [user, reply]));
+    const row = rows.find((r) => r.event === "compact.fresh");
+    assert.equal(row?.preTokens, 160_000);
+    assert.equal(row?.trigger, auto ? "auto" : undefined);
+  }
+});
+
+test("auto-compact: the next compact.native row has trigger auto, once; a manual Compact's has none", async () => {
+  const agents = { a1: agent(160_000) };
+  const { port, rows } = fakePort(agents, true);
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  agents.a1 = agent(30_000);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted]));
+  // A later manual Compact on the same session.
+  agents.a1 = agent(120_000);
+  await watch.act({ agentId: "a1", action: "compact" });
+  agents.a1 = agent(30_000);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted, user, reply, user, compacted]));
+  const natives = rows.filter((r) => r.event === "compact.native");
+  assert.deepEqual(natives.map((r) => r.trigger), ["auto", undefined]);
+});
+
+test("skip-auto: stops the next red compact, survives a compaction and writes a skip-auto row", async () => {
+  const agents = { a1: agent(120_000) };
+  const { port, rows, sent } = fakePort(agents, true);
+  const watch = createContextWatch(port);
+  assert.deepEqual(await watch.act({ agentId: "a1", action: "skip-auto" }), { ok: true, error: null, agentId: "a1" });
+  assert.equal(rows.filter((r) => r.event === "skip-auto").length, 1);
+  agents.a1 = agent(160_000);
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  assert.deepEqual(sent, []);
+  // A compaction re-arms warnings and the auto latch, but not the skip.
+  agents.a1 = agent(30_000);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted]));
+  agents.a1 = agent(160_000);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted, user, reply]));
+  assert.deepEqual(sent, []);
+  assert.equal(rows.filter((r) => r.event === "warning" && r.level === "red").length, 2);
+});
+
+test("sessions: auto is true normally, false when skipped, on Ignore, for a loop agent or with the setting off", async () => {
+  const cases: [string, WatchAgent, boolean, ContextAction?][] = [
+    ["normal", agent(50_000), true],
+    ["skipped", agent(50_000), true, "skip-auto"],
+    ["ignore", agent(50_000), true, "ignore"],
+    ["loop", agent(50_000, { "loop-step": "implement" }), true],
+    ["setting off", agent(50_000), false],
+  ];
+  for (const [name, a, on, action] of cases) {
+    const { port } = fakePort({ a1: a }, on);
+    const watch = createContextWatch(port);
+    if (action) await watch.act({ agentId: "a1", action });
+    assert.equal((await watch.sessions(["a1"]))[0]?.auto, name === "normal", name);
+    await watch.onTurnEnded(turn("a1", [user, reply]));
+    assert.equal((await watch.sessions(["a1"]))[0]?.auto, name === "normal", `${name} after a turn`);
+  }
+});
+
+test("auto-compact: a /compact send that throws clears the auto mark, so a later manual compact has no trigger", async () => {
+  const agents = { a1: agent(160_000) };
+  const { port, rows } = fakePort(agents, true);
+  const send = port.send;
+  port.send = async () => {
+    throw new Error("down");
+  };
+  const watch = createContextWatch(port);
+  await assert.rejects(watch.onTurnEnded(turn("a1", [user, reply])));
+  port.send = send;
+  agents.a1 = agent(30_000);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, compacted]));
+  assert.equal(rows.find((r) => r.event === "compact.native")?.trigger, undefined);
+});
+
+test("auto-compact: a fresh auto compact that fails is logged and not retried on the next red turn", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const agents: Record<string, WatchAgent> = { a1: agent(160_000, {}, []) };
+  const { port, fresh } = fakePort(agents, true);
+  port.fresh.create = async () => {
+    throw new Error("no workspace");
+  };
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("a1", [user, reply]));
+  await settle();
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(String(warn.mock.calls[0]?.arguments[0]), /auto-compact of a1 failed: no workspace/);
+  await watch.onTurnEnded(turn("a1", [user, reply, user, reply]));
+  await settle();
+  assert.deepEqual(fresh, ["handoff a1"]);
+});
+
+test("a plan and an implement session at the same usage get their own step's level and red", async () => {
+  const config: ContextConfig = {
+    ...ALL_HALF,
+    plan: { warn: 30, act: 40, mode: "fresh" },
+    implement: { warn: 70, act: 85, mode: "compact" },
+  };
+  const { port, rows } = fakePort(
+    {
+      p1: agent(90_000, { "loop-step": "plan" }),
+      i1: agent(90_000, { "loop-step": "implement" }),
+      n1: agent(90_000),
+    },
+    false,
+    config,
+  );
+  const watch = createContextWatch(port);
+  await watch.onTurnEnded(turn("p1"));
+  await watch.onTurnEnded(turn("i1"));
+  const statuses = await watch.sessions(["p1", "i1", "n1"]);
+  assert.deepEqual(
+    statuses.map((status) => [status?.reading.level, status?.red]),
+    [
+      ["red", 80_000],
+      ["ok", 170_000],
+      ["ok", 150_000],
+    ],
+  );
+  assert.deepEqual(rows.filter((row) => row.event === "warning").map((row) => [row.agentId, row.level]), [["p1", "red"]]);
+  assert.equal((await watch.live("p1"))?.reading.level, "red");
+  assert.equal((await watch.live("i1"))?.reading.level, "ok");
 });

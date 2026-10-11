@@ -94,6 +94,13 @@ test("implement and fix both load the saved Implement extras", () => {
   assert.deepEqual(stepSkills("fix", phases), extras);
 });
 
+test("diagnose loads the saved Plan extras", () => {
+  const extras = [{ name: "repro-helper", source: "team-skills" }];
+  const phases = DEFAULT_PHASES.map((p) => (p.id === "plan" ? { ...p, extras } : p));
+  assert.deepEqual(stepSkills("diagnose", phases), stepSkills("plan", phases));
+  assert.deepEqual(stepSkills("diagnose", phases), extras);
+});
+
 test("plan and pr load no extras with the default phases", () => {
   assert.deepEqual(stepSkills("plan", DEFAULT_PHASES), []);
   assert.deepEqual(stepSkills("pr", DEFAULT_PHASES), []);

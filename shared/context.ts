@@ -1,25 +1,74 @@
 import { defineRpc, defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
+import type { MeterPolicy } from "./context-meter";
+import { LOOP_STEPS, type LoopStep } from "./initiative-loop";
+import { STEP_PHASES } from "./pipeline";
 
 // The context watch's settings and RPCs (see CONTEXT.md, "Context meter"). The pure meter is
 // shared/context-meter.ts; the server side registers these in S2.
 
+// A step's policy: warn and act as a percent of the session's window, and what act does.
+const stepPolicy = (mode: "compact" | "fresh") =>
+  z.object({
+    warn: z.number().int().min(1).max(100).default(70),
+    act: z.number().int().min(1).max(100).default(85),
+    mode: z.enum(["compact", "fresh"]).default(mode),
+  });
+
 const contextValues = z.object({
-  // Tokens at which a session's level turns amber, then red.
-  amber: z.number().int().min(1).default(100_000),
-  red: z.number().int().min(1).default(150_000),
+  // `default` covers every step without its own policy, and sessions that are not loop steps.
+  default: stepPolicy("fresh").default({ warn: 70, act: 85, mode: "fresh" }),
+  plan: stepPolicy("fresh").default({ warn: 70, act: 85, mode: "fresh" }),
+  implement: stepPolicy("compact").default({ warn: 70, act: 85, mode: "compact" }),
+  review: stepPolicy("fresh").default({ warn: 70, act: 85, mode: "fresh" }),
+  // Compact a session on its own when it crosses act.
+  autoCompact: z.boolean().default(true),
 });
 
 export type ContextConfig = z.infer<typeof contextValues>;
 
+export const DEFAULT_CONTEXT_CONFIG: ContextConfig = contextValues.parse({});
+
+// v1 stored two token counts for a 200k window; they become `default`'s percents.
+const V1_WINDOW = 200_000;
+
+function toPercent(tokens: unknown, fallback: number): number {
+  if (typeof tokens !== "number" || !Number.isFinite(tokens)) return fallback;
+  return Math.min(100, Math.max(1, Math.round((tokens / V1_WINDOW) * 100)));
+}
+
 export const contextSettings = defineSettings({
   id: "context",
   scope: "host",
-  version: 1,
+  version: 2,
   schema: contextValues,
+  migrate(values) {
+    const row = values !== null && typeof values === "object" ? (values as Record<string, unknown>) : {};
+    // Only `autoCompact` carries over as is; a bad one falls back alone, keeping the migrated percents.
+    const parsed = contextValues.safeParse({
+      autoCompact: typeof row.autoCompact === "boolean" ? row.autoCompact : undefined,
+      default: {
+        warn: toPercent(row.amber, 70),
+        act: toPercent(row.red, 85),
+        mode: "fresh",
+      },
+    });
+    return parsed.success ? parsed.data : DEFAULT_CONTEXT_CONFIG;
+  },
 });
 
-export const CONTEXT_ACTIONS = ["compact", "fresh", "remind", "ignore"] as const;
+const POLICY_KEYS = ["plan", "implement", "review"] as const;
+
+// The policy a session's meter reads: its loop step's (through the drawer phase), else `default`,
+// which is also what a missing window falls back to.
+export function meterPolicy(config: ContextConfig, labels: Record<string, string>): MeterPolicy {
+  const label = labels["loop-step"];
+  const phase = label !== undefined && (LOOP_STEPS as readonly string[]).includes(label) ? STEP_PHASES[label as LoopStep] : null;
+  const key = POLICY_KEYS.find((candidate) => candidate === phase);
+  return { step: key ? config[key] : config.default, fallback: config.default };
+}
+
+export const CONTEXT_ACTIONS = ["compact", "fresh", "remind", "ignore", "skip-auto"] as const;
 export type ContextAction = (typeof CONTEXT_ACTIONS)[number];
 
 // A pill action on one session. `agentId` in the output is the new session after `fresh`.
@@ -38,14 +87,36 @@ export const contextSummary = z.object({
   sessions: z.number(),
   sessionsOverThreshold: z.number(),
   warnings: z.number(),
-  compactions: z.object({ native: z.number(), fresh: z.number(), inferred: z.number() }),
+  // `auto` counts the compact.* rows the watch started itself (trigger "auto"); they also count in native/fresh.
+  compactions: z.object({ native: z.number(), fresh: z.number(), inferred: z.number(), auto: z.number() }),
   ignored: z.number(),
   reminded: z.number(),
   // Σ(preTokens − used) over compact rows.
   tokensAvoided: z.number(),
   // Per loop step, over turn rows with a step: turns, Σ used (context tokens, not billed), and the
   // sorted distinct models ("unknown" when a row has none).
-  byStep: z.record(z.string(), z.object({ turns: z.number(), tokens: z.number(), models: z.array(z.string()) })),
+  // `explore` (S1) sums each agent's last exploration count for the step: `agents` with a count,
+  // `edited` the agents that reached a code edit, `unknown` the agents whose count was lost. Absent
+  // when no row of the step carries one.
+  byStep: z.record(
+    z.string(),
+    z.object({
+      turns: z.number(),
+      tokens: z.number(),
+      models: z.array(z.string()),
+      explore: z
+        .object({
+          agents: z.number(),
+          reads: z.number(),
+          searches: z.number(),
+          files: z.number(),
+          chars: z.number(),
+          edited: z.number(),
+          unknown: z.number(),
+        })
+        .optional(),
+    }),
+  ),
   // The same totals per "<initiative>/<story>", over turn rows with a story ("unknown" initiative on
   // rows written before S18). Not shown on the card.
   byStory: z.record(z.string(), z.object({ turns: z.number(), tokens: z.number(), models: z.array(z.string()) })),
@@ -79,6 +150,9 @@ export const contextStatus = z.object({
   warned: z.array(z.enum(["amber", "red"])),
   mode: z.enum(["normal", "remind", "ignore"]),
   red: z.number(),
+  // Whether the session will compact on its own at red: false when skipped, on Ignore, for a loop
+  // agent or with the setting off.
+  auto: z.boolean(),
 });
 
 export type ContextStatus = z.infer<typeof contextStatus>;

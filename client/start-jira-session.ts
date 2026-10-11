@@ -89,14 +89,28 @@ export async function startJiraSession(
   return { agentId: agent.id, workspaceId: workspace.id, warnings };
 }
 
-async function resolveProject(paseo: PaseoApi, issueKey: string) {
-  const prefix = issueKey.split("-")[0]?.toUpperCase() ?? "";
+type ProjectList = Awaited<ReturnType<PaseoApi["projects"]["list"]>>;
+
+// The repo a Jira key starts in: the Paseo project its prefix hints at, else `fallback` (the harness repo).
+export function repoForKey(listed: ProjectList, key: string, fallback: string | null) {
+  return projectForKey(listed, key)?.projectRootPath ?? (fallback || null);
+}
+
+function projectForKey(listed: ProjectList, key: string) {
+  const prefix = keyPrefix(key);
   const hints = PROJECT_HINTS[prefix] ?? [prefix.toLowerCase()];
-  const listed = await paseo.projects.list();
-  const match = listed.projects.find((project) => matchesProject(project, hints));
+  return listed.projects.find((project) => matchesProject(project, hints));
+}
+
+function keyPrefix(key: string) {
+  return key.split("-")[0]?.toUpperCase() ?? "";
+}
+
+async function resolveProject(paseo: PaseoApi, issueKey: string) {
+  const match = projectForKey(await paseo.projects.list(), issueKey);
   if (!match) {
     throw new Error(
-      `No Paseo project is mapped for ${prefix}. Add that repo in Paseo, then try again.`,
+      `No Paseo project is mapped for ${keyPrefix(issueKey)}. Add that repo in Paseo, then try again.`,
     );
   }
   return match;
