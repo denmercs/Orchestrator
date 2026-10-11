@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DEFAULT_PHASES, type Phase } from "../shared/pipeline";
-import { DRAWER_TABS, handoffChip, nextOpen, phaseSummary, THEN_OPTION_LABEL } from "./pipeline-drawer-model";
+import { DRAWER_TABS, handoffChip, handoffChips, nextOpen, phaseSummary, THEN_OPTION_LABEL } from "./pipeline-drawer-model";
 
 function phase(id: Phase["id"], rest: Partial<Phase> = {}): Phase {
   const base = DEFAULT_PHASES.find((p) => p.id === id) as Phase;
@@ -66,4 +66,11 @@ test("nextOpen: same id closes, another id opens it, one open at a time", () => 
   assert.equal(nextOpen(null, "plan"), "plan");
   assert.equal(nextOpen("plan", "plan"), null);
   assert.equal(nextOpen("plan", "review"), "review");
+});
+
+test("handoffChips: one chip under every card, so Done ends on the merge chip", () => {
+  assert.deepEqual(
+    handoffChips(DEFAULT_PHASES).map((c) => c.label),
+    ["wait for you → Implement", "auto → Review", "on PASS → Done", "on merge"],
+  );
 });

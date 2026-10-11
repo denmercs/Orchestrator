@@ -28,7 +28,7 @@ import {
 } from "../shared/pipeline";
 import {
   DRAWER_TABS,
-  handoffChip,
+  handoffChips,
   nextOpen,
   phaseSummary,
   THEN_OPTION_LABEL,
@@ -203,7 +203,7 @@ export function SkillsDrawer({
             {DRAWER_TABS.map((t) => (
               <Pressable
                 key={t.id}
-                accessibilityRole="button"
+                accessibilityRole="tab"
                 accessibilityState={{ selected: tab === t.id }}
                 onPress={() => onTab(t.id)}
                 style={[styles.segment, tab === t.id ? styles.segmentActive : null]}
@@ -249,14 +249,14 @@ export function SkillsDrawer({
 
 function PhasesTab({ pipeline, values, styles }: { pipeline: Pipeline; values: PipelineConfig; styles: Styles }) {
   const [open, setOpen] = useState<PhaseId | null>(null);
+  const chips = handoffChips(values.phases);
   function updatePhase(id: PhaseId, change: (phase: Phase) => Phase) {
     void pipeline.save({ phases: values.phases.map((phase) => (phase.id === id ? change(phase) : phase)) });
   }
   return (
     <>
       {values.phases.map((phase, index) => {
-        const chip = handoffChip(values.phases, index);
-        const last = index === values.phases.length - 1;
+        const chip = chips[index];
         return (
           <View key={phase.id}>
             <PhaseCard
@@ -271,11 +271,9 @@ function PhasesTab({ pipeline, values, styles }: { pipeline: Pipeline; values: P
             />
             <View style={styles.handoff}>
               <View style={styles.handoffRule} />
-              {last ? null : (
-                <View style={styles.handoffChip}>
-                  <Text style={chip.auto ? styles.handoffTextAuto : styles.handoffText}>{chip.label}</Text>
-                </View>
-              )}
+              <View style={styles.handoffChip}>
+                <Text style={chip.auto ? styles.handoffTextAuto : styles.handoffText}>{chip.label}</Text>
+              </View>
             </View>
           </View>
         );
@@ -388,6 +386,7 @@ function PhaseCard({
                       <Pressable
                         key={`${extra.source}:${extra.name}`}
                         accessibilityRole="button"
+                        accessibilityLabel={extra.required ? `${extra.name}, required` : `Remove ${extra.name}`}
                         disabled={extra.required}
                         onPress={() => onChange((p) => ({ ...p, extras: p.extras.filter((e) => !sameRef(e, extra)) }))}
                         style={styles.chip}
@@ -1101,7 +1100,7 @@ function createStyles(theme: Theme, compact: boolean) {
     chevronOpen: { transform: [{ rotate: "90deg" }] },
     gridRow: { flexDirection: "row" as const, alignItems: "flex-start" as const, gap: 8 },
     gridCell: { flex: 1, gap: 6 },
-    requiredTag: { color: c.statusSuccess, fontSize: 10, fontWeight: "600" as const },
+    requiredTag: { color: c.statusWarning, fontSize: 10, fontWeight: "600" as const },
     chipDashed: { borderStyle: "dashed" as const },
     handoff: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, paddingLeft: 21 },
     handoffRule: { width: 1, height: 24, backgroundColor: c.border },
@@ -1123,14 +1122,7 @@ function createStyles(theme: Theme, compact: boolean) {
       borderColor: c.foregroundMuted,
     },
     linkSmall: { color: c.accent, fontSize: 11 },
-    label: {
-      width: 64,
-      color: c.foregroundMuted,
-      fontSize: 11,
-      fontWeight: "700" as const,
-      letterSpacing: 0.5,
-      textTransform: "uppercase" as const,
-    },
+    label: { width: 64, color: c.foregroundMuted, fontSize: 11.5, paddingTop: 4 },
     body: { color: c.foreground, fontSize: 13 },
     muted: { color: c.foregroundMuted, fontSize: 12 },
     warn: { color: c.foregroundMuted, fontSize: 12, fontStyle: "italic" as const },

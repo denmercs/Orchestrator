@@ -27,6 +27,11 @@ export function handoffChip(phases: Phase[], index: number) {
   return { label, auto: then === "auto" };
 }
 
+// One chip under every card, the last included: Done hands off "on merge" to Story closed.
+export function handoffChips(phases: Phase[]) {
+  return phases.map((_, index) => handoffChip(phases, index));
+}
+
 export const DRAWER_TABS = [
   { id: "phases", label: "Phases" },
   { id: "context", label: "Context" },
