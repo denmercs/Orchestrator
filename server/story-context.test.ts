@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
+import type { ContextConfig } from "../shared/context";
 import type { TelemetryRow } from "./context-telemetry";
 import type { LiveSession } from "./context-watch";
 import { loadStoryContext, type StoryContextDeps } from "./story-context";
@@ -61,8 +62,17 @@ const ROWS: TelemetryRow[] = [
   row("a2", "turn", 50_000, { costUsd: 1.25 }),
 ];
 
-function deps(session: LiveSession | null, rows: TelemetryRow[] = ROWS): StoryContextDeps {
-  return { live: live(session), rows: async () => rows, thresholds: async () => ({ amber: 100_000, red: 150_000 }) };
+const HALF = { warn: 50, act: 75 } as const;
+const CONFIG: ContextConfig = {
+  default: { ...HALF, mode: "fresh" },
+  plan: { ...HALF, mode: "fresh" },
+  implement: { ...HALF, mode: "compact" },
+  review: { ...HALF, mode: "fresh" },
+  autoCompact: true,
+};
+
+function deps(session: LiveSession | null, rows: TelemetryRow[] = ROWS, config: ContextConfig = CONFIG): StoryContextDeps {
+  return { live: live(session), rows: async () => rows, policy: async () => config };
 }
 
 const SESSION: LiveSession = {
@@ -98,6 +108,28 @@ test("a live agent gives the panel, found across phases", async () => {
     },
     split: { system: 10_000, conversation: 30_000, tool: 10_000 },
     costUsd: 1.75,
+  });
+});
+
+test("the markers read the step's percent of the window, and a fresh step says hand off", async () => {
+  const config: ContextConfig = {
+    ...CONFIG,
+    implement: { warn: 60, act: 80, mode: "compact" },
+    plan: { warn: 20, act: 40, mode: "fresh" },
+  };
+  const input = { repo, initiative: "redesign", storyId: "S3" };
+  const implement = await loadStoryContext(input, deps(SESSION, ROWS, config));
+  assert.deepEqual(implement?.markers, {
+    warn: { tokens: 120_000, percent: 60 },
+    act: { tokens: 160_000, percent: 80, word: "compact" },
+  });
+  const plan = await loadStoryContext(
+    input,
+    deps({ ...SESSION, labels: { ...LABELS, "loop-step": "plan" } }, ROWS, config),
+  );
+  assert.deepEqual(plan?.markers, {
+    warn: { tokens: 40_000, percent: 20 },
+    act: { tokens: 80_000, percent: 40, word: "hand off" },
   });
 });
 

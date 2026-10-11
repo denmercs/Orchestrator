@@ -9,11 +9,15 @@ import {
   type CompactionItem,
   type ContextSnapshot,
   type Level,
-  type Thresholds,
+  thresholdsFor,
+  type MeterPolicy,
   type WarningMemory,
 } from "./context-meter";
 
-const THRESHOLDS: Thresholds = { amber: 100_000, red: 150_000 };
+const THRESHOLDS: MeterPolicy = {
+  step: { warn: 50, act: 75, mode: "compact" },
+  fallback: { warn: 50, act: 75, mode: "fresh" },
+};
 const MAX = 200_000;
 
 function snapshot(used: number | null, commands: string[] = ["compact"]): ContextSnapshot {
@@ -43,6 +47,43 @@ test("readContext: 99k is ok, 100k is amber, 150k is red", () => {
   assert.equal(readContext(snapshot(99_999), THRESHOLDS).level, "ok");
   assert.equal(readContext(snapshot(100_000), THRESHOLDS).level, "amber");
   assert.equal(readContext(snapshot(150_000), THRESHOLDS).level, "red");
+});
+
+test("readContext: the level crosses at the step's percent of max", () => {
+  const policy: MeterPolicy = { step: { warn: 20, act: 40, mode: "fresh" }, fallback: THRESHOLDS.fallback };
+  const level = (used: number, max: number) =>
+    readContext({ usage: { contextWindowUsedTokens: used, contextWindowMaxTokens: max }, commands: [] }, policy).level;
+  assert.equal(level(39_999, 100_000), "amber");
+  assert.equal(level(40_000, 100_000), "red");
+  assert.equal(level(19_999, 100_000), "ok");
+  assert.equal(level(20_000, 100_000), "amber");
+  assert.equal(level(20_000, 1_000_000), "ok");
+});
+
+test("readContext: a missing max uses the fallback percent of 200k, not the step's", () => {
+  const policy: MeterPolicy = {
+    step: { warn: 10, act: 20, mode: "fresh" },
+    fallback: { warn: 50, act: 75, mode: "fresh" },
+  };
+  const level = (used: number) => readContext({ usage: { contextWindowUsedTokens: used }, commands: [] }, policy).level;
+  assert.equal(level(99_999), "ok");
+  assert.equal(level(100_000), "amber");
+  assert.equal(level(150_000), "red");
+});
+
+test("thresholdsFor: tokens from the step's percent of max, or the fallback's of 200k", () => {
+  const policy: MeterPolicy = {
+    step: { warn: 70, act: 85, mode: "compact" },
+    fallback: { warn: 50, act: 75, mode: "fresh" },
+  };
+  assert.deepEqual(thresholdsFor(policy, 1_000_000), { amber: 700_000, red: 850_000 });
+  assert.deepEqual(thresholdsFor(policy, null), { amber: 100_000, red: 150_000 });
+});
+
+test("readContext: a max of 0 counts as missing, so it uses the fallback and is not red", () => {
+  const reading = readContext({ usage: { contextWindowUsedTokens: 120_000, contextWindowMaxTokens: 0 }, commands: [] }, THRESHOLDS);
+  assert.equal(reading.max, null);
+  assert.equal(reading.level, "amber");
 });
 
 test("readContext: /compact listed with usage is full and native", () => {
