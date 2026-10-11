@@ -67,11 +67,17 @@ test("parseJudge finds the JSON object inside surrounding prose", () => {
   assert.deepEqual(parseJudge(reply, 2, 1), { matches: [[0, 0]], new: [1] });
 });
 
-test("parseJudge returns null for bad JSON, out-of-range indexes and wrong shapes", () => {
+test("parseJudge drops a bad match or new index and keeps the rest of the verdict", () => {
+  // Seen in a replay: three replay findings, and the judge matched a fourth that does not exist.
+  assert.deepEqual(parseJudge('```json\n{"matches":[[2,2],[3,3]],"new":[0,1]}\n```', 3, 9), { matches: [[2, 2]], new: [0, 1] });
+  assert.deepEqual(parseJudge('{"matches":[[0,0],[5,null],[-1,0],[1]],"new":[1,7]}', 2, 1), { matches: [[0, 0]], new: [1] });
+  assert.deepEqual(parseJudge('{"matches":[[0,0]],"new":[5]}', 2, 1), { matches: [[0, 0]], new: [] });
+});
+
+test("parseJudge returns null for bad JSON, wrong shapes, and a reply whose every match is bad", () => {
   assert.equal(parseJudge("not json", 1, 1), null);
   assert.equal(parseJudge('{"matches":[[2,0]],"new":[]}', 2, 1), null);
   assert.equal(parseJudge('{"matches":[[0,1]],"new":[]}', 2, 1), null);
-  assert.equal(parseJudge('{"matches":[[0,0]],"new":[5]}', 2, 1), null);
   assert.equal(parseJudge('{"matches":[[-1,0]],"new":[]}', 2, 1), null);
   assert.equal(parseJudge('{"matches":[[0]],"new":[]}', 2, 1), null);
   assert.equal(parseJudge('{"matches":"x","new":[]}', 2, 1), null);

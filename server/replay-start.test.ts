@@ -4,7 +4,7 @@ import type { TelemetryRow } from "./context-telemetry";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { lastTurn, readArms } from "./replay-start";
+import { lastTurn, readArms, readRunName } from "./replay-start";
 
 const row = (agentId: string, event: TelemetryRow["event"], costUsd: number): TelemetryRow => ({
   at: "2026-10-10T00:00:00.000Z",
@@ -34,5 +34,21 @@ test("readArms: the arms file in ARMS order, undefined when absent or empty, and
   assert.equal(readArms(root), undefined);
   writeFileSync(file, "facts fact+corrections");
   assert.throws(() => readArms(root), /unknown arm fact\+corrections/);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("readRunName: the run-name file's name, \"run\" when absent or empty, and a name that is not one plain path segment throws", () => {
+  const root = mkdtempSync(join(tmpdir(), "replay-run-name-"));
+  mkdirSync(join(root, ".harness", "replay"), { recursive: true });
+  const file = join(root, ".harness", "replay", "run-name");
+  assert.equal(readRunName(root), "run");
+  writeFileSync(file, "findings-only\n");
+  assert.equal(readRunName(root), "findings-only");
+  writeFileSync(file, "  \n");
+  assert.equal(readRunName(root), "run");
+  for (const bad of ["../escape", "a/b", ".hidden", "two words"]) {
+    writeFileSync(file, bad);
+    assert.throws(() => readRunName(root), /run-name/);
+  }
   rmSync(root, { recursive: true, force: true });
 });

@@ -174,7 +174,7 @@ Only `active` notes and `seeded` notes you have approved can go into a brief.
 | Memory files | `<repo>/.harness/memory/` (each repo keeps its own; nothing leaves it) |
 | Memory code | `server/memory.ts`, `server/repo-analyzer.ts`, `server/repo-facts.ts`, `server/corrections.ts`, `server/correction-*.ts` |
 | Seeding | `scripts/seed-memory.mjs` |
-| Replay | `server/memory-replay.ts`, `server/replay*.ts`, started from ⌘K |
+| Replay | `server/memory-replay.ts`, `server/replay*.ts`, started from ⌘K, or by writing `{"root": "/abs/repo"}` (optional `costCap`, `controls`) to `~/.orchestrator/replay-start.json`; the plugin picks it up within about 5 seconds and writes the outcome to `~/.orchestrator/replay-start.result.json` |
 | Measurement | this folder: `report.mjs` → `baseline.md`, `verdict.mjs` → `verdict.md` |
 | Full plan | `.harness/initiatives/agent-memory/` (local only) |
 

@@ -116,7 +116,7 @@ test("replays one corpus row in three arms and records each on its turn end", as
   assert.match(state, /## Plan\n- parse the corpus/);
   assert.match(state, /## Cycles\n- \[x\] Cycle 1/);
 
-  // Three agents with the Review prompt, labels, and no MCP servers; only `none` has no brief.
+  // Three agents with the findings-only Review prompt, labels, and no MCP servers; only `none` has no brief.
   assert.equal(ids.length, 3);
   assert.equal(calls.agents.length, 3);
   const arms = calls.agents.map((a) => a.input.labels["replay-arm"]).sort();
@@ -142,9 +142,10 @@ test("replays one corpus row in three arms and records each on its turn end", as
   const bare = stepPrompt(
     "review",
     { id: "S7", title: row.title, body: row.body, ticketKey: null, ticketUrl: null, storyFile: null, storiesDir: null, phaseLabel: null, phaseTitle: null, architectureFile: null, initiativeTitle: null, initiativeFile: null, branch: "", base: "base000" },
-    { round: 2, plan: row.plan },
+    { round: 2, plan: row.plan, findingsOnly: true },
   );
   assert.equal(noneAgent.input.prompt, bare);
+  for (const a of calls.agents) assert.match(a.input.prompt, /Do not fix anything/);
   assert.ok(noneAgent.input.prompt.includes("a judge marks each finding"), "the Review prompt carries the story body");
 
   // Turn ends: each agent's worktree holds its findings.
