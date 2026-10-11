@@ -412,6 +412,8 @@ function PhaseSettings({
   if (phase.id === "done") {
     return (
       <View style={styles.rowWrap}>
+        <Text style={styles.muted}>Red CI → fresh Fix CI agent</Text>
+        <Stepper label="max fixes" value={values.maxFixes} styles={styles} onChange={(v) => void pipeline.save({ maxFixes: v })} />
         <Text style={styles.muted}>After merge</Text>
         <Chip
           label={values.closeOnMerge ? "✓ close the Jira story" : "leave Jira alone"}

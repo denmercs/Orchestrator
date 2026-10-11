@@ -17,7 +17,7 @@ import { startPhaseArchitect } from "./server/harness-architect";
 import { openPhasePlan, refreshPhasePlan } from "./server/phase-plan";
 import { stopPlanServer } from "./server/plan-server";
 import { createHarnessEpic, listHarness } from "./server/harness-layout";
-import { advancePipeline, closeMergedStories, startStory } from "./server/pipeline-advance";
+import { advancePipeline, closeMergedStories, startStory, watchPipelinePrs } from "./server/pipeline-advance";
 import { createLoopAdvance } from "./server/loop-advance";
 import { createInitiativeLoop } from "./server/initiative-loop";
 import { startTicket } from "./server/ticket-start";
@@ -348,6 +348,8 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   const offWorkspaceCreated = server.on("workspace.created", ({ workspace }) => {
     scopeWorkerWorkspace(workspace);
   });
+  // The Story pipeline's CI watch runs on the tick, with the handle the last event gave.
+  let pipelinePaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
   // Set on every turn event: the resume fires later, from a timer, after the event has gone.
   let voicePaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
   const voiceResume = createVoiceResume({
@@ -377,6 +379,7 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
       return;
     }
     loop.rememberPaseo(paseo);
+    pipelinePaseo = paseo;
     void loop.onTurnEnded(event);
     void advancePipeline(paseo, event, readPipeline, readAgentConfig).catch((error) => {
       console.warn("orchestrator: pipeline advance failed", error);
@@ -395,6 +398,7 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   const arm = (paseo: Parameters<typeof loop.rememberPaseo>[0]) => {
     loop.rememberPaseo(paseo);
     initiativeLoop.rememberPaseo(paseo);
+    pipelinePaseo = paseo;
   };
   const offSessionOpen = server.before("agent.session_open", (_input, { paseo }) => {
     arm(paseo);
@@ -420,6 +424,11 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
   const timer = setInterval(() => {
     void loop.pollMergedPrs();
     void initiativeLoop.tick();
+    if (pipelinePaseo) {
+      void watchPipelinePrs(pipelinePaseo, readPipeline, readAgentConfig).catch((error) => {
+        console.warn("orchestrator: pipeline CI watch failed", error);
+      });
+    }
   }, PR_POLL_MS);
   timer.unref?.();
   return () => {
