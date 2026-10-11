@@ -1,4 +1,5 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { RpcInput } from "@getpaseo/plugin";
 import { loadDailyVerse } from "./server/bible-verse";
 import { listMergedPrs } from "./server/github-prs";
 import { pickMcpServers, readHostMcpServers } from "./server/host-mcp";
@@ -36,6 +37,7 @@ import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay
 import { readArms, readCorpus, readCostCap, readRunName, realReplayPorts } from "./server/replay-start";
 import { claudeSignedIn } from "./server/claude-cli";
 import { startMemoryReplay } from "./shared/replay-rpc";
+import { REPLAY_START_FILE, REPLAY_START_POLL_MS, tickReplayStart } from "./server/replay-trigger";
 import { join } from "node:path";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
@@ -106,10 +108,15 @@ import {
 
 type ReplayRunner = ReturnType<typeof createMemoryReplay>;
 
-// `deps.replay` and `deps.signedIn` let tests stand in for the memory replay runner and the Claude Code login check.
+// `deps.replay` and `deps.signedIn` let tests stand in for the memory replay runner and the Claude Code login check;
+// `deps.replayStart` moves the replay start file and its poll.
 export default function contribute(
   server: PluginServerContext,
-  deps: { replay?: ReplayRunner; signedIn?: () => Promise<boolean> } = {},
+  deps: {
+    replay?: ReplayRunner;
+    signedIn?: () => Promise<boolean>;
+    replayStart?: { file: string; everyMs: number };
+  } = {},
 ) {
   // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
   server.registerUsageSource?.(kiroUsageSource());
@@ -213,7 +220,8 @@ export default function contribute(
       ),
     );
   let replaying = false;
-  server.handle(startMemoryReplay, async (input, { paseo }) => {
+  // The ⌘K RPC and the start file both start the replay here, so they make the same checks.
+  const startReplay = async (input: RpcInput<typeof startMemoryReplay>, paseo: NonNullable<typeof contextPaseo>) => {
     replayPaseo = paseo;
     contextPaseo = paseo;
     if (replaying || memoryReplay.pendingAgents().length > 0) throw new Error("A memory replay is already running.");
@@ -234,7 +242,8 @@ export default function contribute(
         replaying = false;
       });
     return { run, rounds: corpus.length, costCap, runDir };
-  });
+  };
+  server.handle(startMemoryReplay, (input, { paseo }) => startReplay(input, paseo));
   const readPolicy = async () => {
     const state = await context.read();
     return state.status === "ready" ? state.values : DEFAULT_CONTEXT_CONFIG;
@@ -441,6 +450,15 @@ export default function contribute(
     }
   }, PR_POLL_MS);
   timer.unref?.();
+  // A Claude session starts the replay by writing the start file; any Paseo handle we have seen will do.
+  const replayStart = deps.replayStart ?? { file: REPLAY_START_FILE, everyMs: REPLAY_START_POLL_MS };
+  const replayPaseoNow = () => contextPaseo ?? pipelinePaseo;
+  const replayStartTimer = setInterval(() => {
+    void tickReplayStart(replayStart.file, () => replayPaseoNow() !== null, (input) => startReplay(input, replayPaseoNow()!)).catch(
+      (error) => console.warn("orchestrator: replay start file failed", error),
+    );
+  }, replayStart.everyMs);
+  replayStartTimer.unref?.();
   return () => {
     offPulseSettings();
     stopPlanServer();
@@ -453,6 +471,7 @@ export default function contribute(
     offPermissionRequested();
     offPermissionResolved();
     clearInterval(timer);
+    clearInterval(replayStartTimer);
     voiceResume.stop();
   };
 }
