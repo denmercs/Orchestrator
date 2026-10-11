@@ -10,6 +10,7 @@ import { FALLBACK_AGENT_CONFIG } from "../shared/agent-runner";
 import { DEFAULT_PHASES, type SkillSource } from "../shared/pipeline";
 import { readMarker } from "../shared/story-method";
 import { gatesOf } from "../shared/gates";
+import type { TelemetryRow } from "./context-telemetry";
 import { frontmatter, readStories, writeFrontmatter } from "./harness-layout";
 import { sourceId } from "./skill-sources";
 
@@ -43,6 +44,7 @@ type Agent = {
   status?: string;
   lastError?: string;
   archivedAt?: string;
+  lastUsage?: { totalCostUsd?: number };
 };
 
 // A repo with one initiative (loop on), one phase and one story mid-Implement in a worktree.
@@ -1717,4 +1719,152 @@ test("closedPr gives a story's PR number while the PR is closed, and null once i
   ghPr(null);
   assert.equal(await initiative.closedPr(ref), null);
   assert.equal(await initiative.closedPr({ ...ref, storyId: "S9" }), null);
+});
+
+// The cost cap: a fake readCost, and the ending agent's live cost from lastUsage.
+function capped(live: number, cap: number, outcome: "completed" | "failed" | "canceled" = "completed", marker = "implement-done") {
+  const fx = fixture("a1");
+  const { api, created } = fakePaseo([{ id: "a1", labels: fx.labels, lastUsage: { totalCostUsd: live } }]);
+  writeFileSync(join(fx.worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\n${marker}\n`, "utf8");
+  const rows = [
+    { at: "2026-10-01T10:00:00.000Z", agentId: "p0", step: "plan", event: "turn", initiative: "demo", story: "S1", costUsd: 1 },
+  ] as unknown as TelemetryRow[];
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+    async () => null,
+    { cap: async () => cap, rows: async () => rows },
+  );
+  const event = { agent: { id: "a1" }, outcome: outcome === "failed" ? { kind: "failed", error: { message: "boom" } } : { kind: outcome } };
+  const end = () => initiative.onTurnEnded(api, event as unknown as Parameters<typeof initiative.onTurnEnded>[1]);
+  return { ...fx, api, created, end };
+}
+
+test("a turn that brings the story to the cap blocks it as cost-cap and starts no next step", async () => {
+  const fx = capped(4.12, 5);
+  await fx.end();
+  assert.equal(storyMeta(fx.story).status, "blocked");
+  assert.equal(storyMeta(fx.story).block_kind, "cost-cap");
+  assert.equal(storyMeta(fx.story).blocked_reason, "cost cap ($5.12 of $5)");
+  assert.deepEqual(fx.created, []);
+
+  const over = capped(4, 5, "completed", "plan-done");
+  await over.end();
+  assert.equal(storyMeta(over.story).block_kind, "cost-cap");
+  assert.equal(storyMeta(over.story).blocked_reason, "cost cap ($5.00 of $5)");
+  assert.deepEqual(over.created, []);
+});
+
+test("a failed turn at the cap blocks; a canceled one and one under the cap do not", async () => {
+  const failed = capped(6, 5, "failed", "implement-running");
+  await failed.end();
+  assert.equal(storyMeta(failed.story).block_kind, "cost-cap");
+
+  const canceled = capped(6, 5, "canceled");
+  await canceled.end();
+  assert.equal(storyMeta(canceled.story).status, "implementing");
+
+  const under = capped(3.9, 5);
+  await under.end();
+  assert.notEqual(storyMeta(under.story).status, "blocked");
+  assert.deepEqual(under.created.map((agent) => agent.labels["loop-step"]), ["review"]);
+});
+
+test("a story's cost_cap_usd overrides the base cap; no cost data and a pr-open story never block", async () => {
+  const raised = capped(6, 5);
+  writeFrontmatter(raised.story, { cost_cap_usd: 10 });
+  await raised.end();
+  assert.notEqual(storyMeta(raised.story).block_kind, "cost-cap");
+
+  const lowered = capped(2.5, 5);
+  writeFrontmatter(lowered.story, { cost_cap_usd: 3 });
+  await lowered.end();
+  assert.equal(storyMeta(lowered.story).blocked_reason, "cost cap ($3.50 of $3)");
+
+  const open = capped(9, 5);
+  writeFrontmatter(open.story, { status: "pr-open" });
+  await open.end();
+  assert.notEqual(storyMeta(open.story).block_kind, "cost-cap");
+});
+
+test("a turn ending on a story that is already blocked keeps its block, even over the cap", async () => {
+  const fx = capped(6, 5, "failed", "implement-running");
+  writeFrontmatter(fx.story, { status: "blocked", blocked_from: "implementing", block_kind: "retry-limit", blocked_reason: "Gave up" });
+  await fx.end();
+  const meta = storyMeta(fx.story);
+  assert.equal(meta.block_kind, "retry-limit");
+  assert.equal(meta.blocked_from, "implementing");
+  assert.equal(meta.blocked_reason, "Gave up");
+});
+
+// Continue and Leave stopped on a cost-cap block.
+function capBlocked(kind: string, extra: Record<string, unknown> = {}) {
+  const fx = fixture("a1");
+  const marker = "implement-done";
+  const state = join(fx.worktree, ".harness", "state.md");
+  writeFileSync(state, `# S1 — Demo story\n\n## Status\n${marker}\n`, "utf8");
+  writeFrontmatter(fx.story, {
+    status: "blocked",
+    blocked_from: "implementing",
+    block_kind: kind,
+    blocked_reason: "cost cap ($5.12 of $5)",
+    ...extra,
+  });
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+    async () => null,
+    { cap: async () => 5, rows: async () => [] },
+  );
+  return { ...fx, state, initiative, ref: { repo: fx.root, initiative: "demo", storyId: "S1" } };
+}
+
+test("raiseCap adds the base cap to the story's cap and reopens it without touching the marker", async () => {
+  const fx = capBlocked("cost-cap");
+  const before = readFileSync(fx.state, "utf8");
+  await fx.initiative.raiseCap(fx.ref);
+  const meta = storyMeta(fx.story);
+  assert.deepEqual([meta.status, Number(meta.cost_cap_usd), meta.block_kind, meta.blocked_from], ["implementing", 10, undefined, undefined]);
+  assert.equal(readFileSync(fx.state, "utf8"), before);
+
+  const second = capBlocked("cost-cap", { cost_cap_usd: 10 });
+  await second.initiative.raiseCap(second.ref);
+  assert.equal(Number(storyMeta(second.story).cost_cap_usd), 15);
+
+  const left = capBlocked("cost-cap-left");
+  await left.initiative.raiseCap(left.ref);
+  assert.deepEqual([storyMeta(left.story).status, Number(storyMeta(left.story).cost_cap_usd)], ["implementing", 10]);
+});
+
+test("leaveStopped marks a cost-cap block as left and keeps it blocked", async () => {
+  const fx = capBlocked("cost-cap");
+  await fx.initiative.leaveStopped(fx.ref);
+  const meta = storyMeta(fx.story);
+  assert.deepEqual([meta.status, meta.block_kind, meta.blocked_from], ["blocked", "cost-cap-left", "implementing"]);
+});
+
+test("raiseCap and leaveStopped refuse a story that isn't blocked on a cost cap", async () => {
+  const other = capBlocked("ci");
+  const before = readFileSync(other.story, "utf8");
+  await other.initiative.raiseCap(other.ref);
+  await other.initiative.leaveStopped(other.ref);
+  await other.initiative.raiseCap({ ...other.ref, storyId: "S9" });
+  assert.equal(readFileSync(other.story, "utf8"), before);
+
+  const left = capBlocked("cost-cap-left");
+  const leftBefore = readFileSync(left.story, "utf8");
+  await left.initiative.leaveStopped(left.ref);
+  assert.equal(readFileSync(left.story, "utf8"), leftBefore);
+});
+
+test("retryStep on a cost-cap block raises the cap, so the fresh step isn't blocked again", async () => {
+  const fx = capBlocked("cost-cap", { step: "implement", round: 1 });
+  const { api, created } = fakePaseo([{ id: "a1", labels: fx.labels, status: "closed" }]);
+  const result = await fx.initiative.retryStep(api, fx.ref);
+  assert.equal(result.ok, true);
+  assert.equal(created.length, 1);
+  const meta = storyMeta(fx.story);
+  assert.deepEqual([meta.status, Number(meta.cost_cap_usd), meta.block_kind], ["implementing", 10, undefined]);
 });

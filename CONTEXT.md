@@ -121,7 +121,7 @@ Each gate carries `board` (the board's selection key, `boardKey(board)`: `repo` 
 
 _Avoid_: blocker (for any gate), task, todo, action item.
 
-**Gate action**: acting on a story's gate from outside its session (`gateAct`, `orchestration.gates.act`, with the board key, story id and action). Five actions, each belonging to one gate:
+**Gate action**: acting on a story's gate from outside its session (`gateAct`, `orchestration.gates.act`, with the board key, story id and action). Seven actions, each belonging to one gate:
 
 - **approve** (plan): sends "Approved. Go ahead." to the story's agent. Frontmatter is untouched; the planner's own `plan-done` moves the story on.
 - **changes** (plan): sends nothing and returns the agent id, so you can open the session and say what to change.
@@ -134,6 +134,8 @@ _Avoid_: blocker (for any gate), task, todo, action item.
   - If the retry message can't be sent, the story stays reopened and the error comes back.
 
   The retry button sits on a blocked story's inline panel and in its Details drawer.
+- **continue** (cost): raises the story's **Cost cap** by the base cap and reopens it. Marker running and session open → sends the continue message; session ended → the loop starts the same step in a fresh session; marker already done → nothing more. Refused off a cost-cap block. Retry on a `cost-cap-left` block behaves the same.
+- **leave** (cost): marks a `cost-cap` block as `cost-cap-left`: it stays blocked on the board but drops out of Needs you. Refused off a cost-cap block.
 
 Reopen puts the story back to `blocked_from` and clears `blocked_reason`, `blocked_from`, `block_kind`, `waiting_on`, `stalled`, `retries`, `idle_turns`, `fail_tests`, `fail_runs` and `stuck_nudged` (a `step` block also sets its state.md marker back to `<step>-running`), so the loop's marker flow and supervision pick it up again. An action is refused, with nothing sent, when the story is not on that board, its status no longer matches the action's gate ("S12 is now implementing, not awaiting approval."), it is waiting on a permission (answer it in the session), or it has no live agent (none set, unknown, or archived; a closed or errored session counts too, except for restart, which can start fresh from one, and retry, which follows its own rules above). There is no action for the merge gate. Code: `server/gate-actions.ts`.
 
@@ -242,7 +244,9 @@ The five numbers under the needs-you queue, from the epic boards, the gates and 
 
 Running, Ready and Merged show "—" until the boards first load. Each stat has a coloured dot by its label (green, blue, amber, grey) as in the design. The strip wraps on narrow layouts. Code: `statsOf` and `startOfDay` in `shared/stats-strip.ts`, `StatsStrip` and `useSpend` in `client/needs-you.tsx`.
 
-**Budget**: the host setting `budget` (`budgetSettings`, version 1): `{ dailyBudgetUsd: 25, storyCapUsd: 5 }`. Display only for now: the strip shows today's spend against the daily budget, whole dollars when whole ("$25"), and the selected-story panel shows a story's cost against the story cap. Nothing edits it and nothing enforces either number yet. Code: `shared/settings.ts`.
+**Budget**: the host setting `budget` (`budgetSettings`, version 1): `{ dailyBudgetUsd: 25, storyCapUsd: 5 }`. The strip shows today's spend against the daily budget, whole dollars when whole ("$25"), and the selected-story panel shows a story's cost against the story cap. The daily budget is display only; the story cap is enforced as the **Cost cap**. Nothing edits it yet. Code: `shared/settings.ts`.
+
+**Cost cap**: the most one story may spend, `storyCapUsd` from the **Budget** (a story's own `cost_cap_usd` overrides it once **continue** has raised it). Checked at each turn end of an agent step: a story at or over the cap blocks with `block_kind` `cost-cap` (reason "cost cap ($x.xx of $y)"), a stuck-style gate that offers **continue** and **leave**. Spend is the story's telemetry cost, counting the live session. Code: `ReadCost` and `raiseCap`/`leaveStopped` in `server/initiative-loop.ts`.
 
 _Avoid_: KPI row, metrics (for the strip); quota, limit (for the budget).
 

@@ -165,12 +165,18 @@ export function storyHistory(rows: TelemetryRow[], key: StoryKey): StoryHistory 
 
 // Σ over the story's agents of each one's last `costUsd` (costs are cumulative per session);
 // null when none of its rows has a cost. Rows written before S18 have no initiative and never match.
-export function storyCost(rows: TelemetryRow[], key: { initiative: string; story: string }): number | null {
+// `live` replaces that agent's last cost (and counts it when the agent has no rows yet).
+export function storyCost(
+  rows: TelemetryRow[],
+  key: { initiative: string; story: string },
+  live?: { agentId: string; costUsd: number },
+): number | null {
   const last = new Map<string, number>();
   for (const row of rows) {
     if (row.initiative !== key.initiative || row.story !== key.story || typeof row.costUsd !== "number") continue;
     last.set(row.agentId, row.costUsd);
   }
+  if (live) last.set(live.agentId, live.costUsd);
   if (last.size === 0) return null;
   let total = 0;
   for (const cost of last.values()) total += cost;

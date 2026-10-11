@@ -12,6 +12,7 @@ function story(id: string, fields: Partial<EpicStory> = {}): EpicStory {
     blockedBy: "",
     blockedReason: "",
     blockedFrom: "",
+    blockKind: "",
     skillWarnings: "",
     discoveredFrom: "",
     pr: null,
@@ -178,5 +179,24 @@ test("gateRow: tag is the story id, text is the title then the gate text, and ac
     where: "Redesign · Phase 1",
     primary: { kind: "open-pr", label: "Review & merge", url },
     secondary: null,
+  });
+});
+
+test("cost gate: a cost-cap block gives a cost gate with Continue / Leave stopped; cost-cap-left gives none", () => {
+  const capped = story("S11", { status: "blocked", blockKind: "cost-cap", blockedReason: "Spent $5.25 of $5.00" });
+  const left = story("S12", { status: "blocked", blockKind: "cost-cap-left", blockedReason: "Spent $5.25 of $5.00" });
+  const gates = gatesOf([board("repo", "init", "Redesign", "phase-1", [capped, left])]);
+
+  assert.deepEqual(
+    gates.map((g) => [g.kind, g.storyId, g.text]),
+    [["cost", "S11", "Spent $5.25 of $5.00"]],
+  );
+  assert.equal(needsYou(left), false);
+  assert.deepEqual(gateRow(gates[0]), {
+    tag: "S11",
+    text: "Name: Spent $5.25 of $5.00".replace("Name", gates[0].title),
+    where: gates[0].where,
+    primary: { kind: "continue", label: "Continue" },
+    secondary: { kind: "leave", label: "Leave stopped" },
   });
 });

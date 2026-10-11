@@ -3,7 +3,7 @@ import { z } from "zod";
 import { phaseLabel, type EpicBoard, type EpicStory } from "./orchestration";
 
 // Where an agent is paused waiting on you: a plan to approve, a green PR to merge, or a blocked story.
-export type GateKind = "plan" | "merge" | "stuck";
+export type GateKind = "plan" | "merge" | "stuck" | "cost";
 
 export type Gate = {
   kind: GateKind;
@@ -25,7 +25,11 @@ export const boardKey = (board: Pick<EpicBoard, "repo" | "initiative">) => `${bo
 function gateKind(story: EpicStory): GateKind | null {
   if (story.status === "awaiting-approval") return "plan";
   if (story.status === "pr-open" && story.ci === "green") return "merge";
-  if (story.status === "blocked") return "stuck";
+  if (story.status === "blocked") {
+    if (story.blockKind === "cost-cap") return "cost";
+    if (story.blockKind === "cost-cap-left") return null;
+    return "stuck";
+  }
   return null;
 }
 
@@ -33,6 +37,7 @@ const TEXT: Record<GateKind, (story: EpicStory) => string> = {
   plan: () => "Plan awaiting approval",
   merge: (story) => (story.pr === null ? "PR ready to merge" : `PR #${story.pr} ready to merge`),
   stuck: (story) => story.blockedReason || "Blocked",
+  cost: (story) => story.blockedReason || "Cost cap reached",
 };
 
 // A story waits on you when its plan needs approval, it is blocked, or its PR is green and ready to merge.
@@ -63,7 +68,7 @@ export const gateRowLabel = (gate: Gate) => `${gate.text}, ${gate.where}`;
 
 // What you can do to a gate from outside the session: approve or request changes on a plan gate,
 // nudge, restart or retry a stuck one (see CONTEXT.md, "Gate action").
-export const GATE_ACTIONS = ["approve", "changes", "nudge", "restart", "retry"] as const;
+export const GATE_ACTIONS = ["approve", "changes", "nudge", "restart", "retry", "continue", "leave"] as const;
 export type GateAction = (typeof GATE_ACTIONS)[number];
 
 // One gate action on a story. `board` is the board key (boardKey). `agentId` in the output is the
@@ -98,6 +103,10 @@ const ROW_ACTIONS: Record<GateKind, (gate: Gate) => Pick<GateRow, "primary" | "s
   stuck: () => ({
     primary: { kind: "restart", label: "Restart from handoff" },
     secondary: { kind: "nudge", label: "Nudge" },
+  }),
+  cost: () => ({
+    primary: { kind: "continue", label: "Continue" },
+    secondary: { kind: "leave", label: "Leave stopped" },
   }),
   merge: (gate) => ({ primary: { kind: "open-pr", label: "Review & merge", url: gate.prUrl }, secondary: null }),
 };

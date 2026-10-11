@@ -13,6 +13,7 @@ function story(id: string, fields: Partial<EpicStory> = {}): EpicStory {
     blockedBy: "",
     blockedReason: "",
     blockedFrom: "",
+    blockKind: "",
     skillWarnings: "",
     discoveredFrom: "",
     pr: null,

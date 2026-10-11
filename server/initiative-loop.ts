@@ -8,6 +8,8 @@ import type { AgentCreateConfig } from "../shared/agent-runner";
 import { LOOP_AGENT_KIND, type LoopConfig } from "../shared/initiative-loop";
 import { branchName } from "../shared/naming";
 import { phaseLabel } from "../shared/orchestration";
+import { budgetMoney } from "../shared/stats-strip";
+import { storyCost, type TelemetryRow } from "./context-telemetry";
 import { DEFAULT_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import type { ToolItem } from "../shared/exploration";
 import { stuckCheck, type StuckCounters } from "../shared/stuck";
@@ -213,7 +215,15 @@ function recordOutcome(story: StoryFile, event: OutcomeEvent) {
 
 // `kind` names what blocked it, so the loop can tell its own give-up from the rest and Retry knows what
 // to redo: `start` and `pr` and `ci` need no agent, `retry-limit`, `step` and `stuck` do. A permission wait has none.
-export type BlockKind = "start" | "pr" | "ci" | "retry-limit" | "step" | "stuck";
+// `cost-cap` is a story over its cost cap; `cost-cap-left` is the same block after Leave stopped.
+export type BlockKind = "start" | "pr" | "ci" | "retry-limit" | "step" | "stuck" | "cost-cap" | "cost-cap-left";
+// What the cost cap needs: the base cap in dollars and the telemetry rows to total a story's spend from.
+export type ReadCost = { cap: () => number | Promise<number>; rows: () => TelemetryRow[] | Promise<TelemetryRow[]> };
+// A story's cost cap: its own `cost_cap_usd` once Continue has raised it, else the base cap.
+function storyCap(story: StoryFile, base: number) {
+  const own = Number(story.meta.cost_cap_usd);
+  return own > 0 ? own : base;
+}
 // A permission wait is answered in the session, so it passes `record = false` and stays out of ## Outcome.
 function block(story: StoryFile, reason: string, kind?: BlockKind, record = true) {
   if (record) recordOutcome(story, { kind: "blocked", reason });
@@ -232,6 +242,8 @@ export function createInitiativeLoop(
   readPipeline: () => Promise<{ phases: Phase[]; sources: SkillSource[] }>,
   // The branch prefix (`dm`), or null for none.
   readInitials: () => Promise<string | null> = async () => null,
+  // The cost cap: a story at or over it blocks at its turn end. Absent, nothing is capped.
+  readCost?: ReadCost,
 ) {
   let paseo: PaseoApi | null = null;
   // Steps started by this process, so a repeated event can't start one twice before its label shows.
@@ -834,6 +846,15 @@ export function createInitiativeLoop(
       });
     },
 
+    // Whether the story's step marker is still `<step>-running`; false when there is no step or worktree.
+    stepRunning(input: StoryRef): Promise<boolean> {
+      return serial(async () => {
+        const meta = findStory(input)?.meta;
+        if (!meta?.step || !meta.worktree) return false;
+        return readMarker(readText(stateFile(meta.worktree))).marker === `${meta.step}-running`;
+      });
+    },
+
     // A gate action got the agent going again: the story goes back to the step it blocked from, with
     // its retries reset, so the marker flow and supervision pick it up. A CI block gets a fresh fix
     // budget, and a step block's marker goes back to running so reconcile doesn't block it again.
@@ -862,6 +883,40 @@ export function createInitiativeLoop(
       });
     },
 
+    // Continue on a cost-cap block (or Retry on one that was left): the story's cap goes up by the base
+    // cap and the story goes back to the step it blocked from. The state.md marker is left as it is, so
+    // the caller decides whether anything needs waking. Any other block is refused and left alone.
+    raiseCap(input: StoryRef): Promise<void> {
+      return serial(async () => {
+        const story = findStory(input);
+        const kind = story?.meta.block_kind;
+        if (!story || !readCost || story.meta.status !== "blocked" || (kind !== "cost-cap" && kind !== "cost-cap-left")) return;
+        if (!story.meta.blocked_from) return;
+        const base = await readCost.cap();
+        writeFrontmatter(story.path, {
+          cost_cap_usd: storyCap(story, base) + base,
+          status: story.meta.blocked_from,
+          blocked_reason: null,
+          blocked_from: null,
+          block_kind: null,
+          waiting_on: null,
+          stalled: null,
+          paused_until: null,
+          retries: null,
+        });
+      });
+    },
+
+    // Leave stopped on a cost-cap block: it stays blocked on the board but is marked as left, so it
+    // drops out of Needs you. Only a story blocked on a cost cap is touched.
+    leaveStopped(input: StoryRef): Promise<void> {
+      return serial(async () => {
+        const story = findStory(input);
+        if (story?.meta.status !== "blocked" || story.meta.block_kind !== "cost-cap") return;
+        writeFrontmatter(story.path, { block_kind: "cost-cap-left" });
+      });
+    },
+
     // Retry on a blocked step whose session ended or is gone: the step starts again in a fresh session,
     // same step, round and cycle, as supervise does for a dead session. startStep clears the block.
     // Anything but a blocked agent step is refused and left alone; startStep's own error comes back as is.
@@ -876,6 +931,11 @@ export function createInitiativeLoop(
         const step = meta.step as LoopStep | undefined;
         if (!step || !SUPERVISED_STEPS.has(step)) {
           return { ok: false, error: `${story.id} has no step to start again.`, agentId: null };
+        }
+        // A cost-cap block raises its cap first, so the fresh step isn't blocked again on its first turn end.
+        if (readCost && (meta.block_kind === "cost-cap" || meta.block_kind === "cost-cap-left")) {
+          const base = await readCost.cap();
+          writeFrontmatter(story.path, { cost_cap_usd: storyCap(story, base) + base });
         }
         try {
           const state = meta.worktree ? readText(stateFile(meta.worktree)) : "";
@@ -910,7 +970,8 @@ export function createInitiativeLoop(
       if (event.outcome.kind === "canceled") return Promise.resolve();
       const outcome = event.outcome;
       return serial(async () => {
-        const labels = (await api.agents.ref(event.agent.id).refresh())?.agent.labels ?? {};
+        const refreshed = (await api.agents.ref(event.agent.id).refresh())?.agent;
+        const labels = refreshed?.labels ?? {};
         if (labels.kind !== KIND || !labels["loop-repo"] || !labels["loop-initiative"]) return;
         const init = initiativeAt(labels["loop-repo"], labels["loop-initiative"]);
         const phaseDir = join(init.dir, PHASES_DIR, labels["loop-phase"] ?? "");
@@ -924,6 +985,22 @@ export function createInitiativeLoop(
         if (labels["loop-step"] !== story.meta.step) return;
         if ((labels["loop-cycle"] ?? "") !== (story.meta.cycle ?? "")) return;
         if ((labels["loop-cycles"] ?? "") !== (story.meta.cycles ?? "")) return;
+        // The cost cap: a story at or over it blocks before anything new starts. This turn's cost is the
+        // agent's live figure, since the context watch may not have written its row yet. A story that is
+        // already blocked keeps the block it has, so Retry still knows what to redo.
+        if (readCost && story.meta.status !== "pr-open" && story.meta.status !== "blocked") {
+          const live = refreshed?.lastUsage?.totalCostUsd;
+          const spent = storyCost(
+            await readCost.rows(),
+            { initiative: labels["loop-initiative"], story: story.id },
+            typeof live === "number" ? { agentId: event.agent.id, costUsd: live } : undefined,
+          );
+          const cap = storyCap(story, await readCost.cap());
+          if (spent !== null && cap > 0 && spent >= cap) {
+            block(story, `cost cap ($${spent.toFixed(2)} of ${budgetMoney(cap)})`, "cost-cap");
+            return;
+          }
+        }
         // A failed turn is retried by the tick, which gives a rate limit or outage time to clear. One
         // that hit the plan's usage limit waits for the reset instead, and isn't a retry.
         if (outcome.kind === "failed") {

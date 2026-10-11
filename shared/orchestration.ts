@@ -400,6 +400,8 @@ export const epicStory = z.object({
   blockedReason: z.string(),
   // The status the story was in when it was blocked. Empty when unset.
   blockedFrom: z.string(),
+  // From frontmatter `block_kind:`, why the loop blocked it (e.g. "cost-cap"). Empty when unset.
+  blockKind: z.string(),
   // Written by the initiative loop: the step's skill warnings, joined with " · ". Empty when none.
   skillWarnings: z.string(),
   // Set when an agent filed this story while working on another.

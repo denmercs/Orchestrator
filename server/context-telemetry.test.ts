@@ -280,6 +280,18 @@ test("storyCost sums the last cost of each of the story's agents", () => {
   assert.equal(storyCost([], S11), null);
 });
 
+test("storyCost replaces an agent's last cost with a live figure, and counts an agent with no rows", () => {
+  const rows: TelemetryRow[] = [
+    row("2026-10-01T10:01:00.000Z", "p1", 60_000, "turn", { ...S11, step: "plan", costUsd: 1.25 }),
+    row("2026-10-01T10:02:00.000Z", "i1", 30_000, "turn", { ...S11, step: "implement", costUsd: 2 }),
+  ];
+
+  assert.equal(storyCost(rows, S11, { agentId: "i1", costUsd: 4 }), 5.25);
+  assert.equal(storyCost(rows, S11, { agentId: "new", costUsd: 1 }), 4.25);
+  assert.equal(storyCost([], S11, { agentId: "new", costUsd: 1 }), 1);
+  assert.equal(storyCost(rows, S11), 3.25);
+});
+
 test("summariseTelemetry sums each agent's last explore per step and counts null as unknown", async () => {
   const file = join(root, "explore.jsonl");
   const count = (reads: number, files: number, chars: number, edited: boolean) => ({ reads, searches: 1, files, chars, edited });

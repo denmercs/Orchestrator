@@ -16,7 +16,7 @@ const RUNNING = new Set(["planning", "implementing", "reviewing"]);
 
 const money = (usd: number) => `$${usd.toFixed(2)}`;
 // Whole-dollar budgets read as "$25", others with cents.
-const budgetMoney = (usd: number) => (Number.isInteger(usd) ? `$${usd}` : money(usd));
+export const budgetMoney = (usd: number) => (Number.isInteger(usd) ? `$${usd}` : money(usd));
 
 // `boards` is null until the first read lands; the board stats show "—" until then.
 export function statsOf(input: {

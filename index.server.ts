@@ -124,7 +124,7 @@ export default function contribute(
   server.registerUsageSource?.(kiroUsageSource());
   server.registerSettings(standupSettings);
   server.registerSettings(dashboardSettings);
-  server.registerSettings(budgetSettings);
+  const budget = server.registerSettings(budgetSettings);
   const runnerSettings = server.registerSettings(agentRunnerSettings);
   const readRunnerProfileId = async () => {
     const state = await runnerSettings.read();
@@ -188,6 +188,13 @@ export default function contribute(
       return values ? { phases: values.phases, sources: values.sources } : { phases: DEFAULT_PHASES, sources: [] };
     },
     readInitials,
+    {
+      cap: async () => {
+        const state = await budget.read();
+        return (state.status === "ready" ? state.values : budgetSettings.schema.parse({})).storyCapUsd;
+      },
+      rows: () => readTelemetry(),
+    },
   );
   // The Initiatives tab and the loop start file both start the loop here.
   const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: Parameters<typeof initiativeLoop.start>[0]) =>
