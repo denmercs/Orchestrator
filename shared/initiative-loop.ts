@@ -36,6 +36,7 @@ const loopValues = z.object({
   // Times the loop restarts or nudges a step whose session failed, died or stopped without its
   // marker, before the story blocks for you.
   maxRetries: z.number().int().min(0).max(10).default(2),
+  stuckTurns: z.number().int().min(3).max(30).default(8),
   // Local hours [holdFrom, holdUntil) in which the loop starts no new story and doesn't resume a step
   // paused by the plan limit, so a limit that resets mid-morning doesn't spend the window you work in
   // (6 and 22 hold all day and leave the night to the loop). Steps already running carry on. Null is off.
