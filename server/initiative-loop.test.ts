@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -11,6 +11,7 @@ import { DEFAULT_PHASES, type SkillSource } from "../shared/pipeline";
 import { readMarker } from "../shared/story-method";
 import { gatesOf } from "../shared/gates";
 import type { TelemetryRow } from "./context-telemetry";
+import { worktreeFingerprint } from "./turn-progress";
 import { frontmatter, readStories, writeFrontmatter } from "./harness-layout";
 import { sourceId } from "./skill-sources";
 
@@ -45,6 +46,7 @@ type Agent = {
   lastError?: string;
   archivedAt?: string;
   lastUsage?: { totalCostUsd?: number };
+  activeTurn?: { turnId: string; startedAt: string | null } | null;
 };
 
 // A repo with one initiative (loop on), one phase and one story mid-Implement in a worktree.
@@ -83,7 +85,7 @@ function fixture(agent = "a1") {
 // A fake Paseo: live agents by id; workspace creates are recorded and become live agents, and
 // follow-ups are recorded in `sent`.
 function fakePaseo(live: Agent[]) {
-  const sent: { id: string; text: string }[] = [];
+  const sent: { id: string; text: string; options?: { activeTurnBehavior?: string } }[] = [];
   const archived: string[] = [];
   const created: {
     workspace: string;
@@ -99,8 +101,8 @@ function fakePaseo(live: Agent[]) {
           const found = live.find((agent) => agent.id === id);
           return found ? { agent: { status: "idle", ...found } } : null;
         },
-        send: async (text: string) => {
-          sent.push({ id, text });
+        send: async (text: string, options?: { activeTurnBehavior?: string }) => {
+          sent.push(options ? { id, text, options } : { id, text });
         },
       }),
       list: async () => ({ entries: live.map((agent) => ({ agent })) }),
@@ -399,13 +401,14 @@ test("a Diagnose blocked by the retry limit that then writes diagnose-done is re
 
 test("starting a new step clears the stuck counters and the nudge", async () => {
   const fx = diagnoseEnded("diagnose-done");
-  writeFrontmatter(fx.story, { idle_turns: 2, fail_tests: '["a"]', fail_runs: 2, stuck_nudged: 1 });
+  writeFrontmatter(fx.story, { idle_turns: 2, fail_tests: '["a"]', fail_runs: 2, stuck_nudged: 1, mid_turn: "t1", mid_fingerprint: "f", mid_changed: "2026-10-11T09:00:00.000Z", mid_nudged: "2026-10-11T09:00:00.000Z" });
 
   await loop().onTurnEnded(fx.api, fx.turnEnded("a1"));
 
   assert.deepEqual(fx.created.map((agent) => agent.labels["loop-step"]), ["implement"]);
   const meta = storyMeta(fx.story);
   assert.deepEqual([meta.idle_turns, meta.fail_tests, meta.fail_runs, meta.stuck_nudged], [undefined, undefined, undefined, undefined]);
+  assert.deepEqual([meta.mid_turn, meta.mid_fingerprint, meta.mid_changed, meta.mid_nudged], [undefined, undefined, undefined, undefined]);
 });
 
 test("reopen clears the stuck counters and the nudge", async () => {
@@ -418,12 +421,14 @@ test("reopen clears the stuck counters and the nudge", async () => {
     fail_tests: '["a"]',
     fail_runs: 3,
     stuck_nudged: 1,
+    mid_turn: "t1", mid_fingerprint: "f", mid_changed: "2026-10-11T09:00:00.000Z", mid_nudged: "2026-10-11T09:00:00.000Z",
   });
 
   await loop().reopen({ repo: root, initiative: "demo", storyId: "S1" });
 
   const meta = storyMeta(story);
   assert.deepEqual([meta.idle_turns, meta.fail_tests, meta.fail_runs, meta.stuck_nudged], [undefined, undefined, undefined, undefined]);
+  assert.deepEqual([meta.mid_turn, meta.mid_fingerprint, meta.mid_changed, meta.mid_nudged], [undefined, undefined, undefined, undefined]);
 });
 
 test("the parent's implement-done commits once and starts Review; with a cycle unticked the story blocks", async () => {
@@ -1867,4 +1872,190 @@ test("retryStep on a cost-cap block raises the cap, so the fresh step isn't bloc
   assert.equal(created.length, 1);
   const meta = storyMeta(fx.story);
   assert.deepEqual([meta.status, Number(meta.cost_cap_usd), meta.block_kind], ["implementing", 10, undefined]);
+});
+
+// Writes one brief log of a failing test run into the worktree, as the brief wrapper would.
+function failingLog(worktree: string, name: string, test: string) {
+  mkdirSync(join(worktree, ".harness", "logs"), { recursive: true });
+  writeFileSync(join(worktree, ".harness", "logs", name), `brief: exit 1\nnot ok 1 - ${test}\n# tests 3\n# fail 1\n`, "utf8");
+}
+
+test("a running step whose turn has 3 failing test runs gets one steered nudge, and not another", async () => {
+  const { worktree, story, labels } = fixture("a1");
+  const startedAt = new Date(Date.now() - 60_000).toISOString();
+  for (const stamp of ["01", "02", "03"]) failingLog(worktree, `implement-2026-10-11T10-00-${stamp}.log`, "parses a turn");
+  const { api, sent } = fakePaseo([{ id: "a1", labels, status: "running", activeTurn: { turnId: "t1", startedAt } }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+  await initiative.tick();
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].options, { activeTurnBehavior: "steer" });
+  assert.match(sent[0].text, /You look stuck: .*parses a turn/);
+  const meta = storyMeta(story);
+  assert.equal(meta.stuck_nudged, "1");
+  assert.ok(Date.parse(meta.mid_nudged ?? ""));
+  assert.equal(meta.mid_turn, "t1");
+  assert.deepEqual([meta.retries, meta.stalled, meta.status], [undefined, undefined, "implementing"]);
+});
+
+// Makes the fixture's worktree a git repo with one commit, so its fingerprint is real.
+function gitWorktree(worktree: string) {
+  const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: worktree, stdio: "pipe" });
+  git("init", "-q");
+  writeFileSync(join(worktree, "a.txt"), "one\n", "utf8");
+  git("add", "a.txt");
+  git("commit", "-q", "-m", "init");
+}
+
+function idleFixture(midTurn: string, minutesAgo: number, fingerprint?: string) {
+  const fx = fixture("a1");
+  gitWorktree(fx.worktree);
+  const changed = new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  writeFrontmatter(fx.story, {
+    mid_turn: midTurn,
+    mid_fingerprint: fingerprint ?? worktreeFingerprint(fx.worktree),
+    mid_changed: changed,
+    mid_nudged: "2026-10-11T09:00:00.000Z",
+  });
+  return { ...fx, changed };
+}
+
+const runningTurn = (labels: Record<string, string>) => [
+  { id: "a1", labels, status: "running", activeTurn: { turnId: "t1", startedAt: new Date(Date.now() - 60_000).toISOString() } },
+];
+
+test("a running Implement turn with no file edits for 21 minutes gets one steered nudge", async () => {
+  const fx = idleFixture("t1", 21);
+  writeFrontmatter(fx.story, { mid_nudged: null });
+  const { api, sent } = fakePaseo(runningTurn(fx.labels));
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].options, { activeTurnBehavior: "steer" });
+  assert.match(sent[0].text, /You look stuck: no file edits in 20 minutes/);
+  const meta = storyMeta(fx.story);
+  assert.equal(meta.stuck_nudged, "1");
+  assert.ok(Date.parse(meta.mid_nudged ?? ""));
+});
+
+test("a new turn id resets the mid-turn fields and sends no nudge, however old the stored change", async () => {
+  const fx = idleFixture("t0", 60);
+  const { api, sent } = fakePaseo(runningTurn(fx.labels));
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.equal(sent.length, 0);
+  const meta = storyMeta(fx.story);
+  assert.equal(meta.mid_turn, "t1");
+  assert.equal(meta.mid_nudged, undefined);
+  assert.equal(meta.stuck_nudged, undefined);
+  // The fresh turn's first sight of the worktree starts its own idle clock.
+  assert.equal(meta.mid_fingerprint, worktreeFingerprint(fx.worktree) ?? "");
+  assert.ok(Date.now() - Date.parse(meta.mid_changed ?? "") < 60_000);
+});
+
+test("a fingerprint change within a turn records a new mid_changed without a nudge", async () => {
+  const fx = idleFixture("t1", 60, "stale-fingerprint");
+  writeFrontmatter(fx.story, { mid_nudged: null });
+  const { api, sent } = fakePaseo(runningTurn(fx.labels));
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.equal(sent.length, 0);
+  const meta = storyMeta(fx.story);
+  assert.equal(meta.mid_fingerprint, worktreeFingerprint(fx.worktree) ?? "");
+  assert.ok(Date.now() - Date.parse(meta.mid_changed ?? "") < 60_000);
+});
+
+test("evidence again after the mid-turn nudge blocks the story as stuck and interrupts the turn", async () => {
+  const { worktree, story, labels } = fixture("a1");
+  const nudged = new Date(Date.now() - 30_000).toISOString();
+  writeFrontmatter(story, { mid_turn: "t1", mid_nudged: nudged, stuck_nudged: 1 });
+  // Runs from before the nudge are old evidence; three newer failing runs are new.
+  failingLog(worktree, "implement-2026-10-11T09-00-01.log", "old failure");
+  utimesSync(join(worktree, ".harness", "logs", "implement-2026-10-11T09-00-01.log"), new Date(Date.now() - 50_000), new Date(Date.now() - 50_000));
+  for (const stamp of ["01", "02", "03"]) failingLog(worktree, `implement-2026-10-11T10-00-${stamp}.log`, "parses a turn");
+  const { api, sent } = fakePaseo(runningTurn(labels));
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  const meta = storyMeta(story);
+  assert.equal(meta.status, "blocked");
+  assert.match(meta.blocked_reason ?? "", /^stuck: .*parses a turn/);
+  assert.equal(meta.block_kind, "stuck");
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].options, { activeTurnBehavior: "interrupt" });
+  assert.match(sent[0].text, /The loop blocked this story as stuck: .*stop and wait/);
+});
+
+test("runs from before the mid-turn nudge are not evidence again", async () => {
+  const { worktree, story, labels } = fixture("a1");
+  for (const stamp of ["01", "02", "03"]) failingLog(worktree, `implement-2026-10-11T10-00-${stamp}.log`, "parses a turn");
+  writeFrontmatter(story, { mid_turn: "t1", mid_nudged: new Date(Date.now() + 60_000).toISOString(), stuck_nudged: 1 });
+  const { api, sent } = fakePaseo(runningTurn(labels));
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.equal(sent.length, 0);
+  assert.equal(storyMeta(story).status, "implementing");
+});
+
+test("a passing test run after the mid-turn nudge clears both nudge fields and sends nothing", async () => {
+  const { worktree, story, labels } = fixture("a1");
+  writeFrontmatter(story, { mid_turn: "t1", mid_nudged: new Date(Date.now() - 30_000).toISOString(), stuck_nudged: 1 });
+  mkdirSync(join(worktree, ".harness", "logs"), { recursive: true });
+  writeFileSync(join(worktree, ".harness", "logs", "implement-2026-10-11T10-00-01.log"), "brief: exit 0\n# tests 3\n# pass 3\n# fail 0\n", "utf8");
+  const { api, sent } = fakePaseo(runningTurn(labels));
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.equal(sent.length, 0);
+  const meta = storyMeta(story);
+  assert.deepEqual([meta.stuck_nudged, meta.mid_nudged, meta.status], [undefined, undefined, "implementing"]);
+});
+
+test("a fingerprint change after the mid-turn nudge clears both nudge fields and sends nothing", async () => {
+  const fx = idleFixture("t1", 60, "stale-fingerprint");
+  writeFrontmatter(fx.story, { stuck_nudged: 1 });
+  const { api, sent } = fakePaseo(runningTurn(fx.labels));
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.equal(sent.length, 0);
+  const meta = storyMeta(fx.story);
+  assert.deepEqual([meta.stuck_nudged, meta.mid_nudged, meta.status], [undefined, undefined, "implementing"]);
+});
+
+test("idle evidence after a mid-turn nudge counts from the nudge, so it does not block on the next tick", async () => {
+  const fx = idleFixture("t1", 21);
+  writeFrontmatter(fx.story, { mid_nudged: null });
+  const { api, sent } = fakePaseo(runningTurn(fx.labels));
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+  await initiative.tick();
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].options, { activeTurnBehavior: "steer" });
+  assert.equal(storyMeta(fx.story).status, "implementing");
+  assert.ok(Date.now() - Date.parse(storyMeta(fx.story).mid_changed ?? "") < 60_000);
 });

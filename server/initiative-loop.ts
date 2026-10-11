@@ -12,7 +12,7 @@ import { budgetMoney } from "../shared/stats-strip";
 import { storyCost, type TelemetryRow } from "./context-telemetry";
 import { DEFAULT_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import type { ToolItem } from "../shared/exploration";
-import { stuckCheck, type StuckCounters } from "../shared/stuck";
+import { midTurnCheck, stuckCheck, type StuckCounters } from "../shared/stuck";
 import { appendOutcome, type OutcomeEvent } from "../shared/story-outcome";
 import {
   PHASES_DIR,
@@ -53,10 +53,20 @@ import {
 import { withMcpScope } from "./mcp-scope";
 import { installSkills, skillPaths } from "./skill-sources";
 import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
+import { briefRuns, worktreeFingerprint } from "./turn-progress";
 import { inHoldWindow, usageLimitResumeAt } from "./usage-limit";
 
 // The stuck evidence a step carries in its frontmatter; a new step or a reopen starts it clean.
-const STUCK_CLEAR = { idle_turns: null, fail_tests: null, fail_runs: null, stuck_nudged: null };
+const STUCK_CLEAR = {
+  idle_turns: null,
+  fail_tests: null,
+  fail_runs: null,
+  stuck_nudged: null,
+  mid_turn: null,
+  mid_fingerprint: null,
+  mid_changed: null,
+  mid_nudged: null,
+};
 
 // The initiative loop, driven by Paseo events rather than a long-running process:
 //   Start            marks the initiative loop: on and starts every ready story of its active phase.
@@ -78,6 +88,9 @@ const STUCK_CLEAR = { idle_turns: null, fail_tests: null, fail_runs: null, stuck
 //                    same test failing 3 brief test runs in a row. The first time, one nudge names it (no
 //                    retry counted); if it still holds on a later turn the story blocks as `stuck`. Progress
 //                    resets it; a new step or a reopen starts clean.
+//                    The tick also reads a running turn from disk: 3 failing brief logs in a row, or (Implement
+//                    only) no change outside .harness/ for 20 minutes. The first time one nudge is steered into
+//                    the turn; evidence again after it blocks as `stuck` and interrupts the turn.
 // The story files are the state: the loop writes status, branch, workspace, agent, pr and ci into
 // their frontmatter, so it resumes from them after a restart. Paseo owns the worktrees and agents.
 
@@ -647,6 +660,10 @@ export function createInitiativeLoop(
       .then((found) => found?.agent ?? null, () => undefined);
     // Paseo didn't answer: that says nothing about the session, so try again next tick.
     if (session === undefined) return;
+    if (session?.status === "running" && session.activeTurn) {
+      await midTurnWatch(api, story, step, session.activeTurn);
+      return;
+    }
     if (session?.status === "running" || session?.status === "initializing") return;
     const dead = !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
     if (!dead && !meta.stalled && !resuming) return;
@@ -679,6 +696,63 @@ export function createInitiativeLoop(
       cycles,
       attempt: retries + 1,
     });
+  }
+
+  // When each running turn was first seen, for a turn whose start time Paseo didn't report.
+  const turnSeen = new Map<string, number>();
+
+  // Reads a running turn's progress from disk (the brief logs since it started). The first evidence is
+  // one nudge steered into the running turn, so it isn't interrupted; the nudge is shared with the
+  // turn-end check (`stuck_nudged`). A send that fails records nothing, so the next tick tries again.
+  async function midTurnWatch(
+    api: PaseoApi,
+    story: StoryFile,
+    step: LoopStep,
+    turn: { turnId: string; startedAt: string | null },
+  ) {
+    const { meta } = story;
+    if (!meta.worktree || !meta.agent) return;
+    // A new turn starts the mid-turn fields over.
+    if (meta.mid_turn !== turn.turnId) {
+      writeFrontmatter(story.path, { mid_turn: turn.turnId, mid_fingerprint: null, mid_changed: null, mid_nudged: null });
+    }
+    const carried = meta.mid_turn === turn.turnId;
+    const key = `${meta.agent}:${turn.turnId}`;
+    if (!turnSeen.has(key)) turnSeen.set(key, Date.now());
+    const startedMs = Date.parse(turn.startedAt ?? "");
+    const turnStart = Number.isNaN(startedMs) ? (turnSeen.get(key) as number) : startedMs;
+    // After the nudge, only runs made since it count as evidence again.
+    const nudgedMs = carried ? Date.parse(meta.mid_nudged ?? "") : Number.NaN;
+    const since = Number.isNaN(nudgedMs) ? turnStart : Math.max(turnStart, nudgedMs);
+    const runs = briefRuns(meta.worktree, step, since).map((run) => run.failures);
+    const subagents = meta.cycles === "subagents";
+    // Only Implement judges idleness, so only it pays for the git work.
+    const fingerprint = step === "implement" && !subagents ? worktreeFingerprint(meta.worktree) : null;
+    const stored = { fingerprint: carried ? meta.mid_fingerprint || null : null, changed: carried ? meta.mid_changed || null : null };
+    const { mid, evidence, progressed } = midTurnCheck({ runs, fingerprint, now: Date.now(), mid: stored, step, subagents });
+    if (mid.fingerprint !== stored.fingerprint || mid.changed !== stored.changed) {
+      writeFrontmatter(story.path, { mid_fingerprint: mid.fingerprint, mid_changed: mid.changed });
+    }
+    // Progress after a nudge starts the spell over.
+    if (progressed) {
+      if (meta.stuck_nudged || meta.mid_nudged) writeFrontmatter(story.path, { stuck_nudged: null, mid_nudged: null });
+      return;
+    }
+    if (!evidence) return;
+    // Already nudged (here or at a turn end) and still stuck: block, then stop the running turn.
+    if (meta.stuck_nudged || (carried && meta.mid_nudged)) {
+      block(story, `stuck: ${evidence}`, "stuck");
+      await api.agents
+        .ref(meta.agent)
+        .send(`The loop blocked this story as stuck: ${evidence}; stop and wait.`, { activeTurnBehavior: "interrupt" })
+        .catch(() => undefined);
+      return;
+    }
+    const text = nudgePrompt(`You look stuck: ${evidence}.`);
+    const sent = await api.agents.ref(meta.agent).send(text, { activeTurnBehavior: "steer" }).then(() => true, () => false);
+    // Idleness is judged again from the nudge, not from the stale edit time.
+    const nudgedAt = new Date().toISOString();
+    if (sent) writeFrontmatter(story.path, { stuck_nudged: 1, mid_nudged: nudgedAt, mid_changed: nudgedAt });
   }
 
   // A story's worktree was removed mid-step, so there is nothing to resume. Its work went somewhere,

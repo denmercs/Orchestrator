@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { stuckCheck, testRuns, type StuckCounters } from "./stuck";
+import { MID_TURN_IDLE_MS, briefTestFailures, midTurnCheck, stuckCheck, testRuns, type StuckCounters } from "./stuck";
 import type { ToolItem } from "./exploration";
 
 const shell = (command: string, output: string): ToolItem => ({ type: "tool_call", status: "completed", detail: { type: "shell", command, output } });
 const brief = (output: string) => shell(".harness/bin/brief npm test", `brief: exit 1 · 9 lines · full log .harness/logs/x.log\n${output}`);
+
+test("briefTestFailures reads a raw log: TAP names, failing tests block, passing, and no summary", () => {
+  const tap = ["not ok 3 - parses a turn", "not ok 3 - parses a turn", "# tests 5", "# fail 1"].join("\n");
+  assert.deepEqual(briefTestFailures(tap), ["parses a turn"]);
+  const block = ["✖ failing tests:", "✖ first one (1.2ms)", "ℹ tests 4", "ℹ fail 1"].join("\n");
+  assert.deepEqual(briefTestFailures(block), ["first one"]);
+  assert.deepEqual(briefTestFailures("# tests 5\n# pass 5\n# fail 0"), []);
+  assert.equal(briefTestFailures("error TS2322: bad type"), null);
+});
 
 test("testRuns reads failing names from TAP not ok lines", () => {
   const output = ["not ok 3 - parses a turn", "  ---", "  error: boom", "  ...", "# tests 5", "# pass 4", "# fail 1"].join("\n");
@@ -92,5 +101,52 @@ test("stuckCheck restarts the streak on disjoint failures and resets on a pass",
 
 test("stuckCheck names the failing test when both signals hold", () => {
   const r = stuckCheck({ ...zero, idle_turns: 2, fail_tests: ["a"], fail_runs: 2 }, [fail("a")], opts);
+  assert.equal(r.evidence, "a failed 3 test runs in a row");
+});
+
+const NOW = Date.parse("2026-01-01T12:00:00.000Z");
+const iso = (ms: number) => new Date(ms).toISOString();
+const midOpts = { now: NOW, mid: { fingerprint: "f1", changed: iso(NOW - 60_000) }, step: "implement", subagents: false };
+
+test("midTurnCheck names a test failing in 3 runs, with +N more, and a passing last run is progress", () => {
+  const r = midTurnCheck({ ...midOpts, runs: [["a", "b"], ["a"], ["b", "a"]], fingerprint: "f1" });
+  assert.equal(r.evidence, "a failed 3 test runs in a row");
+  assert.equal(r.progressed, false);
+  const more = midTurnCheck({ ...midOpts, runs: [["a", "b"], ["a", "b"], ["b", "a"]], fingerprint: "f1" });
+  assert.equal(more.evidence, "a failed 3 test runs in a row (+1 more)");
+  const two = midTurnCheck({ ...midOpts, runs: [["a"], ["a"]], fingerprint: "f1" });
+  assert.equal(two.evidence, null);
+  const passed = midTurnCheck({ ...midOpts, runs: [["a"], ["a"], ["a"], []], fingerprint: "f1" });
+  assert.equal(passed.evidence, null);
+  assert.equal(passed.progressed, true);
+});
+
+test("midTurnCheck tracks the fingerprint: first sight, change, and unknown", () => {
+  const first = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", mid: { fingerprint: null, changed: null } });
+  assert.deepEqual(first, { mid: { fingerprint: "f1", changed: iso(NOW) }, evidence: null, progressed: false });
+  const edited = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f2" });
+  assert.deepEqual(edited, { mid: { fingerprint: "f2", changed: iso(NOW) }, evidence: null, progressed: true });
+  const unknown = midTurnCheck({ ...midOpts, runs: [], fingerprint: null, mid: { fingerprint: "f1", changed: iso(NOW - MID_TURN_IDLE_MS) } });
+  assert.deepEqual(unknown.mid, { fingerprint: "f1", changed: iso(NOW - MID_TURN_IDLE_MS) });
+  assert.equal(unknown.evidence, null);
+});
+
+test("midTurnCheck flags no edits after 20 minutes on Implement only, not for subagent parents", () => {
+  assert.equal(MID_TURN_IDLE_MS, 20 * 60_000);
+  const old = { fingerprint: "f1", changed: iso(NOW - MID_TURN_IDLE_MS) };
+  const idle = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", mid: old });
+  assert.equal(idle.evidence, "no file edits in 20 minutes");
+  assert.deepEqual(idle.mid, old);
+  const soon = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", mid: { fingerprint: "f1", changed: iso(NOW - MID_TURN_IDLE_MS + 1) } });
+  assert.equal(soon.evidence, null);
+  assert.equal(midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", mid: old, step: "review" }).evidence, null);
+  const sub = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", mid: old, subagents: true });
+  assert.equal(sub.evidence, null);
+  assert.deepEqual(sub.mid, old);
+});
+
+test("midTurnCheck names the failing test before idleness", () => {
+  const old = { fingerprint: "f1", changed: iso(NOW - 2 * MID_TURN_IDLE_MS) };
+  const r = midTurnCheck({ ...midOpts, runs: [["a"], ["a"], ["a"]], fingerprint: "f1", mid: old });
   assert.equal(r.evidence, "a failed 3 test runs in a row");
 });
