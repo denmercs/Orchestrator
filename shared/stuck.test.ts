@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MID_TURN_IDLE_MS, briefTestFailures, midTurnCheck, stuckCheck, testRuns, type StuckCounters } from "./stuck";
+import { MID_TURN_IDLE_MS, RUN_CAP_MS, briefTestFailures, midTurnCheck, stuckCheck, testRuns, toolRunningSince, type StuckCounters } from "./stuck";
 import type { ToolItem } from "./exploration";
 
 const shell = (command: string, output: string): ToolItem => ({ type: "tool_call", status: "completed", detail: { type: "shell", command, output } });
@@ -106,7 +106,7 @@ test("stuckCheck names the failing test when both signals hold", () => {
 
 const NOW = Date.parse("2026-01-01T12:00:00.000Z");
 const iso = (ms: number) => new Date(ms).toISOString();
-const midOpts = { now: NOW, mid: { fingerprint: "f1", changed: iso(NOW - 60_000) }, step: "implement", subagents: false, testRunning: false, lastRunMs: null };
+const midOpts = { now: NOW, mid: { fingerprint: "f1", changed: iso(NOW - 60_000) }, step: "implement", subagents: false, testRunning: false, lastRunMs: null, toolRunningSinceMs: null };
 
 test("midTurnCheck names a test failing in 3 runs, with +N more, and a passing last run is progress", () => {
   const r = midTurnCheck({ ...midOpts, runs: [["a", "b"], ["a"], ["b", "a"]], fingerprint: "f1" });
@@ -123,9 +123,9 @@ test("midTurnCheck names a test failing in 3 runs, with +N more, and a passing l
 
 test("midTurnCheck tracks the fingerprint: first sight, change, and unknown", () => {
   const first = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", mid: { fingerprint: null, changed: null } });
-  assert.deepEqual(first, { mid: { fingerprint: "f1", changed: iso(NOW) }, evidence: null, progressed: false });
+  assert.deepEqual(first, { mid: { fingerprint: "f1", changed: iso(NOW) }, evidence: null, progressed: false, interrupt: false });
   const edited = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f2" });
-  assert.deepEqual(edited, { mid: { fingerprint: "f2", changed: iso(NOW) }, evidence: null, progressed: true });
+  assert.deepEqual(edited, { mid: { fingerprint: "f2", changed: iso(NOW) }, evidence: null, progressed: true, interrupt: false });
   const unknown = midTurnCheck({ ...midOpts, runs: [], fingerprint: null, mid: { fingerprint: "f1", changed: iso(NOW - MID_TURN_IDLE_MS) } });
   assert.deepEqual(unknown.mid, { fingerprint: "f1", changed: iso(NOW - MID_TURN_IDLE_MS) });
   assert.equal(unknown.evidence, null);
@@ -162,7 +162,7 @@ test("midTurnCheck keeps a failing streak as evidence when the worktree also cha
 test("midTurnCheck isn't idle while a brief run is going, and is again once it isn't", () => {
   const old = { fingerprint: "f1", changed: iso(NOW - 2 * MID_TURN_IDLE_MS) };
   const running = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", mid: old, testRunning: true });
-  assert.deepEqual(running, { mid: old, evidence: null, progressed: false });
+  assert.deepEqual(running, { mid: old, evidence: null, progressed: false, interrupt: false });
   // A run past the cap reaches here as not running, so idleness counts again.
   const capped = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", mid: old, testRunning: false });
   assert.equal(capped.evidence, "no file edits in 20 minutes");
@@ -171,9 +171,44 @@ test("midTurnCheck isn't idle while a brief run is going, and is again once it i
 test("midTurnCheck restarts the idle clock at the last finished run, pass or fail, without calling it progress", () => {
   const old = { fingerprint: "f1", changed: iso(NOW - 2 * MID_TURN_IDLE_MS) };
   const failed = midTurnCheck({ ...midOpts, runs: [["a"]], fingerprint: "f1", mid: old, lastRunMs: NOW - 60_000 });
-  assert.deepEqual(failed, { mid: old, evidence: null, progressed: false });
+  assert.deepEqual(failed, { mid: old, evidence: null, progressed: false, interrupt: false });
   const passed = midTurnCheck({ ...midOpts, runs: [[]], fingerprint: "f1", mid: old, lastRunMs: NOW - 60_000 });
   assert.deepEqual([passed.evidence, passed.progressed], [null, true]);
   const stale = midTurnCheck({ ...midOpts, runs: [["a"]], fingerprint: "f1", mid: old, lastRunMs: NOW - MID_TURN_IDLE_MS });
   assert.equal(stale.evidence, "no file edits in 20 minutes");
+});
+
+test("toolRunningSince is the oldest running call in the turn, null when none", () => {
+  const call = (status: string, timestamp: string, turnId?: string) => ({ item: { type: "tool_call", status }, timestamp, turnId });
+  const entries = [
+    call("completed", iso(NOW - 9_000), "t1"),
+    call("running", iso(NOW - 5_000), "t1"),
+    call("running", iso(NOW - 8_000), "t0"),
+    call("running", iso(NOW - 3_000)),
+    { item: { type: "assistant_message" }, timestamp: iso(NOW - 7_000), turnId: "t1" },
+  ];
+  assert.equal(toolRunningSince(entries, "t1"), NOW - 5_000);
+  assert.equal(toolRunningSince([call("completed", iso(NOW), "t1"), call("canceled", iso(NOW), "t1")], "t1"), null);
+  assert.equal(toolRunningSince([], "t1"), null);
+});
+
+test("midTurnCheck isn't idle while any tool call runs under the cap, and null leaves it as before", () => {
+  const old = { fingerprint: "f1", changed: iso(NOW - 2 * MID_TURN_IDLE_MS) };
+  const running = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", mid: old, toolRunningSinceMs: NOW - RUN_CAP_MS + 1 });
+  assert.deepEqual(running, { mid: old, evidence: null, progressed: false, interrupt: false });
+  const unknown = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", mid: old, toolRunningSinceMs: null });
+  assert.deepEqual([unknown.evidence, unknown.interrupt], ["no file edits in 20 minutes", false]);
+  // A running call doesn't hide a test that keeps failing.
+  const failing = midTurnCheck({ ...midOpts, runs: [["a"], ["a"], ["a"]], fingerprint: "f1", mid: old, toolRunningSinceMs: NOW - 60_000 });
+  assert.deepEqual([failing.evidence, failing.interrupt], ["a failed 3 test runs in a row", false]);
+});
+
+test("midTurnCheck interrupts a call running past the cap, skipping the nudge, on Implement only", () => {
+  assert.equal(RUN_CAP_MS, 60 * 60_000);
+  const over = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", toolRunningSinceMs: NOW - RUN_CAP_MS });
+  assert.deepEqual(over, { mid: midOpts.mid, evidence: "one command running over 60 minutes", progressed: false, interrupt: true });
+  const review = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", step: "review", toolRunningSinceMs: NOW - RUN_CAP_MS });
+  assert.deepEqual([review.evidence, review.interrupt], [null, false]);
+  const sub = midTurnCheck({ ...midOpts, runs: [], fingerprint: "f1", subagents: true, toolRunningSinceMs: NOW - RUN_CAP_MS });
+  assert.deepEqual([sub.evidence, sub.interrupt], [null, false]);
 });

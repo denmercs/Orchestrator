@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { briefTestFailures } from "../shared/stuck";
+import { RUN_CAP_MS, briefTestFailures } from "../shared/stuck";
 
 const git = (cwd: string, args: string[]): string =>
   execFileSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
@@ -61,7 +61,7 @@ export function briefRuns(worktree: string, step: string, sinceMs: number): { na
 }
 
 // Past this a brief run no longer counts as running, so a hung test reads as idle again.
-export const BRIEF_RUN_CAP_MS = 60 * 60_000;
+export const BRIEF_RUN_CAP_MS = RUN_CAP_MS;
 
 const alive = (pid: number): boolean => {
   try {

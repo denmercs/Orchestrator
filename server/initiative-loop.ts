@@ -12,7 +12,7 @@ import { budgetMoney } from "../shared/stats-strip";
 import { storyCost, type TelemetryRow } from "./context-telemetry";
 import { DEFAULT_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import type { ToolItem } from "../shared/exploration";
-import { midTurnCheck, stuckCheck, type StuckCounters } from "../shared/stuck";
+import { midTurnCheck, stuckCheck, toolRunningSince, type StuckCounters, type TimelineEntry } from "../shared/stuck";
 import { appendOutcome, type OutcomeEvent } from "../shared/story-outcome";
 import {
   PHASES_DIR,
@@ -93,6 +93,8 @@ const STUCK_CLEAR = {
 //                    the turn; evidence again after it blocks as `stuck` and interrupts the turn.
 //                    A brief run under an hour old isn't idle, a finished one restarts the clock, and a nudge
 //                    whose send fails still counts.
+//                    Any tool call the timeline shows running isn't idle either; one running over an hour skips
+//                    the nudge, which can't land until it returns, and blocks and interrupts at once.
 // The story files are the state: the loop writes status, branch, workspace, agent, pr and ci into
 // their frontmatter, so it resumes from them after a restart. Paseo owns the worktrees and agents.
 
@@ -703,10 +705,10 @@ export function createInitiativeLoop(
   // When each agent's running turn was first seen, for a turn whose start time Paseo didn't report.
   const turnSeen = new Map<string, { turnId: string; at: number }>();
 
-  // Reads a running turn's progress from disk (the brief logs since it started). The first evidence is
-  // one nudge steered into the running turn, so it isn't interrupted; the nudge is shared with the
-  // turn-end check (`stuck_nudged`). A send that fails still records the nudge, so the next evidence
-// blocks rather than retrying the nudge every tick.
+  // Reads a running turn's progress from disk (the brief logs since it started) and the timeline (a tool
+  // call still running). The first evidence is one nudge steered into the running turn, so it isn't
+  // interrupted; the nudge is shared with the turn-end check (`stuck_nudged`). A send that fails still
+  // records the nudge, so the next evidence blocks rather than retrying the nudge every tick.
   async function midTurnWatch(
     api: PaseoApi,
     story: StoryFile,
@@ -735,9 +737,12 @@ export function createInitiativeLoop(
     const idleWatch = step === "implement" && !subagents;
     const fingerprint = idleWatch ? worktreeFingerprint(meta.worktree) : null;
     const testRunning = idleWatch && activeBriefRuns(meta.worktree, step, now).length > 0;
+    const toolRunningSinceMs = idleWatch ? await runningToolSince(api, meta.agent, turn.turnId) : null;
     const lastRunMs = logged.length > 0 ? logged[logged.length - 1].mtimeMs : null;
     const stored = { fingerprint: carried ? meta.mid_fingerprint || null : null, changed: carried ? meta.mid_changed || null : null };
-    const { mid, evidence, progressed } = midTurnCheck({ runs, fingerprint, now, mid: stored, step, subagents, testRunning, lastRunMs });
+    const { mid, evidence, progressed, interrupt } = midTurnCheck({
+      runs, fingerprint, now, mid: stored, step, subagents, testRunning, lastRunMs, toolRunningSinceMs,
+    });
     if (mid.fingerprint !== stored.fingerprint || mid.changed !== stored.changed) {
       writeFrontmatter(story.path, { mid_fingerprint: mid.fingerprint, mid_changed: mid.changed });
     }
@@ -747,8 +752,9 @@ export function createInitiativeLoop(
       return;
     }
     if (!evidence) return;
-    // Already nudged (here or at a turn end) and still stuck: block, then stop the running turn.
-    if (meta.stuck_nudged || (carried && meta.mid_nudged)) {
+    // Already nudged (here or at a turn end), or stuck inside one call a steer can't reach: block, then
+    // stop the running turn.
+    if (interrupt || meta.stuck_nudged || (carried && meta.mid_nudged)) {
       block(story, `stuck: ${evidence}`, "stuck");
       await api.agents
         .ref(meta.agent)
@@ -761,6 +767,17 @@ export function createInitiativeLoop(
     // Idleness is judged again from the nudge, not from the stale edit time.
     const nudgedAt = new Date().toISOString();
     writeFrontmatter(story.path, { stuck_nudged: 1, mid_nudged: nudgedAt, mid_changed: nudgedAt });
+  }
+
+  // When the oldest tool call running in the agent's turn started, from the timeline's tail. Null when
+  // none is running, or Paseo didn't answer, so missing data never counts against the step.
+  async function runningToolSince(api: PaseoApi, agent: string, turnId: string): Promise<number | null> {
+    try {
+      const page = await api.agents.ref(agent).timeline.refetch({ direction: "tail", limit: 50, projection: "projected" });
+      return page.error ? null : toolRunningSince(page.entries as readonly TimelineEntry[], turnId);
+    } catch {
+      return null;
+    }
   }
 
   // A story's worktree was removed mid-step, so there is nothing to resume. Its work went somewhere,

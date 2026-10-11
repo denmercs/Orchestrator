@@ -47,6 +47,8 @@ type Agent = {
   archivedAt?: string;
   lastUsage?: { totalCostUsd?: number };
   activeTurn?: { turnId: string; startedAt: string | null } | null;
+  // Timeline entries the tail refetch returns; "fail" makes the read throw.
+  timeline?: unknown[] | "fail";
 };
 
 // A repo with one initiative (loop on), one phase and one story mid-Implement in a worktree.
@@ -103,6 +105,13 @@ function fakePaseo(live: Agent[]) {
         },
         send: async (text: string, options?: { activeTurnBehavior?: string }) => {
           sent.push(options ? { id, text, options } : { id, text });
+        },
+        timeline: {
+          refetch: async () => {
+            const entries = live.find((agent) => agent.id === id)?.timeline ?? [];
+            if (entries === "fail") throw new Error("daemon unreachable");
+            return { entries, error: null };
+          },
         },
       }),
       list: async () => ({ entries: live.map((agent) => ({ agent })) }),
@@ -2129,4 +2138,70 @@ test("a brief run still going keeps a 21-minute idle Implement turn from being n
   await initiative.tick();
   assert.equal(sent.length, 1);
   assert.match(sent[0].text, /You look stuck: no file edits in 20 minutes/);
+});
+
+// A running turn whose timeline shows one shell call running since `minutesAgo`.
+const runningCall = (labels: Record<string, string>, minutesAgo: number, command = "npm run typecheck") => [
+  {
+    ...runningTurn(labels)[0],
+    timeline: [
+      {
+        turnId: "t1",
+        timestamp: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+        item: { type: "tool_call", status: "running", name: "Bash", detail: { type: "shell", command } },
+      },
+    ],
+  },
+];
+
+test("a tool call still running, without brief, keeps a 21-minute idle Implement turn from being nudged", async () => {
+  const fx = idleFixture("t1", 21);
+  writeFrontmatter(fx.story, { mid_nudged: null });
+  const { api, sent } = fakePaseo(runningCall(fx.labels, 21));
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.equal(sent.length, 0);
+  assert.deepEqual([storyMeta(fx.story).status, storyMeta(fx.story).stuck_nudged], ["implementing", undefined]);
+});
+
+test("a tool call running over an hour skips the nudge and blocks and interrupts at once", async () => {
+  const fx = idleFixture("t1", 61);
+  writeFrontmatter(fx.story, { mid_nudged: null });
+  const { api, sent } = fakePaseo(runningCall(fx.labels, 61));
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  const meta = storyMeta(fx.story);
+  assert.deepEqual([meta.status, meta.block_kind, meta.blocked_reason], ["blocked", "stuck", "stuck: one command running over 60 minutes"]);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].options, { activeTurnBehavior: "interrupt" });
+  assert.match(sent[0].text, /stuck: one command running over 60 minutes; stop and wait/);
+});
+
+test("a timeline that can't be read falls back to the brief marker and never blocks on its own", async () => {
+  const fx = idleFixture("t1", 21);
+  writeFrontmatter(fx.story, { mid_nudged: null });
+  mkdirSync(join(fx.worktree, ".harness", "logs"), { recursive: true });
+  const marker = join(fx.worktree, ".harness", "logs", `implement-${process.pid}.running`);
+  writeFileSync(marker, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 21 * 60_000).toISOString() }), "utf8");
+  const agents = runningTurn(fx.labels).map((agent) => ({ ...agent, timeline: "fail" as const }));
+  const { api, sent } = fakePaseo(agents);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+  assert.equal(sent.length, 0);
+  assert.equal(storyMeta(fx.story).status, "implementing");
+
+  // Without the marker it is plain idleness again: one steered nudge, no block.
+  rmSync(marker);
+  await initiative.tick();
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].options, { activeTurnBehavior: "steer" });
+  assert.equal(storyMeta(fx.story).status, "implementing");
 });

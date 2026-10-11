@@ -90,15 +90,38 @@ export function stuckCheck(
 
 export const MID_TURN_IDLE_MS = 20 * 60_000;
 
+// Past this a running command no longer counts as activity: a brief run reads as idle again, and a
+// tool call still going is stuck.
+export const RUN_CAP_MS = 60 * 60_000;
+
+export type TimelineEntry = { item: ToolItem; timestamp: string; turnId?: string };
+
+// When the oldest tool call still running in the turn started, from a page of timeline entries (a
+// running call's entry keeps its start time). Null when none is running. Entries from another turn
+// are skipped.
+export function toolRunningSince(entries: readonly TimelineEntry[], turnId: string): number | null {
+  let since: number | null = null;
+  for (const entry of entries) {
+    if (entry.item?.type !== "tool_call" || entry.item.status !== "running") continue;
+    if (entry.turnId !== undefined && entry.turnId !== turnId) continue;
+    const ms = Date.parse(entry.timestamp);
+    if (!Number.isNaN(ms) && (since === null || ms < since)) since = ms;
+  }
+  return since;
+}
+
 export type MidTurn = { fingerprint: string | null; changed: string | null };
 
 // The running turn's progress read from disk: the test runs since the turn started (failing names,
 // [] = pass), the worktree fingerprint now (null = unknown) and the carried fingerprint state.
-// Returns the next state, the stuck evidence (null when none) and whether the step made progress
-// (a passing last run or a changed fingerprint, with no evidence). A failing test is named before
-// idleness; idleness counts on Implement only and not for subagent parents. A brief run still going
-// (`testRunning`) isn't idle, and the last finished run (`lastRunMs`, pass or fail) restarts the idle clock.
-export function midTurnCheck({ runs, fingerprint, now, mid, step, subagents, testRunning, lastRunMs }: {
+// Returns the next state, the stuck evidence (null when none), whether the step made progress
+// (a passing last run or a changed fingerprint, with no evidence) and whether to block and interrupt
+// now. A failing test is named before idleness; idleness counts on Implement only and not for
+// subagent parents. A brief run still going (`testRunning`) or a tool call running under RUN_CAP_MS
+// (`toolRunningSinceMs`, null = unknown) isn't idle, and the last finished run (`lastRunMs`, pass or
+// fail) restarts the idle clock. A call past the cap is stuck inside it, where a steer can't land, so
+// it skips the nudge (`interrupt`).
+export function midTurnCheck({ runs, fingerprint, now, mid, step, subagents, testRunning, lastRunMs, toolRunningSinceMs }: {
   runs: readonly string[][];
   fingerprint: string | null;
   now: number;
@@ -107,7 +130,8 @@ export function midTurnCheck({ runs, fingerprint, now, mid, step, subagents, tes
   subagents: boolean;
   testRunning: boolean;
   lastRunMs: number | null;
-}): { mid: MidTurn; evidence: string | null; progressed: boolean } {
+  toolRunningSinceMs: number | null;
+}): { mid: MidTurn; evidence: string | null; progressed: boolean; interrupt: boolean } {
   const streak = foldRuns({ fail_tests: [], fail_runs: 0 }, runs);
   let progressed = runs.length > 0 && runs[runs.length - 1].length === 0;
   let next = mid;
@@ -115,12 +139,17 @@ export function midTurnCheck({ runs, fingerprint, now, mid, step, subagents, tes
     next = { fingerprint, changed: new Date(now).toISOString() };
     if (mid.fingerprint !== null) progressed = true;
   }
+  const idleWatch = step === "implement" && !subagents;
+  if (idleWatch && toolRunningSinceMs !== null && now - toolRunningSinceMs >= RUN_CAP_MS) {
+    return { mid: next, evidence: `one command running over ${RUN_CAP_MS / 60_000} minutes`, progressed: false, interrupt: true };
+  }
+  const running = testRunning || toolRunningSinceMs !== null;
   let evidence = failEvidence(streak.fail_tests, streak.fail_runs);
   const activeMs = Math.max(Date.parse(next.changed ?? ""), lastRunMs ?? -Infinity);
-  if (evidence === null && fingerprint !== null && step === "implement" && !subagents && next.changed !== null
-    && fingerprint === mid.fingerprint && !testRunning && now - activeMs >= MID_TURN_IDLE_MS) {
+  if (evidence === null && fingerprint !== null && idleWatch && next.changed !== null
+    && fingerprint === mid.fingerprint && !running && now - activeMs >= MID_TURN_IDLE_MS) {
     evidence = `no file edits in ${MID_TURN_IDLE_MS / 60_000} minutes`;
   }
   // As at a turn end, an edit doesn't excuse a test that keeps failing.
-  return { mid: next, evidence, progressed: progressed && evidence === null };
+  return { mid: next, evidence, progressed: progressed && evidence === null, interrupt: false };
 }
