@@ -34,6 +34,7 @@ import { readPlanUsage } from "./server/plan-usage";
 import { planUsageRpc } from "./shared/plan-usage";
 import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay";
 import { readCorpus, readCostCap, realReplayPorts, REPLAY_RUN } from "./server/replay-start";
+import { claudeSignedIn } from "./server/claude-cli";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { join } from "node:path";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
@@ -105,8 +106,11 @@ import {
 
 type ReplayRunner = ReturnType<typeof createMemoryReplay>;
 
-// `deps.replay` lets tests stand in for the memory replay runner.
-export default function contribute(server: PluginServerContext, deps: { replay?: ReplayRunner } = {}) {
+// `deps.replay` and `deps.signedIn` let tests stand in for the memory replay runner and the Claude Code login check.
+export default function contribute(
+  server: PluginServerContext,
+  deps: { replay?: ReplayRunner; signedIn?: () => Promise<boolean> } = {},
+) {
   // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
   server.registerUsageSource?.(kiroUsageSource());
   server.registerSettings(standupSettings);
@@ -214,6 +218,10 @@ export default function contribute(server: PluginServerContext, deps: { replay?:
     contextPaseo = paseo;
     if (replaying || memoryReplay.pendingAgents().length > 0) throw new Error("A memory replay is already running.");
     const corpus = readCorpus(input.root, input.controls);
+    // The judge runs on the Claude Code CLI; signed out, every round would come back with no verdict.
+    if (!(await (deps.signedIn ?? claudeSignedIn)())) {
+      throw new Error("Claude Code is not signed in, so the replay judge can't run. Run `claude` and log in, then start the replay again.");
+    }
     const costCap = input.costCap ?? readCostCap(input.root) ?? DEFAULT_COST_CAP_USD;
     const runDir = join(input.root, ".harness", "replay", REPLAY_RUN);
     replaying = true;

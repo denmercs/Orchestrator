@@ -194,6 +194,7 @@ timeline
   2026-10-10 : This repo seeded (36 areas, 166 decisions, 171 facts, $0)
              : Area names fixed and re-seeded
              : Replay started, blocked on judge API key
+             : Judge and classifier moved to the Claude Code CLI, no key needed
 ```
 
 ### How
@@ -277,12 +278,12 @@ call:
 - Phase 4: keep corrections-to-checks. The baseline repeat rate is 20%
   (3 of 15 findings, by keyword guess), under the 25% line.
 
-**Blocker (needs a human):** S12, the real replay. It started (20 rounds × 3
-arms, $50 cap, 9 rows written), but the judge has no Anthropic API key, so
-every result is `outcome: null`. To unblock: add the `anthropic-api-key`
-Keychain item or set `ANTHROPIC_API_KEY` for the Paseo daemon, reload the
-plugin, rerun the replay from ⌘K, label `new-findings.md` and the dedupe
-sample, then rerun `verdict.mjs`.
+**Next (needs a human):** S12, the real replay. The first run (20 rounds × 3
+arms, $50 cap, 9 rows written) had no judge, so every result is
+`outcome: null`. The judge and the corrections classifier now call Haiku
+through the signed-in Claude Code CLI, so no API key is needed. To finish:
+stop the old run, reload the plugin, rerun the replay from ⌘K, label
+`new-findings.md` and the dedupe sample, then rerun `verdict.mjs`.
 
 ---
 
@@ -294,7 +295,7 @@ The full picture, including work that may never ship if the data says no.
 
 | Story | What | Status |
 |---|---|---|
-| S12 | Run the replay here and in `lifeway-discipleship`, rewrite the verdict | blocked (API key) |
+| S12 | Run the replay here and in `lifeway-discipleship`, rewrite the verdict | ready to rerun |
 | S16 | Date baseline stories by `merged_at` | implementing |
 | S17 | Backfill `merged_at` on stories merged before S15 | todo |
 | S18 | Cut agent transcripts at the baseline cutoff | PR open |
@@ -311,7 +312,7 @@ The full picture, including work that may never ship if the data says no.
 | S18 | A cheap model rewrites unverified notes (unapproved until you approve them) |
 
 Human tasks outside the loop: approve the seeded notes in bulk (none approved
-yet), and set the API key and re-seed so corrections exist before Phase 3.
+yet), and re-seed so corrections exist before Phase 3.
 
 Open decisions: note eligibility (d1), paths per step (d3), what happens when
 a citation fails (d4), recording loaded notes (d5), the on switch (d8),
