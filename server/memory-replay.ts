@@ -1,4 +1,4 @@
-// The memory replay runner: replays one past Review round in three arms (no brief, facts, facts + corrections).
+// The memory replay runner: replays one past Review round in up to three arms (no brief, facts, facts + corrections).
 // Everything outside the process is a port, so the runner is tested with fakes. Cap, timeout and orphan cleanup
 // (Cycle 8) slot in around `runRound` and `onTurnEnded`; `finishArm` is the one place a worktree is removed.
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -29,6 +29,8 @@ export const DEFAULT_COST_CAP_USD = 120;
 export const DEFAULT_RESERVE_USD = 1.2;
 export const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
 const POLL_MS = 30_000;
+// The only markers a finished Review leaves. Anything else (still `starting`, a session the usage limit killed) is no result.
+const REVIEW_ENDED = new Set(["review-done", "review-failed"]);
 
 // Worktree source finding (Cycle 7): the protocol types `baseBranch` as a plain string documented as a "base ref",
 // but the daemon that resolves it is not in node_modules, so a sha is unconfirmed. The runner therefore uses a detached
@@ -67,6 +69,8 @@ export type RunContext = { run: string; root: string; runDir: string };
 
 export type ReplayOptions = RunContext & {
   costCap?: number;
+  // The arms to run, in ARMS order. Defaults to all of them.
+  arms?: Arm[];
   reserve?: number;
   timeoutMs?: number;
   pollMs?: number;
@@ -295,8 +299,13 @@ export function createMemoryReplay(ports: ReplayPorts) {
         tokens: { used: turn?.used ?? null, costUsd: turn?.costUsd ?? null },
         ...ending,
       };
-      if (!ending.stopped && !ending.error) {
-        const state = readText(join(job.dir, ".harness", "state.md"));
+      const state = ending.stopped || ending.error ? "" : readText(join(job.dir, ".harness", "state.md"));
+      const marker = /^##\s+Status\s*\n\s*`?([^\n`]+)/m.exec(state)?.[1]?.trim() ?? null;
+      if (!ending.stopped && !ending.error && !REVIEW_ENDED.has(marker ?? "")) {
+        // The turn ended but the Review never finished (the usage limit, a crash mid-turn): an error row a rerun picks up.
+        fields.marker = marker;
+        fields.error = `review ended on ${marker ? `marker ${marker}` : "no status marker"}`;
+      } else if (!ending.stopped && !ending.error) {
         const replayFindings = findingsOf(state);
         let matches: [number, number][] | null = [];
         if (row.kind === "failed" && row.findings.length && replayFindings.length) {
@@ -311,7 +320,8 @@ export function createMemoryReplay(ports: ReplayPorts) {
           }
         }
         fields.outcome = outcomeOf(row.findings, replayFindings, matches);
-        fields.marker = /^##\s+Status\s*\n\s*`?([^\n`]+)/m.exec(state)?.[1]?.trim() ?? null;
+        fields.marker = marker;
+        if (!fields.outcome) fields.error = "judge gave no verdict";
       }
       writeRow(ctx, row, arm, fields);
     } finally {
@@ -360,7 +370,8 @@ export function createMemoryReplay(ports: ReplayPorts) {
       if (!line.trim()) continue;
       try {
         const r = JSON.parse(line) as ResultRow;
-        if (r.stopped || r.error) continue; // cut off by the cap or failed to run: a rerun picks it up again
+        // Only a finished Review with an outcome is done. Cap-stopped, errored, unfinished or unjudged rows run again.
+        if (r.stopped || r.error || !r.outcome || !REVIEW_ENDED.has(r.marker ?? "")) continue;
         done.add(pairKey(r, r.arm));
       } catch {
         // a torn line is not a done row
@@ -385,14 +396,15 @@ export function createMemoryReplay(ports: ReplayPorts) {
   // Drives the corpus: logs the cap, removes orphan worktrees, skips done pairs, runs one round at a time while it fits.
   async function replay(corpus: CorpusRow[], opts: ReplayOptions): Promise<{ rounds: number; started: number; stoppedByCap: boolean }> {
     const costCap = opts.costCap ?? DEFAULT_COST_CAP_USD;
+    const arms = opts.arms ?? ARMS;
     const reserve = opts.reserve ?? DEFAULT_RESERVE_USD;
     if (!Number.isFinite(costCap) || costCap <= 0) throw new Error(`replay: bad cost cap ${String(opts.costCap)}`);
     const ctx: RunContext = { run: opts.run, root: opts.root, runDir: opts.runDir };
     cap = costCap;
     timeoutMs = opts.timeoutMs ?? AGENT_TIMEOUT_MS;
     spentDone = spentBefore(ctx);
-    const queue = replayQueue(corpus, doneKeys(ctx));
-    log(ctx, `cost cap ${usd(costCap)} · ${queue.length} rounds × ${ARMS.length} arms · reserve ${usd(reserve)}`);
+    const queue = replayQueue(corpus, doneKeys(ctx), arms);
+    log(ctx, `cost cap ${usd(costCap)} · ${queue.length} rounds × ${arms.length} arms (${arms.join(", ")}) · reserve ${usd(reserve)}`);
 
     const live = new Set([...pending.values()].map((p) => p.dir));
     const worktrees = join(ctx.runDir, "worktrees");

@@ -212,6 +212,7 @@ function fakeTimers() {
 }
 
 const control: CorpusRow = { ...row, story: "S8", round: 1, kind: "control", findings: [] };
+const emptyOutcome = { caught: [], notCaught: [], new: [] };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const rowsOf = (runDir: string) =>
   readFileSync(join(runDir, "results.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
@@ -230,7 +231,7 @@ test("replay logs the cap first and puts spent/cap in each agent title", async (
   await tick();
   await tick();
   const first = readFileSync(join(runDir, "run.log"), "utf8").split("\n")[0];
-  assert.equal(first, "cost cap $120.00 · 2 rounds × 3 arms · reserve $1.20");
+  assert.equal(first, "cost cap $120.00 · 2 rounds × 3 arms (none, facts, facts+corrections) · reserve $1.20");
   assert.ok(calls.agents.length > 0 && calls.agents.every((a) => a.input.title.endsWith("$0.00/$120.00")));
   for (let guard = 0; replay.pendingAgents().length || calls.agents.length < 6; guard++) {
     for (const id of replay.pendingAgents()) await replay.onTurnEnded({ agentId: id });
@@ -252,7 +253,7 @@ test("a round that does not fit is not started", async () => {
   assert.equal(calls.agents.length, 0);
   assert.equal(calls.workspaces.length, 0);
   assert.equal(result.stoppedByCap, true);
-  assert.match(readFileSync(join(runDir, "run.log"), "utf8"), /^cost cap \$3\.00 · 1 rounds × 3 arms · reserve \$1\.20\n/);
+  assert.match(readFileSync(join(runDir, "run.log"), "utf8"), /^cost cap \$3\.00 · 1 rounds × 3 arms \(none, facts, facts\+corrections\) · reserve \$1\.20\n/);
   assert.match(readFileSync(join(runDir, "run.log"), "utf8"), /does not fit/);
   rmSync(root, { recursive: true, force: true });
 });
@@ -335,7 +336,7 @@ test("a failed agent and a 45-minute timeout write error rows and clean up", asy
 test("a rerun skips done rows, retries cap-stopped ones and removes orphan worktrees", async () => {
   const { root, runDir, calls, ports } = setup();
   withCaps(ports);
-  const doneRow = (arm: string, extra: object = {}) => ({ run: "run1", initiative: row.initiative, story: "S7", round: 2, kind: "failed", arm, outcome: null, tokens: { used: 1, costUsd: 0.25 }, judgeCostUsd: 0, ...extra });
+  const doneRow = (arm: string, extra: object = {}) => ({ run: "run1", initiative: row.initiative, story: "S7", round: 2, kind: "failed", arm, outcome: emptyOutcome, marker: "review-done", tokens: { used: 1, costUsd: 0.25 }, judgeCostUsd: 0, ...extra });
   writeFileSync(
     join(runDir, "results.jsonl"),
     [doneRow("none"), doneRow("facts"), doneRow("facts+corrections", { stopped: "cap" })].map((r) => JSON.stringify(r)).join("\n") + "\n",
@@ -408,7 +409,7 @@ test("an unreadable judge reply is kept on the row", async () => {
 test("a rerun retries error rows", async () => {
   const { root, runDir, calls, ports } = setup();
   withCaps(ports);
-  const doneRow = (arm: string, extra: object = {}) => ({ run: "run1", initiative: row.initiative, story: "S7", round: 2, kind: "failed", arm, outcome: null, tokens: { used: 1, costUsd: 0 }, judgeCostUsd: 0, ...extra });
+  const doneRow = (arm: string, extra: object = {}) => ({ run: "run1", initiative: row.initiative, story: "S7", round: 2, kind: "failed", arm, outcome: emptyOutcome, marker: "review-failed", tokens: { used: 1, costUsd: 0 }, judgeCostUsd: 0, ...extra });
   writeFileSync(
     join(runDir, "results.jsonl"),
     [doneRow("none"), doneRow("facts", { error: "git worktree add failed" }), doneRow("facts+corrections")].map((r) => JSON.stringify(r)).join("\n") + "\n",
@@ -453,6 +454,74 @@ test("a rerun archives replay agents and workspaces the dead plugin left in Pase
   await tick();
   assert.deepEqual(cancelled, ["old1", "old2"]);
   assert.ok(calls.archived.includes("wsOld"));
+  for (const id of replay.pendingAgents()) await replay.onTurnEnded({ agentId: id });
+  await done;
+  rmSync(root, { recursive: true, force: true });
+});
+
+// ---- Rows a usage-limited session left behind ----
+
+test("a Review still on starting with empty findings is an error row, not caught/missed, and a rerun retries it", async () => {
+  const { root, runDir, calls, ports } = setup();
+  withCaps(ports);
+  const replay = createMemoryReplay(ports);
+  const done = replay.replay([row], { run: "run1", root, runDir, arms: ["facts"] });
+  await tick();
+  await tick();
+  // The session died on the usage limit: its turn ended with the seeded state untouched.
+  const dir = calls.workspaces[0].directory;
+  writeFileSync(join(dir, ".harness", "state.md"), "## Status\nstarting\n\n## Plan\nx\n\n## Review findings\n\n## Preview\n", "utf8");
+  await replay.onTurnEnded({ agentId: replay.pendingAgents()[0] });
+  await done;
+  const [first] = rowsOf(runDir);
+  assert.equal(first.marker, "starting");
+  assert.equal(first.outcome, null, "no caught/notCaught/new: the recorded findings are not counted as missed");
+  assert.match(first.error, /review ended on marker starting/);
+  assert.equal(calls.judged.length, 0);
+  assert.equal(existsSync(join(runDir, "new-findings.md")), false);
+
+  const again = createMemoryReplay(ports);
+  const rerun = again.replay([row], { run: "run1", root, runDir, arms: ["facts"] });
+  await tick();
+  await tick();
+  assert.equal(again.pendingAgents().length, 1, "the error row is picked up on the next run");
+  await again.onTurnEnded({ agentId: again.pendingAgents()[0] });
+  await rerun;
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("a rerun retries rows with no outcome or an unfinished marker, even without an error field", async () => {
+  const { root, runDir, calls, ports } = setup();
+  withCaps(ports);
+  const old = (arm: string, extra: object) => ({ run: "run1", initiative: row.initiative, story: "S7", round: 2, kind: "failed", arm, tokens: { used: 1, costUsd: 0 }, judgeCostUsd: 0, ...extra });
+  writeFileSync(
+    join(runDir, "results.jsonl"),
+    [
+      old("none", { marker: "review-done", outcome: null }),
+      old("facts", { marker: "starting", outcome: { caught: [], notCaught: row.findings, new: [] } }),
+      old("facts+corrections", { marker: "review-done", outcome: emptyOutcome }),
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n",
+    "utf8",
+  );
+  const replay = createMemoryReplay(ports);
+  const done = replay.replay([row], { run: "run1", root, runDir });
+  await tick();
+  await tick();
+  assert.deepEqual(calls.agents.map((a) => a.input.labels["replay-arm"]), ["none", "facts"]);
+  for (const id of replay.pendingAgents()) await replay.onTurnEnded({ agentId: id });
+  await done;
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("the arms option limits a run to those arms", async () => {
+  const { root, runDir, calls, ports } = setup();
+  withCaps(ports);
+  const replay = createMemoryReplay(ports);
+  const done = replay.replay([row], { run: "run1", root, runDir, arms: ["none", "facts"] });
+  await tick();
+  await tick();
+  assert.deepEqual(calls.agents.map((a) => a.input.labels["replay-arm"]), ["none", "facts"]);
+  assert.match(readFileSync(join(runDir, "run.log"), "utf8"), /1 rounds × 2 arms \(none, facts\)/);
   for (const id of replay.pendingAgents()) await replay.onTurnEnded({ agentId: id });
   await done;
   rmSync(root, { recursive: true, force: true });
