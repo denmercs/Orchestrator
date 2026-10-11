@@ -1,7 +1,7 @@
 import { defineRpc, defineSettings, PluginAttachmentSearchPayloadSchema } from "@getpaseo/plugin";
 import { z } from "zod";
 import type { LoopStep } from "./initiative-loop";
-import { stepPrompt, type Cycle, type StoryContext } from "./story-method";
+import { readMarker, stepPrompt, type Cycle, type StoryContext } from "./story-method";
 
 // Story pipeline: a Jira story run through the same steps as the initiative loop (shared/story-method.ts).
 // Plan, each Implement cycle and Review run in fresh agents. A step ends by writing a marker under
@@ -326,11 +326,5 @@ export function fixPrompt(implement: Phase, ticket: Ticket, options: PhasePrompt
 }
 
 export function readStatus(stateMarkdown: string) {
-  const match = stateMarkdown.match(/^##\s+Status\s*\n([\s\S]*?)(?=^##\s|$(?![\s\S]))/m);
-  const body = match?.[1] ?? "";
-  const first = body
-    .split("\n")
-    .map((line) => line.trim().replace(/^`|`$/g, ""))
-    .find((line) => line.length > 0);
-  return first?.toLowerCase() ?? null;
+  return readMarker(stateMarkdown).marker;
 }

@@ -21,7 +21,7 @@ import { briefTag } from "./brief-install";
 import type { TelemetryRow } from "./context-telemetry";
 import type { Judge } from "./replay-judge";
 import { withMcpScope } from "./mcp-scope";
-import { readSection, seedState, stepPrompt, type StoryContext } from "../shared/story-method";
+import { readMarker, readSection, seedState, stepPrompt, type StoryContext } from "../shared/story-method";
 import type { analyze as analyzeRepo } from "./repo-analyzer";
 
 export const REPLAY_KIND = "memory-replay";
@@ -31,6 +31,7 @@ export const AGENT_TIMEOUT_MS = 45 * 60 * 1000;
 const POLL_MS = 30_000;
 // The only markers a finished Review leaves. Anything else (still `starting`, a session the usage limit killed) is no result.
 const REVIEW_ENDED = new Set(["review-done", "review-failed"]);
+const NO_VERDICT = "judge gave no verdict";
 
 // Worktree source finding (Cycle 7): the protocol types `baseBranch` as a plain string documented as a "base ref",
 // but the daemon that resolves it is not in node_modules, so a sha is unconfirmed. The runner therefore uses a detached
@@ -88,6 +89,8 @@ export type ResultRow = {
   tokens: { used: number | null; costUsd: number | null };
   judgeCostUsd: number;
   judgeReply?: string;
+  // What the finished Review found, kept so a judge failure can be judged again without rerunning the Review.
+  replayFindings?: string[];
   marker: string | null;
   plan: boolean;
   at: string;
@@ -300,28 +303,14 @@ export function createMemoryReplay(ports: ReplayPorts) {
         ...ending,
       };
       const state = ending.stopped || ending.error ? "" : readText(join(job.dir, ".harness", "state.md"));
-      const marker = /^##\s+Status\s*\n\s*`?([^\n`]+)/m.exec(state)?.[1]?.trim() ?? null;
+      const marker = readMarker(state).marker;
       if (!ending.stopped && !ending.error && !REVIEW_ENDED.has(marker ?? "")) {
         // The turn ended but the Review never finished (the usage limit, a crash mid-turn): an error row a rerun picks up.
         fields.marker = marker;
         fields.error = `review ended on ${marker ? `marker ${marker}` : "no status marker"}`;
       } else if (!ending.stopped && !ending.error) {
-        const replayFindings = findingsOf(state);
-        let matches: [number, number][] | null = [];
-        if (row.kind === "failed" && row.findings.length && replayFindings.length) {
-          try {
-            const verdict = await ports.judge(row.findings, replayFindings);
-            matches = verdict.matches;
-            fields.judgeCostUsd = verdict.costUsd;
-            if (verdict.reply !== undefined) fields.judgeReply = verdict.reply.slice(0, 2000);
-          } catch (error) {
-            console.warn("replay: judge", error);
-            matches = null;
-          }
-        }
-        fields.outcome = outcomeOf(row.findings, replayFindings, matches);
+        Object.assign(fields, await judged(row, findingsOf(state)));
         fields.marker = marker;
-        if (!fields.outcome) fields.error = "judge gave no verdict";
       }
       writeRow(ctx, row, arm, fields);
     } finally {
@@ -330,6 +319,55 @@ export function createMemoryReplay(ports: ReplayPorts) {
     }
     if (cap !== null) await checkCap();
     return true;
+  }
+
+  // Judges a finished Review's findings against the recorded ones: the outcome, or a no-verdict error row's fields.
+  async function judged(row: CorpusRow, replayFindings: string[]): Promise<Partial<ResultRow>> {
+    const fields: Partial<ResultRow> = { replayFindings };
+    let matches: [number, number][] | null = [];
+    if (row.kind === "failed" && row.findings.length && replayFindings.length) {
+      try {
+        const verdict = await ports.judge(row.findings, replayFindings);
+        matches = verdict.matches;
+        fields.judgeCostUsd = verdict.costUsd;
+        if (verdict.reply !== undefined) fields.judgeReply = verdict.reply.slice(0, 2000);
+      } catch (error) {
+        console.warn("replay: judge", error);
+        matches = null;
+      }
+    }
+    fields.outcome = outcomeOf(row.findings, replayFindings, matches);
+    if (!fields.outcome) fields.error = NO_VERDICT;
+    return fields;
+  }
+
+  // Pairs whose latest row is a judge failure with the Review's findings kept: judge those again, no new Review.
+  // The new row carries no review cost; the old row already counts it.
+  async function rejudge(ctx: RunContext, corpus: CorpusRow[], arms: Arm[]): Promise<Set<string>> {
+    const rejudged = new Set<string>();
+    const latest = new Map<string, ResultRow>();
+    for (const line of readText(join(ctx.runDir, "results.jsonl")).split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const r = JSON.parse(line) as ResultRow;
+        latest.set(pairKey(r, r.arm), r);
+      } catch {
+        // a torn line is skipped
+      }
+    }
+    const done = doneKeys(ctx);
+    for (const row of corpus) {
+      for (const arm of arms) {
+        const key = pairKey(row, arm);
+        const last = latest.get(key);
+        if (done.has(key) || !last || last.error !== NO_VERDICT || !REVIEW_ENDED.has(last.marker ?? "") || !last.replayFindings) continue;
+        const fields = await judged(row, last.replayFindings);
+        writeRow(ctx, row, arm, { ...fields, marker: last.marker, explore: last.explore ?? null, tokens: { used: null, costUsd: null } });
+        log(ctx, `re-judged ${row.initiative}/${row.story} r${row.round} ${arm}: ${fields.outcome ? "verdict" : "no verdict again"}`);
+        rejudged.add(key);
+      }
+    }
+    return rejudged;
   }
 
   const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -403,7 +441,9 @@ export function createMemoryReplay(ports: ReplayPorts) {
     cap = costCap;
     timeoutMs = opts.timeoutMs ?? AGENT_TIMEOUT_MS;
     spentDone = spentBefore(ctx);
-    const queue = replayQueue(corpus, doneKeys(ctx), arms);
+    // A re-judged pair, verdict or not, is not rerun this time; a second failure waits for the next run.
+    const rejudged = await rejudge(ctx, corpus, arms);
+    const queue = replayQueue(corpus, new Set([...doneKeys(ctx), ...rejudged]), arms);
     log(ctx, `cost cap ${usd(costCap)} · ${queue.length} rounds × ${arms.length} arms (${arms.join(", ")}) · reserve ${usd(reserve)}`);
 
     const live = new Set([...pending.values()].map((p) => p.dir));
