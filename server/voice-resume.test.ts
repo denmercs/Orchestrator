@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
-import { createVoiceResume, cutMidSpeech, RESUME_MESSAGE } from "./voice-resume";
+import { createVoiceResume, noiseCut, RESUME_MESSAGE, TOOL_RESUME_MESSAGE } from "./voice-resume";
 
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 type Outcome = TurnEnded["outcome"];
@@ -13,8 +13,10 @@ function toolCall(name: string, status: "running" | "completed" | "failed" | "ca
   return { type: "tool_call", callId: name, name, detail: { type: "unknown", input: null, output: null }, status, error: null };
 }
 
-function turnEnded(outcome: Outcome, ...calls: ReturnType<typeof toolCall>[]): TurnEnded {
-  return { agent: AGENT, turnId: "t1", outcome, timeline: calls as unknown as TurnEnded["timeline"] };
+const USER = { type: "user_message", text: "carry on" };
+
+function turnEnded(outcome: Outcome, ...items: (ReturnType<typeof toolCall> | typeof USER)[]): TurnEnded {
+  return { agent: AGENT, turnId: "t1", outcome, timeline: items as unknown as TurnEnded["timeline"] };
 }
 
 const cut = () => turnEnded(CANCELED, toolCall("Bash", "completed"), toolCall("mcp__paseo__speak", "failed"));
@@ -25,16 +27,29 @@ function setup() {
   return { resume, sent };
 }
 
-test("a canceled turn ending on an unfinished speak is a cut", () => {
-  assert.equal(cutMidSpeech(cut()), true);
-  assert.equal(cutMidSpeech(turnEnded(CANCELED, toolCall("speak", "running"))), true);
+test("a canceled turn ending on an unfinished speak is a speech cut", () => {
+  assert.equal(noiseCut(cut()), "speech");
+  assert.equal(noiseCut(turnEnded(CANCELED, toolCall("speak", "running"))), "speech");
 });
 
-test("a finished speak, a non-speak tool, or a completed turn is not a cut", () => {
-  assert.equal(cutMidSpeech(turnEnded(CANCELED, toolCall("mcp__paseo__speak", "completed"))), false);
-  assert.equal(cutMidSpeech(turnEnded(CANCELED, toolCall("mcp__paseo__speak", "failed"), toolCall("Bash", "canceled"))), false);
-  assert.equal(cutMidSpeech(turnEnded({ kind: "completed" }, toolCall("mcp__paseo__speak", "failed"))), false);
-  assert.equal(cutMidSpeech(turnEnded(CANCELED)), false);
+test("a finished speak, a completed turn, or no tool call is not a cut", () => {
+  assert.equal(noiseCut(turnEnded(CANCELED, toolCall("mcp__paseo__speak", "completed"))), null);
+  assert.equal(noiseCut(turnEnded({ kind: "completed" }, toolCall("mcp__paseo__speak", "failed"))), null);
+  assert.equal(noiseCut(turnEnded(CANCELED)), null);
+});
+
+test("a canceled turn ending on any other unfinished tool is a tool cut", () => {
+  assert.equal(noiseCut(turnEnded(CANCELED, toolCall("mcp__paseo__speak", "completed"), toolCall("Bash", "canceled"))), "tool");
+  assert.equal(noiseCut(turnEnded(CANCELED, toolCall("mcp__paseo__speak", "failed"), toolCall("Read", "running"))), "tool");
+});
+
+test("an unfinished tool in a session that never spoke is not a cut: it is a typed session's Stop", () => {
+  assert.equal(noiseCut(turnEnded(CANCELED, toolCall("Read", "completed"), toolCall("Bash", "canceled"))), null);
+});
+
+test("an unfinished tool from before the last user message doesn't make a later canceled turn a cut", () => {
+  assert.equal(noiseCut(turnEnded(CANCELED, toolCall("mcp__paseo__speak", "completed"), toolCall("Bash", "canceled"), USER)), null);
+  assert.equal(noiseCut(turnEnded(CANCELED, toolCall("mcp__paseo__speak", "failed"), USER)), null);
 });
 
 test("after a cut with no new turn in the quiet window, the agent is told to finish", async () => {
@@ -47,6 +62,19 @@ test("after a cut with no new turn in the quiet window, the agent is told to fin
     mock.timers.tick(1);
     await Promise.resolve();
     assert.deepEqual(sent, [["a1", RESUME_MESSAGE]]);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("after a tool cut with no new turn in the quiet window, the agent is told to run it again", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { resume, sent } = setup();
+    resume.onTurnEnded(turnEnded(CANCELED, toolCall("mcp__paseo__speak", "completed"), toolCall("Bash", "canceled")));
+    mock.timers.tick(1000);
+    await Promise.resolve();
+    assert.deepEqual(sent, [["a1", TOOL_RESUME_MESSAGE]]);
   } finally {
     mock.timers.reset();
   }
