@@ -212,6 +212,21 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     dispatch({ type: "utterance", text: "" });
   }
 
+  /**
+   * Typed or dictated text from the drawer's box takes the same path as a transcript, without the mic. It is an
+   * explicit request, so with a target chosen it wakes the loop while voice is off; the mic stays closed.
+   */
+  function submitText(text: string): boolean {
+    if (!text.trim()) return false;
+    if (!snapshot.session) {
+      perform({ type: "speak", line: "Pick a session first." });
+      return false;
+    }
+    if (snapshot.mode === "asleep") dispatch({ type: "wake" });
+    dispatch({ type: "utterance", text });
+    return true;
+  }
+
   function on() {
     dispatch({ type: "wake" });
     publish({ error: null });
@@ -236,6 +251,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     endTalk,
     toggleTalk,
     cancelTalk,
+    submitText,
     dispatch,
     getState: (): VoiceSnapshot => snapshot,
     subscribe(listener: () => void) {

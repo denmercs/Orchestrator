@@ -1,7 +1,9 @@
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { ScrollView } from "@getpaseo/plugin/client/react-native";
+import { ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
+import { createDictation } from "./dictation-model";
+import { canRecordHere } from "./voice-mic";
 import type { createVoiceRunner } from "./voice-runner";
 import { CONFIRM_CANCEL } from "../shared/voice-loop";
 
@@ -12,6 +14,55 @@ const MODE_LABEL = { asleep: "Off", listening: "Listening", confirming: "Waiting
 
 function useRunner(runner: VoiceRunner) {
   return useSyncExternalStore(runner.subscribe, runner.getState, runner.getState);
+}
+
+// Dictation mode: a box the phone keyboard's own mic can dictate into. Each pause sends what is new; the Send
+// button sends at once. The text goes through the runner's utterance path, so no mic or transcriber is needed.
+function DictationBox({ styles, runner }: { styles: ReturnType<typeof createStyles>; runner: VoiceRunner }) {
+  const [text, setText] = useState("");
+  const [auto, setAuto] = useState(true);
+  const dictation = useMemo(() => createDictation({ send: (t) => runner.submitText(t), clear: () => setText("") }), [runner]);
+  useEffect(() => dictation.dispose, [dictation]);
+  const noMic = useMemo(() => !canRecordHere(), []);
+
+  return (
+    <View style={styles.dictation}>
+      <TextInput
+        accessibilityLabel="Say or type to the target session"
+        placeholder="Say or type to the target session"
+        value={text}
+        onChangeText={(next) => {
+          setText(next);
+          dictation.change(next);
+        }}
+        multiline
+        style={styles.input}
+      />
+      <View style={styles.row}>
+        <Pressable
+          accessibilityRole="switch"
+          accessibilityState={{ checked: auto }}
+          onPress={() => {
+            setAuto(!auto);
+            dictation.setAuto(!auto);
+          }}
+          style={[styles.action, auto ? styles.actionOn : null]}
+        >
+          <Text style={styles.actionText}>{auto ? "Auto-send when I pause: on" : "Auto-send when I pause: off"}</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Send"
+          disabled={!text.trim()}
+          onPress={() => dictation.send()}
+          style={[styles.action, styles.send, !text.trim() ? styles.disabled : null]}
+        >
+          <Text style={styles.actionText}>Send</Text>
+        </Pressable>
+      </View>
+      {noMic ? <Text style={styles.hint}>Tap the box, then your keyboard's mic, and just talk. Each pause sends.</Text> : null}
+    </View>
+  );
 }
 
 // Header trigger for the Voice drawer.
@@ -52,7 +103,8 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
             </Pressable>
           </View>
         </View>
-        <ScrollView style={styles.flex1} contentContainerStyle={styles.body}>
+        {/* Taps on the buttons must not dismiss the keyboard mid-dictation. */}
+        <ScrollView style={styles.flex1} contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
           <View style={styles.row}>
             <Pressable
               accessibilityRole="switch"
@@ -108,6 +160,8 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
               <Text style={styles.actionText}>Interrupt</Text>
             </Pressable>
           </View>
+
+          <DictationBox styles={styles} runner={runner} />
 
           {state.mode === "confirming" && state.confirm ? (
             <View style={styles.card}>
@@ -237,6 +291,20 @@ function createStyles(theme: Theme, compact: boolean) {
       paddingVertical: 12,
     },
     disabled: { opacity: 0.4 },
+    dictation: { gap: 8 },
+    input: {
+      minHeight: 72,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: 7,
+      backgroundColor: c.surface1,
+      color: c.foreground,
+      fontSize: 13,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      textAlignVertical: "top" as const,
+    },
+    send: { marginLeft: "auto" as const },
     session: {
       flexDirection: "row" as const,
       justifyContent: "space-between" as const,

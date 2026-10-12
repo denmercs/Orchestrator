@@ -444,3 +444,43 @@ test("turning voice on again clears the last error; a stale failed open does not
   assert.equal(runner.getState().mode, "listening");
   assert.equal(runner.getState().error, null);
 });
+
+test("submitText sends typed text to the target without the mic or the transcriber, even with voice off", async () => {
+  const calls: string[] = [];
+  const { runner, said } = setup({
+    recorder: { open: () => void calls.push("open"), start: () => void calls.push("start"), stop: async () => ({ audio: "", ms: 0 }) },
+    transcriber: async () => (calls.push("transcribe"), ""),
+  });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  assert.equal(runner.submitText("please run the tests"), true);
+  await flush();
+  assert.deepEqual(said, [["a1", "please run the tests"]]);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent to Alpha" }]);
+  assert.deepEqual(runner.getState().lines, ["Sent to Alpha"]);
+});
+
+test("submitText keeps the loop's confirm rules: merge asks, a typed one sends", async () => {
+  const { runner, said } = setup();
+  runner.pick(alpha);
+  runner.submitText("merge it");
+  await flush();
+  assert.deepEqual(said, []);
+  assert.equal(runner.getState().mode, "confirming");
+  runner.submitText("one");
+  await flush();
+  assert.deepEqual(said, [["a1", "merge it"]]);
+});
+
+test("submitText with no target or only whitespace sends nothing", async () => {
+  const { runner, said } = setup();
+  assert.equal(runner.submitText("please run the tests"), false);
+  assert.deepEqual(runner.getState().lines, ["Pick a session first."]);
+  assert.equal(runner.getState().mode, "asleep");
+  runner.pick(alpha);
+  assert.equal(runner.submitText("   "), false);
+  await flush();
+  assert.deepEqual(said, []);
+  assert.deepEqual(runner.getState().transcripts, []);
+});

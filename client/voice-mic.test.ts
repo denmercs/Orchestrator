@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createVoiceMic, micErrorMessage, MIC_DENIED_MESSAGE, NO_MIC_MESSAGE } from "./voice-mic";
+import { canRecordHere, createVoiceMic, micErrorMessage, MIC_DENIED_MESSAGE, NO_MIC_MESSAGE } from "./voice-mic";
 
 test("open() without navigator.mediaDevices says this device can't record", async () => {
+  assert.equal(canRecordHere(), false);
   await assert.rejects(createVoiceMic().open(), { message: NO_MIC_MESSAGE });
 });
 

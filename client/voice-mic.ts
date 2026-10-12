@@ -26,6 +26,11 @@ export function micErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** False where the mic can never open, such as Paseo's phone app, which gives plugins no navigator.mediaDevices. */
+export function canRecordHere(): boolean {
+  return typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getUserMedia === "function";
+}
+
 export function createVoiceMic() {
   let stream: MediaStream | null = null;
   let recorder: MediaRecorder | null = null;
@@ -35,8 +40,7 @@ export function createVoiceMic() {
   return {
     async open() {
       if (stream?.active) return;
-      // Paseo's phone app gives plugins no navigator.mediaDevices.
-      if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) throw new Error(NO_MIC_MESSAGE);
+      if (!canRecordHere()) throw new Error(NO_MIC_MESSAGE);
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       } catch (err) {
