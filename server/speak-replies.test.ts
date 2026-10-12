@@ -17,7 +17,7 @@ function reply(outcome: Outcome, ...texts: string[]): TurnEnded {
   return { agent: AGENT, turnId: "t1", outcome, timeline: timeline as unknown as TurnEnded["timeline"] };
 }
 
-async function setup(options: { scriptOk?: boolean; mode?: "short" | "full" } = {}) {
+async function setup(options: { scriptOk?: boolean; mode?: "short" | "medium" | "full" } = {}) {
   const runs: { args: string[]; stdin?: string }[] = [];
   const speak = createSpeakReplies({
     script: "/repo/scripts/speak",

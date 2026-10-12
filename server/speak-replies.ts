@@ -61,7 +61,7 @@ function lastReply(timeline: TurnEnded["timeline"]): string {
   return "";
 }
 
-// The sessions switched on to speak their replies, short or full. In memory only, so a daemon restart turns them all off.
+// The sessions switched on to speak their replies, short, medium or full. In memory only, so a daemon restart turns them all off.
 export function createSpeakReplies(ports: SpeakPorts) {
   const modes = new Map<string, Exclude<SpeakMode, "off">>();
   return {
@@ -80,7 +80,7 @@ export function createSpeakReplies(ports: SpeakPorts) {
     onTurnEnded(event: TurnEnded) {
       const mode = modes.get(event.agent.id);
       if (!mode || event.outcome.kind !== "completed") return;
-      const line = spokenLine(lastReply(event.timeline), mode === "full");
+      const line = spokenLine(lastReply(event.timeline), mode);
       if (line) ports.run([], line);
     },
     // A new turn means the user sent something: stop talking over it.
