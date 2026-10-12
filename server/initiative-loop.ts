@@ -1028,6 +1028,17 @@ export function createInitiativeLoop(
           // This turn's items are those after the last user message.
           const items = (event.timeline ?? []) as readonly ToolItem[];
           const lastUser = items.map((item) => item.type).lastIndexOf("user_message");
+          // Claude Code can end the turn normally with the plan limit as its only reply, rather than
+          // failing it: that waits for the reset like a failed turn would, and isn't a stall.
+          const reply = items
+            .slice(lastUser + 1)
+            .filter((item): item is ToolItem & { text: string } => item.type === "assistant_message" && typeof (item as { text?: unknown }).text === "string")
+            .at(-1)?.text;
+          const resumeAt = reply ? usageLimitResumeAt(reply, new Date()) : null;
+          if (resumeAt) {
+            writeFrontmatter(after.path, { paused_until: resumeAt.toISOString(), stalled: null });
+            return;
+          }
           let failTests: string[] = [];
           try {
             const parsed: unknown = JSON.parse(after.meta.fail_tests || "[]");

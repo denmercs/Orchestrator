@@ -739,6 +739,39 @@ test("a turn that hit the usage limit pauses the story until the reset: no nudge
   assert.equal(storyMeta(story).status, "implementing");
 });
 
+test("a turn that ends on the usage limit as its reply pauses the story too, not a stall", async () => {
+  const { story, labels } = fixture("a1");
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  const timeline = [
+    { type: "user_message", text: "Carry on with this step." },
+    { type: "assistant_message", text: "You've hit your session limit · resets 2:30am (America/Chicago)" },
+  ];
+
+  await initiative.onTurnEnded(api, ended("a1", { kind: "completed" }, timeline));
+  assert.equal(storyMeta(story).stalled, undefined);
+  assert.ok(Date.parse(storyMeta(story).paused_until ?? "") > Date.now());
+
+  await initiative.tick();
+
+  assert.deepEqual([sent, created], [[], []]);
+  assert.equal(storyMeta(story).retries, undefined);
+});
+
+test("a reply that only talks about the usage limit mid-work is still a stall", async () => {
+  const { story, labels } = fixture("a1");
+  const { api } = fakePaseo([{ id: "a1", labels }]);
+  const timeline = [
+    { type: "assistant_message", text: "You've hit your session limit · resets 2:30am" },
+    { type: "assistant_message", text: "I updated usage-limit.ts so the loop waits for the reset." },
+  ];
+
+  await loop().onTurnEnded(api, ended("a1", { kind: "completed" }, timeline));
+
+  assert.equal(storyMeta(story).paused_until, undefined);
+  assert.equal(storyMeta(story).stalled, "It ended its turn without writing the step's marker.");
+});
+
 test("once the reset has passed, the tick nudges the paused session without counting a retry", async () => {
   const { story, labels } = fixture("a1");
   writeFrontmatter(story, { retries: 1, paused_until: new Date(Date.now() - 1000).toISOString() });
