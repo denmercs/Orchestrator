@@ -131,8 +131,40 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   let holding = false;
   let started: Promise<void> = Promise.resolve();
   let holdTimer: unknown = null;
+  let opening: Promise<boolean> | null = null; // the latest mic open, true once it worked
 
   const hints = () => [...new Set([...BASE_HINTS, ...snapshot.sessions.map((s) => s.name)])];
+
+  // Opens the mic. A failure turns voice back off and leaves its reason as the one error shown.
+  function openMic(): Promise<boolean> {
+    const attempt: Promise<boolean> = new Promise((resolve) => resolve(ports.recorder?.open?.())).then(
+      () => true,
+      (err) => {
+        // Only the latest open may turn voice off; an older one lost to an off/on.
+        if (opening === attempt) {
+          off();
+          fail(err);
+        }
+        return false;
+      },
+    );
+    opening = attempt;
+    return attempt;
+  }
+
+  async function begin(recorder: NonNullable<VoiceRunnerPorts["recorder"]>) {
+    // A tap while the mic is still opening waits for it; a failed open already turned voice off.
+    if (opening && !(await opening)) return;
+    if (snapshot.mode === "asleep") return;
+    try {
+      await recorder.start();
+    } catch (err) {
+      if (!recorder.open) throw err;
+      // The mic was released since voice turned on: open it once more before giving up.
+      if (!(await openMic())) return;
+      await recorder.start();
+    }
+  }
 
   function startTalk() {
     const recorder = ports.recorder;
@@ -140,10 +172,9 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     if (!recorder) return fail(new Error("No microphone available."));
     holding = true;
     dispatch({ type: "speechStart" });
+    // A forgotten tap still ends: the clip is sent at 30 s.
     holdTimer = clock.setTimeout(() => void endTalk(), MAX_HOLD_MS);
-    started = Promise.resolve()
-      .then(() => recorder.start())
-      .then(() => undefined);
+    started = begin(recorder);
     started.catch(() => undefined);
   }
 
@@ -162,9 +193,49 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     dispatch({ type: "utterance", text });
   }
 
+  /** Tap to talk: the first tap starts recording, the next one stops and sends. */
+  function toggleTalk() {
+    return holding ? endTalk() : startTalk();
+  }
+
+  /** Stops a recording and throws it away. */
+  async function cancelTalk() {
+    if (!holding) return;
+    holding = false;
+    clock.clearTimeout(holdTimer);
+    try {
+      await started;
+      await (ports.recorder as NonNullable<VoiceRunnerPorts["recorder"]>).stop();
+    } catch {
+      // Nothing was going to be sent anyway.
+    }
+    dispatch({ type: "utterance", text: "" });
+  }
+
+  function on() {
+    dispatch({ type: "wake" });
+    publish({ error: null });
+    void openMic();
+  }
+
+  function off() {
+    dispatch({ type: "sleep" });
+    if (holdTimer !== null) clock.clearTimeout(holdTimer);
+    holdTimer = null;
+    holding = false;
+    opening = null;
+    try {
+      Promise.resolve(ports.recorder?.close?.()).catch(fail);
+    } catch (err) {
+      fail(err);
+    }
+  }
+
   return {
     startTalk,
     endTalk,
+    toggleTalk,
+    cancelTalk,
     dispatch,
     getState: (): VoiceSnapshot => snapshot,
     subscribe(listener: () => void) {
@@ -173,25 +244,8 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
         listeners.delete(listener);
       };
     },
-    on() {
-      dispatch({ type: "wake" });
-      try {
-        Promise.resolve(ports.recorder?.open?.()).catch(fail);
-      } catch (err) {
-        fail(err);
-      }
-    },
-    off() {
-      dispatch({ type: "sleep" });
-      if (holdTimer !== null) clock.clearTimeout(holdTimer);
-      holdTimer = null;
-      holding = false;
-      try {
-        Promise.resolve(ports.recorder?.close?.()).catch(fail);
-      } catch (err) {
-        fail(err);
-      }
-    },
+    on,
+    off,
     confirm: (word: string) => dispatch({ type: "confirm", word }),
     interrupt: () => dispatch({ type: "interrupt" }),
     setSessions(list: VoiceSession[]) {
