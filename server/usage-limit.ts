@@ -3,6 +3,11 @@ import type { ProviderUsage } from "../shared/plan-usage";
 // Claude's plan limit (the 5-hour session or a weekly one), as opposed to a transient rate limit:
 // a failed turn that says this will keep failing until the limit resets, so retrying is pointless.
 const LIMIT = /usage limit|hit your (?:[a-z]+ )?limit|limit reached/i;
+// Claude Code's own notice, which is the whole reply when it stops a turn on the plan limit: either
+// `Claude AI usage limit reached|<epoch>` or `You've hit your [session|weekly|...] limit · resets ...`.
+const NOTICE = /^(?:you[\u2019']ve hit your (?:[a-z]+ )?limit|claude ai usage limit reached)/i;
+// The notice is short; a longer reply that happens to mention a limit is the agent talking.
+const NOTICE_MAX_CHARS = 200;
 // Used when the message names no reset time.
 const FALLBACK_MS = 60 * 60 * 1000;
 // A little past the reset, so the first try doesn't land on the boundary.
@@ -25,6 +30,15 @@ export function usageLimitResumeAt(message: string, now: Date): Date | null {
     return new Date(reset.getTime() + BUFFER_MS);
   }
   return new Date(now.getTime() + FALLBACK_MS);
+}
+
+// When a turn's final reply is Claude Code's plan-limit notice itself: the moment to try again, read
+// the same way as for a failed turn. Null for any other reply, including one that only discusses a
+// limit ("retry limit reached", a summary that mentions the usage limit).
+export function limitNotice(text: string, now: Date): Date | null {
+  const trimmed = text.trim();
+  if (trimmed.length > NOTICE_MAX_CHARS || !NOTICE.test(trimmed)) return null;
+  return usageLimitResumeAt(trimmed, now);
 }
 
 // A plan window this full (used %) counts as the limit: the next turn would hit it.
