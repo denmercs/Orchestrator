@@ -1,6 +1,8 @@
 // The Voice loop: a pure state machine that decides everything the Voice drawer does.
 // step(state, event) → { state, effects }. Adapters (mic, transcriber, interpreter, session link, speaker) only carry
-// events in and effects out; the loop holds no clocks and imports nothing, so any bundle can reach it.
+// events in and effects out; the loop holds no clocks and imports only its own wording (voice-lines), so any
+// bundle can reach it. The Voice runner (drawer, Mac) and the Jarvis router (phone) both run it.
+import { CANCELLED, confirmLine, noSessionLine, notTargetLine, NOTHING_TO_CONFIRM, pickFirstLine, sentLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
 
 export type VoiceMode = "asleep" | "listening" | "confirming" | "waiting" | "speaking";
 export type VoiceSession = { id: string; name: string };
@@ -11,6 +13,8 @@ export type VoiceState = {
   mode: VoiceMode;
   session: VoiceSession | null;
   sessions: VoiceSession[];
+  /** Voice's own sessions (Jarvis, the Voice helper): never a target, or Jarvis would steer itself. */
+  blocked: VoiceSession[];
   talking: boolean;
   pending: { seq: number; heard: string } | null;
   confirm: { word: string; text: string } | null;
@@ -33,7 +37,7 @@ export type VoiceEvent =
   | { type: "playbackEnded" }
   | { type: "confirm"; word: string }
   | { type: "pick"; session: VoiceSession }
-  | { type: "sessions"; list: VoiceSession[] }
+  | { type: "sessions"; list: VoiceSession[]; blocked?: VoiceSession[] }
   | { type: "notice"; kind: string; sessionId: string }
   | { type: "interrupt" }
   /** Sleep from the drawer (the runner's off switch): same as "Jarvis, ignore me". */
@@ -52,11 +56,18 @@ export type VoiceEffect =
 
 export type VoiceStep = { state: VoiceState; effects: VoiceEffect[] };
 
+/** How long a confirm waits for its word, on the Mac (the runner's timer) and the phone (Jarvis), before it is cancelled. */
+export const CONFIRM_TIMEOUT_MS = 20_000;
+
+/** Jarvis's provider id and the Voice helper's label: Voice's own sessions, never a target. */
+export const ROUTER_PROVIDER_ID = "jarvis";
+export const VOICE_HELPER_KIND = "voice-helper";
+
 /** The confirm word that means "cancel" (button or the runner's timeout). */
 export const CONFIRM_CANCEL = "cancel";
 
 export function initialVoiceState(): VoiceState {
-  return { mode: "asleep", session: null, sessions: [], talking: false, pending: null, confirm: null, held: null, queue: [], seq: 0 };
+  return { mode: "asleep", session: null, sessions: [], blocked: [], talking: false, pending: null, confirm: null, held: null, queue: [], seq: 0 };
 }
 
 const NAMES = "jarvis|jervis|javis|travis|jarvus|service";
@@ -69,29 +80,41 @@ const NOTICE_ORDER: NoticeKind[] = ["finished", "needsYou", "error", "costCap"];
 const NOTICE_ONE: Record<NoticeKind, string> = { finished: "finished", needsYou: "needs you", error: "hit an error", costCap: "hit the cost cap" };
 const NOTICE_MANY: Record<NoticeKind, string> = { finished: "finished", needsYou: "need you", error: "hit an error", costCap: "hit the cost cap" };
 const NUMBER_WORDS = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
-const SPOKEN_CAP = 300;
+// Said after the name to wake the loop with nothing else to do.
+const WAKE_WORDS = new Set(["", "wake up", "wake", "i m back", "im back", "listen", "you there", "are you there"]);
 
 const norm = (text: string): string => text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
 const stripName = (text: string): string => text.replace(new RegExp(`^(?:(?:hey|ok|okay) )?(?:${NAMES})(?: |$)`), "").trim();
+/** Asleep, only the name itself wakes the loop ("Jarvis", "hey Jarvis, …"), not a mishearing like "travis". */
+const calledByName = (text: string): boolean => /^(?:(?:hey|ok|okay) )?jarvis(?: |$)/.test(norm(text));
+const isBlocked = (state: VoiceState, id: string): boolean => state.blocked.some((s) => s.id === id);
+/** True when the words start with the name (or a close mishearing), as in "Jarvis, wake up". */
+export const addressed = (text: string): boolean => stripName(norm(text)) !== norm(text);
+/** The words without a leading "Jarvis," (or "hey Jarvis"), punctuation and case kept. */
+export const withoutName = (text: string): string =>
+  text.replace(new RegExp(`^\\s*(?:(?:hey|ok|okay)[\\s,]+)?(?:${NAMES})\\b[\\s,.!?]*`, "i"), "").trim() || text.trim();
 const critical = (text: string): string | null => CRITICAL.exec(text)?.[1] ?? null;
 const out = (state: VoiceState, ...effects: VoiceEffect[]): VoiceStep => ({ state, effects });
 
 function sentTo(state: VoiceState, text: string): VoiceStep {
   const session = state.session;
   if (!session) return out(state);
+  if (isBlocked(state, session.id)) {
+    return out({ ...state, session: null, pending: null, confirm: null }, { type: "speak", line: notTargetLine(session.name) });
+  }
   const next = { ...state, mode: "waiting" as const, pending: null, confirm: null };
-  return out(next, { type: "send", session, text, behavior: "steer" }, { type: "receipt", session, line: `Sent to ${session.name}` });
+  return out(next, { type: "send", session, text, behavior: "steer" }, { type: "receipt", session, line: sentLine(session.name) });
 }
 
 function askConfirm(state: VoiceState, text: string, word: string): VoiceStep {
   const session = state.session;
   if (!session) return out(state);
   const next = { ...state, mode: "confirming" as const, pending: null, confirm: { word, text } };
-  return out(next, { type: "askConfirm", word, line: `Send "${text}" to ${session.name}? Say one to send, or two to cancel.` });
+  return out(next, { type: "askConfirm", word, line: confirmLine(text, session.name) });
 }
 
 function cancelled(state: VoiceState): VoiceStep {
-  return out({ ...state, mode: "listening", pending: null, confirm: null }, { type: "speak", line: "Cancelled." });
+  return out({ ...state, mode: "listening", pending: null, confirm: null }, { type: "speak", line: CANCELLED });
 }
 
 function sleep(state: VoiceState): VoiceStep {
@@ -107,29 +130,32 @@ function matching(sessions: VoiceSession[], spoken: string): VoiceSession[] {
 function switchTo(state: VoiceState, spoken: string): VoiceStep {
   const base = { ...state, pending: null, confirm: null };
   const matches = matching(state.sessions, spoken);
-  if (matches.length === 1) return out({ ...base, mode: "listening", session: matches[0] }, { type: "speak", line: `Now on ${matches[0].name}.` });
+  const own = matches.length ? [] : matching(state.blocked, spoken);
+  if (own.length) return out(base, { type: "speak", line: notTargetLine(own[0].name) });
+  if (matches.length === 1) return out({ ...base, mode: "listening", session: matches[0] }, { type: "speak", line: switchedLine(matches[0].name) });
   if (matches.length > 1) {
-    const names = matches.map((s) => s.name);
-    return out(base, { type: "speak", line: `Which one: ${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}?` });
+    return out(base, { type: "speak", line: whichLine(matches.map((s) => s.name)) });
   }
-  return out(base, { type: "speak", line: `No session called ${spoken}.` });
+  return out(base, { type: "speak", line: noSessionLine(spoken) });
 }
 
 function onUtterance(state: VoiceState, text: string): VoiceStep {
   const heard = norm(text);
   const cleaned = stripName(heard);
-  const ignore = new RegExp(`^(?:(?:hey|ok|okay) )?(?:(${NAMES}) )?ignor(?:e|ing)( me)?$`).exec(heard);
-  if (ignore && (ignore[1] || ignore[2])) return sleep(state);
+  const ignore = new RegExp(`^(?:(?:hey|ok|okay) )?(?:(${NAMES}) )?(?:ignor(?:e|ing)( me)?|(silent mode))$`).exec(heard);
+  if (ignore && (ignore[1] || ignore[2] || ignore[3])) return sleep(state);
   if (NEVER_MIND.has(cleaned)) return state.confirm ? cancelled(state) : out({ ...state, pending: null });
   if (state.confirm) {
     if (CONFIRM_NO.has(cleaned)) return cancelled(state);
     return CONFIRM_YES.has(cleaned) || cleaned === state.confirm.word ? sentTo(state, state.confirm.text) : out(state);
   }
+  // "One" with nothing waiting (it was cancelled or timed out) says so rather than nothing.
+  if (CONFIRM_YES.has(cleaned)) return out({ ...state, pending: null }, { type: "speak", line: NOTHING_TO_CONFIRM });
   // Without the name, "switch to X" is only a switch when X is a session; otherwise it is a request for the session.
   const toName = /^switch to (.+)$/.exec(cleaned);
   if (toName && (cleaned !== heard || matching(state.sessions, toName[1]).length)) return switchTo(state, toName[1]);
   if (cleaned.split(" ").filter(Boolean).length < 2 && !critical(cleaned)) return out(state);
-  if (!state.session) return out(state, { type: "speak", line: "Pick a session first." });
+  if (!state.session) return out(state, { type: "speak", line: pickFirstLine(state.sessions.map((s) => s.name)) });
   const seq = state.seq + 1;
   return out({ ...state, seq, pending: { seq, heard: text } }, { type: "interpret", seq, text });
 }
@@ -146,10 +172,29 @@ function onInterpreted(state: VoiceState, seq: number, result: InterpretResult):
 }
 
 function core(state: VoiceState, event: VoiceEvent): VoiceStep {
-  if (event.type === "sessions") return out({ ...state, sessions: event.list });
+  if (event.type === "sessions") {
+    const blocked = event.blocked ?? [];
+    // A target that turns out to be one of Voice's own sessions is dropped.
+    const session = state.session && blocked.some((s) => s.id === state.session?.id) ? null : state.session;
+    return out({ ...state, sessions: event.list, blocked, session });
+  }
+  if (event.type === "pick" && isBlocked(state, event.session.id)) {
+    return state.mode === "asleep" ? out(state) : out(state, { type: "speak", line: notTargetLine(event.session.name) });
+  }
   if (state.mode === "asleep") {
     if (event.type === "wake") return out({ ...state, mode: "listening" }, { type: "listen" });
     if (event.type === "pick") return out({ ...state, session: event.session });
+    // The name itself wakes it (only Jarvis hears while asleep: the drawer's mic is closed).
+    if (event.type === "utterance" && calledByName(event.text)) {
+      const awake: VoiceState = { ...state, mode: "listening" };
+      const rest = norm(withoutName(event.text));
+      if (!addressed(rest) && !WAKE_WORDS.has(rest)) {
+        const r = onUtterance(awake, event.text);
+        // "Jarvis, ignore me" while asleep just stays asleep.
+        return r.state.mode === "asleep" ? out(state) : { state: r.state, effects: [{ type: "listen" }, ...r.effects] };
+      }
+      return out(awake, { type: "listen" }, { type: "speak", line: WAKE_LINE });
+    }
     return out(state);
   }
   switch (event.type) {
@@ -218,42 +263,27 @@ function mergeNotices(queue: Notice[]): string {
   return parts.map((p, i) => (i === 0 ? p[0].toUpperCase() + p.slice(1) : p)).join(". ") + ".";
 }
 
-/** d5: the first paragraph that isn't a code fence, markdown stripped, capped at 300 characters. */
-function spokenLine(text: string): string {
-  const paragraphs: string[][] = [[]];
-  let fenced = false;
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (line.startsWith("```")) {
-      fenced = !fenced;
-      continue;
-    }
-    if (fenced) continue;
-    if (!line) paragraphs.push([]);
-    else paragraphs[paragraphs.length - 1].push(line);
-  }
-  for (const lines of paragraphs) {
-    const plain = lines
-      .join(" ")
-      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
-      .replace(/`/g, "")
-      .replace(/(^|\s)#+\s+/g, "$1")
-      .replace(/\*+/g, "")
-      .replace(/(^|[\s(])_+([^_]+?)_+(?=$|[\s).,;:!?])/g, "$1$2")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (plain) return cap(plain);
-  }
-  return "";
+/** A session's spoken name: its title, else the first 8 characters of its id. */
+export function sessionName(agent: { id: string; title?: string | null }): string {
+  return agent.title?.trim() || agent.id.slice(0, 8);
 }
 
-function cap(line: string): string {
-  if (line.length <= SPOKEN_CAP) return line;
-  const cut = line.slice(0, SPOKEN_CAP);
-  const ends = [...cut.matchAll(/[.!?](?=\s)/g)];
-  if (ends.length) return cut.slice(0, ends[ends.length - 1].index + 1);
-  const space = cut.lastIndexOf(" ");
-  return `${space > 0 ? cut.slice(0, space) : cut}…`;
+type AgentLike = { id: string; title?: string | null; provider?: string; labels?: Record<string, string> | null };
+
+/** False for Voice's own sessions: a Jarvis session or the Voice helper. */
+export function canTarget(agent: { provider?: string; labels?: Record<string, string> | null }): boolean {
+  return agent.provider !== ROUTER_PROVIDER_ID && agent.labels?.kind !== VOICE_HELPER_KIND;
+}
+
+/** The sessions Voice may send to; Voice's own sessions are left out. */
+export function voiceSessions(agents: AgentLike[]): VoiceSession[] {
+  return splitSessions(agents).list;
+}
+
+/** Sessions Voice may send to (`list`), and its own (`blocked`), for the loop's `sessions` event. */
+export function splitSessions(agents: AgentLike[]): { list: VoiceSession[]; blocked: VoiceSession[] } {
+  const named = (agent: AgentLike) => ({ id: agent.id, name: sessionName(agent) });
+  return { list: agents.filter(canTarget).map(named), blocked: agents.filter((a) => !canTarget(a)).map(named) };
 }
 
 export function step(state: VoiceState, event: VoiceEvent): VoiceStep {

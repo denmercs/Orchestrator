@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { initialVoiceState, step, type VoiceEffect, type VoiceEvent, type VoiceMode, type VoiceSession, type VoiceState } from "./voice-loop";
+import { addressed, initialVoiceState, step, withoutName, type VoiceEffect, type VoiceEvent, type VoiceMode, type VoiceSession, type VoiceState } from "./voice-loop";
 
 const api: VoiceSession = { id: "s1", name: "api-refactor" };
 const docs: VoiceSession = { id: "s2", name: "docs" };
@@ -41,10 +41,14 @@ test("the loop starts asleep; wake listens; everything else while asleep does no
   assert.equal(picked.state.session, docs);
 });
 
-test("shared/voice-loop.ts has no import lines", () => {
+test("shared/voice-loop.ts imports only its wording, and that imports nothing", () => {
   const source = readFileSync(new URL("./voice-loop.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(source, /^\s*import\s/m);
+  const imports = source.match(/^\s*import\s.*$/gm) ?? [];
+  assert.deepEqual(imports.map((line) => /from "([^"]+)"/.exec(line)?.[1]), ["./voice-lines"]);
   assert.doesNotMatch(source, /\brequire\(/);
+  const lines = readFileSync(new URL("./voice-lines.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(lines, /^\s*import\s/m);
+  assert.doesNotMatch(lines, /\brequire\(/);
 });
 
 // Cycle 2
@@ -58,7 +62,7 @@ test("'never mind' is matched locally and never reaches the interpreter", () => 
 });
 
 test("'Jarvis, ignore me' and close mishearings put the loop to sleep", () => {
-  for (const text of ["Jarvis, ignore me", "Jervis ignore me", "travis, ignoring me", "ignore me", "Hey Jarvis, ignore me"]) {
+  for (const text of ["Jarvis, ignore me", "Jervis ignore me", "travis, ignoring me", "ignore me", "Hey Jarvis, ignore me", "Jarvis, silent mode", "silent mode"]) {
     const r = say(awake({ pending: { seq: 4, heard: "x" } }), text);
     assert.deepEqual(r.effects, [{ type: "sleep" }], text);
     assert.equal(r.state.mode, "asleep");
@@ -93,7 +97,7 @@ test("the sleep event while asleep does nothing", () => {
 });
 
 test("an utterance with no target asks for a session; otherwise it goes to the interpreter", () => {
-  assert.deepEqual(say(awake({ session: null }), "fix the login bug").effects, [{ type: "speak", line: "Pick a session first." }]);
+  assert.deepEqual(say(awake({ session: null }), "fix the login bug").effects, [{ type: "speak", line: "Pick a session first: say switch to, then a name. Sessions: api-refactor, docs." }]);
   const r = say(awake(), "fix the login bug");
   assert.deepEqual(r.effects, [{ type: "interpret", seq: 1, text: "fix the login bug" }]);
   assert.deepEqual(r.state.pending, { seq: 1, heard: "fix the login bug" });
@@ -104,7 +108,7 @@ test("interpreted send steers the target, gives a receipt and waits", () => {
   const r = heardAs(awake(), "fix the login bug", { type: "send", text: "Fix the login bug" });
   assert.deepEqual(r.effects, [
     { type: "send", session: api, text: "Fix the login bug", behavior: "steer" },
-    { type: "receipt", session: api, line: "Sent to api-refactor" },
+    { type: "receipt", session: api, line: "Sent to api-refactor." },
   ]);
   assert.equal(r.state.mode, "waiting");
   assert.equal(r.state.pending, null);
@@ -147,7 +151,7 @@ test("the exact word, spoken or confirm(word), sends with a receipt; yes and oth
   assert.deepEqual(step(asked, { type: "confirm", word: "delete" }).effects, []);
   const expected = [
     { type: "send", session: api, text: "Merge the branch", behavior: "steer" },
-    { type: "receipt", session: api, line: "Sent to api-refactor" },
+    { type: "receipt", session: api, line: "Sent to api-refactor." },
   ];
   const spoken = say(asked, "Jarvis, merge.");
   assert.deepEqual(spoken.effects, expected);
@@ -355,7 +359,9 @@ test("every mode × event: steers pair with receipts, only interrupt interrupts,
         }
         if (e.type === "interrupt") assert.equal(event.type, "interrupt", label);
       });
-      if (mode === "asleep" && event.type !== "wake") assert.deepEqual(effects, [], label);
+      // Asleep, only wake and words addressed to Jarvis do anything.
+      const named = event.type === "utterance" && /^jarvis, (?!ignore)/i.test(event.text);
+      if (mode === "asleep" && event.type !== "wake" && !named) assert.deepEqual(effects, [], label);
     }
   }
 });
@@ -391,4 +397,56 @@ test("notices from unknown sessions say 'A session' and merge by session id", ()
   let state = awake({ talking: true, sessions: [api, docs, twin] });
   for (const sessionId of ["s2", "s4"]) state = step(state, { type: "notice", kind: "finished", sessionId }).state;
   assert.deepEqual(say(state, "uh").effects, [{ type: "speak", line: "Two sessions finished." }]);
+});
+
+test("addressed spots a leading name; withoutName drops it and keeps the rest as said", () => {
+  assert.equal(addressed("Jarvis, wake up"), true);
+  assert.equal(addressed("hey Jervis"), true);
+  assert.equal(addressed("run the tests"), false);
+  assert.equal(withoutName("Jarvis, run the tests."), "run the tests.");
+  assert.equal(withoutName("Hey Jarvis, Merge it"), "Merge it");
+  assert.equal(withoutName("run the tests"), "run the tests");
+  assert.equal(withoutName("Jarvis"), "Jarvis");
+});
+
+test("asleep, words that start with the name wake it; the rest is then heard as usual", () => {
+  const asleep = { ...awake(), mode: "asleep" as const };
+  const woke = say(asleep, "Jarvis, wake up");
+  assert.deepEqual(woke.effects, [{ type: "listen" }, { type: "speak", line: "I'm listening." }]);
+  assert.equal(woke.state.mode, "listening");
+  assert.deepEqual(say(asleep, "Jarvis").effects, [{ type: "listen" }, { type: "speak", line: "I'm listening." }]);
+  const ask = say(asleep, "Jarvis, run the tests");
+  assert.deepEqual(types(ask.effects), ["listen", "interpret"]);
+  assert.deepEqual(say(asleep, "Jarvis, ignore me").state.mode, "asleep");
+  assert.deepEqual(say(asleep, "run the tests").effects, []);
+});
+
+test("Voice's own sessions are never a target: pick, switch by name, a stale target and a send are refused", () => {
+  const jarvis: VoiceSession = { id: "j1", name: "Jarvis phone" };
+  const line = "Jarvis phone is a voice session, so it can't be the target. Pick another session.";
+  const state = awake({ blocked: [jarvis] });
+  const picked = step(state, { type: "pick", session: jarvis });
+  assert.deepEqual(picked.effects, [{ type: "speak", line }]);
+  assert.equal(picked.state.session?.id, "s1");
+  assert.deepEqual(step({ ...state, mode: "asleep" }, { type: "pick", session: jarvis }).state.session?.id, "s1");
+  assert.deepEqual(say(state, "Jarvis, switch to jarvis phone").effects, [{ type: "speak", line }]);
+  const dropped = step(awake({ session: jarvis }), { type: "sessions", list: [api, docs], blocked: [jarvis] });
+  assert.equal(dropped.state.session, null);
+  const sneaked = heardAs({ ...awake({ session: jarvis }), blocked: [jarvis] }, "run the tests", { type: "send", text: "run the tests" });
+  assert.deepEqual(sneaked.effects, [{ type: "speak", line }]);
+  assert.equal(sneaked.state.session, null);
+});
+
+test("'one' with nothing to confirm says so", () => {
+  assert.deepEqual(say(awake(), "one").effects, [{ type: "speak", line: "Nothing to confirm." }]);
+});
+
+test("asleep, only the name itself wakes it, not a mishearing", () => {
+  const asleep = { ...awake(), mode: "asleep" as const };
+  for (const heard of ["Travis, wake up", "service the car", "Jervis", "javis run the tests"]) {
+    assert.deepEqual(say(asleep, heard).effects, [], heard);
+  }
+  assert.equal(say(asleep, "OK Jarvis").state.mode, "listening");
+  // Awake, the mishearings still count as the name.
+  assert.deepEqual(say(awake(), "Travis, ignore me").effects, [{ type: "sleep" }]);
 });

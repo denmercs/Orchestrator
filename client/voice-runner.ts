@@ -1,11 +1,12 @@
-import { CONFIRM_CANCEL, initialVoiceState, step, type InterpretResult, type VoiceEffect, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
+import { CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type InterpretResult, type VoiceEffect, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
 
 export const MAX_LINES = 20;
 export const MAX_TRANSCRIPTS = 5;
 
 export const MAX_HOLD_MS = 30_000;
 export const MIN_HOLD_MS = 300;
-export const CONFIRM_TIMEOUT_MS = 10_000;
+// One timeout for the drawer and Jarvis.
+export { CONFIRM_TIMEOUT_MS };
 export const BASE_HINTS = ["merge", "Orchestrator", "Paseo", "Jarvis"];
 
 /** Ports the runner carries effects out through. Recorder, transcriber and clock are optional. */
@@ -248,10 +249,11 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     off,
     confirm: (word: string) => dispatch({ type: "confirm", word }),
     interrupt: () => dispatch({ type: "interrupt" }),
-    setSessions(list: VoiceSession[]) {
+    /** `blocked` are Voice's own sessions (Jarvis, the Voice helper), never a target. */
+    setSessions(list: VoiceSession[], blocked: VoiceSession[] = []) {
       // The pills resync often; only a real change should reach the loop and wake subscribers.
-      const same = list.length === snapshot.sessions.length && list.every((s, i) => s.id === snapshot.sessions[i]?.id && s.name === snapshot.sessions[i]?.name);
-      if (!same) dispatch({ type: "sessions", list });
+      const same = (a: VoiceSession[], b: VoiceSession[]) => a.length === b.length && a.every((s, i) => s.id === b[i]?.id && s.name === b[i]?.name);
+      if (!same(list, snapshot.sessions) || !same(blocked, snapshot.blocked)) dispatch({ type: "sessions", list, blocked });
     },
     pick: (session: VoiceSession) => dispatch({ type: "pick", session }),
   };

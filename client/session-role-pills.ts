@@ -4,7 +4,7 @@ import { createContextPillIcon } from "./context-pill-icon";
 import { createRequestSequence, createToastQueue, pillMenu, pillView, usageChanged } from "./context-pill-model";
 import { RECAP_COMMAND, recapPill } from "./recap-pill-model";
 import type { createVoiceRunner } from "./voice-runner";
-import { sessionName, voicePill, voiceSessions } from "./voice-pill-model";
+import { canTarget, sessionName, splitSessions, voicePill } from "./voice-pill-model";
 
 // Paseo stamps spawned sessions with this label; the protocol package does not export it.
 const PARENT_LABEL = "paseo.parent-agent-id";
@@ -222,7 +222,8 @@ export function contributeSessionRolePills(client: PluginClientContext, voice?: 
   }
 
   function voiceButton(agent: Agent): PluginButton | null {
-    if (!voice) return null;
+    // Voice's own sessions (Jarvis, the Voice helper) can't be a target, so they get no pill.
+    if (!voice || !canTarget(agent)) return null;
     const view = voicePill(agent, voice.getState());
     if (!view) return null;
     return {
@@ -234,7 +235,8 @@ export function contributeSessionRolePills(client: PluginClientContext, voice?: 
 
   function sync() {
     const live = [...agents.values()].filter(isLive);
-    voice?.setSessions(voiceSessions(live));
+    const { list, blocked } = splitSessions(live);
+    voice?.setSessions(list, blocked);
     const childCounts = new Map<string, number>();
     for (const agent of live) {
       const parentId = parentOf(agent);

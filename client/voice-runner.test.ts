@@ -39,7 +39,7 @@ test("an utterance after a pick is sent to the session through the link", async 
   runner.dispatch({ type: "utterance", text: "please run the tests" });
   await flush();
   assert.deepEqual(said, [["a1", "please run the tests"]]);
-  assert.deepEqual(runner.getState().lines, ["Sent to Alpha"]);
+  assert.deepEqual(runner.getState().lines, ["Sent to Alpha."]);
   assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent to Alpha" }]);
 });
 
@@ -242,12 +242,12 @@ test("confirm(word) from a button sends", async () => {
   assert.equal(runner.getState().mode, "waiting");
 });
 
-test("the confirm times out after 10 seconds and cancels", async () => {
+test("the confirm times out after the shared 20 seconds and cancels", async () => {
   const { runner, said, timers } = talkSetup();
   runner.dispatch({ type: "utterance", text: "merge it" });
   await flush();
   const timer = timers.at(-1);
-  assert.equal(timer?.ms, 10_000);
+  assert.equal(timer?.ms, 20_000);
   timer?.fn();
   await flush();
   assert.equal(runner.getState().mode, "listening");
@@ -443,4 +443,16 @@ test("turning voice on again clears the last error; a stale failed open does not
   await flush();
   assert.equal(runner.getState().mode, "listening");
   assert.equal(runner.getState().error, null);
+});
+
+test("setSessions passes Voice's own sessions to the loop as blocked, and only on a change", () => {
+  const { runner } = talkSetup();
+  const jarvis = { id: "j1", name: "Jarvis" };
+  let notified = 0;
+  runner.subscribe(() => notified++);
+  runner.setSessions([alpha], [jarvis]);
+  assert.deepEqual(runner.getState().blocked, [jarvis]);
+  const before = notified;
+  runner.setSessions([alpha], [{ ...jarvis }]);
+  assert.equal(notified, before);
 });
