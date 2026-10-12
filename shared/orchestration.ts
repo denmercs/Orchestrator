@@ -402,6 +402,10 @@ export const epicStory = z.object({
   blockedFrom: z.string(),
   // From frontmatter `block_kind:`, why the loop blocked it (e.g. "cost-cap"). Empty when unset.
   blockKind: z.string(),
+  // Written by the initiative loop while a step waits out a plan limit: when it resumes (ISO) and the
+  // provider whose limit it is (e.g. "claude"; empty when the limit came from the turn's reply). Empty when unset.
+  pausedUntil: z.string(),
+  pausedFor: z.string(),
   // Written by the initiative loop: the step's skill warnings, joined with " · ". Empty when none.
   skillWarnings: z.string(),
   // Set when an agent filed this story while working on another.

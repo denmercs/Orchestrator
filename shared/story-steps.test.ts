@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EpicBoardState, EpicStory } from "./orchestration";
+import { clockTime } from "./plan-usage";
 import { initiativeStatus, stepBar } from "./story-steps";
 
 function story(fields: Partial<EpicStory> = {}): EpicStory {
@@ -13,6 +14,8 @@ function story(fields: Partial<EpicStory> = {}): EpicStory {
     blockedReason: "",
     blockedFrom: "",
     blockKind: "",
+    pausedUntil: "",
+    pausedFor: "",
     skillWarnings: "",
     discoveredFrom: "",
     pr: null,
@@ -128,6 +131,26 @@ test("stepBar text: implementing and reviewing open the session", () => {
     cta: "Open session",
   });
   assert.deepEqual(text({ status: "reviewing" }), { sub: "Reviewing", detail: "Review", cta: "Open session" });
+});
+
+test("stepBar text: a step paused for a plan limit says so and when it resumes", () => {
+  const resumes = new Date(Date.now() + 3_600_000);
+  const paused = { pausedUntil: resumes.toISOString(), pausedFor: "claude" };
+  for (const status of ["planning", "implementing", "reviewing"]) {
+    const { sub, detail, cta } = stepBar(story({ status, ...paused }), "plan");
+    assert.deepEqual([sub, detail, cta], ["Paused · Claude limit", `Paused for the Claude limit, resumes at ${clockTime(resumes)}`, "Open session"]);
+  }
+  const diagnosing = stepBar(story({ status: "planning", track: "diagnose", ...paused }), "diagnose");
+  assert.equal(diagnosing.sub, "Paused · Claude limit");
+  assert.match(clockTime(resumes), /^\d{1,2}:\d{2} [AP]M$/);
+});
+
+test("stepBar text: a pause without a provider names the plan limit; a pause that has passed shows the step", () => {
+  const resumes = new Date(Date.now() + 3_600_000);
+  const unnamed = stepBar(story({ status: "implementing", pausedUntil: resumes.toISOString() }), "plan");
+  assert.deepEqual([unnamed.sub, unnamed.detail], ["Paused · plan limit", `Paused for the plan limit, resumes at ${clockTime(resumes)}`]);
+  const passed = stepBar(story({ status: "implementing", pausedUntil: new Date(Date.now() - 1000).toISOString(), pausedFor: "claude" }), "plan");
+  assert.equal(passed.sub, "Implementing");
 });
 
 test("stepBar text: pr-open follows CI", () => {

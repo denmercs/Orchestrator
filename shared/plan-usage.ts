@@ -60,6 +60,12 @@ export const PLAN_PROVIDERS = [
   { id: "cursor", name: "Cursor" },
 ] as const;
 
+// A provider's display name: "Claude" for "claude". One PLAN_PROVIDERS doesn't list keeps its id.
+export const providerName = (id: string) => PLAN_PROVIDERS.find((provider) => provider.id === id)?.name ?? id;
+
+// "2:32 AM": a moment as a local clock time, for a pause's resume.
+export const clockTime = (date: Date) => date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+
 export type PlanUsageTone = "default" | "warning" | "danger";
 
 // One window or balance. Each phrase is null when there is nothing to show; the client joins them

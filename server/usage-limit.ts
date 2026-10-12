@@ -1,3 +1,5 @@
+import type { ProviderUsage } from "../shared/plan-usage";
+
 // Claude's plan limit (the 5-hour session or a weekly one), as opposed to a transient rate limit:
 // a failed turn that says this will keep failing until the limit resets, so retrying is pointless.
 const LIMIT = /usage limit|hit your (?:[a-z]+ )?limit|limit reached/i;
@@ -23,6 +25,23 @@ export function usageLimitResumeAt(message: string, now: Date): Date | null {
     return new Date(reset.getTime() + BUFFER_MS);
   }
   return new Date(now.getTime() + FALLBACK_MS);
+}
+
+// A plan window this full (used %) counts as the limit: the next turn would hit it.
+export const PLAN_LIMIT_PCT = 99;
+
+// When a provider's live plan usage says it is at its limit: the moment to try again. Null unless it
+// is available and some window is at PLAN_LIMIT_PCT. The latest reset among those windows, a little
+// past it; an hour from now when none of them names a reset still ahead.
+export function planLimitUntil(usage: ProviderUsage, now: Date): Date | null {
+  if (usage.status !== "available") return null;
+  const full = usage.windows.filter((window) => (window.usedPct ?? 0) >= PLAN_LIMIT_PCT);
+  if (!full.length) return null;
+  const resets = full
+    .map((window) => Date.parse(window.resetsAt ?? ""))
+    .filter((time) => time > now.getTime());
+  if (!resets.length) return new Date(now.getTime() + FALLBACK_MS);
+  return new Date(Math.max(...resets) + BUFFER_MS);
 }
 
 // Whether `now` falls in the hold window [from, until) of local hours, which may wrap midnight

@@ -53,7 +53,9 @@ import {
 import { withMcpScope } from "./mcp-scope";
 import { installSkills, skillPaths } from "./skill-sources";
 import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
-import { inHoldWindow, usageLimitResumeAt } from "./usage-limit";
+import { clockTime, providerName } from "../shared/plan-usage";
+import { readPlanUsage } from "./plan-usage";
+import { inHoldWindow, planLimitUntil, usageLimitResumeAt } from "./usage-limit";
 
 // The stuck evidence a step carries in its frontmatter; a new step or a reopen starts it clean.
 const STUCK_CLEAR = { idle_turns: null, fail_tests: null, fail_runs: null, stuck_nudged: null };
@@ -72,6 +74,10 @@ const STUCK_CLEAR = { idle_turns: null, fail_tests: null, fail_runs: null, stuck
 //                    whose worktree is gone goes to its branch's PR.
 //                    A failed turn that hit the plan's usage limit isn't a retry: the story is paused until
 //                    the reset time in the message (an hour on if it names none), then nudged.
+//                    Each tick also reads live plan usage from Paseo. While a step's provider is at its limit
+//                    the loop starts no story on it and pauses a stalled or dead step (paused_until,
+//                    paused_for) instead of nudging into the wall; a retry-limit block from around when the
+//                    limit hit goes back to a pause, so it resumes after the reset.
 //                    A permission request blocks the story until it's answered.
 //                    A turn you cancel is left alone.
 //                    Stuck evidence is read from each completed turn: no file edits for stuckTurns turns, or the
@@ -105,6 +111,8 @@ const STEP_ANSWERS: Record<string, string[]> = {
   review: [MARKERS.reviewDone, MARKERS.reviewFailed],
 };
 const PERMISSION = "permission";
+// How long before the loop first saw a plan limit a retry-limit block can be and still be put down to it.
+const LIMIT_GRACE_MS = 30 * 60 * 1000;
 const STATUS_FOR: Record<LoopStep, string> = {
   plan: "planning",
   diagnose: "planning",
@@ -232,6 +240,7 @@ function block(story: StoryFile, reason: string, kind?: BlockKind, record = true
     blocked_reason: reason,
     blocked_from: story.meta.status ?? "todo",
     block_kind: kind ?? null,
+    blocked_at: new Date().toISOString(),
   });
 }
 
@@ -246,6 +255,11 @@ export function createInitiativeLoop(
   readCost?: ReadCost,
 ) {
   let paseo: PaseoApi | null = null;
+  // Providers at their plan limit, from the last read of live plan usage: since when the loop has seen
+  // it, and until when it holds. In memory only, so a restart forgets `since` until the next read.
+  const limits = new Map<string, { since: number; until: number }>();
+  // Each step's provider, read once per tick; null when its config can't be read.
+  const stepProviders = new Map<LoopStep, string | null>();
   // Steps started by this process, so a repeated event can't start one twice before its label shows.
   const started = new Set<string>();
   // One loop action at a time: Start, turn ends and the tick all read and write the same story files.
@@ -255,6 +269,39 @@ export function createInitiativeLoop(
     chain = run.catch(() => undefined);
     return run;
   };
+
+  // Brings `limits` up to date from Paseo's live plan usage. A daemon that can't answer leaves it as it was.
+  async function refreshLimits(api: PaseoApi) {
+    stepProviders.clear();
+    const { providers } = await readPlanUsage(api);
+    if (!providers) return;
+    const now = new Date();
+    const limited = new Set<string>();
+    for (const usage of providers) {
+      const until = planLimitUntil(usage, now);
+      if (!until) continue;
+      limited.add(usage.providerId);
+      const since = limits.get(usage.providerId)?.since ?? now.getTime();
+      limits.set(usage.providerId, { since, until: until.getTime() });
+    }
+    for (const id of [...limits.keys()]) if (!limited.has(id)) limits.delete(id);
+  }
+
+  // The plan limit a step's provider is at, or null when it isn't (or its config can't be read).
+  // A model-qualified provider ("claude/opus") is gated by its provider's limit.
+  async function limitFor(api: PaseoApi, config: LoopConfig, step: LoopStep) {
+    if (!limits.size) return null;
+    if (!stepProviders.has(step)) {
+      const provider = await readAgentConfig(api, step, config).then(
+        (agentConfig) => agentConfig.provider.split("/")[0],
+        () => null,
+      );
+      stepProviders.set(step, provider);
+    }
+    const provider = stepProviders.get(step);
+    const limit = provider ? limits.get(provider) : undefined;
+    return provider && limit ? { provider, since: limit.since, until: new Date(limit.until) } : null;
+  }
 
   async function loopAgents(api: PaseoApi) {
     const listed = await api.agents.list({ filter: { includeArchived: false }, page: { limit: 200 } });
@@ -360,9 +407,11 @@ export function createInitiativeLoop(
         agent: agent.id,
         blocked_reason: null,
         blocked_from: null,
+        blocked_at: null,
         block_kind: null,
         stalled: null,
         paused_until: null,
+        paused_for: null,
         waiting_on: null,
         ...(extra.attempt ? {} : { retries: null }),
         ...STUCK_CLEAR,
@@ -496,9 +545,11 @@ export function createInitiativeLoop(
       status: meta.blocked_from ?? null,
       blocked_reason: null,
       blocked_from: null,
+      blocked_at: null,
       retries: null,
       stalled: null,
       paused_until: null,
+      paused_for: null,
       block_kind: null,
     });
     return readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
@@ -593,8 +644,9 @@ export function createInitiativeLoop(
     }
     const merged = new Set(phaseDirs(init).flatMap((dir) => readStoryFiles(dir).filter(isMerged).map((story) => story.id)));
     const stories = readStoryFiles(phaseDir);
-    // A step stopped by the plan's usage limit says the next one would stop too.
-    if (stories.some((story) => Date.parse(story.meta.paused_until ?? "") > Date.now())) {
+    // A step stopped by the plan's usage limit in its reply says the next one would stop too. A pause
+    // from live usage names its provider, and the gate below holds only stories on that provider.
+    if (stories.some((story) => !story.meta.paused_for && Date.parse(story.meta.paused_until ?? "") > Date.now())) {
       return { started: startedNow, reason: "paused until the usage limit resets" };
     }
     // A story blocked on a permission request still has its session open, so it keeps its slot.
@@ -607,7 +659,14 @@ export function createInitiativeLoop(
         !story.meta.blocked_by &&
         (story.meta.depends_on ?? "").split(",").map((id) => id.trim()).filter(Boolean).every((id) => merged.has(id)),
     );
+    let paused = "";
     for (const story of ready.slice(0, Math.max(0, config.parallel - inFlight))) {
+      // Its first step's provider is at its plan limit: starting it would only hit the wall.
+      const limit = await limitFor(api, config, story.meta.track === "diagnose" ? "diagnose" : "plan");
+      if (limit) {
+        paused = `paused for the ${providerName(limit.provider)} limit until ${clockTime(limit.until)}`;
+        continue;
+      }
       try {
         const agentId = await startStory(api, config, init, phaseDir, story);
         if (agentId) startedNow.push({ story: story.id, agentId });
@@ -616,6 +675,7 @@ export function createInitiativeLoop(
       }
     }
     const running = inFlight + startedNow.length;
+    if (paused && !startedNow.length) return { started: startedNow, reason: paused };
     const label = phaseLabel(phaseMeta(phaseDir).phase ?? "");
     return {
       started: startedNow,
@@ -650,13 +710,20 @@ export function createInitiativeLoop(
     if (session?.status === "running" || session?.status === "initializing") return;
     const dead = !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
     if (!dead && !meta.stalled && !resuming) return;
+    // Its provider is at its plan limit (or still is, past an earlier pause): wait out the reset rather
+    // than nudge or restart into it. Not a retry.
+    const limit = await limitFor(api, config, step);
+    if (limit) {
+      writeFrontmatter(story.path, { paused_until: limit.until.toISOString(), paused_for: limit.provider, stalled: null });
+      return;
+    }
     const why = dead
       ? session?.lastError
         ? `Its session failed: ${session.lastError}.`
         : "Its session is gone."
       : meta.stalled || "The usage limit has reset.";
     if (resuming && !dead) {
-      writeFrontmatter(story.path, { paused_until: null, stalled: null });
+      writeFrontmatter(story.path, { paused_until: null, paused_for: null, stalled: null });
       await api.agents.ref(meta.agent).send(nudgePrompt(why));
       return;
     }
@@ -665,7 +732,7 @@ export function createInitiativeLoop(
       block(story, `${STEP_LABELS[step]}: ${why} Gave up after ${retries} ${retries === 1 ? "retry" : "retries"}.`, "retry-limit");
       return;
     }
-    writeFrontmatter(story.path, { retries: retries + 1, stalled: null, paused_until: null });
+    writeFrontmatter(story.path, { retries: retries + 1, stalled: null, paused_until: null, paused_for: null });
     if (!dead) {
       await api.agents.ref(meta.agent).send(nudgePrompt(why));
       return;
@@ -703,6 +770,31 @@ export function createInitiativeLoop(
     await watchPr(api, config, init, phaseDir, fresh);
   }
 
+  // A story the loop gave up on while its step's provider was hitting its plan limit: those retries
+  // went into the wall, so it goes back to its step as a pause and resumes after the reset. A block
+  // from well before the limit began (30 minutes' grace) had another cause and stays. `since` is when
+  // this process first saw the limit, so after a restart only blocks from then on are recovered.
+  async function recoverLimitBlock(api: PaseoApi, config: LoopConfig, story: StoryFile) {
+    const { meta } = story;
+    const step = meta.step as LoopStep;
+    if (meta.status !== "blocked" || meta.block_kind !== "retry-limit" || !SUPERVISED_STEPS.has(step)) return false;
+    const blockedAt = Date.parse(meta.blocked_at ?? "");
+    const limit = Number.isNaN(blockedAt) ? null : await limitFor(api, config, step);
+    if (!limit || blockedAt < limit.since - LIMIT_GRACE_MS) return false;
+    writeFrontmatter(story.path, {
+      status: meta.blocked_from ?? null,
+      blocked_reason: null,
+      blocked_from: null,
+      blocked_at: null,
+      block_kind: null,
+      retries: null,
+      stalled: null,
+      paused_until: limit.until.toISOString(),
+      paused_for: limit.provider,
+    });
+    return true;
+  }
+
   // Everything the loop does for one initiative on a tick: PRs, in-flight steps, then free slots.
   async function sweep(api: PaseoApi, config: LoopConfig, init: Initiative) {
     for (const phaseDir of phaseDirs(init)) {
@@ -711,7 +803,10 @@ export function createInitiativeLoop(
           if (story.meta.status === "pr-open") await watchPr(api, config, init, phaseDir, story);
           else if (initiativeLoopState(init.dir) === "on") {
             await reconcile(api, config, init, phaseDir, story, false);
-            const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id);
+            let fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id);
+            if (fresh && (await recoverLimitBlock(api, config, fresh))) {
+              fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id);
+            }
             if (fresh) await supervise(api, config, init, phaseDir, fresh);
           }
         } catch (error) {
@@ -765,6 +860,7 @@ export function createInitiativeLoop(
           const init = initiativeAt(input.repo, input.initiative);
           register(init.root);
           writeFrontmatter(join(init.dir, "initiative.md"), { loop: "on" });
+          await refreshLimits(api);
           const result = await sweep(api, await readConfig(), init);
           return { ok: true, error: null, ...result };
         } catch (cause) {
@@ -872,10 +968,12 @@ export function createInitiativeLoop(
           status: story.meta.blocked_from,
           blocked_reason: null,
           blocked_from: null,
+          blocked_at: null,
           block_kind: null,
           waiting_on: null,
           stalled: null,
           paused_until: null,
+          paused_for: null,
           retries: null,
           ...STUCK_CLEAR,
           ...(kind === "ci" ? { fix_attempts: null, fixed_sha: null } : {}),
@@ -898,10 +996,12 @@ export function createInitiativeLoop(
           status: story.meta.blocked_from,
           blocked_reason: null,
           blocked_from: null,
+          blocked_at: null,
           block_kind: null,
           waiting_on: null,
           stalled: null,
           paused_until: null,
+          paused_for: null,
           retries: null,
         });
       });
@@ -1102,6 +1202,7 @@ export function createInitiativeLoop(
           status: meta.blocked_from || "todo",
           blocked_reason: null,
           blocked_from: null,
+          blocked_at: null,
           waiting_on: null,
         });
       });
@@ -1112,6 +1213,7 @@ export function createInitiativeLoop(
       if (!api) return Promise.resolve();
       return serial(async () => {
         const config = await readConfig();
+        await refreshLimits(api);
         for (const root of readRegistry()) {
           for (const slug of dirsIn(initiativesDir(root))) {
             try {
