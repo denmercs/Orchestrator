@@ -27,6 +27,8 @@ import { getBranchInitials } from "./shared/naming";
 import { createContextWatch, paseoPort } from "./server/context-watch";
 import { createGateActions, loopGatePort } from "./server/gate-actions";
 import { createVoiceResume } from "./server/voice-resume";
+import { createSpeakReplies, realSpeakPorts, type SpeakPorts } from "./server/speak-replies";
+import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { gateAct } from "./shared/gates";
 import { readTelemetry, summariseTelemetry } from "./server/context-telemetry";
 import { loadStoryContext } from "./server/story-context";
@@ -126,6 +128,7 @@ export default function contribute(
     replayStart?: { file: string; everyMs: number };
     loopStart?: { file: string; everyMs: number };
     voiceHelperCwd?: string;
+    speak?: SpeakPorts;
   } = {},
 ) {
   // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
@@ -426,6 +429,13 @@ export default function contribute(
     helperPaseo = paseo;
     return voiceHelper.interpret(input);
   });
+  // Spoken replies: a switched-on session says the short line of each completed reply (scripts/SPEAK.md).
+  const speakReplies = createSpeakReplies(deps.speak ?? realSpeakPorts());
+  server.handle(speakRepliesSet, async ({ agentId, on }) => {
+    await speakReplies.set(agentId, on);
+    return { ok: true };
+  });
+  server.handle(speakRepliesState, () => ({ agentIds: speakReplies.agentIds() }));
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     voicePaseo = paseo;
     // The Voice helper's own turns are telemetry only: its spend reaches the context card, and nothing
@@ -454,6 +464,7 @@ export default function contribute(
         .catch((error) => console.warn("orchestrator: memory replay failed", error));
       return;
     }
+    speakReplies.onTurnEnded(event);
     loop.rememberPaseo(paseo);
     pipelinePaseo = paseo;
     void loop.onTurnEnded(event);
@@ -482,6 +493,7 @@ export default function contribute(
   const offTurnStarted = server.on("agent.turn_started", (event, { paseo }) => {
     arm(paseo);
     voiceResume.onTurnStarted(event.agent.id);
+    speakReplies.onTurnStarted(event.agent.id);
   });
   const offAgentCreated = server.on("agent.created", (_event, { paseo }) => arm(paseo));
   const offPermissionRequested = server.on("agent.permission_requested", (event, { paseo }) => {
