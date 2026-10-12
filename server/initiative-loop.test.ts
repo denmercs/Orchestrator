@@ -85,8 +85,9 @@ function fixture(agent = "a1") {
 }
 
 // A fake Paseo: live agents by id; workspace creates are recorded and become live agents, and
-// follow-ups are recorded in `sent`.
-function fakePaseo(live: Agent[]) {
+// follow-ups are recorded in `sent`. With `usage`, `providers.listUsage` answers its providers (read on
+// each call, so a test can change them), or rejects while they are null.
+function fakePaseo(live: Agent[], usage?: { providers: unknown[] | null }) {
   const sent: { id: string; text: string; options?: { activeTurnBehavior?: string } }[] = [];
   const archived: string[] = [];
   const created: {
@@ -116,6 +117,16 @@ function fakePaseo(live: Agent[]) {
       }),
       list: async () => ({ entries: live.map((agent) => ({ agent })) }),
     },
+    ...(usage
+      ? {
+          providers: {
+            listUsage: async () => {
+              if (!usage.providers) throw new Error("daemon down");
+              return { providers: usage.providers };
+            },
+          },
+        }
+      : {}),
     workspaces: {
       archive: async (workspace: string) => {
         archived.push(workspace);
@@ -753,6 +764,39 @@ test("a turn that hit the usage limit pauses the story until the reset: no nudge
   assert.equal(storyMeta(story).status, "implementing");
 });
 
+test("a turn that ends on the usage limit as its reply pauses the story too, not a stall", async () => {
+  const { story, labels } = fixture("a1");
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  const timeline = [
+    { type: "user_message", text: "Carry on with this step." },
+    { type: "assistant_message", text: "You've hit your session limit · resets 2:30am (America/Chicago)" },
+  ];
+
+  await initiative.onTurnEnded(api, ended("a1", { kind: "completed" }, timeline));
+  assert.equal(storyMeta(story).stalled, undefined);
+  assert.ok(Date.parse(storyMeta(story).paused_until ?? "") > Date.now());
+
+  await initiative.tick();
+
+  assert.deepEqual([sent, created], [[], []]);
+  assert.equal(storyMeta(story).retries, undefined);
+});
+
+test("a reply that only talks about the usage limit mid-work is still a stall", async () => {
+  const { story, labels } = fixture("a1");
+  const { api } = fakePaseo([{ id: "a1", labels }]);
+  const timeline = [
+    { type: "assistant_message", text: "You've hit your session limit · resets 2:30am" },
+    { type: "assistant_message", text: "I updated usage-limit.ts so the loop waits for the reset." },
+  ];
+
+  await loop().onTurnEnded(api, ended("a1", { kind: "completed" }, timeline));
+
+  assert.equal(storyMeta(story).paused_until, undefined);
+  assert.equal(storyMeta(story).stalled, "It ended its turn without writing the step's marker.");
+});
+
 test("once the reset has passed, the tick nudges the paused session without counting a retry", async () => {
   const { story, labels } = fixture("a1");
   writeFrontmatter(story, { retries: 1, paused_until: new Date(Date.now() - 1000).toISOString() });
@@ -806,6 +850,150 @@ test("a pause that ended inside the hold window waits for the window to close", 
   open.rememberPaseo(api);
   await open.tick();
   assert.equal(sent.length, 1);
+});
+
+// Live plan usage from the daemon: Claude's five-hour window at `usedPct`, resetting in an hour.
+const claudeAt = (usedPct: number, resetsAt = new Date(Date.now() + 3_600_000)) => [
+  { providerId: "claude", status: "available", planLabel: "Max", windows: [{ id: "five_hour", label: "5h", usedPct, resetsAt: resetsAt.toISOString() }] },
+];
+
+test("a stalled step whose provider is at its plan limit is paused, not nudged: no retry counted", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker.", retries: 1 });
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100) });
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+  await initiative.tick();
+
+  assert.deepEqual([sent, created], [[], []]);
+  const meta = storyMeta(story);
+  assert.ok(Date.parse(meta.paused_until ?? "") > Date.now() + 3_600_000);
+  assert.equal(meta.paused_for, "claude");
+  assert.equal(meta.stalled, undefined);
+  assert.equal(meta.retries, "1");
+  assert.equal(meta.status, "implementing");
+});
+
+test("a dead session whose provider is at its plan limit isn't restarted into it", async () => {
+  const { story } = fixture("a1");
+  const { api, created } = fakePaseo([], { providers: claudeAt(99.5) });
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.deepEqual(created, []);
+  assert.equal(storyMeta(story).paused_for, "claude");
+  assert.equal(storyMeta(story).retries, undefined);
+});
+
+test("a pause whose reset passed while the limit still holds is paused again, not nudged", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { paused_until: new Date(Date.now() - 1000).toISOString() });
+  const weekly = new Date(Date.now() + 3 * 86_400_000);
+  const { api, sent } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100, weekly) });
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.deepEqual(sent, []);
+  assert.equal(Date.parse(storyMeta(story).paused_until ?? ""), weekly.getTime() + 120_000);
+});
+
+test("only the step's own provider gates it: a Claude limit leaves a Cursor step's nudge alone", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker." });
+  const { api, sent } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100) });
+  const initiative = createInitiativeLoop(async () => DEFAULT_LOOP_CONFIG, async () => ({ provider: "cursor" }), noExtras);
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.equal(sent.length, 1);
+  assert.equal(storyMeta(story).paused_for, undefined);
+});
+
+test("a model-qualified provider (claude/opus) is gated by its provider's limit", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker." });
+  const { api, sent } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100) });
+  const initiative = createInitiativeLoop(async () => DEFAULT_LOOP_CONFIG, async () => ({ provider: "claude/opus" }), noExtras);
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.deepEqual(sent, []);
+  assert.equal(storyMeta(story).paused_for, "claude");
+});
+
+test("a daemon that can't answer leaves the last known limit in place", async () => {
+  const { story, labels } = fixture("a1");
+  const usage: { providers: unknown[] | null } = { providers: claudeAt(100) };
+  const { api, sent } = fakePaseo([{ id: "a1", labels }], usage);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+  await initiative.tick();
+
+  usage.providers = null;
+  writeFrontmatter(story, { paused_until: new Date(Date.now() - 1000).toISOString() });
+  await initiative.tick();
+  assert.deepEqual(sent, []);
+
+  usage.providers = claudeAt(20);
+  writeFrontmatter(story, { paused_until: new Date(Date.now() - 1000).toISOString() });
+  await initiative.tick();
+  assert.deepEqual(sent, [{ id: "a1", text: nudgePrompt("The usage limit has reset.") }]);
+  assert.equal(storyMeta(story).paused_for, undefined);
+});
+
+test("a retry-limit block makes the block time and the step's provider at its limit turns it back into a pause", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker.", retries: 2 });
+  const usage: { providers: unknown[] | null } = { providers: claudeAt(10) };
+  const { api, sent } = fakePaseo([{ id: "a1", labels }], usage);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+  assert.equal(storyMeta(story).block_kind, "retry-limit");
+  assert.ok(Date.parse(storyMeta(story).blocked_at ?? "") <= Date.now());
+
+  usage.providers = claudeAt(100);
+  await initiative.tick();
+
+  const meta = storyMeta(story);
+  assert.equal(meta.status, "implementing");
+  assert.deepEqual([meta.blocked_reason, meta.blocked_from, meta.block_kind, meta.retries], [undefined, undefined, undefined, undefined]);
+  assert.equal(meta.paused_for, "claude");
+  assert.ok(Date.parse(meta.paused_until ?? "") > Date.now());
+  assert.deepEqual(sent, []);
+
+  usage.providers = claudeAt(5);
+  writeFrontmatter(story, { paused_until: new Date(Date.now() - 1000).toISOString() });
+  await initiative.tick();
+  assert.deepEqual(sent, [{ id: "a1", text: nudgePrompt("The usage limit has reset.") }]);
+});
+
+test("a retry-limit block from well before the limit started stays blocked", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, {
+    status: "blocked",
+    blocked_reason: "Implement: gave up.",
+    blocked_from: "implementing",
+    block_kind: "retry-limit",
+    blocked_at: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+  });
+  const { api } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100) });
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  await initiative.tick();
+
+  assert.equal(storyMeta(story).status, "blocked");
+  assert.equal(storyMeta(story).paused_until, undefined);
 });
 
 test("inside the hold window no new story starts, while a step already running is left alone", async () => {
@@ -1416,7 +1604,14 @@ test("each block site writes its kind: step for a blocked or failed step, ci for
 // A repo with a todo story and the loop on; Start creates its workspace through a fake Paseo that
 // records the branch it was asked for.
 async function startNewStory(
-  options: { branch?: string; existing?: string[]; frontmatter?: string; pipeline?: Parameters<typeof createInitiativeLoop>[2] } = {},
+  options: {
+    branch?: string;
+    existing?: string[];
+    frontmatter?: string;
+    pipeline?: Parameters<typeof createInitiativeLoop>[2];
+    usage?: unknown[];
+    agentConfig?: Parameters<typeof createInitiativeLoop>[1];
+  } = {},
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "loop-start-")));
   const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
@@ -1434,7 +1629,7 @@ async function startNewStory(
   const saved = options.branch ? `branch: ${options.branch}\n` : "";
   const extra = options.frontmatter ?? "";
   writeFileSync(story, `---\nid: S1\ntitle: Add search\nstatus: todo\n${saved}${extra}---\n\n## Goal\n\nShip it.\n`, "utf8");
-  const fake = fakePaseo([]);
+  const fake = fakePaseo([], options.usage ? { providers: options.usage } : undefined);
   const requested: string[] = [];
   const api = fake.api as unknown as Record<string, unknown> & { workspaces: Record<string, unknown> };
   api.projects = { list: async () => ({ projects: [] }) };
@@ -1446,13 +1641,13 @@ async function startNewStory(
   };
   const initiative = createInitiativeLoop(
     async () => DEFAULT_LOOP_CONFIG,
-    async () => FALLBACK_AGENT_CONFIG,
+    options.agentConfig ?? (async () => FALLBACK_AGENT_CONFIG),
     options.pipeline ?? noExtras,
     async () => "dm",
   );
   const result = await initiative.start(fake.api, { repo: root, initiative: "demo" });
   assert.equal(result.error, null);
-  return { requested, meta: storyMeta(story), created: fake.created };
+  return { requested, meta: storyMeta(story), created: fake.created, reason: result.reason };
 }
 
 test("a new story's branch is <initials>/<title slug>", async () => {
@@ -1490,6 +1685,22 @@ test("a story without a track starts on Plan", async () => {
   const { created } = await startNewStory();
   assert.equal(created.length, 1);
   assert.equal(created[0].labels["loop-step"], "plan");
+});
+
+test("no story starts while its first step's provider is at its plan limit", async () => {
+  const { created, meta, reason } = await startNewStory({ usage: claudeAt(100) });
+  assert.deepEqual(created, []);
+  assert.equal(meta.status, "todo");
+  assert.match(reason, /^paused for the Claude limit until \d{1,2}:\d{2}/);
+});
+
+test("a diagnose story is gated on Diagnose's provider, not Plan's", async () => {
+  const { created } = await startNewStory({
+    usage: claudeAt(100),
+    frontmatter: "track: diagnose\n",
+    agentConfig: async (_api, step) => ({ provider: step === "diagnose" ? "cursor" : "claude" }),
+  });
+  assert.deepEqual(created.map((agent) => agent.labels["loop-step"]), ["diagnose"]);
 });
 
 test("a saved branch: still wins over the generated name", async () => {
