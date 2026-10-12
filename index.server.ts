@@ -37,12 +37,13 @@ import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay
 import { readArms, readCorpus, readCostCap, readRunName, realReplayPorts } from "./server/replay-start";
 import { claudeSignedIn } from "./server/claude-cli";
 import { startMemoryReplay } from "./shared/replay-rpc";
+import { createTranscriber, realTranscribePorts } from "./server/voice-transcribe";
 import { REPLAY_START_FILE, REPLAY_START_POLL_MS, tickReplayStart } from "./server/replay-trigger";
 import { LOOP_START_FILE, LOOP_START_POLL_MS, tickLoopStart } from "./server/loop-trigger";
 import { join, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./server/voice-helper";
-import { voiceHelperStart, voiceHelperStop, voiceInterpret } from "./shared/voice-rpc";
+import { transcribeVoice, voiceHelperStart, voiceHelperStop, voiceInterpret } from "./shared/voice-rpc";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -260,6 +261,8 @@ export default function contribute(
     return { run, rounds: corpus.length, costCap, runDir };
   };
   server.handle(startMemoryReplay, (input, { paseo }) => startReplay(input, paseo));
+  const transcribe = createTranscriber(realTranscribePorts());
+  server.handle(transcribeVoice, (input) => transcribe(input));
   const readPolicy = async () => {
     const state = await context.read();
     return state.status === "ready" ? state.values : DEFAULT_CONTEXT_CONFIG;
