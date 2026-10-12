@@ -66,7 +66,12 @@ const STUCK_CLEAR = {
   mid_fingerprint: null,
   mid_changed: null,
   mid_nudged: null,
+  waiting_subagent_since: null,
 };
+
+// How long a parent may sit waiting on a subagent before the tick counts it as stalled: a subagent that
+// died never wakes its parent.
+const SUBAGENT_WAIT_MS = 30 * 60_000;
 
 // The initiative loop, driven by Paseo events rather than a long-running process:
 //   Start            marks the initiative loop: on and starts every ready story of its active phase.
@@ -670,12 +675,15 @@ export function createInitiativeLoop(
     }
     if (session?.status === "running" || session?.status === "initializing") return;
     const dead = !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
-    if (!dead && !meta.stalled && !resuming) return;
+    const waitedSince = Date.parse(meta.waiting_subagent_since ?? "");
+    const waitedOut = !Number.isNaN(waitedSince) && Date.now() - waitedSince >= SUBAGENT_WAIT_MS;
+    if (!dead && !meta.stalled && !resuming && !waitedOut) return;
     const why = dead
       ? session?.lastError
         ? `Its session failed: ${session.lastError}.`
         : "Its session is gone."
-      : meta.stalled || "The usage limit has reset.";
+      : meta.stalled ||
+        (resuming ? "The usage limit has reset." : `It waited on a subagent for over ${SUBAGENT_WAIT_MS / 60_000} minutes.`);
     if (resuming && !dead) {
       writeFrontmatter(story.path, { paused_until: null, stalled: null });
       await api.agents.ref(meta.agent).send(nudgePrompt(why));
@@ -686,7 +694,7 @@ export function createInitiativeLoop(
       block(story, `${STEP_LABELS[step]}: ${why} Gave up after ${retries} ${retries === 1 ? "retry" : "retries"}.`, "retry-limit");
       return;
     }
-    writeFrontmatter(story.path, { retries: retries + 1, stalled: null, paused_until: null });
+    writeFrontmatter(story.path, { retries: retries + 1, stalled: null, paused_until: null, waiting_subagent_since: null });
     if (!dead) {
       await api.agents.ref(meta.agent).send(nudgePrompt(why));
       return;
@@ -1129,11 +1137,17 @@ export function createInitiativeLoop(
           const items = (event.timeline ?? []) as readonly ToolItem[];
           const lastUser = items.map((item) => item.type).lastIndexOf("user_message");
           // A parent that ticked a cycle since the last turn end is making progress: its retries start
-          // over. One whose turn ended on a subagent call is waiting on it, and that isn't a stall.
+          // over. One whose turn ended on a subagent call is waiting on it, and that isn't a stall until
+          // the wait outlasts SUBAGENT_WAIT_MS (supervise).
           const ticked = readCycles(state).filter((cycle) => cycle.done).length;
-          if (ticked > (Number(after.meta.ticked_cycles) || 0)) writeFrontmatter(after.path, { ticked_cycles: ticked, retries: null });
+          const before = Number(after.meta.ticked_cycles) || 0;
           const lastCall = items.slice(lastUser + 1).filter((item) => item.type === "tool_call").at(-1);
           const waiting = lastCall?.detail?.type === "sub_agent";
+          writeFrontmatter(after.path, {
+            ...(ticked !== before ? { ticked_cycles: ticked || null } : {}),
+            ...(ticked > before ? { retries: null } : {}),
+            waiting_subagent_since: waiting ? new Date().toISOString() : null,
+          });
           let failTests: string[] = [];
           try {
             const parsed: unknown = JSON.parse(after.meta.fail_tests || "[]");

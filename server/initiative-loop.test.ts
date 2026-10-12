@@ -884,6 +884,45 @@ test("a turn that ended on a subagent call is waiting on it, not stalled", async
   assert.deepEqual([meta.status, meta.stalled, meta.retries], ["implementing", undefined, "2"]);
 });
 
+test("a subagent wait over 30 minutes is nudged as a stall; a fresh one is left alone", async () => {
+  const { story, labels } = fixture("a1");
+  const { api, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  writeFrontmatter(story, { waiting_subagent_since: new Date(Date.now() - 5 * 60_000).toISOString() });
+  await initiative.tick();
+  assert.deepEqual(sent, []);
+
+  writeFrontmatter(story, { waiting_subagent_since: new Date(Date.now() - 31 * 60_000).toISOString() });
+  await initiative.tick();
+  assert.deepEqual(sent, [{ id: "a1", text: nudgePrompt("It waited on a subagent for over 30 minutes.") }]);
+  const meta = storyMeta(story);
+  assert.deepEqual([meta.retries, meta.waiting_subagent_since], ["1", undefined]);
+});
+
+test("a Cycles list that starts over with fewer ticks still resets retries on its next tick", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  writeFrontmatter(story, { cycles: "subagents", retries: 2, ticked_cycles: 3 });
+  const cycles = (ticks: string) =>
+    writeFileSync(
+      join(worktree, ".harness", "state.md"),
+      `# S1 — Demo story\n\n## Status\nimplement-running\n\n## Cycles\n${ticks}\n`,
+      "utf8",
+    );
+  const { api } = fakePaseo([{ id: "a1", labels: { ...labels, "loop-cycles": "subagents" } }]);
+  const initiative = loop();
+  const subagent = { type: "tool_call", status: "running", detail: { type: "sub_agent" } };
+
+  cycles("- [x] Cycle 1 — A: a\n- [ ] Cycle 2 — B: b");
+  await initiative.onTurnEnded(api, ended("a1", { kind: "completed" }, [{ type: "user_message" }, subagent]));
+  assert.deepEqual([storyMeta(story).ticked_cycles, storyMeta(story).retries], ["1", "2"]);
+
+  cycles("- [x] Cycle 1 — A: a\n- [x] Cycle 2 — B: b");
+  await initiative.onTurnEnded(api, ended("a1", { kind: "completed" }, [{ type: "user_message" }, subagent]));
+  assert.deepEqual([storyMeta(story).ticked_cycles, storyMeta(story).retries], ["2", undefined]);
+});
+
 test("an Implement turn end with no edit at stuckTurns sends one stuck nudge, with no retry and no stall", async () => {
   const { story, labels } = fixture("a1");
   writeFrontmatter(story, { idle_turns: 2 });
