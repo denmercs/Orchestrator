@@ -40,6 +40,9 @@ import { startMemoryReplay } from "./shared/replay-rpc";
 import { REPLAY_START_FILE, REPLAY_START_POLL_MS, tickReplayStart } from "./server/replay-trigger";
 import { LOOP_START_FILE, LOOP_START_POLL_MS, tickLoopStart } from "./server/loop-trigger";
 import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./server/voice-helper";
+import { voiceHelperStart, voiceHelperStop, voiceInterpret } from "./shared/voice-rpc";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -118,6 +121,7 @@ export default function contribute(
     signedIn?: () => Promise<boolean>;
     replayStart?: { file: string; everyMs: number };
     loopStart?: { file: string; everyMs: number };
+    voiceHelperCwd?: string;
   } = {},
 ) {
   // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
@@ -388,8 +392,38 @@ export default function contribute(
       if (voicePaseo) await voicePaseo.agents.ref(agentId).send(text);
     },
   });
+  // The helper's ports read Paseo through this stand-in, which always points at the handle the last RPC gave.
+  let helperPaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
+  const voiceHelper = createVoiceHelper(
+    paseoVoiceHelperPorts(
+      new Proxy({} as NonNullable<typeof helperPaseo>, { get: (_target, key) => helperPaseo![key as keyof typeof helperPaseo] }),
+      deps.voiceHelperCwd ?? VOICE_HELPER_CWD,
+    ),
+  );
+  server.handle(voiceHelperStart, async (_input, { paseo }) => {
+    helperPaseo = paseo;
+    await mkdir(deps.voiceHelperCwd ?? VOICE_HELPER_CWD, { recursive: true });
+    await voiceHelper.start();
+    return { ok: true };
+  });
+  server.handle(voiceHelperStop, async (_input, { paseo }) => {
+    helperPaseo = paseo;
+    await voiceHelper.stop();
+    return { ok: true };
+  });
+  server.handle(voiceInterpret, (input, { paseo }) => {
+    helperPaseo = paseo;
+    return voiceHelper.interpret(input);
+  });
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     voicePaseo = paseo;
+    // The Voice helper's own turns are telemetry only: its spend reaches the context card, and nothing
+    // else (resume, loop, pipeline) may act on it.
+    if (event.agent.id === voiceHelper.agentId()) {
+      contextPaseo = paseo;
+      void contextWatch.onTurnEnded(event).catch((error) => console.warn("orchestrator: context watch failed", error));
+      return;
+    }
     voiceResume.onTurnEnded(event);
     // A memory replay's agent is the runner's business only: the telemetry row first, then its result row.
     if (memoryReplay.pendingAgents().includes(event.agent.id)) {
@@ -494,5 +528,6 @@ export default function contribute(
     clearInterval(replayStartTimer);
     clearInterval(loopStartTimer);
     voiceResume.stop();
+    void voiceHelper.stop().catch((error) => console.warn("orchestrator: voice helper stop failed", error));
   };
 }
