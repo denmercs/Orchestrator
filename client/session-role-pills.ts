@@ -3,6 +3,8 @@ import { contextAct, contextSessionsRpc, type ContextAction, type ContextStatus 
 import { createContextPillIcon } from "./context-pill-icon";
 import { createRequestSequence, createToastQueue, pillMenu, pillView, usageChanged } from "./context-pill-model";
 import { RECAP_COMMAND, recapPill } from "./recap-pill-model";
+import type { createVoiceRunner } from "./voice-runner";
+import { sessionName, voicePill, voiceSessions } from "./voice-pill-model";
 
 // Paseo stamps spawned sessions with this label; the protocol package does not export it.
 const PARENT_LABEL = "paseo.parent-agent-id";
@@ -64,6 +66,8 @@ function pillFor(
   };
 }
 
+type VoiceRunner = ReturnType<typeof createVoiceRunner>;
+
 type Pill = { registration: PluginButtonRegistration; workspaceId: string };
 
 // Puts `pillId` on each agent in `buttons` and takes it off every other agent.
@@ -93,9 +97,9 @@ function reconcile(
   }
 }
 
-// Three pills share one agent subscription: the role pill (harness/worker), the context pill
-// (see CONTEXT.md, "Context pill") and the recap pill.
-export function contributeSessionRolePills(client: PluginClientContext) {
+// Four pills share one agent subscription: the role pill (harness/worker), the context pill
+// (see CONTEXT.md, "Context pill"), the recap pill and the voice pill.
+export function contributeSessionRolePills(client: PluginClientContext, voice?: VoiceRunner) {
   // Composer pills arrived after this plugin's minimum Paseo version; skip on older apps.
   if (typeof client.addComposerPill !== "function") {
     return () => {};
@@ -105,6 +109,7 @@ export function contributeSessionRolePills(client: PluginClientContext) {
   const rolePills = new Map<string, Pill>();
   const contextPills = new Map<string, Pill>();
   const recapPills = new Map<string, Pill>();
+  const voicePills = new Map<string, Pill>();
   const statuses = new Map<string, ContextStatus | null>();
   const toasts = createToastQueue();
   const requests = createRequestSequence();
@@ -114,6 +119,16 @@ export function contributeSessionRolePills(client: PluginClientContext) {
   let fetchTimer: ReturnType<typeof setTimeout> | undefined;
   let subscription: AgentList["subscription"] | undefined;
   let stopped = false;
+  let lastVoiceMode = voice?.getState().mode;
+  let lastVoiceSession = voice?.getState().session?.id;
+  // Pills only need a redraw when the mode or target moves, not on every transcript line.
+  const unsubscribeVoice = voice?.subscribe(() => {
+    const { mode, session } = voice.getState();
+    if (mode === lastVoiceMode && session?.id === lastVoiceSession) return;
+    lastVoiceMode = mode;
+    lastVoiceSession = session?.id;
+    sync();
+  });
 
   const contextIcon = createContextPillIcon({
     tone: (agentId) => pillView(statuses.get(agentId) ?? null).tone,
@@ -206,8 +221,20 @@ export function contributeSessionRolePills(client: PluginClientContext) {
     return { ...view, icon: "History", behavior: { kind: "action", onPress: () => recap(agent.id) } };
   }
 
+  function voiceButton(agent: Agent): PluginButton | null {
+    if (!voice) return null;
+    const view = voicePill(agent, voice.getState());
+    if (!view) return null;
+    return {
+      ...view,
+      icon: "Mic",
+      behavior: { kind: "action", onPress: () => voice?.pick({ id: agent.id, name: sessionName(agent) }) },
+    };
+  }
+
   function sync() {
     const live = [...agents.values()].filter(isLive);
+    voice?.setSessions(voiceSessions(live));
     const childCounts = new Map<string, number>();
     for (const agent of live) {
       const parentId = parentOf(agent);
@@ -219,6 +246,7 @@ export function contributeSessionRolePills(client: PluginClientContext) {
     const roleButtons = new Map<string, { workspaceId: string; button: PluginButton }>();
     const contextButtons = new Map<string, { workspaceId: string; button: PluginButton }>();
     const recapButtons = new Map<string, { workspaceId: string; button: PluginButton }>();
+    const voiceButtons = new Map<string, { workspaceId: string; button: PluginButton }>();
     for (const agent of live) {
       if (!agent.workspaceId) {
         continue;
@@ -232,10 +260,15 @@ export function contributeSessionRolePills(client: PluginClientContext) {
       if (recapPillButton) {
         recapButtons.set(agent.id, { workspaceId: agent.workspaceId, button: recapPillButton });
       }
+      const voicePillButton = voiceButton(agent);
+      if (voicePillButton) {
+        voiceButtons.set(agent.id, { workspaceId: agent.workspaceId, button: voicePillButton });
+      }
     }
     reconcile(client, "session-role", rolePills, roleButtons);
     reconcile(client, "session-context", contextPills, contextButtons);
     reconcile(client, "session-recap", recapPills, recapButtons);
+    reconcile(client, "session-voice", voicePills, voiceButtons);
   }
 
   function replace(entries: AgentList["entries"]) {
@@ -282,12 +315,14 @@ export function contributeSessionRolePills(client: PluginClientContext) {
     stopped = true;
     clearTimeout(fetchTimer);
     void subscription?.release();
-    for (const pill of [...rolePills.values(), ...contextPills.values(), ...recapPills.values()]) {
+    unsubscribeVoice?.();
+    for (const pill of [...rolePills.values(), ...contextPills.values(), ...recapPills.values(), ...voicePills.values()]) {
       pill.registration.remove();
     }
     rolePills.clear();
     contextPills.clear();
     recapPills.clear();
+    voicePills.clear();
     listeners.clear();
   };
 }

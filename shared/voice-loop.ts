@@ -35,7 +35,9 @@ export type VoiceEvent =
   | { type: "pick"; session: VoiceSession }
   | { type: "sessions"; list: VoiceSession[] }
   | { type: "notice"; kind: string; sessionId: string }
-  | { type: "interrupt" };
+  | { type: "interrupt" }
+  /** Sleep from the drawer (the runner's off switch): same as "Jarvis, ignore me". */
+  | { type: "sleep" };
 
 export type VoiceEffect =
   | { type: "send"; session: VoiceSession; text: string; behavior: "steer" }
@@ -153,6 +155,10 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
   switch (event.type) {
     case "wake":
       return out(state);
+    case "sleep": {
+      const r = sleep(state);
+      return state.mode === "speaking" ? { state: r.state, effects: [{ type: "stopPlayback" }, ...r.effects] } : r;
+    }
     case "interrupt":
       return state.session ? out(state, { type: "interrupt", session: state.session }) : out(state);
     case "speechStart":

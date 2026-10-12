@@ -37,6 +37,8 @@ import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay
 import { readArms, readCorpus, readCostCap, readRunName, realReplayPorts } from "./server/replay-start";
 import { claudeSignedIn } from "./server/claude-cli";
 import { startMemoryReplay } from "./shared/replay-rpc";
+import { transcribeVoice } from "./shared/voice-rpc";
+import { createTranscriber, realTranscribePorts } from "./server/voice-transcribe";
 import { REPLAY_START_FILE, REPLAY_START_POLL_MS, tickReplayStart } from "./server/replay-trigger";
 import { LOOP_START_FILE, LOOP_START_POLL_MS, tickLoopStart } from "./server/loop-trigger";
 import { join } from "node:path";
@@ -256,6 +258,8 @@ export default function contribute(
     return { run, rounds: corpus.length, costCap, runDir };
   };
   server.handle(startMemoryReplay, (input, { paseo }) => startReplay(input, paseo));
+  const transcribe = createTranscriber(realTranscribePorts());
+  server.handle(transcribeVoice, (input) => transcribe(input));
   const readPolicy = async () => {
     const state = await context.read();
     return state.status === "ready" ? state.values : DEFAULT_CONTEXT_CONFIG;

@@ -1,15 +1,24 @@
-import type { PluginClientContext } from "@getpaseo/plugin/client";
+import type { PluginClientContext, PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { CURSOR_THEMES } from "./client/cursor-themes";
 import { OrchestrationDashboard } from "./client/orchestration-dashboard";
 import { contributeSessionRolePills } from "./client/session-role-pills";
 import { attachSkill } from "./shared/pipeline";
 import { INSTALL_LABEL } from "./shared/install";
 import { startMemoryReplay } from "./shared/replay-rpc";
+import { createVoiceLink } from "./client/voice-link";
+import { createVoiceMic, createVoiceTranscriber } from "./client/voice-mic";
+import { createVoiceRunner } from "./client/voice-runner";
 
 const TITLE = INSTALL_LABEL ? `Orchestration (${INSTALL_LABEL})` : "Orchestration";
 
 export default function contribute(client: PluginClientContext) {
-  client.addSurface("orchestration", OrchestrationDashboard);
+  const voice = createVoiceRunner({
+    link: createVoiceLink(client.paseo.agents),
+    recorder: createVoiceMic(),
+    transcriber: createVoiceTranscriber(client.rpc),
+  });
+  const Dashboard = (props: PluginSurfaceProps) => <OrchestrationDashboard {...props} voice={voice} />;
+  client.addSurface("orchestration", Dashboard);
   client.addSidebarItem({
     id: "orchestration",
     title: TITLE,
@@ -49,9 +58,10 @@ export default function contribute(client: PluginClientContext) {
     searchPlaceholder: "Search skills",
     search: attachSkill,
   });
-  const offPills = contributeSessionRolePills(client);
+  const offPills = contributeSessionRolePills(client, voice);
   const offThemes = CURSOR_THEMES.map((theme) => client.addTheme(theme));
   return async () => {
+    voice.off();
     await Promise.all([offAttach(), offPills(), ...offThemes.map((off) => off())]);
   };
 }

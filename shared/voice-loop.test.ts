@@ -66,6 +66,32 @@ test("'Jarvis, ignore me' and close mishearings put the loop to sleep", () => {
   }
 });
 
+test("the sleep event puts an awake loop to sleep, stopping playback first when speaking, and clears everything", () => {
+  const dirty = { talking: true, held: "docs: done", queue: [{ kind: "error" as const, sessionId: "s2", name: "docs" }] };
+  const cases: [VoiceMode, Partial<VoiceState>, VoiceEffect[]][] = [
+    ["listening", { pending: { seq: 2, heard: "x" } }, [{ type: "sleep" }]],
+    ["confirming", { confirm: { word: "merge", text: "Merge it" } }, [{ type: "sleep" }]],
+    ["speaking", {}, [{ type: "stopPlayback" }, { type: "sleep" }]],
+  ];
+  for (const [mode, patch, effects] of cases) {
+    const r = step(awake({ mode, ...dirty, ...patch }), { type: "sleep" });
+    assert.deepEqual(r.effects, effects, mode);
+    assert.equal(r.state.mode, "asleep", mode);
+    assert.equal(r.state.pending, null, mode);
+    assert.equal(r.state.confirm, null, mode);
+    assert.equal(r.state.talking, false, mode);
+    assert.equal(r.state.held, null, mode);
+    assert.deepEqual(r.state.queue, [], mode);
+  }
+});
+
+test("the sleep event while asleep does nothing", () => {
+  const asleep = awake({ mode: "asleep" });
+  const r = step(asleep, { type: "sleep" });
+  assert.deepEqual(r.effects, []);
+  assert.deepEqual(r.state, asleep);
+});
+
 test("an utterance with no target asks for a session; otherwise it goes to the interpreter", () => {
   assert.deepEqual(say(awake({ session: null }), "fix the login bug").effects, [{ type: "speak", line: "Pick a session first." }]);
   const r = say(awake(), "fix the login bug");
