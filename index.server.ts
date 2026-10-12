@@ -39,7 +39,7 @@ import { claudeSignedIn } from "./server/claude-cli";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { REPLAY_START_FILE, REPLAY_START_POLL_MS, tickReplayStart } from "./server/replay-trigger";
 import { LOOP_START_FILE, LOOP_START_POLL_MS, tickLoopStart } from "./server/loop-trigger";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./server/voice-helper";
 import { voiceHelperStart, voiceHelperStop, voiceInterpret } from "./shared/voice-rpc";
@@ -394,15 +394,20 @@ export default function contribute(
   });
   // The helper's ports read Paseo through this stand-in, which always points at the handle the last RPC gave.
   let helperPaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
+  const helperCwd = deps.voiceHelperCwd ?? VOICE_HELPER_CWD;
   const voiceHelper = createVoiceHelper(
     paseoVoiceHelperPorts(
       new Proxy({} as NonNullable<typeof helperPaseo>, { get: (_target, key) => helperPaseo![key as keyof typeof helperPaseo] }),
-      deps.voiceHelperCwd ?? VOICE_HELPER_CWD,
+      helperCwd,
     ),
   );
+  // Turn ends carry no labels, so the helper is also known by its own folder: a turn that ends just
+  // after voice turns off (the id already forgotten) must still stay telemetry only.
+  const isVoiceHelper = (agent: { id: string; cwd: string }) =>
+    agent.id === voiceHelper.agentId() || resolve(agent.cwd) === resolve(helperCwd);
   server.handle(voiceHelperStart, async (_input, { paseo }) => {
     helperPaseo = paseo;
-    await mkdir(deps.voiceHelperCwd ?? VOICE_HELPER_CWD, { recursive: true });
+    await mkdir(helperCwd, { recursive: true });
     await voiceHelper.start();
     return { ok: true };
   });
@@ -419,7 +424,7 @@ export default function contribute(
     voicePaseo = paseo;
     // The Voice helper's own turns are telemetry only: its spend reaches the context card, and nothing
     // else (resume, loop, pipeline) may act on it.
-    if (event.agent.id === voiceHelper.agentId()) {
+    if (isVoiceHelper(event.agent)) {
       contextPaseo = paseo;
       void contextWatch.onTurnEnded(event).catch((error) => console.warn("orchestrator: context watch failed", error));
       return;

@@ -73,6 +73,7 @@ Reply with only that JSON, no prose and no code fence:
 {"action":"send"|"confirm"|"switch"|"drop","text"?:...,"session"?:...}
 
 Examples:
+"run the tests in orchestra tour" -> {"action":"send","text":"run the tests in Orchestrator"}
 "This day" (a fragment) -> {"action":"drop"}
 "merge England" -> {"action":"confirm","text":"merge it"}
 "switch to the review session" -> {"action":"switch","session":"<the session named like that>"}`;

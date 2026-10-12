@@ -288,7 +288,7 @@ function helperPaseo() {
   return { paseo, calls };
 }
 
-const turnAgent = (id: string) => ({ id, workspaceId: null, parentAgentId: null, provider: "claude", cwd: "/x", title: null });
+const turnAgent = (id: string, cwd = "/x") => ({ id, workspaceId: null, parentAgentId: null, provider: "claude", cwd, title: null });
 
 test("the voice helper RPCs start and stop one helper agent, and interpret fails while it is stopped", async () => {
   const cwd = join(mkdtempSync(join(tmpdir(), "voice-helper-")), "nested", "helper");
@@ -326,6 +326,23 @@ test("a helper agent's turn end writes only the telemetry read, and a stranger s
   await end("other", { kind: "completed" });
   await new Promise((r) => setTimeout(r, 20));
   assert.ok(calls.length > 2, `a stranger goes the whole route (${calls.join(", ")})`);
+  stop();
+});
+
+test("a helper turn end that lands after voice turns off is still telemetry only", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "voice-helper-"));
+  const { handlers, listeners, stop } = wired([], true, undefined, undefined, cwd);
+  const { paseo, calls } = helperPaseo();
+  await handlers.get(voiceHelperStart.name)!({}, { paseo });
+  await handlers.get(voiceHelperStop.name)!({}, { paseo });
+  calls.length = 0;
+  // A helper turn that finished as voice turned off: its turn end arrives once the helper has forgotten the id.
+  await listeners.get("agent.turn_ended")!(
+    { agent: turnAgent("helper-1", cwd), turnId: null, outcome: { kind: "completed" }, timeline: [] },
+    { paseo },
+  );
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(calls, ["ref:helper-1", "refresh:helper-1"]);
   stop();
 });
 
