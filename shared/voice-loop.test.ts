@@ -44,11 +44,13 @@ test("the loop starts asleep; wake listens; everything else while asleep does no
 test("shared/voice-loop.ts imports only its wording, and that imports nothing", () => {
   const source = readFileSync(new URL("./voice-loop.ts", import.meta.url), "utf8");
   const imports = source.match(/^\s*import\s.*$/gm) ?? [];
-  assert.deepEqual(imports.map((line) => /from "([^"]+)"/.exec(line)?.[1]), ["./voice-lines"]);
+  assert.deepEqual(imports.map((line) => /from "([^"]+)"/.exec(line)?.[1]), ["./voice-lines", "./voice-names"]);
   assert.doesNotMatch(source, /\brequire\(/);
-  const lines = readFileSync(new URL("./voice-lines.ts", import.meta.url), "utf8");
-  assert.doesNotMatch(lines, /^\s*import\s/m);
-  assert.doesNotMatch(lines, /\brequire\(/);
+  for (const file of ["./voice-lines.ts", "./voice-names.ts"]) {
+    const dep = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.doesNotMatch(dep, /^\s*import\s/m, file);
+    assert.doesNotMatch(dep, /\brequire\(/, file);
+  }
 });
 
 // Cycle 2
@@ -97,7 +99,7 @@ test("the sleep event while asleep does nothing", () => {
 });
 
 test("an utterance with no target asks for a session; otherwise it goes to the interpreter", () => {
-  assert.deepEqual(say(awake({ session: null }), "fix the login bug").effects, [{ type: "speak", line: "Pick a session first: say switch to, then a name. Sessions: api-refactor, docs." }]);
+  assert.deepEqual(say(awake({ session: null }), "fix the login bug").effects, [{ type: "speak", line: "Pick a session first. One, api-refactor. Two, docs. Say a number, or switch to and a name." }]);
   const r = say(awake(), "fix the login bug");
   assert.deepEqual(r.effects, [{ type: "interpret", seq: 1, text: "fix the login bug" }]);
   assert.deepEqual(r.state.pending, { seq: 1, heard: "fix the login bug" });
@@ -294,9 +296,11 @@ test("'Jarvis, switch to <name>' picks the match, asks when several match, and r
   assert.deepEqual(partial.effects, [{ type: "speak", line: "Now on api-refactor." }]);
   assert.equal(partial.state.session, api);
   const many = say(known, "Jarvis, switch to api");
-  assert.deepEqual(many.effects, [{ type: "speak", line: "Which one: api-refactor or api-docs?" }]);
+  assert.deepEqual(many.effects, [{ type: "speak", line: "Did you mean: one, api-refactor; two, api-docs? Say a number." }]);
   assert.equal(many.state.session, api);
-  assert.deepEqual(say(known, "Jarvis, switch to billing").effects, [{ type: "speak", line: "No session called billing." }]);
+  assert.deepEqual(say(known, "Jarvis, switch to billing").effects, [
+    { type: "speak", line: "No session called billing. One, api-refactor. Two, docs. Three, api-docs. Say a number, or switch to and a name." },
+  ]);
   const plain = say(known, "switch to strict mode");
   assert.deepEqual(types(plain.effects), ["interpret"], "a bare 'switch to' that names no session is a request for the session");
   assert.deepEqual(say(known, "switch to docs").effects, [{ type: "speak", line: "Now on docs." }]);
@@ -449,4 +453,108 @@ test("asleep, only the name itself wakes it, not a mishearing", () => {
   assert.equal(say(asleep, "OK Jarvis").state.mode, "listening");
   // Awake, the mishearings still count as the name.
   assert.deepEqual(say(awake(), "Travis, ignore me").effects, [{ type: "sleep" }]);
+});
+
+// Session picking, from real phone transcripts.
+const phase: VoiceSession = { id: "p", name: "📐 Phase 1 architecture — Talk to a session hands-free" };
+const check: VoiceSession = { id: "c", name: "Check" };
+const s4: VoiceSession = { id: "s4", name: "🔁 S4 · Plan — Speak replies back" };
+const s6: VoiceSession = { id: "s6", name: "🔁 S6 · Plan — Wire the helper into the Voice drawer" };
+const spike: VoiceSession = { id: "v", name: "voice-spike throwaway" };
+const phone = (patch: Partial<VoiceState> = {}) => awake({ session: null, sessions: [phase, check, s4, s6, spike], ...patch });
+const PICK_FIRST = "Pick a session first. One, Phase 1 architecture. Two, Check. Three, S4 Plan. Four, S6 Plan. And more. Say a number, or switch to and a name.";
+
+test("the phone transcripts: noise gets a short numbered list, 'Phase One architecture' finds 'Phase 1 architecture'", () => {
+  let state = phone();
+  for (const heard of ["Let's do this for.", "Which to ask for"]) {
+    const r = say(state, heard);
+    assert.deepEqual(r.effects, [{ type: "speak", line: PICK_FIRST }], heard);
+    state = r.state;
+  }
+  const sport = say(state, "Switch to Sport Plan");
+  assert.deepEqual(sport.effects, [{ type: "speak", line: "Did you mean: one, S4 Plan; two, S6 Plan? Say a number." }]);
+  assert.equal(sport.state.session, null);
+  const switched = say(sport.state, "Switch to Phase One architecture.");
+  assert.deepEqual(switched.effects, [{ type: "speak", line: "Now on Phase 1 architecture." }]);
+  assert.equal(switched.state.session, phase);
+  const bare = say(phone(), "Phase One architecture.");
+  assert.deepEqual(bare.effects, [{ type: "speak", line: "Now on Phase 1 architecture." }]);
+  assert.equal(bare.state.session, phase);
+});
+
+test("a bare session name switches only when there is no target; with one it is just words for the target", () => {
+  assert.equal(say(phone(), "Check").state.session, check);
+  assert.equal(say(phone(), "S4 plan").state.session, s4);
+  assert.deepEqual(say(phone(), "plan").effects, [], "a bare part of a name is not a name");
+  const targeted = say(phone({ session: check }), "Phase One architecture.");
+  assert.deepEqual(types(targeted.effects), ["interpret"]);
+  assert.equal(targeted.state.session, check);
+});
+
+test("switch phrasings: switch to, go to, talk to, use, pick, open", () => {
+  for (const heard of ["switch to check", "go to check", "talk to check", "use check", "pick check", "open check", "Jarvis, go to the check session please"]) {
+    const r = say(phone({ session: s4 }), heard);
+    assert.deepEqual(r.effects, [{ type: "speak", line: "Now on Check." }], heard);
+    assert.equal(r.state.session, check, heard);
+  }
+  assert.deepEqual(types(say(phone({ session: s4 }), "open the voice file").effects), ["interpret"], "'open X' that is not exactly a session goes to the target");
+  assert.deepEqual(say(phone(), "switch to billing").effects[0], { type: "speak", line: `No session called billing. ${PICK_FIRST.slice("Pick a session first. ".length)}` });
+});
+
+test("'list sessions' reads up to six short names, numbered; a bare number then picks one", () => {
+  const many = [phase, check, s4, s6, spike, docs, api];
+  for (const heard of ["list sessions", "which sessions", "what sessions are open", "sessions", "Jarvis, list the sessions"]) {
+    const r = say(phone({ sessions: many, session: s4 }), heard);
+    assert.deepEqual(
+      r.effects,
+      [{ type: "speak", line: "One, Phase 1 architecture. Two, Check. Three, S4 Plan. Four, S6 Plan. Five, voice-spike throwaway. Six, docs. And more. Say a number, or switch to and a name." }],
+      heard,
+    );
+    assert.equal(r.state.choices?.length, 6);
+  }
+  const listed = say(phone(), "list sessions").state;
+  for (const [heard, session] of [["two", check], ["2", check], ["number two", check], ["switch to two", check], ["the first one", phase], ["one", phase], ["third", s4], ["to", check]] as const) {
+    const r = say(listed, heard);
+    assert.equal(r.state.session, session, heard);
+    assert.equal(r.state.choices, null, heard);
+  }
+  assert.deepEqual(say(listed, "nine").effects, [{ type: "speak", line: "There's no number nine. Say a number from one to five." }]);
+  assert.equal(say(listed, "nine").state.choices?.length, 5, "a wrong number keeps the list");
+  assert.equal(say(listed, "uh").state.choices?.length, 5, "noise keeps the list");
+  assert.equal(say(listed, "Which to ask for").state.choices?.length, 4, "a new list replaces it");
+  assert.equal(say({ ...listed, session: check }, "run the tests please").state.choices, null, "anything else forgets it");
+  assert.deepEqual(say(phone({ sessions: [] }), "list sessions").effects, [{ type: "speak", line: "No sessions are open." }]);
+});
+
+test("numbered answers pick from a did-you-mean and from pick-first", () => {
+  const asked = say(phone(), "Switch to Sport Plan").state;
+  assert.equal(say(asked, "one").state.session, s4);
+  assert.equal(say(asked, "number two").state.session, s6);
+  const first = say(phone(), "Let's do this for.").state;
+  assert.deepEqual(say(first, "four").effects, [{ type: "speak", line: "Now on S6 Plan." }]);
+});
+
+test("a pending confirm beats a stale list: 'one' sends, 'two' cancels, the word said back still sends", () => {
+  const listed = say(phone({ session: check }), "list sessions").state;
+  const asking = heardAs(listed, "merge it", { type: "send", text: "merge it" });
+  assert.deepEqual(asking.effects, [{ type: "askConfirm", word: "merge", line: 'Send "merge it" to Check? Say one to send, or two to cancel.' }]);
+  assert.equal(asking.state.choices, null);
+  for (const yes of ["one", "1", "number one", "the first one", "merge"]) {
+    const r = say(asking.state, yes);
+    assert.deepEqual(types(r.effects), ["send", "receipt"], yes);
+    assert.equal(r.state.session, check, yes);
+  }
+  for (const no of ["two", "2", "number two", "too"]) assert.deepEqual(say(asking.state, no).effects, [{ type: "speak", line: "Cancelled." }], no);
+  // A list stays with the sessions it was read from.
+  const closed = step(listed, { type: "sessions", list: [check, s4] });
+  assert.equal(closed.state.choices, null);
+  assert.deepEqual(say(closed.state, "one").effects, [{ type: "speak", line: "Nothing to confirm." }]);
+});
+
+test("receipts, replies and notices use the short name", () => {
+  const on = say(phone(), "Phase One architecture.").state;
+  const sent = heardAs(on, "run the tests", { type: "send", text: "run the tests" });
+  assert.deepEqual(sent.effects[1], { type: "receipt", session: phase, line: "Sent to Phase 1 architecture." });
+  assert.deepEqual(step({ ...on, mode: "listening" }, { type: "reply", sessionId: "p", text: "Done." }).effects, [{ type: "speak", line: "Phase 1 architecture: Done." }]);
+  assert.deepEqual(step(on, { type: "notice", kind: "needsYou", sessionId: "s4" }).effects, [{ type: "speak", line: "S4 Plan needs you." }]);
 });

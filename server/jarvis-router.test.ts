@@ -166,3 +166,15 @@ test("an aborted route sends nothing and leaves the state as it was", async () =
   assert.deepEqual(await router.route("r1", "one", abort.signal), { spoken: [], note: STOPPED_NOTE });
   assert.equal(router.stateOf("r1")?.mode, "confirming");
 });
+
+test("on the phone: a list, then a bare number, picks across separate utterances", async () => {
+  const phase: VoiceSession = { id: "p", name: "📐 Phase 1 architecture — Talk to a session hands-free" };
+  const check: VoiceSession = { id: "c", name: "Check" };
+  const { router, sent } = setup({ sessions: [phase, check] });
+  assert.deepEqual((await router.route("r1", "Which sessions?")).spoken, ["One, Phase 1 architecture. Two, Check. Say a number, or switch to and a name."]);
+  assert.deepEqual((await router.route("r1", "Two.")).spoken, ["Now on Check."]);
+  assert.deepEqual((await router.route("r1", "run the tests please")).spoken, ["Sent to Check."]);
+  const fresh = setup({ sessions: [phase, check] });
+  assert.deepEqual((await fresh.router.route("r2", "Phase One architecture.")).spoken, ["Now on Phase 1 architecture."]);
+  assert.deepEqual(sent, [["c", "run the tests please"]]);
+});
