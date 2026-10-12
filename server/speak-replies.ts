@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { accessSync, constants as fsConstants, readdirSync, statSync } from "node:fs";
 import { access, constants } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +16,25 @@ export type SpeakPorts = {
 };
 
 // Paseo bundles the plugin as CJS, which has no module URL, so find the script by install path.
-export const SPEAK_SCRIPT = join(process.env.PASEO_HOME ?? join(homedir(), ".paseo"), "plugins", "orchestrator", "scripts", "speak");
+// Installs land in plugins/orchestrator/<install id>/checkout/; the old layout had scripts/ directly under plugins/orchestrator/.
+export function findSpeakScript(home = process.env.PASEO_HOME ?? join(homedir(), ".paseo")): string {
+  const root = join(home, "plugins", "orchestrator");
+  const legacy = join(root, "scripts", "speak");
+  const installs: { script: string; mtime: number }[] = [];
+  try {
+    for (const id of readdirSync(root)) {
+      const script = join(root, id, "checkout", "scripts", "speak");
+      try {
+        accessSync(script, fsConstants.X_OK);
+        installs.push({ script, mtime: statSync(script).mtimeMs });
+      } catch {}
+    }
+  } catch {}
+  installs.sort((a, b) => b.mtime - a.mtime);
+  return installs[0]?.script ?? legacy;
+}
+
+export const SPEAK_SCRIPT = findSpeakScript();
 
 export function realSpeakPorts(script = SPEAK_SCRIPT): SpeakPorts {
   return {

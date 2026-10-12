@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
-import { createSpeakReplies } from "./speak-replies";
+import { createSpeakReplies, findSpeakScript } from "./speak-replies";
 
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 type Outcome = TurnEnded["outcome"];
@@ -92,4 +94,14 @@ test("server code avoids import.meta, which is undefined in Paseo's CJS plugin b
     .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
     .filter((name) => readFileSync(new URL(name, dir), "utf8").includes("import.meta"));
   assert.deepEqual(offenders, []);
+});
+
+test("findSpeakScript finds the script inside an install's checkout folder", () => {
+  const home = mkdtempSync(join(tmpdir(), "speak-"));
+  const dir = join(home, "plugins", "orchestrator", "abc", "checkout", "scripts");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "speak"), "#!/bin/sh\n");
+  chmodSync(join(dir, "speak"), 0o755);
+  assert.equal(findSpeakScript(home), join(dir, "speak"));
+  assert.equal(findSpeakScript(join(home, "none")), join(home, "none", "plugins", "orchestrator", "scripts", "speak"));
 });
