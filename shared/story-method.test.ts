@@ -219,6 +219,8 @@ test("a parent prompt runs the unticked cycles in subagents, with the brief and 
   assert.match(step, /## Cycle brief/);
   assert.match(step, /If you can't start subagents, work the cycles yourself, one at a time, in the same order/);
   assert.match(step, /tick its line in `## Cycles`/);
+  assert.match(step, /Run it in the foreground \(`run_in_background: false`\)/);
+  assert.match(step, /Never end your turn while a subagent is running/);
   assert.match(step, /set `## Status` to `implement-done`/);
   const brief = step.slice(step.indexOf("\n## Cycle brief\n"));
   assert.match(brief, /Do not touch `## Status`/);
