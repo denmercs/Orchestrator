@@ -4,6 +4,7 @@ import { access, constants } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
+import type { SpeakMode } from "../shared/speak-replies";
 import { spokenLine } from "../shared/voice-lines";
 
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
@@ -60,30 +61,31 @@ function lastReply(timeline: TurnEnded["timeline"]): string {
   return "";
 }
 
-// The sessions switched on to speak their replies. In memory only, so a daemon restart turns them all off.
+// The sessions switched on to speak their replies, short or full. In memory only, so a daemon restart turns them all off.
 export function createSpeakReplies(ports: SpeakPorts) {
-  const on = new Set<string>();
+  const modes = new Map<string, Exclude<SpeakMode, "off">>();
   return {
-    agentIds: () => [...on],
-    async set(agentId: string, enabled: boolean) {
-      if (!enabled) {
-        on.delete(agentId);
+    modes: () => Object.fromEntries(modes),
+    async set(agentId: string, mode: SpeakMode) {
+      if (mode === "off") {
+        modes.delete(agentId);
         return;
       }
       if (!(await ports.scriptReady())) {
         throw new Error(`The speak script is missing or not executable: ${ports.script}`);
       }
-      ports.run(["--warm"]);
-      on.add(agentId);
+      if (!modes.has(agentId)) ports.run(["--warm"]);
+      modes.set(agentId, mode);
     },
     onTurnEnded(event: TurnEnded) {
-      if (!on.has(event.agent.id) || event.outcome.kind !== "completed") return;
-      const line = spokenLine(lastReply(event.timeline));
+      const mode = modes.get(event.agent.id);
+      if (!mode || event.outcome.kind !== "completed") return;
+      const line = spokenLine(lastReply(event.timeline), mode === "full");
       if (line) ports.run([], line);
     },
     // A new turn means the user sent something: stop talking over it.
     onTurnStarted(agentId: string) {
-      if (on.has(agentId)) ports.run(["--hush"]);
+      if (modes.has(agentId)) ports.run(["--hush"]);
     },
   };
 }

@@ -17,9 +17,11 @@ scripts/speak --stop           # unload the worker (frees about 3 GB)
 
 ## Speak replies pill
 
-The Orchestrator plugin's composer pill "Speak" (top-level sessions only) uses these flags. Switching it on runs
-`--warm`; each completed reply runs `speak` with the reply's first non-code paragraph (markdown stripped, 300
-characters, from `shared/voice-lines.ts` `spokenLine`); the next prompt on that session runs `--hush`. Switching it
+The Orchestrator plugin's composer pill "Speak" (top-level sessions only) uses these flags. Each press cycles
+off → short → full → off. Switching it on runs `--warm`; each completed reply runs `speak` with the reply's first
+non-code paragraph in short mode (markdown stripped, 300 characters), or in full mode every paragraph except code
+fences and table rows, list markers dropped, 1500 characters (both from `shared/voice-lines.ts` `spokenLine`); the
+next prompt on that session runs `--hush`. Switching it
 off does not unload the worker, so use `--stop` for that. Canceled or failed turns and code-only replies stay silent.
 The set of switched-on sessions lives in the daemon's memory, so a daemon restart turns them all off. Audio plays
 on the Mac running the daemon (`afplay`), not on a phone or remote client. Errors at reply time go to

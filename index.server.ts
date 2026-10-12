@@ -429,13 +429,13 @@ export default function contribute(
     helperPaseo = paseo;
     return voiceHelper.interpret(input);
   });
-  // Spoken replies: a switched-on session says the short line of each completed reply (scripts/SPEAK.md).
+  // Spoken replies: a switched-on session says the short line (or, in full mode, the whole message) of each completed reply (scripts/SPEAK.md).
   const speakReplies = createSpeakReplies(deps.speak ?? realSpeakPorts());
-  server.handle(speakRepliesSet, async ({ agentId, on }) => {
-    await speakReplies.set(agentId, on);
+  server.handle(speakRepliesSet, async ({ agentId, mode }) => {
+    await speakReplies.set(agentId, mode);
     return { ok: true };
   });
-  server.handle(speakRepliesState, () => ({ agentIds: speakReplies.agentIds() }));
+  server.handle(speakRepliesState, () => ({ modes: speakReplies.modes() }));
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     voicePaseo = paseo;
     // The Voice helper's own turns are telemetry only: its spend reaches the context card, and nothing
