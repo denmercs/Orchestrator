@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { accessSync, chmodSync, constants, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -37,6 +37,50 @@ test("briefScript runs standalone: exit code, header, full log, pruned to 20", (
     assert.equal(mine.length, 1);
     assert.equal(readFileSync(join(logs, mine[0]), "utf8"), "x\n");
     assert.ok(!left.includes("plan-old-00.log"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A brief script for `step` in a fresh temp dir, with its logs dir.
+function briefDir(step: string) {
+  const dir = mkdtempSync(join(tmpdir(), "brief-"));
+  const bin = join(dir, ".harness", "bin");
+  mkdirSync(bin, { recursive: true });
+  const script = join(bin, "brief");
+  writeFileSync(script, briefScript(step));
+  chmodSync(script, 0o755);
+  return { dir, script, logs: join(dir, ".harness", "logs") };
+}
+
+test("briefScript marks its run with <step>-<pid>.running while it goes, and removes it after", () => {
+  const { dir, script, logs } = briefDir("implement-c1");
+  try {
+    const list = "console.log(require('fs').readFileSync(require('path').join('.harness','logs',require('fs').readdirSync('.harness/logs').find((n)=>n.endsWith('.running'))),'utf8'))";
+    const run = spawnSync(script, [process.execPath, "-e", list], { cwd: dir, encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    const marker = JSON.parse(/^\{.*\}$/m.exec(run.stdout)?.[0] ?? "{}") as { pid?: number; startedAt?: string };
+    assert.equal(typeof marker.pid, "number");
+    assert.ok(Date.parse(marker.startedAt ?? ""));
+    const log = readdirSync(logs).find((name) => name.endsWith(".log")) ?? "";
+    assert.ok(readFileSync(join(logs, log), "utf8").includes(`"pid":${marker.pid}`));
+    assert.deepEqual(readdirSync(logs).filter((name) => name.endsWith(".running")), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("briefScript removes its marker when it is killed with SIGTERM", async () => {
+  const { dir, script, logs } = briefDir("implement");
+  try {
+    const child = spawn(script, [process.execPath, "-e", "setTimeout(() => {}, 30000)"], { cwd: dir, stdio: "ignore" });
+    const marker = join(logs, `implement-${child.pid}.running`);
+    for (let i = 0; i < 100 && !existsSync(marker); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(existsSync(marker));
+    const exit = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+    child.kill("SIGTERM");
+    assert.equal(await exit, 143);
+    assert.equal(existsSync(marker), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

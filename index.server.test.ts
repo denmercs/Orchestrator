@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "./index.server";
 import { startMemoryReplay } from "./shared/replay-rpc";
+import { voiceHelperStart, voiceHelperStop, voiceInterpret } from "./shared/voice-rpc";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,6 +83,22 @@ test("still loads on a host without registerUsageSource", () => {
   assert.deepEqual(usageSourceIds({}), []);
 });
 
+test("registers the Jarvis provider", () => {
+  const ids: string[] = [];
+  const noop = () => undefined;
+  const server = new Proxy({} as PluginServerContext, {
+    get: (_target, key) => {
+      if (key === "registerProvider") return (provider: { id: string; label: string }) => ids.push(`${provider.id}:${provider.label}`);
+      if (key === "registerSettings") {
+        return () => new Proxy({}, { get: (_t, k) => (k === "read" ? async () => ({ status: "loading" }) : noop) });
+      }
+      return noop;
+    },
+  });
+  contribute(server);
+  assert.deepEqual(ids, ["jarvis:Jarvis"]);
+});
+
 type Fake = {
   pending: string[];
   calls: string[];
@@ -93,6 +110,7 @@ function wired(
   signedIn = true,
   replayStart?: { file: string; everyMs: number },
   loopStart?: { file: string; everyMs: number },
+  voiceHelperCwd?: string,
 ) {
   const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
   const listeners = new Map<string, (event: unknown, context: unknown) => unknown>();
@@ -119,7 +137,7 @@ function wired(
       return () => noop;
     },
   });
-  const stop = contribute(server, { replay: runner, signedIn: async () => signedIn, replayStart, loopStart });
+  const stop = contribute(server, { replay: runner, signedIn: async () => signedIn, replayStart, loopStart, voiceHelperCwd });
   return { handlers, listeners, fake, stop };
 }
 
@@ -266,4 +284,90 @@ test("a loop start file starts the initiative loop with that input, once Paseo i
   } finally {
     stop();
   }
+});
+
+// A fake Paseo that records every agent it is asked about; `create` hands back the helper's id.
+function helperPaseo() {
+  const calls: string[] = [];
+  const paseo = {
+    agents: {
+      create: async () => (calls.push("create"), { id: "helper-1" }),
+      ref: (id: string) => (
+        calls.push(`ref:${id}`),
+        {
+          refresh: async () => (calls.push(`refresh:${id}`), null),
+          archive: async () => void calls.push(`archive:${id}`),
+        }
+      ),
+    },
+  };
+  return { paseo, calls };
+}
+
+const turnAgent = (id: string, cwd = "/x") => ({ id, workspaceId: null, parentAgentId: null, provider: "claude", cwd, title: null });
+
+test("the voice helper RPCs start and stop one helper agent, and interpret fails while it is stopped", async () => {
+  const cwd = join(mkdtempSync(join(tmpdir(), "voice-helper-")), "nested", "helper");
+  const { handlers, stop } = wired([], true, undefined, undefined, cwd);
+  const { paseo, calls } = helperPaseo();
+  const start = handlers.get(voiceHelperStart.name);
+  const halt = handlers.get(voiceHelperStop.name);
+  const interpret = handlers.get(voiceInterpret.name);
+  assert.ok(start && halt && interpret, "all three RPCs are handled");
+  const input = { transcript: "hi", sessionId: "s", sessions: [{ id: "s", name: "api" }] };
+  await assert.rejects(async () => interpret(input, { paseo }), /not started/);
+  assert.deepEqual(await start({}, { paseo }), { ok: true });
+  assert.equal(existsSync(cwd), true, "the helper's folder is made before the agent is created");
+  await start({}, { paseo });
+  assert.equal(calls.filter((c) => c === "create").length, 1);
+  assert.deepEqual(await halt({}, { paseo }), { ok: true });
+  assert.ok(calls.includes("archive:helper-1"));
+  stop();
+});
+
+test("a helper agent's turn end writes only the telemetry read, and a stranger still takes the normal route", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "voice-helper-"));
+  const { handlers, listeners, stop } = wired([], true, undefined, undefined, cwd);
+  const { paseo, calls } = helperPaseo();
+  await handlers.get(voiceHelperStart.name)!({}, { paseo });
+  const onTurn = listeners.get("agent.turn_ended");
+  assert.ok(onTurn);
+  const end = (id: string, outcome: object) => onTurn({ agent: turnAgent(id), turnId: null, outcome, timeline: [] }, { paseo });
+  calls.length = 0;
+  await end("helper-1", { kind: "completed" });
+  await new Promise((r) => setTimeout(r, 20));
+  // The context watch reads the agent for its telemetry row; the loop, pipeline and initiative loop would look at it too.
+  assert.deepEqual(calls, ["ref:helper-1", "refresh:helper-1"]);
+  calls.length = 0;
+  await end("other", { kind: "completed" });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(calls.length > 2, `a stranger goes the whole route (${calls.join(", ")})`);
+  stop();
+});
+
+test("a helper turn end that lands after voice turns off is still telemetry only", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "voice-helper-"));
+  const { handlers, listeners, stop } = wired([], true, undefined, undefined, cwd);
+  const { paseo, calls } = helperPaseo();
+  await handlers.get(voiceHelperStart.name)!({}, { paseo });
+  await handlers.get(voiceHelperStop.name)!({}, { paseo });
+  calls.length = 0;
+  // A helper turn that finished as voice turned off: its turn end arrives once the helper has forgotten the id.
+  await listeners.get("agent.turn_ended")!(
+    { agent: turnAgent("helper-1", cwd), turnId: null, outcome: { kind: "completed" }, timeline: [] },
+    { paseo },
+  );
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(calls, ["ref:helper-1", "refresh:helper-1"]);
+  stop();
+});
+
+test("disposing the plugin archives the voice helper", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "voice-helper-"));
+  const { handlers, stop } = wired([], true, undefined, undefined, cwd);
+  const { paseo, calls } = helperPaseo();
+  await handlers.get(voiceHelperStart.name)!({}, { paseo });
+  stop();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(calls.includes("archive:helper-1"));
 });

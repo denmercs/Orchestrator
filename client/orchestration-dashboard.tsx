@@ -46,13 +46,17 @@ import { pulseTabState } from "./prod-pulse-model";
 import { LoopProfilesToggle, LoopStepProfiles } from "./loop-step-profiles";
 import { NeedsYouQueue, StatsStrip } from "./needs-you";
 import { RunnerPicker } from "./runner-picker";
+import type { DrawerTab } from "./pipeline-drawer-model";
 import { SkillsDrawer, StoryPipelineButton } from "./skills-drawer";
+import { VoiceButton, VoiceDrawer } from "./voice-drawer";
+import type { createVoiceRunner } from "./voice-runner";
 import { startJiraSession } from "./start-jira-session";
 import { StandupSection } from "./standup-section";
 import { StartInput } from "./start-input";
 import { useOrchestrationCatalog } from "./use-orchestration-catalog";
 
-export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurfaceProps) {
+export function OrchestrationDashboard({ theme, layout, navigation, voice }: PluginSurfaceProps & { voice: ReturnType<typeof createVoiceRunner> }) {
+  const [voiceOpen, setVoiceOpen] = useState(false);
   const paseo = usePaseo();
   const { agents, workspaces, error } = useOrchestrationCatalog();
   const listSchedules = useRpc(listOrchestrationSchedules);
@@ -93,6 +97,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
   const { pulse, loaded: pulseLoaded, refresh: refreshPulse } = useProdPulse();
   const epic = useEpicBoards();
   const [skillsOpen, setSkillsOpen] = useState(false);
+  const [drawerTab, setDrawerTab] = useState<DrawerTab>("phases");
   const [loopProfilesOpen, setLoopProfilesOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const gates = useMemo(() => gatesOf(epic.boards ?? []), [epic.boards]);
@@ -444,6 +449,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         open={skillsOpen}
         onPress={() => setSkillsOpen((open) => !open)}
       />
+      <VoiceButton theme={theme} runner={voice} open={voiceOpen} onPress={() => setVoiceOpen((open) => !open)} />
     </DashboardHeader>
   );
 
@@ -478,7 +484,10 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
             theme={theme}
             compact={layout.compact}
             navigation={navigation}
-            onEditPolicy={() => setSkillsOpen(true)}
+            onEditPolicy={() => {
+              setDrawerTab("context");
+              setSkillsOpen(true);
+            }}
           />
         </>
       );
@@ -586,8 +595,11 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
         theme={theme}
         compact={layout.compact}
         open={skillsOpen}
+        tab={drawerTab}
+        onTab={setDrawerTab}
         onClose={() => setSkillsOpen(false)}
       />
+      <VoiceDrawer theme={theme} compact={layout.compact} runner={voice} open={voiceOpen} onClose={() => setVoiceOpen(false)} />
     </View>
   );
 }

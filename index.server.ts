@@ -37,9 +37,16 @@ import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay
 import { readArms, readCorpus, readCostCap, readRunName, realReplayPorts } from "./server/replay-start";
 import { claudeSignedIn } from "./server/claude-cli";
 import { startMemoryReplay } from "./shared/replay-rpc";
+import { createTranscriber, realTranscribePorts } from "./server/voice-transcribe";
 import { REPLAY_START_FILE, REPLAY_START_POLL_MS, tickReplayStart } from "./server/replay-trigger";
 import { LOOP_START_FILE, LOOP_START_POLL_MS, tickLoopStart } from "./server/loop-trigger";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./server/voice-helper";
+import { transcribeVoice, voiceHelperStart, voiceHelperStop, voiceInterpret, voiceTarget } from "./shared/voice-rpc";
+import { createJarvisProvider } from "./server/jarvis-provider";
+import { createJarvisRouter } from "./server/jarvis-router";
+import { splitSessions } from "./shared/voice-loop";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -118,6 +125,7 @@ export default function contribute(
     signedIn?: () => Promise<boolean>;
     replayStart?: { file: string; everyMs: number };
     loopStart?: { file: string; everyMs: number };
+    voiceHelperCwd?: string;
   } = {},
 ) {
   // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
@@ -256,6 +264,8 @@ export default function contribute(
     return { run, rounds: corpus.length, costCap, runDir };
   };
   server.handle(startMemoryReplay, (input, { paseo }) => startReplay(input, paseo));
+  const transcribe = createTranscriber(realTranscribePorts());
+  server.handle(transcribeVoice, (input) => transcribe(input));
   const readPolicy = async () => {
     const state = await context.read();
     return state.status === "ready" ? state.values : DEFAULT_CONTEXT_CONFIG;
@@ -388,8 +398,43 @@ export default function contribute(
       if (voicePaseo) await voicePaseo.agents.ref(agentId).send(text);
     },
   });
+  // The helper's ports read Paseo through this stand-in, which always points at the handle the last RPC gave.
+  let helperPaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
+  const helperCwd = deps.voiceHelperCwd ?? VOICE_HELPER_CWD;
+  const voiceHelper = createVoiceHelper(
+    paseoVoiceHelperPorts(
+      new Proxy({} as NonNullable<typeof helperPaseo>, { get: (_target, key) => helperPaseo![key as keyof typeof helperPaseo] }),
+      helperCwd,
+    ),
+  );
+  // Turn ends carry no labels, so the helper is also known by its own folder: a turn that ends just
+  // after voice turns off (the id already forgotten) must still stay telemetry only.
+  const isVoiceHelper = (agent: { id: string; cwd: string }) =>
+    agent.id === voiceHelper.agentId() || resolve(agent.cwd) === resolve(helperCwd);
+  server.handle(voiceHelperStart, async (_input, { paseo }) => {
+    helperPaseo = paseo;
+    await mkdir(helperCwd, { recursive: true });
+    await voiceHelper.start();
+    return { ok: true };
+  });
+  server.handle(voiceHelperStop, async (_input, { paseo }) => {
+    helperPaseo = paseo;
+    await voiceHelper.stop();
+    return { ok: true };
+  });
+  server.handle(voiceInterpret, (input, { paseo }) => {
+    helperPaseo = paseo;
+    return voiceHelper.interpret(input);
+  });
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     voicePaseo = paseo;
+    // The Voice helper's own turns are telemetry only: its spend reaches the context card, and nothing
+    // else (resume, loop, pipeline) may act on it.
+    if (isVoiceHelper(event.agent)) {
+      contextPaseo = paseo;
+      void contextWatch.onTurnEnded(event).catch((error) => console.warn("orchestrator: context watch failed", error));
+      return;
+    }
     voiceResume.onTurnEnded(event);
     // A memory replay's agent is the runner's business only: the telemetry row first, then its result row.
     if (memoryReplay.pendingAgents().includes(event.agent.id)) {
@@ -479,6 +524,29 @@ export default function contribute(
     );
   }, loopStart.everyMs);
   loopStartTimer.unref?.();
+  // Jarvis: a provider whose sessions route what you say (Paseo voice mode) to the Voice drawer's target.
+  // Providers get no Paseo handle, so it uses the last one any event or RPC gave.
+  const jarvisPaseo = () => {
+    const paseo = paseoNow() ?? voicePaseo ?? helperPaseo;
+    if (!paseo) throw new Error("Paseo isn't ready yet. Try again in a moment.");
+    return paseo;
+  };
+  const jarvis = createJarvisRouter({
+    async sessions() {
+      const listed = await jarvisPaseo().agents.list({ filter: { includeArchived: false }, page: { limit: 200 } });
+      return splitSessions(
+        listed.entries.map((entry) => entry.agent).filter((agent) => agent.status !== "closed" && !agent.archivedAt),
+      );
+    },
+    send: (sessionId, text) => jarvisPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
+  });
+  // A Jarvis session or the Voice helper is refused (ok: false), or Jarvis would steer itself.
+  server.handle(voiceTarget, async (session, { paseo }) => {
+    helperPaseo = paseo;
+    return { ok: (await jarvis.setTarget(session)).ok };
+  });
+  // Paseo 0.11.0+ only, like the usage source.
+  server.registerProvider?.(createJarvisProvider({ route: jarvis.route }));
   return () => {
     offPulseSettings();
     stopPlanServer();
@@ -494,5 +562,6 @@ export default function contribute(
     clearInterval(replayStartTimer);
     clearInterval(loopStartTimer);
     voiceResume.stop();
+    void voiceHelper.stop().catch((error) => console.warn("orchestrator: voice helper stop failed", error));
   };
 }

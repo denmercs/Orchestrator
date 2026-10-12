@@ -12,7 +12,7 @@ import { budgetMoney } from "../shared/stats-strip";
 import { storyCost, type TelemetryRow } from "./context-telemetry";
 import { DEFAULT_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import type { ToolItem } from "../shared/exploration";
-import { stuckCheck, type StuckCounters } from "../shared/stuck";
+import { midTurnCheck, stuckCheck, toolRunningSince, type StuckCounters, type TimelineEntry } from "../shared/stuck";
 import { appendOutcome, type OutcomeEvent } from "../shared/story-outcome";
 import {
   PHASES_DIR,
@@ -53,12 +53,27 @@ import {
 import { withMcpScope } from "./mcp-scope";
 import { installSkills, skillPaths } from "./skill-sources";
 import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
+import { activeBriefRuns, briefRuns, worktreeFingerprint } from "./turn-progress";
 import { clockTime, providerName } from "../shared/plan-usage";
 import { readPlanUsage } from "./plan-usage";
 import { inHoldWindow, planLimitUntil, usageLimitResumeAt } from "./usage-limit";
 
 // The stuck evidence a step carries in its frontmatter; a new step or a reopen starts it clean.
-const STUCK_CLEAR = { idle_turns: null, fail_tests: null, fail_runs: null, stuck_nudged: null };
+const STUCK_CLEAR = {
+  idle_turns: null,
+  fail_tests: null,
+  fail_runs: null,
+  stuck_nudged: null,
+  mid_turn: null,
+  mid_fingerprint: null,
+  mid_changed: null,
+  mid_nudged: null,
+  waiting_subagent_since: null,
+};
+
+// How long a parent may sit waiting on a subagent before the tick counts it as stalled: a subagent that
+// died never wakes its parent.
+const SUBAGENT_WAIT_MS = 30 * 60_000;
 
 // The initiative loop, driven by Paseo events rather than a long-running process:
 //   Start            marks the initiative loop: on and starts every ready story of its active phase.
@@ -84,6 +99,13 @@ const STUCK_CLEAR = { idle_turns: null, fail_tests: null, fail_runs: null, stuck
 //                    same test failing 3 brief test runs in a row. The first time, one nudge names it (no
 //                    retry counted); if it still holds on a later turn the story blocks as `stuck`. Progress
 //                    resets it; a new step or a reopen starts clean.
+//                    The tick also reads a running turn from disk: 3 failing brief logs in a row, or (Implement
+//                    only) no change outside .harness/ for 20 minutes. The first time one nudge is steered into
+//                    the turn; evidence again after it blocks as `stuck` and interrupts the turn.
+//                    A brief run under an hour old isn't idle, a finished one restarts the clock, and a nudge
+//                    whose send fails still counts.
+//                    Any tool call the timeline shows running isn't idle either; one running over an hour skips
+//                    the nudge, which can't land until it returns, and blocks and interrupts at once.
 // The story files are the state: the loop writes status, branch, workspace, agent, pr and ci into
 // their frontmatter, so it resumes from them after a restart. Paseo owns the worktrees and agents.
 
@@ -707,9 +729,15 @@ export function createInitiativeLoop(
       .then((found) => found?.agent ?? null, () => undefined);
     // Paseo didn't answer: that says nothing about the session, so try again next tick.
     if (session === undefined) return;
+    if (session?.status === "running" && session.activeTurn) {
+      await midTurnWatch(api, story, step, session.activeTurn);
+      return;
+    }
     if (session?.status === "running" || session?.status === "initializing") return;
     const dead = !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
-    if (!dead && !meta.stalled && !resuming) return;
+    const waitedSince = Date.parse(meta.waiting_subagent_since ?? "");
+    const waitedOut = !Number.isNaN(waitedSince) && Date.now() - waitedSince >= SUBAGENT_WAIT_MS;
+    if (!dead && !meta.stalled && !resuming && !waitedOut) return;
     // Its provider is at its plan limit (or still is, past an earlier pause): wait out the reset rather
     // than nudge or restart into it. Not a retry.
     const limit = await limitFor(api, config, step);
@@ -721,7 +749,8 @@ export function createInitiativeLoop(
       ? session?.lastError
         ? `Its session failed: ${session.lastError}.`
         : "Its session is gone."
-      : meta.stalled || "The usage limit has reset.";
+      : meta.stalled ||
+        (resuming ? "The usage limit has reset." : `It waited on a subagent for over ${SUBAGENT_WAIT_MS / 60_000} minutes.`);
     if (resuming && !dead) {
       writeFrontmatter(story.path, { paused_until: null, paused_for: null, stalled: null });
       await api.agents.ref(meta.agent).send(nudgePrompt(why));
@@ -732,7 +761,7 @@ export function createInitiativeLoop(
       block(story, `${STEP_LABELS[step]}: ${why} Gave up after ${retries} ${retries === 1 ? "retry" : "retries"}.`, "retry-limit");
       return;
     }
-    writeFrontmatter(story.path, { retries: retries + 1, stalled: null, paused_until: null, paused_for: null });
+    writeFrontmatter(story.path, { retries: retries + 1, stalled: null, paused_until: null, paused_for: null, waiting_subagent_since: null });
     if (!dead) {
       await api.agents.ref(meta.agent).send(nudgePrompt(why));
       return;
@@ -746,6 +775,84 @@ export function createInitiativeLoop(
       cycles,
       attempt: retries + 1,
     });
+  }
+
+  // When each agent's running turn was first seen, for a turn whose start time Paseo didn't report.
+  const turnSeen = new Map<string, { turnId: string; at: number }>();
+
+  // Reads a running turn's progress from disk (the brief logs since it started) and the timeline (a tool
+  // call still running). The first evidence is one nudge steered into the running turn, so it isn't
+  // interrupted; the nudge is shared with the turn-end check (`stuck_nudged`). A send that fails still
+  // records the nudge, so the next evidence blocks rather than retrying the nudge every tick.
+  async function midTurnWatch(
+    api: PaseoApi,
+    story: StoryFile,
+    step: LoopStep,
+    turn: { turnId: string; startedAt: string | null },
+  ) {
+    const { meta } = story;
+    if (!meta.worktree || !meta.agent) return;
+    // A new turn starts the mid-turn fields over.
+    if (meta.mid_turn !== turn.turnId) {
+      writeFrontmatter(story.path, { mid_turn: turn.turnId, mid_fingerprint: null, mid_changed: null, mid_nudged: null });
+    }
+    const carried = meta.mid_turn === turn.turnId;
+    let seen = turnSeen.get(meta.agent);
+    if (seen?.turnId !== turn.turnId) turnSeen.set(meta.agent, (seen = { turnId: turn.turnId, at: Date.now() }));
+    const startedMs = Date.parse(turn.startedAt ?? "");
+    const turnStart = Number.isNaN(startedMs) ? seen.at : startedMs;
+    // After the nudge, only runs made since it count as evidence again.
+    const nudgedMs = carried ? Date.parse(meta.mid_nudged ?? "") : Number.NaN;
+    const since = Number.isNaN(nudgedMs) ? turnStart : Math.max(turnStart, nudgedMs);
+    const logged = briefRuns(meta.worktree, step, since);
+    const runs = logged.map((run) => run.failures);
+    const subagents = meta.cycles === "subagents";
+    const now = Date.now();
+    // Only Implement judges idleness, so only it pays for the git work.
+    const idleWatch = step === "implement" && !subagents;
+    const fingerprint = idleWatch ? worktreeFingerprint(meta.worktree) : null;
+    const testRunning = idleWatch && activeBriefRuns(meta.worktree, step, now).length > 0;
+    const toolRunningSinceMs = idleWatch ? await runningToolSince(api, meta.agent, turn.turnId) : null;
+    const lastRunMs = logged.length > 0 ? logged[logged.length - 1].mtimeMs : null;
+    const stored = { fingerprint: carried ? meta.mid_fingerprint || null : null, changed: carried ? meta.mid_changed || null : null };
+    const { mid, evidence, progressed, interrupt } = midTurnCheck({
+      runs, fingerprint, now, mid: stored, step, subagents, testRunning, lastRunMs, toolRunningSinceMs,
+    });
+    if (mid.fingerprint !== stored.fingerprint || mid.changed !== stored.changed) {
+      writeFrontmatter(story.path, { mid_fingerprint: mid.fingerprint, mid_changed: mid.changed });
+    }
+    // Progress after a nudge starts the spell over.
+    if (progressed) {
+      if (meta.stuck_nudged || meta.mid_nudged) writeFrontmatter(story.path, { stuck_nudged: null, mid_nudged: null });
+      return;
+    }
+    if (!evidence) return;
+    // Already nudged (here or at a turn end), or stuck inside one call a steer can't reach: block, then
+    // stop the running turn.
+    if (interrupt || meta.stuck_nudged || (carried && meta.mid_nudged)) {
+      block(story, `stuck: ${evidence}`, "stuck");
+      await api.agents
+        .ref(meta.agent)
+        .send(`The loop blocked this story as stuck: ${evidence}; stop and wait.`, { activeTurnBehavior: "interrupt" })
+        .catch(() => undefined);
+      return;
+    }
+    const text = nudgePrompt(`You look stuck: ${evidence}.`);
+    await api.agents.ref(meta.agent).send(text, { activeTurnBehavior: "steer" }).catch(() => undefined);
+    // Idleness is judged again from the nudge, not from the stale edit time.
+    const nudgedAt = new Date().toISOString();
+    writeFrontmatter(story.path, { stuck_nudged: 1, mid_nudged: nudgedAt, mid_changed: nudgedAt });
+  }
+
+  // When the oldest tool call running in the agent's turn started, from the timeline's tail. Null when
+  // none is running, or Paseo didn't answer, so missing data never counts against the step.
+  async function runningToolSince(api: PaseoApi, agent: string, turnId: string): Promise<number | null> {
+    try {
+      const page = await api.agents.ref(agent).timeline.refetch({ direction: "tail", limit: 50, projection: "projected" });
+      return page.error ? null : toolRunningSince(page.entries as readonly TimelineEntry[], turnId);
+    } catch {
+      return null;
+    }
   }
 
   // A story's worktree was removed mid-step, so there is nothing to resume. Its work went somewhere,
@@ -1118,16 +1225,29 @@ export function createInitiativeLoop(
         await reconcile(api, await readConfig(), init, phaseDir, story, true);
         // Still running its step after the turn: the session stopped without its marker.
         const after = readStoryFiles(phaseDir).find((item) => item.id === story.id);
+        const state = after?.meta.worktree ? readText(stateFile(after.meta.worktree)) : "";
         if (
           after?.meta.agent === event.agent.id &&
           after.meta.worktree &&
           SUPERVISED.has(after.meta.status ?? "") &&
           SUPERVISED_STEPS.has(after.meta.step ?? "") &&
-          readMarker(readText(stateFile(after.meta.worktree))).marker === `${after.meta.step}-running`
+          readMarker(state).marker === `${after.meta.step}-running`
         ) {
           // This turn's items are those after the last user message.
           const items = (event.timeline ?? []) as readonly ToolItem[];
           const lastUser = items.map((item) => item.type).lastIndexOf("user_message");
+          // A parent that ticked a cycle since the last turn end is making progress: its retries start
+          // over. One whose turn ended on a subagent call is waiting on it, and that isn't a stall until
+          // the wait outlasts SUBAGENT_WAIT_MS (supervise).
+          const ticked = readCycles(state).filter((cycle) => cycle.done).length;
+          const before = Number(after.meta.ticked_cycles) || 0;
+          const lastCall = items.slice(lastUser + 1).filter((item) => item.type === "tool_call").at(-1);
+          const waiting = lastCall?.detail?.type === "sub_agent";
+          writeFrontmatter(after.path, {
+            ...(ticked !== before ? { ticked_cycles: ticked || null } : {}),
+            ...(ticked > before ? { retries: null } : {}),
+            waiting_subagent_since: waiting ? new Date().toISOString() : null,
+          });
           // Claude Code can end the turn normally with the plan limit as its only reply, rather than
           // failing it: that waits for the reset like a failed turn would, and isn't a stall.
           const reply = items
@@ -1171,7 +1291,7 @@ export function createInitiativeLoop(
             // Unsent, the session would sit idle with nothing for the tick to act on: stall it instead.
             const sent = await api.agents.ref(event.agent.id).send(nudgePrompt(why)).then(() => true, () => false);
             writeFrontmatter(after.path, sent ? { stuck_nudged: 1 } : { stalled: why });
-          } else {
+          } else if (!waiting) {
             writeFrontmatter(after.path, { stalled: "It ended its turn without writing the step's marker." });
           }
         }
