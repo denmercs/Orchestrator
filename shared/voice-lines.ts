@@ -83,6 +83,8 @@ function plainText(text: string): string {
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/`/g, "")
     .replace(/[^\s()]+/g, fileNameOnly)
+    .replace(/[^\s()]+/g, dropCommitHash)
+    .replace(/\s*\(\s*\)/g, "")
     .replace(/(^|\s)#+\s+/g, "$1")
     .replace(/\*+/g, "")
     .replace(/(^|[\s(])_+([^_]+?)_+(?=$|[\s).,;:!?])/g, "$1$2")
@@ -99,6 +101,12 @@ function fileNameOnly(token: string): string {
   const anchored = /^(?:~|\.{1,2})?\//.test(core) || /^\.{1,2}\//.test(core);
   if (!last || !(anchored || parts.length > 2 || /\.\w+$/.test(last))) return token;
   return `${last}${tail}`;
+}
+
+/** A commit hash is noise read aloud, so it is dropped ("at f2a6468." → "at."); a plain number or word is kept. */
+function dropCommitHash(token: string): string {
+  const [, core, tail] = /^(.*?)([.,;:!?]*)$/.exec(token) ?? [, token, ""];
+  return /^[0-9a-f]{7,40}$/.test(core) && /\d/.test(core) && /[a-f]/.test(core) ? tail : token;
 }
 
 function cap(line: string, limit: number): string {

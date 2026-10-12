@@ -33,3 +33,7 @@ test("spokenLine says a file's name, not its path", () => {
   assert.equal(spokenLine("Opened ~/.paseo/plugins/orchestrator, see ./a/b.md, (src/x.ts)."), "Opened orchestrator, see b.md, (x.ts).");
   assert.equal(spokenLine("Use yes/no or and/or, see https://github.com/a/b on 10/12/2026."), "Use yes/no or and/or, see https://github.com/a/b on 10/12/2026.");
 });
+
+test("spokenLine skips commit hashes but keeps numbers and words", () => {
+  assert.equal(spokenLine("Merged at f2a6468616af5d678a0bc578d4240482c8419737 (a446d72), call 5551234567, decade."), "Merged at , call 5551234567, decade.");
+});
