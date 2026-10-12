@@ -43,7 +43,11 @@ import { LOOP_START_FILE, LOOP_START_POLL_MS, tickLoopStart } from "./server/loo
 import { join, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./server/voice-helper";
-import { transcribeVoice, voiceHelperStart, voiceHelperStop, voiceInterpret } from "./shared/voice-rpc";
+import { transcribeVoice, voiceHelperStart, voiceHelperStop, voiceInterpret, voiceTarget } from "./shared/voice-rpc";
+import { createJarvisProvider, JARVIS_PROVIDER_ID } from "./server/jarvis-provider";
+import { createJarvisRouter } from "./server/jarvis-router";
+import { VOICE_HELPER_KIND } from "./server/voice-helper";
+import { voiceSessions } from "./shared/voice-loop";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -521,6 +525,32 @@ export default function contribute(
     );
   }, loopStart.everyMs);
   loopStartTimer.unref?.();
+  // Jarvis: a provider whose sessions route what you say (Paseo voice mode) to the Voice drawer's target.
+  // Providers get no Paseo handle, so it uses the last one any event or RPC gave.
+  const jarvisPaseo = () => {
+    const paseo = paseoNow() ?? voicePaseo ?? helperPaseo;
+    if (!paseo) throw new Error("Paseo isn't ready yet. Try again in a moment.");
+    return paseo;
+  };
+  const jarvis = createJarvisRouter({
+    async sessions() {
+      const listed = await jarvisPaseo().agents.list({ filter: { includeArchived: false }, page: { limit: 200 } });
+      return voiceSessions(
+        listed.entries
+          .map((entry) => entry.agent)
+          .filter((agent) => agent.status !== "closed" && !agent.archivedAt)
+          .filter((agent) => agent.provider !== JARVIS_PROVIDER_ID && agent.labels?.kind !== VOICE_HELPER_KIND),
+      );
+    },
+    send: (sessionId, text) => jarvisPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
+  });
+  server.handle(voiceTarget, (session, { paseo }) => {
+    helperPaseo = paseo;
+    jarvis.setTarget(session);
+    return { ok: true };
+  });
+  // Paseo 0.11.0+ only, like the usage source.
+  server.registerProvider?.(createJarvisProvider({ route: jarvis.route }));
   return () => {
     offPulseSettings();
     stopPlanServer();

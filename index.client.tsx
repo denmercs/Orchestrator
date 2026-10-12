@@ -8,6 +8,7 @@ import { startMemoryReplay } from "./shared/replay-rpc";
 import { createVoiceLink } from "./client/voice-link";
 import { createVoiceMic, createVoiceTranscriber } from "./client/voice-mic";
 import { createVoiceRunner } from "./client/voice-runner";
+import { voiceTarget } from "./shared/voice-rpc";
 
 const TITLE = INSTALL_LABEL ? `Orchestration (${INSTALL_LABEL})` : "Orchestration";
 
@@ -16,6 +17,14 @@ export default function contribute(client: PluginClientContext) {
     link: createVoiceLink(client.paseo.agents),
     recorder: createVoiceMic(),
     transcriber: createVoiceTranscriber(client.rpc),
+  });
+  // The Jarvis router (server) sends to the drawer's target, so every new target is passed on.
+  let toldTarget: string | undefined;
+  const offTarget = voice.subscribe(() => {
+    const session = voice.getState().session;
+    if (!session || session.id === toldTarget) return;
+    toldTarget = session.id;
+    client.rpc(voiceTarget, session).catch((error) => console.warn("orchestrator: voice target not passed on", error));
   });
   const Dashboard = (props: PluginSurfaceProps) => <OrchestrationDashboard {...props} voice={voice} />;
   client.addSurface("orchestration", Dashboard);
@@ -61,6 +70,7 @@ export default function contribute(client: PluginClientContext) {
   const offPills = contributeSessionRolePills(client, voice);
   const offThemes = CURSOR_THEMES.map((theme) => client.addTheme(theme));
   return async () => {
+    offTarget();
     voice.off();
     await Promise.all([offAttach(), offPills(), ...offThemes.map((off) => off())]);
   };

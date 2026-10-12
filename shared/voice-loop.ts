@@ -1,6 +1,8 @@
 // The Voice loop: a pure state machine that decides everything the Voice drawer does.
 // step(state, event) → { state, effects }. Adapters (mic, transcriber, interpreter, session link, speaker) only carry
-// events in and effects out; the loop holds no clocks and imports nothing, so any bundle can reach it.
+// events in and effects out; the loop holds no clocks and imports only its own wording (voice-lines), so any
+// bundle can reach it. The Voice runner (drawer, Mac) and the Jarvis router (phone) both run it.
+import { CANCELLED, confirmLine, noSessionLine, pickFirstLine, sentLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
 
 export type VoiceMode = "asleep" | "listening" | "confirming" | "waiting" | "speaking";
 export type VoiceSession = { id: string; name: string };
@@ -69,10 +71,16 @@ const NOTICE_ORDER: NoticeKind[] = ["finished", "needsYou", "error", "costCap"];
 const NOTICE_ONE: Record<NoticeKind, string> = { finished: "finished", needsYou: "needs you", error: "hit an error", costCap: "hit the cost cap" };
 const NOTICE_MANY: Record<NoticeKind, string> = { finished: "finished", needsYou: "need you", error: "hit an error", costCap: "hit the cost cap" };
 const NUMBER_WORDS = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
-const SPOKEN_CAP = 300;
+// Said after the name to wake the loop with nothing else to do.
+const WAKE_WORDS = new Set(["", "wake up", "wake", "i m back", "im back", "listen", "you there", "are you there"]);
 
 const norm = (text: string): string => text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
 const stripName = (text: string): string => text.replace(new RegExp(`^(?:(?:hey|ok|okay) )?(?:${NAMES})(?: |$)`), "").trim();
+/** True when the words start with the name (or a close mishearing), as in "Jarvis, wake up". */
+export const addressed = (text: string): boolean => stripName(norm(text)) !== norm(text);
+/** The words without a leading "Jarvis," (or "hey Jarvis"), punctuation and case kept. */
+export const withoutName = (text: string): string =>
+  text.replace(new RegExp(`^\\s*(?:(?:hey|ok|okay)[\\s,]+)?(?:${NAMES})\\b[\\s,.!?]*`, "i"), "").trim() || text.trim();
 const critical = (text: string): string | null => CRITICAL.exec(text)?.[1] ?? null;
 const out = (state: VoiceState, ...effects: VoiceEffect[]): VoiceStep => ({ state, effects });
 
@@ -80,18 +88,18 @@ function sentTo(state: VoiceState, text: string): VoiceStep {
   const session = state.session;
   if (!session) return out(state);
   const next = { ...state, mode: "waiting" as const, pending: null, confirm: null };
-  return out(next, { type: "send", session, text, behavior: "steer" }, { type: "receipt", session, line: `Sent to ${session.name}` });
+  return out(next, { type: "send", session, text, behavior: "steer" }, { type: "receipt", session, line: sentLine(session.name) });
 }
 
 function askConfirm(state: VoiceState, text: string, word: string): VoiceStep {
   const session = state.session;
   if (!session) return out(state);
   const next = { ...state, mode: "confirming" as const, pending: null, confirm: { word, text } };
-  return out(next, { type: "askConfirm", word, line: `Send "${text}" to ${session.name}? Say one to send, or two to cancel.` });
+  return out(next, { type: "askConfirm", word, line: confirmLine(text, session.name) });
 }
 
 function cancelled(state: VoiceState): VoiceStep {
-  return out({ ...state, mode: "listening", pending: null, confirm: null }, { type: "speak", line: "Cancelled." });
+  return out({ ...state, mode: "listening", pending: null, confirm: null }, { type: "speak", line: CANCELLED });
 }
 
 function sleep(state: VoiceState): VoiceStep {
@@ -107,19 +115,18 @@ function matching(sessions: VoiceSession[], spoken: string): VoiceSession[] {
 function switchTo(state: VoiceState, spoken: string): VoiceStep {
   const base = { ...state, pending: null, confirm: null };
   const matches = matching(state.sessions, spoken);
-  if (matches.length === 1) return out({ ...base, mode: "listening", session: matches[0] }, { type: "speak", line: `Now on ${matches[0].name}.` });
+  if (matches.length === 1) return out({ ...base, mode: "listening", session: matches[0] }, { type: "speak", line: switchedLine(matches[0].name) });
   if (matches.length > 1) {
-    const names = matches.map((s) => s.name);
-    return out(base, { type: "speak", line: `Which one: ${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}?` });
+    return out(base, { type: "speak", line: whichLine(matches.map((s) => s.name)) });
   }
-  return out(base, { type: "speak", line: `No session called ${spoken}.` });
+  return out(base, { type: "speak", line: noSessionLine(spoken) });
 }
 
 function onUtterance(state: VoiceState, text: string): VoiceStep {
   const heard = norm(text);
   const cleaned = stripName(heard);
-  const ignore = new RegExp(`^(?:(?:hey|ok|okay) )?(?:(${NAMES}) )?ignor(?:e|ing)( me)?$`).exec(heard);
-  if (ignore && (ignore[1] || ignore[2])) return sleep(state);
+  const ignore = new RegExp(`^(?:(?:hey|ok|okay) )?(?:(${NAMES}) )?(?:ignor(?:e|ing)( me)?|(silent mode))$`).exec(heard);
+  if (ignore && (ignore[1] || ignore[2] || ignore[3])) return sleep(state);
   if (NEVER_MIND.has(cleaned)) return state.confirm ? cancelled(state) : out({ ...state, pending: null });
   if (state.confirm) {
     if (CONFIRM_NO.has(cleaned)) return cancelled(state);
@@ -129,7 +136,7 @@ function onUtterance(state: VoiceState, text: string): VoiceStep {
   const toName = /^switch to (.+)$/.exec(cleaned);
   if (toName && (cleaned !== heard || matching(state.sessions, toName[1]).length)) return switchTo(state, toName[1]);
   if (cleaned.split(" ").filter(Boolean).length < 2 && !critical(cleaned)) return out(state);
-  if (!state.session) return out(state, { type: "speak", line: "Pick a session first." });
+  if (!state.session) return out(state, { type: "speak", line: pickFirstLine(state.sessions.map((s) => s.name)) });
   const seq = state.seq + 1;
   return out({ ...state, seq, pending: { seq, heard: text } }, { type: "interpret", seq, text });
 }
@@ -150,6 +157,17 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
   if (state.mode === "asleep") {
     if (event.type === "wake") return out({ ...state, mode: "listening" }, { type: "listen" });
     if (event.type === "pick") return out({ ...state, session: event.session });
+    // Words that start with the name wake it (only Jarvis hears while asleep: the drawer's mic is closed).
+    if (event.type === "utterance" && addressed(event.text)) {
+      const awake: VoiceState = { ...state, mode: "listening" };
+      const rest = norm(withoutName(event.text));
+      if (!addressed(rest) && !WAKE_WORDS.has(rest)) {
+        const r = onUtterance(awake, event.text);
+        // "Jarvis, ignore me" while asleep just stays asleep.
+        return r.state.mode === "asleep" ? out(state) : { state: r.state, effects: [{ type: "listen" }, ...r.effects] };
+      }
+      return out(awake, { type: "listen" }, { type: "speak", line: WAKE_LINE });
+    }
     return out(state);
   }
   switch (event.type) {
@@ -218,42 +236,13 @@ function mergeNotices(queue: Notice[]): string {
   return parts.map((p, i) => (i === 0 ? p[0].toUpperCase() + p.slice(1) : p)).join(". ") + ".";
 }
 
-/** d5: the first paragraph that isn't a code fence, markdown stripped, capped at 300 characters. */
-function spokenLine(text: string): string {
-  const paragraphs: string[][] = [[]];
-  let fenced = false;
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (line.startsWith("```")) {
-      fenced = !fenced;
-      continue;
-    }
-    if (fenced) continue;
-    if (!line) paragraphs.push([]);
-    else paragraphs[paragraphs.length - 1].push(line);
-  }
-  for (const lines of paragraphs) {
-    const plain = lines
-      .join(" ")
-      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
-      .replace(/`/g, "")
-      .replace(/(^|\s)#+\s+/g, "$1")
-      .replace(/\*+/g, "")
-      .replace(/(^|[\s(])_+([^_]+?)_+(?=$|[\s).,;:!?])/g, "$1$2")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (plain) return cap(plain);
-  }
-  return "";
+/** A session's spoken name: its title, else the first 8 characters of its id. */
+export function sessionName(agent: { id: string; title?: string | null }): string {
+  return agent.title?.trim() || agent.id.slice(0, 8);
 }
 
-function cap(line: string): string {
-  if (line.length <= SPOKEN_CAP) return line;
-  const cut = line.slice(0, SPOKEN_CAP);
-  const ends = [...cut.matchAll(/[.!?](?=\s)/g)];
-  if (ends.length) return cut.slice(0, ends[ends.length - 1].index + 1);
-  const space = cut.lastIndexOf(" ");
-  return `${space > 0 ? cut.slice(0, space) : cut}…`;
+export function voiceSessions(agents: Array<{ id: string; title?: string | null }>): VoiceSession[] {
+  return agents.map((agent) => ({ id: agent.id, name: sessionName(agent) }));
 }
 
 export function step(state: VoiceState, event: VoiceEvent): VoiceStep {

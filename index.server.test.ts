@@ -83,6 +83,22 @@ test("still loads on a host without registerUsageSource", () => {
   assert.deepEqual(usageSourceIds({}), []);
 });
 
+test("registers the Jarvis provider", () => {
+  const ids: string[] = [];
+  const noop = () => undefined;
+  const server = new Proxy({} as PluginServerContext, {
+    get: (_target, key) => {
+      if (key === "registerProvider") return (provider: { id: string; label: string }) => ids.push(`${provider.id}:${provider.label}`);
+      if (key === "registerSettings") {
+        return () => new Proxy({}, { get: (_t, k) => (k === "read" ? async () => ({ status: "loading" }) : noop) });
+      }
+      return noop;
+    },
+  });
+  contribute(server);
+  assert.deepEqual(ids, ["jarvis:Jarvis"]);
+});
+
 type Fake = {
   pending: string[];
   calls: string[];

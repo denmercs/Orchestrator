@@ -43,3 +43,10 @@ export const voiceInterpret = defineRpc({
     z.object({ type: z.literal("drop") }),
   ]),
 });
+
+// The Voice drawer's target, told to the server so the Jarvis router sends to the same session.
+export const voiceTarget = defineRpc({
+  name: "orchestration.voice.target",
+  input: z.object({ id: z.string().max(200), name: z.string().max(200) }),
+  output: z.object({ ok: z.boolean() }),
+});

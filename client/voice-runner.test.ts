@@ -39,7 +39,7 @@ test("an utterance after a pick is sent to the session through the link", async 
   runner.dispatch({ type: "utterance", text: "please run the tests" });
   await flush();
   assert.deepEqual(said, [["a1", "please run the tests"]]);
-  assert.deepEqual(runner.getState().lines, ["Sent to Alpha"]);
+  assert.deepEqual(runner.getState().lines, ["Sent to Alpha."]);
   assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent to Alpha" }]);
 });
 

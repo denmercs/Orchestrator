@@ -10,13 +10,8 @@ const MODE_TITLES: Record<Exclude<VoiceMode, "asleep">, string> = {
   speaking: "Voice is speaking a reply",
 };
 
-export function sessionName(agent: { id: string; title?: string | null }): string {
-  return agent.title?.trim() || agent.id.slice(0, 8);
-}
-
-export function voiceSessions(agents: Array<{ id: string; title?: string | null }>): VoiceSession[] {
-  return agents.map((agent) => ({ id: agent.id, name: sessionName(agent) }));
-}
+// Shared with the Jarvis router, which names sessions the same way.
+export { sessionName, voiceSessions } from "../shared/voice-loop";
 
 export function voicePill(
   agent: { id: string },
