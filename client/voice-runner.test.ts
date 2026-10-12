@@ -131,7 +131,7 @@ function talkSetup(opts: { ms?: number; transcript?: string | Error; recordFail?
   return { ...base, calls, hintsSeen, timers };
 }
 
-test("hold to talk: speechStart, record, transcribe with hints, then the transcript is sent", async () => {
+test("tap to talk: speechStart, record, transcribe with hints, then the transcript is sent", async () => {
   const { runner, said, calls, hintsSeen } = talkSetup();
   runner.startTalk();
   assert.equal(runner.getState().talking, true);
@@ -145,7 +145,7 @@ test("hold to talk: speechStart, record, transcribe with hints, then the transcr
   assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent to Alpha" }]);
 });
 
-test("a transcribe failure ends the hold with an empty utterance and records the error", async () => {
+test("a transcribe failure ends the recording with an empty utterance and records the error", async () => {
   const { runner, said } = talkSetup({ transcript: new Error("whisper missing") });
   runner.startTalk();
   await runner.endTalk();
@@ -155,7 +155,7 @@ test("a transcribe failure ends the hold with an empty utterance and records the
   assert.deepEqual(said, []);
 });
 
-test("a recorder failure ends the hold with an empty utterance and records the error", async () => {
+test("a recorder failure ends the recording with an empty utterance and records the error", async () => {
   const { runner, calls } = talkSetup({ recordFail: true });
   runner.startTalk();
   await flush();
@@ -166,7 +166,7 @@ test("a recorder failure ends the hold with an empty utterance and records the e
   assert.equal(calls.includes("transcribe"), false);
 });
 
-test("a hold under 300 ms is not transcribed", async () => {
+test("a clip under 300 ms is not transcribed", async () => {
   const { runner, calls, said } = talkSetup({ ms: 200 });
   runner.startTalk();
   await runner.endTalk();
@@ -176,7 +176,7 @@ test("a hold under 300 ms is not transcribed", async () => {
   assert.deepEqual(said, []);
 });
 
-test("a hold auto-ends at 30 seconds", async () => {
+test("a recording auto-ends and is sent at 30 seconds", async () => {
   const { runner, calls, timers } = talkSetup();
   runner.startTalk();
   assert.equal(timers.at(-1)?.ms, 30_000);
@@ -294,7 +294,7 @@ test("off() sleeps the loop, clears timers and closes the mic", async () => {
   assert.deepEqual(closed, ["close"]);
 });
 
-test("on() opens the recorder; a failure lands in error", async () => {
+test("on() opens the recorder; a failure turns voice back off with the error", async () => {
   const opened: string[] = [];
   const { runner } = setup({ recorder: { open: () => void opened.push("open"), start: async () => {}, stop: async () => ({ audio: "", ms: 0 }) } });
   runner.on();
@@ -303,7 +303,7 @@ test("on() opens the recorder; a failure lands in error", async () => {
   bad.runner.on();
   await flush();
   assert.match(bad.runner.getState().error ?? "", /no mic/);
-  assert.equal(bad.runner.getState().mode, "listening");
+  assert.equal(bad.runner.getState().mode, "asleep");
 });
 
 test("a rejected interpreter drops the utterance and records the error", async () => {
@@ -340,4 +340,107 @@ test("setSessions with the same list does not notify subscribers", () => {
   assert.equal(calls, 0);
   runner.setSessions([{ ...alpha, name: "Renamed" }]);
   assert.equal(calls, 1);
+});
+
+test("toggleTalk: the first tap starts recording, the second stops and sends", async () => {
+  const { runner, said, calls } = talkSetup();
+  runner.toggleTalk();
+  await flush();
+  assert.equal(runner.getState().talking, true);
+  assert.deepEqual(calls, ["start"]);
+  await runner.toggleTalk();
+  await flush();
+  assert.deepEqual(calls, ["start", "stop", "transcribe"]);
+  assert.equal(runner.getState().talking, false);
+  assert.deepEqual(said, [["a1", "please run the tests"]]);
+});
+
+test("cancelTalk stops the recording and sends nothing", async () => {
+  const { runner, said, calls, timers } = talkSetup();
+  runner.toggleTalk();
+  await flush();
+  await runner.cancelTalk();
+  await flush();
+  assert.deepEqual(calls, ["start", "stop"]);
+  assert.equal(runner.getState().talking, false);
+  assert.equal(timers.find((t) => t.ms === 30_000)?.cleared, true);
+  assert.deepEqual(said, []);
+  assert.deepEqual(runner.getState().transcripts, []);
+});
+
+function micSetup(open: () => Promise<unknown>, start: () => void = () => {}) {
+  const calls: string[] = [];
+  const base = setup({
+    recorder: {
+      open: () => {
+        calls.push("open");
+        return open();
+      },
+      start: () => {
+        calls.push("start");
+        start();
+      },
+      stop: async () => ({ audio: "QUJD", ms: 2000 }),
+      close: () => void calls.push("close"),
+    },
+    transcriber: async () => "please run the tests",
+  });
+  return { ...base, calls };
+}
+
+test("a tap while the mic is still opening waits for it instead of failing", async () => {
+  let opened!: () => void;
+  const { runner, calls, said } = micSetup(() => new Promise<void>((r) => (opened = r)));
+  runner.on();
+  runner.pick(alpha);
+  runner.toggleTalk();
+  await flush();
+  assert.deepEqual(calls, ["open"]);
+  opened();
+  await flush();
+  assert.deepEqual(calls, ["open", "start"]);
+  await runner.toggleTalk();
+  await flush();
+  assert.equal(runner.getState().error, null);
+  assert.deepEqual(said, [["a1", "please run the tests"]]);
+});
+
+test("a mic that was released is opened once more before talking", async () => {
+  let starts = 0;
+  const { runner, calls } = micSetup(async () => {}, () => {
+    if (starts++ === 0) throw new Error("The microphone is not open. Turn voice on first.");
+  });
+  runner.on();
+  await flush();
+  runner.toggleTalk();
+  await flush();
+  await flush();
+  assert.deepEqual(calls, ["open", "start", "open", "start"]);
+  assert.equal(runner.getState().talking, true);
+  assert.equal(runner.getState().error, null);
+});
+
+test("a mic that cannot open turns voice off; talking is not attempted", async () => {
+  const { runner, calls } = micSetup(async () => Promise.reject(new Error("This device can't record from a plugin. Use voice from the laptop.")));
+  runner.on();
+  runner.toggleTalk();
+  await flush();
+  await flush();
+  assert.equal(runner.getState().mode, "asleep");
+  assert.equal(runner.getState().talking, false);
+  assert.equal(runner.getState().error, "This device can't record from a plugin. Use voice from the laptop.");
+  assert.equal(calls.includes("start"), false);
+});
+
+test("turning voice on again clears the last error; a stale failed open does not turn it off", async () => {
+  let reject!: (err: Error) => void;
+  let first = true;
+  const { runner } = micSetup(() => (first ? ((first = false), new Promise((_, r) => (reject = r))) : Promise.resolve()));
+  runner.on();
+  runner.off();
+  runner.on();
+  reject(new Error("late"));
+  await flush();
+  assert.equal(runner.getState().mode, "listening");
+  assert.equal(runner.getState().error, null);
 });

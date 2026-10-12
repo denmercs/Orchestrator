@@ -15,6 +15,17 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+export const NO_MIC_MESSAGE = "This device can't record from a plugin. Use voice from the laptop.";
+export const MIC_DENIED_MESSAGE = "Microphone permission was denied. Allow the microphone for Paseo, then turn voice on again.";
+
+/** Turns a getUserMedia failure into one message the drawer can show as is. */
+export function micErrorMessage(err: unknown): string {
+  const name = (err as { name?: unknown } | null)?.name;
+  if (name === "NotAllowedError" || name === "SecurityError") return MIC_DENIED_MESSAGE;
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "No microphone was found on this device.";
+  return err instanceof Error ? err.message : String(err);
+}
+
 export function createVoiceMic() {
   let stream: MediaStream | null = null;
   let recorder: MediaRecorder | null = null;
@@ -23,11 +34,14 @@ export function createVoiceMic() {
 
   return {
     async open() {
-      if (stream) return;
-      if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-        throw new Error("This app cannot reach a microphone (navigator.mediaDevices is missing).");
+      if (stream?.active) return;
+      // Paseo's phone app gives plugins no navigator.mediaDevices.
+      if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) throw new Error(NO_MIC_MESSAGE);
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        throw new Error(micErrorMessage(err));
       }
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     },
     close() {
       recorder = null;
@@ -35,7 +49,7 @@ export function createVoiceMic() {
       stream = null;
     },
     start() {
-      if (!stream) throw new Error("The microphone is not open. Turn voice on first.");
+      if (!stream?.active) throw new Error("The microphone is not open. Turn voice on first.");
       chunks = [];
       const next = new MediaRecorder(stream);
       next.ondataavailable = (event) => {

@@ -87,14 +87,18 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
           <View style={styles.row}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Hold to talk"
+              accessibilityLabel={state.talking ? "Tap to send" : "Tap to talk"}
               disabled={!on}
-              onPressIn={() => runner.startTalk()}
-              onPressOut={() => void runner.endTalk()}
+              onPress={() => void runner.toggleTalk()}
               style={[styles.talk, state.talking ? styles.actionOn : null, !on ? styles.disabled : null]}
             >
-              <Text style={styles.actionText}>{state.talking ? "Listening…" : "Hold to talk"}</Text>
+              <Text style={styles.actionText}>{state.talking ? "Listening… tap to send" : "Tap to talk"}</Text>
             </Pressable>
+            {state.talking ? (
+              <Pressable accessibilityRole="button" accessibilityLabel="Cancel recording" onPress={() => void runner.cancelTalk()} style={styles.action}>
+                <Text style={styles.actionText}>Cancel</Text>
+              </Pressable>
+            ) : null}
             <Pressable
               accessibilityRole="button"
               disabled={!on || !state.session}
