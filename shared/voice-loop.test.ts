@@ -597,3 +597,14 @@ test("a list ignores sound-alikes, expires, and is forgotten by any other words;
   const noTarget = say({ ...listed, session: null }, "Two, docs.");
   assert.equal(noTarget.state.session, null);
 });
+
+// S16 Cycle 4
+test("'new session' with a target creates a voice session in its workspace; with none it asks to pick first", () => {
+  for (const heard of ["new session", "start a new session", "Jarvis, new session", "Jarvis, start a new session"]) {
+    const r = say(awake(), heard);
+    assert.deepEqual(r.effects, [{ type: "create", session: api }, { type: "speak", line: "Starting a voice session in api-refactor." }], heard);
+  }
+  const none = say(awake({ session: null }), "new session");
+  assert.deepEqual(types(none.effects), ["speak"]);
+  assert.ok(none.effects[0].type === "speak" && none.effects[0].line.startsWith("Pick a session first."));
+});

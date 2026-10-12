@@ -3,25 +3,36 @@ import { test } from "node:test";
 import type { Interpreter } from "../shared/voice-interpreter";
 import { CONFIRM_TIMEOUT_MS, type VoiceSession } from "../shared/voice-loop";
 import { NOTHING_TO_CONFIRM, notTargetLine, pickFirstLine, SLEEP_LINE, STOPPED_NOTE, WAKE_LINE } from "../shared/voice-lines";
-import { createJarvisRouter } from "./jarvis-router";
+import { VOICE_ROUTING_PREAMBLE, VOICE_SESSION_ENV } from "../shared/voice-session";
+import { createJarvisRouter, voiceSessionCreator } from "./jarvis-router";
 
 const api: VoiceSession = { id: "s1", name: "api-refactor" };
 const docs: VoiceSession = { id: "s2", name: "docs" };
 const self: VoiceSession = { id: "j1", name: "Jarvis" };
 
-function setup(opts: { sessions?: VoiceSession[]; fail?: boolean; interpreter?: Interpreter } = {}) {
+function setup(opts: { sessions?: VoiceSession[]; fail?: boolean; interpreter?: Interpreter; createFail?: boolean } = {}) {
+  // `raw` is what the sessions received; `sent` is the same with the one-time routing preamble taken off, so the
+  // tests that aren't about the preamble read the words alone.
+  const raw: [string, string][] = [];
   const sent: [string, string][] = [];
+  const created: unknown[] = [];
   let clock = 0;
   const router = createJarvisRouter({
     sessions: async () => ({ list: opts.sessions ?? [api, docs], blocked: [self] }),
     send: async (id, text) => {
       if (opts.fail) throw new Error("agent not found");
-      sent.push([id, text]);
+      raw.push([id, text]);
+      sent.push([id, text.replace(`${VOICE_ROUTING_PREAMBLE}\n\n`, "")]);
+    },
+    create: async (target) => {
+      if (opts.createFail) throw new Error("no room");
+      created.push(target);
+      return "new1";
     },
     now: () => clock,
     interpreter: opts.interpreter,
   });
-  return { router, sent, tick: (ms: number) => void (clock += ms) };
+  return { router, sent, raw, created, tick: (ms: number) => void (clock += ms) };
 }
 
 test("with no target it says how to pick one and names a few sessions", async () => {
@@ -188,4 +199,49 @@ test("a numbered list expires after the confirm timeout, so a late number picks 
   await router.route("r1", "list sessions");
   tick(CONFIRM_TIMEOUT_MS - 1);
   assert.deepEqual((await router.route("r1", "two")).spoken, ["Now on docs."]);
+});
+
+test("a new session is created marked, becomes the target, and is never briefed", async () => {
+  const { router, raw, created } = setup();
+  await router.setTarget(api);
+  const r = await router.route("r1", "start a new session");
+  assert.deepEqual(created, [api]);
+  assert.match(r.spoken[0], /^Starting a voice session in /);
+  assert.equal(router.stateOf("r1")?.session?.id, "new1");
+  await router.route("r1", "run the tests");
+  assert.deepEqual(raw, [["new1", "run the tests"]]);
+});
+
+test("voiceSessionCreator makes a marked session on the target's provider, no model, in its workspace or folder", async () => {
+  const calls: unknown[] = [];
+  const make = (workspaceId: string | null) =>
+    voiceSessionCreator(() => ({
+      agents: {
+        ref: () => ({ refresh: async () => ({ agent: { cwd: "/w", provider: "claude", workspaceId } }) }),
+        create: async (o) => (calls.push(["agents", o]), { id: "a1" }),
+      },
+      workspaces: { ref: (id) => ({ agents: { create: async (o) => (calls.push([id, o]), { id: "a2" }) } }) },
+    }));
+  const env = { [VOICE_SESSION_ENV]: "1" };
+  assert.equal(await make(null)(api), "a1");
+  assert.equal(await make("ws")(api), "a2");
+  assert.deepEqual(calls, [["agents", { cwd: "/w", config: { provider: "claude" }, env }], ["ws", { config: { provider: "claude" }, env }]]);
+});
+
+test("the first steer to an unmarked target carries the routing preamble once", async () => {
+  const { router, raw } = setup();
+  await router.setTarget(api);
+  await router.route("r1", "run the tests");
+  await router.route("r1", "check the build");
+  assert.deepEqual(raw, [["s1", `${VOICE_ROUTING_PREAMBLE}\n\nrun the tests`], ["s1", "check the build"]]);
+});
+
+test("a failing create speaks a failure line and keeps the old target", async () => {
+  const { router, raw } = setup({ createFail: true });
+  await router.setTarget(api);
+  const r = await router.route("r1", "start a new session");
+  assert.ok(r.spoken.some((line) => line.includes("no room")));
+  assert.equal(router.stateOf("r1")?.session?.id, "s1");
+  await router.route("r1", "run the tests");
+  assert.equal(raw.at(-1)?.[0], "s1");
 });

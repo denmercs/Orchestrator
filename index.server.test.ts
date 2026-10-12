@@ -371,3 +371,86 @@ test("disposing the plugin archives the voice helper", async () => {
   await new Promise((r) => setTimeout(r, 20));
   assert.ok(calls.includes("archive:helper-1"));
 });
+
+// Wires contribute with a `before` capture and a voice setting that reads as `voiceProfile`.
+function createHook(voiceProfile: string) {
+  let hook: ((input: unknown, context: unknown) => Promise<unknown>) | undefined;
+  const noop = () => undefined;
+  const server = new Proxy({} as PluginServerContext, {
+    get: (_target, key) => {
+      if (key === "before") {
+        return (name: string, h: never) => {
+          if (name === "agent.create") hook = h;
+          return noop;
+        };
+      }
+      if (key === "registerSettings") {
+        return (definition: { id: string }) =>
+          new Proxy(
+            {},
+            {
+              get: (_t, k) =>
+                k === "read"
+                  ? async () =>
+                      definition.id === "voice"
+                        ? { status: "ready", values: { profile: voiceProfile } }
+                        : { status: "loading" }
+                  : () => noop,
+            },
+          );
+      }
+      return () => noop;
+    },
+  });
+  contribute(server);
+  assert.ok(hook, "agent.create has a before hook");
+  return hook;
+}
+
+const sonnetProfiles = {
+  config: {
+    daemon: {
+      agentProfiles: [
+        { id: "opus", name: "Claude | Opus", provider: "claude", model: "claude-opus-4" },
+        { id: "sonnet", name: "Claude | Sonnet 5.5 - Coding", provider: "claude", model: "claude-sonnet-5-5", modeId: "auto" },
+      ],
+    },
+  },
+};
+
+test("a voice-marked agent.create runs on the Sonnet profile and carries the rule", async () => {
+  const hook = createHook("");
+  const request = { config: { provider: "claude", cwd: "/nowhere" }, env: { ORCHESTRATOR_VOICE_SESSION: "1" } };
+  const out = (await hook({ request }, { paseo: { config: { get: async () => sonnetProfiles } } })) as typeof request & {
+    config: { model?: string; modeId?: string; systemPrompt?: string };
+  };
+  assert.equal(out.config.model, "claude-sonnet-5-5");
+  assert.equal(out.config.modeId, "auto");
+  assert.match(out.config.systemPrompt ?? "", /Voice routing rule/);
+});
+
+test("an unmarked agent.create is left as it was, apart from host MCP servers", async () => {
+  const hook = createHook("");
+  const request = { config: { provider: "claude", cwd: "/nowhere", systemPrompt: "mine" } };
+  const out = (await hook({ request }, { paseo: { config: { get: async () => sonnetProfiles } } })) as typeof request | undefined;
+  const config = { ...(out ?? request).config, mcpServers: undefined };
+  assert.deepEqual(config, { ...request.config, mcpServers: undefined });
+});
+
+test("a failing config.get still gives the marked create the rule, and warns", async () => {
+  const hook = createHook("");
+  const request = { config: { provider: "claude", cwd: "/nowhere" }, env: { ORCHESTRATOR_VOICE_SESSION: "1" } };
+  const warn = console.warn;
+  const warned: unknown[][] = [];
+  console.warn = (...args: unknown[]) => void warned.push(args);
+  try {
+    const out = (await hook({ request }, { paseo: { config: { get: async () => Promise.reject(new Error("down")) } } })) as {
+      config: { model?: string; systemPrompt?: string };
+    };
+    assert.equal(out.config.model, undefined);
+    assert.match(out.config.systemPrompt ?? "", /Voice routing rule/);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(warned.length, 1);
+});

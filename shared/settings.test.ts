@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { budgetSettings, dashboardSettings, mcpSettings } from "./settings";
+import { budgetSettings, dashboardSettings, mcpSettings, voiceSettings } from "./settings";
 
 test("mcp settings default to excluding nothing", () => {
   assert.deepEqual(mcpSettings.schema.parse({}), { mcpExclude: [] });
@@ -44,4 +44,18 @@ test("budget settings keep given values", () => {
     dailyBudgetUsd: 40,
     storyCapUsd: 7.5,
   });
+});
+
+test("voice settings are host-scoped at version 1", () => {
+  assert.equal(voiceSettings.id, "voice");
+  assert.equal(voiceSettings.scope, "host");
+  assert.equal(voiceSettings.version, 1);
+});
+
+test("voice settings default to Auto (an empty profile)", () => {
+  assert.deepEqual(voiceSettings.schema.parse({}), { profile: "" });
+});
+
+test("voice settings keep a given profile", () => {
+  assert.deepEqual(voiceSettings.schema.parse({ profile: "off" }), { profile: "off" });
 });

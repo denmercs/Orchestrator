@@ -2,7 +2,7 @@
 // step(state, event) → { state, effects }. Adapters (mic, transcriber, interpreter, session link, speaker) only carry
 // events in and effects out; the loop holds no clocks and imports only its own wording (voice-lines) and name
 // matching (voice-names), so any bundle can reach it. The Voice runner (drawer, Mac) and the Jarvis router (phone) both run it.
-import { CANCELLED, CONFIRM_AGAIN, confirmLine, listLine, noChoiceLine, noSessionLine, notTargetLine, NOTHING_TO_CONFIRM, pickFirstLine, sentLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
+import { CANCELLED, CONFIRM_AGAIN, confirmLine, listLine, newSessionLine, noChoiceLine, noSessionLine, notTargetLine, NOTHING_TO_CONFIRM, pickFirstLine, sentLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
 import { choiceNumber, exactSessions, matchSessions, shortName } from "./voice-names";
 
 export type VoiceMode = "asleep" | "listening" | "confirming" | "waiting" | "speaking";
@@ -57,7 +57,9 @@ export type VoiceEffect =
   | { type: "listen" }
   | { type: "sleep" }
   | { type: "interpret"; seq: number; text: string }
-  | { type: "interrupt"; session: VoiceSession };
+  | { type: "interrupt"; session: VoiceSession }
+  /** Start a new voice session in `session`'s workspace (the target when it was asked for). */
+  | { type: "create"; session: VoiceSession };
 
 export type VoiceStep = { state: VoiceState; effects: VoiceEffect[] };
 
@@ -88,6 +90,7 @@ const PICK_SHOWN = 4;
 const LIST_SESSIONS = /^(?:(?:list|show|read|which|what)(?: me)?(?: the| all| my)? sessions?(?: (?:are )?(?:there|open|running))?|sessions)$/;
 // "switch to X" (and "go/talk/change/move to X"), or "use/pick/open/choose/select X".
 const SWITCH_TO = /^(?:(switch|go|talk|change|move) to|(use|pick|open|choose|select)) (.+)$/;
+const NEW_SESSION = /^(?:start |create |open )?(?:a )?new (?:voice )?session$/;
 const NOTICE_ORDER: NoticeKind[] = ["finished", "needsYou", "error", "costCap"];
 const NOTICE_ONE: Record<NoticeKind, string> = { finished: "finished", needsYou: "needs you", error: "hit an error", costCap: "hit the cost cap" };
 const NOTICE_MANY: Record<NoticeKind, string> = { finished: "finished", needsYou: "need you", error: "hit an error", costCap: "hit the cost cap" };
@@ -189,6 +192,11 @@ function onUtterance(state: VoiceState, text: string): VoiceStep {
   // A bare "one" with nothing waiting (cancelled or timed out) says so; anything longer is speech for the target.
   if (cleaned === "one" || cleaned === "1") return out({ ...base, pending: null }, { type: "speak", line: NOTHING_TO_CONFIRM });
   if (LIST_SESSIONS.test(cleaned)) return numberedList({ ...base, pending: null }, LIST_SHOWN, listLine);
+  if (NEW_SESSION.test(cleaned)) {
+    const target = state.session;
+    if (!target) return numberedList({ ...base, pending: null }, PICK_SHOWN, pickFirstLine);
+    return out({ ...base, pending: null }, { type: "create", session: target }, { type: "speak", line: newSessionLine(shortName(target.name)) });
+  }
   // Without the name and with a target, "switch to X" is only a switch when X is a session (and "use X", "open X"
   // only when X is exactly one); otherwise it is a request for the session.
   const toName = SWITCH_TO.exec(cleaned);

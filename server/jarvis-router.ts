@@ -5,13 +5,40 @@
 // handle, because Paseo reopens the provider session whenever voice mode turns on or off.
 import { CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
 import { namelessPassThrough, type Interpreter } from "../shared/voice-interpreter";
-import { ASLEEP_NOTE, NOTHING_SENT, notTargetLine, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
+import { ASLEEP_NOTE, newSessionFailedLine, NOTHING_SENT, notTargetLine, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
+import { VOICE_ROUTING_PREAMBLE, VOICE_SESSION_ENV } from "../shared/voice-session";
+
+type CreateOptions = { config: { provider: string }; env: Record<string, string> };
+
+/** The slice of the server-side Paseo handle `voiceSessionCreator` uses, so a fake can stand in for it in tests. */
+export type CreatePaseo = {
+  agents: {
+    ref(id: string): { refresh(): Promise<{ agent: { cwd: string; provider: string; workspaceId?: string | null } } | null | undefined> };
+    create(options: CreateOptions & { cwd: string }): Promise<{ id: string }>;
+  };
+  workspaces: { ref(id: string): { agents: { create(options: CreateOptions): Promise<{ id: string }> } } };
+};
+
+/** The `create` port: a marked voice session in the target's folder and workspace, on its provider only (the agent.create hook picks the voice profile). */
+export function voiceSessionCreator(paseo: () => CreatePaseo): (target: VoiceSession) => Promise<string> {
+  return async (target) => {
+    const api = paseo();
+    const refreshed = await api.agents.ref(target.id).refresh();
+    if (!refreshed) throw new Error("That session is gone.");
+    const { cwd, provider, workspaceId } = refreshed.agent;
+    const options = { config: { provider }, env: { [VOICE_SESSION_ENV]: "1" } };
+    const agent = workspaceId ? await api.workspaces.ref(workspaceId).agents.create(options) : await api.agents.create({ cwd, ...options });
+    return agent.id;
+  };
+}
 
 export type JarvisRouterPorts = {
   /** Live sessions: `list` may be targets, `blocked` are Voice's own (Jarvis, the Voice helper). See `splitSessions`. */
   sessions(): Promise<{ list: VoiceSession[]; blocked: VoiceSession[] }>;
   /** Sends text to a session as a steer. */
   send(sessionId: string, text: string): Promise<unknown>;
+  /** Starts a marked voice session beside `target` and returns its id. See `voiceSessionCreator`. */
+  create(target: VoiceSession): Promise<string>;
   /**
    * Turns an utterance into a loop result. Defaults to the words as heard, minus a leading "Jarvis,".
    * The seam for the speech-cleanup helper: pass `withFallback(helper, namelessPassThrough)`, unwrapped to its result.
@@ -32,6 +59,8 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
   const interpreter = ports.interpreter ?? namelessPassThrough;
   const entries = new Map<string, Entry>();
   const chains = new Map<string, Promise<unknown>>();
+  // Sessions that already know the routing rule: ones the router created, and ones it has already told.
+  const briefed = new Set<string>();
   let drawerTarget: VoiceSession | null = null;
   let lastBlocked: VoiceSession[] = [];
   const refresh = async () => {
@@ -82,10 +111,22 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
             // Interrupted before the steer went out: nothing is sent and the state is left as it was.
             if (signal?.aborted) return { spoken: [], note: STOPPED_NOTE };
             try {
-              await ports.send(effect.session.id, effect.text);
+              const first = !briefed.has(effect.session.id);
+              await ports.send(effect.session.id, first ? `${VOICE_ROUTING_PREAMBLE}\n\n${effect.text}` : effect.text);
+              briefed.add(effect.session.id);
             } catch (error) {
               failed = true;
               spoken.push(sendFailedLine(effect.session.name, errorText(error)));
+            }
+            break;
+          case "create":
+            // The new session's system prompt carries the rule, so it is never briefed. A failure keeps the old target.
+            try {
+              const id = await ports.create(effect.session);
+              briefed.add(id);
+              events.push({ type: "pick", session: { id, name: `${effect.session.name} (voice)` } });
+            } catch (error) {
+              spoken.push(newSessionFailedLine(errorText(error)));
             }
             break;
           case "receipt":

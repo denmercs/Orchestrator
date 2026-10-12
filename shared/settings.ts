@@ -105,3 +105,14 @@ export const budgetSettings = defineSettings({
     storyCapUsd: z.number().default(5),
   }),
 });
+
+export const voiceSettings = defineSettings({
+  id: "voice",
+  scope: "host",
+  version: 1,
+  schema: z.object({
+    // Profile (id or name) that voice sessions the plugin creates run on. Empty is Auto (the first Claude Sonnet
+    // profile); "off" leaves them on the Paseo default.
+    profile: z.string().default(""),
+  }),
+});

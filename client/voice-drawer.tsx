@@ -1,12 +1,18 @@
 import { useMemo, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
-import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import type { createVoiceRunner } from "./voice-runner";
+import { ProfileChips, useAgentProfiles } from "./runner-picker";
+import { pickProfile, profileCaption, type AgentProfile } from "../shared/agent-profiles";
+import { voiceSettings } from "../shared/settings";
 import { CONFIRM_CANCEL } from "../shared/voice-loop";
+import { voiceModelLine, voiceProfileFor } from "../shared/voice-session";
 
 type Theme = PluginSurfaceProps["theme"];
 type VoiceRunner = ReturnType<typeof createVoiceRunner>;
+
+const OFF_CHIP: AgentProfile = { id: "off", name: "Off", provider: "" };
 
 const MODE_LABEL = { asleep: "Off", listening: "Listening", confirming: "Waiting for your word", waiting: "Sent, waiting", speaking: "Speaking" } as const;
 
@@ -36,6 +42,8 @@ export function VoiceButton({ theme, runner, open, onPress }: { theme: Theme; ru
 export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: Theme; compact: boolean; runner: VoiceRunner; open: boolean; onClose(): void }) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   const state = useRunner(runner);
+  const settings = useSettings(voiceSettings);
+  const profiles = useAgentProfiles();
   if (!open) return null;
   const on = state.mode !== "asleep";
   const needsWhisper = state.error ? /whisper|ffmpeg|model/i.test(state.error) : false;
@@ -64,6 +72,42 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
               <Text style={styles.actionText}>{on ? "On" : "Off"}</Text>
             </Pressable>
             <Text style={styles.hint}>{MODE_LABEL[state.mode]}</Text>
+          </View>
+
+          <Text style={styles.section}>Voice sessions</Text>
+          {settings.status === "ready" ? (
+            <>
+              <Text style={styles.hint}>{voiceModelLine(voiceProfileFor(profiles, settings.values.profile), settings.values.profile)}</Text>
+              <ProfileChips
+                theme={theme}
+                compact={compact}
+                label="Model"
+                accessibilityLabel="Voice session model"
+                profiles={[...profiles, OFF_CHIP]}
+                selectedId={chosenVoiceId(profiles, settings.values.profile)}
+                autoLabel="Auto"
+                describe={(profile) => (profile.id === OFF_CHIP.id ? "Leave new voice sessions on the Paseo default" : `Run new voice sessions on ${profileCaption(profile)}`)}
+                onPick={(id) => {
+                  const value = id === OFF_CHIP.id ? "off" : id;
+                  if (value !== settings.values.profile) void settings.save({ profile: value }, settings.revision);
+                }}
+              />
+              {settings.saveError ? <Text style={[styles.hint, styles.danger]}>{settings.saveError}</Text> : null}
+            </>
+          ) : (
+            <Text style={styles.hint}>{settings.status === "loading" ? "Voice sessions…" : settings.error}</Text>
+          )}
+          <View style={styles.row}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="New voice session"
+              disabled={!state.session}
+              onPress={() => runner.newSession()}
+              style={[styles.action, !state.session ? styles.disabled : null]}
+            >
+              <Text style={styles.actionText}>New voice session</Text>
+            </Pressable>
+            <Text style={styles.hint}>{state.session ? `In ${state.session.name}'s workspace` : "Pick a session first"}</Text>
           </View>
 
           <Text style={styles.section}>Sessions</Text>
@@ -152,6 +196,12 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
       </View>
     </View>
   );
+}
+
+// The chip that stands for the setting: "off", Auto (empty or unknown), or a profile id.
+function chosenVoiceId(profiles: AgentProfile[], setting: string) {
+  if (setting.trim().toLowerCase() === "off") return OFF_CHIP.id;
+  return setting ? (pickProfile(profiles, setting)?.id ?? "") : "";
 }
 
 function createStyles(theme: Theme, compact: boolean) {

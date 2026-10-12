@@ -11,7 +11,10 @@ export const BASE_HINTS = ["merge", "Orchestrator", "Paseo", "Jarvis"];
 
 /** Ports the runner carries effects out through. Recorder, transcriber and clock are optional. */
 export type VoiceRunnerPorts = {
-  link: { say(sessionId: string, text: string): Promise<unknown>; interrupt(sessionId: string): Promise<unknown> };
+  link: { say(sessionId: string, text: string): Promise<unknown>; interrupt(sessionId: string): Promise<unknown>;
+    /** Starts a voice session beside `target` and returns its id. */
+    create?(target: VoiceSession): Promise<string>;
+  };
   /** Turns an utterance into a result for the loop. Defaults to sending the text as heard. */
   interpreter?: (text: string) => Promise<InterpretResult>;
   /** The mic: open() when voice turns on, close() when it turns off; start() begins capturing; stop() ends it and returns base64 audio and how long it ran. */
@@ -74,6 +77,15 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       case "interrupt":
         ports.link.interrupt(effect.session.id).catch(fail);
         return;
+      case "create": {
+        const create = ports.link.create;
+        if (!create) return fail(new Error("This Paseo can't start a session from here."));
+        create.call(ports.link, effect.session).then(
+          (id) => dispatch({ type: "pick", session: { id, name: `${effect.session.name} (voice)` } }),
+          fail,
+        );
+        return;
+      }
       case "interpret":
         interpreter(effect.text).then(
           (result) => dispatch({ type: "interpreted", seq: effect.seq, result }),
@@ -268,5 +280,9 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       if (!same(list, snapshot.sessions) || !same(blocked, snapshot.blocked)) dispatch({ type: "sessions", list, blocked });
     },
     pick: (session: VoiceSession) => dispatch({ type: "pick", session }),
+    /** The drawer's "New voice session" button: the same create the "new session" phrase makes, voice on or off. */
+    newSession() {
+      if (snapshot.session) perform({ type: "create", session: snapshot.session });
+    },
   };
 }
