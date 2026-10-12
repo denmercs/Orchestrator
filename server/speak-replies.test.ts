@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
 import { createSpeakReplies } from "./speak-replies";
@@ -83,4 +84,12 @@ test("a missing script rejects and leaves the agent off", async () => {
   await assert.rejects(speak.set("a1", true), /\/nope/);
   assert.deepEqual(speak.agentIds(), []);
   assert.deepEqual(runs, []);
+});
+
+test("server code avoids import.meta, which is undefined in Paseo's CJS plugin bundle", () => {
+  const dir = new URL("./", import.meta.url);
+  const offenders = readdirSync(dir)
+    .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
+    .filter((name) => readFileSync(new URL(name, dir), "utf8").includes("import.meta"));
+  assert.deepEqual(offenders, []);
 });
