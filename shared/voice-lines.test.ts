@@ -35,5 +35,5 @@ test("spokenLine says a file's name, not its path", () => {
 });
 
 test("spokenLine skips commit hashes but keeps numbers and words", () => {
-  assert.equal(spokenLine("Merged at f2a6468616af5d678a0bc578d4240482c8419737 (a446d72), call 5551234567, decade."), "Merged at , call 5551234567, decade.");
+  assert.equal(spokenLine("Merged at f2a6468616af5d678a0bc578d4240482c8419737 (a446d72), call 5551234567, decade."), "Merged at, call 5551234567, decade.");
 });
