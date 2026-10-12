@@ -14,6 +14,8 @@ export type VoiceState = {
   talking: boolean;
   pending: { seq: number; heard: string } | null;
   confirm: { word: string; text: string } | null;
+  /** The target's spoken reply, held while you talk or confirm. */
+  held: string | null;
   queue: Notice[];
   seq: number;
 };
@@ -23,6 +25,7 @@ export type InterpretResult = { type: "send"; text: string } | { type: "confirm"
 
 export type VoiceEvent =
   | { type: "wake" }
+  /** Every speechStart is followed by an utterance, empty when nothing was heard, so `talking` always ends. */
   | { type: "speechStart" }
   | { type: "utterance"; text: string }
   | { type: "interpreted"; seq: number; result: InterpretResult }
@@ -51,7 +54,7 @@ export type VoiceStep = { state: VoiceState; effects: VoiceEffect[] };
 export const CONFIRM_CANCEL = "cancel";
 
 export function initialVoiceState(): VoiceState {
-  return { mode: "asleep", session: null, sessions: [], talking: false, pending: null, confirm: null, queue: [], seq: 0 };
+  return { mode: "asleep", session: null, sessions: [], talking: false, pending: null, confirm: null, held: null, queue: [], seq: 0 };
 }
 
 const NAMES = "jarvis|jervis|javis|travis|jarvus|service";
@@ -87,14 +90,18 @@ function cancelled(state: VoiceState): VoiceStep {
 }
 
 function sleep(state: VoiceState): VoiceStep {
-  return out({ ...state, mode: "asleep", talking: false, pending: null, confirm: null, queue: [] }, { type: "sleep" });
+  return out({ ...state, mode: "asleep", talking: false, pending: null, confirm: null, held: null, queue: [] }, { type: "sleep" });
+}
+
+function matching(sessions: VoiceSession[], spoken: string): VoiceSession[] {
+  const query = norm(spoken);
+  const exact = sessions.filter((s) => norm(s.name) === query);
+  return exact.length ? exact : query ? sessions.filter((s) => norm(s.name).includes(query)) : [];
 }
 
 function switchTo(state: VoiceState, spoken: string): VoiceStep {
   const base = { ...state, pending: null, confirm: null };
-  const query = norm(spoken);
-  const exact = state.sessions.filter((s) => norm(s.name) === query);
-  const matches = exact.length ? exact : query ? state.sessions.filter((s) => norm(s.name).includes(query)) : [];
+  const matches = matching(state.sessions, spoken);
   if (matches.length === 1) return out({ ...base, mode: "listening", session: matches[0] }, { type: "speak", line: `Now on ${matches[0].name}.` });
   if (matches.length > 1) {
     const names = matches.map((s) => s.name);
@@ -106,12 +113,13 @@ function switchTo(state: VoiceState, spoken: string): VoiceStep {
 function onUtterance(state: VoiceState, text: string): VoiceStep {
   const heard = norm(text);
   const cleaned = stripName(heard);
-  const ignore = new RegExp(`^(?:(${NAMES}) )?ignor(?:e|ing)( me)?$`).exec(heard);
+  const ignore = new RegExp(`^(?:(?:hey|ok|okay) )?(?:(${NAMES}) )?ignor(?:e|ing)( me)?$`).exec(heard);
   if (ignore && (ignore[1] || ignore[2])) return sleep(state);
   if (NEVER_MIND.has(cleaned)) return state.confirm ? cancelled(state) : out({ ...state, pending: null });
   if (state.confirm) return cleaned === state.confirm.word ? sentTo(state, state.confirm.text) : out(state);
+  // Without the name, "switch to X" is only a switch when X is a session; otherwise it is a request for the session.
   const toName = /^switch to (.+)$/.exec(cleaned);
-  if (toName) return switchTo(state, toName[1]);
+  if (toName && (cleaned !== heard || matching(state.sessions, toName[1]).length)) return switchTo(state, toName[1]);
   if (cleaned.split(" ").filter(Boolean).length < 2 && !critical(cleaned)) return out(state);
   if (!state.session) return out(state, { type: "speak", line: "Pick a session first." });
   const seq = state.seq + 1;
@@ -151,9 +159,12 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
     case "interpreted":
       return onInterpreted(state, event.seq, event.result);
     case "reply": {
-      if (event.sessionId !== state.session?.id || state.mode === "confirming" || state.talking) return out(state);
+      if (event.sessionId !== state.session?.id) return out(state);
       const line = spokenLine(event.text);
-      return line ? out({ ...state, mode: "speaking" }, { type: "speak", line: `${state.session.name}: ${line}` }) : out(state);
+      if (!line) return out(state);
+      const spoken = `${state.session.name}: ${line}`;
+      if (state.mode === "confirming" || state.talking) return out({ ...state, held: spoken });
+      return out({ ...state, mode: "speaking", held: null }, { type: "speak", line: spoken });
     }
     case "playbackEnded":
       return state.mode === "speaking" ? out({ ...state, mode: "listening" }) : out(state);
@@ -163,30 +174,32 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
       return event.word === state.confirm.word ? sentTo(state, state.confirm.text) : out(state);
     case "pick":
       return out(
-        { ...state, mode: "listening", session: event.session, pending: null, confirm: null },
+        { ...state, mode: "listening", session: event.session, pending: null, confirm: null, held: null },
         ...(state.mode === "speaking" ? [{ type: "stopPlayback" } as const] : []),
       );
     case "notice": {
       const kind = event.kind as NoticeKind;
       if (!NOTICE_ORDER.includes(kind) || (kind === "finished" && event.sessionId === state.session?.id)) return out(state);
-      const name = state.sessions.find((s) => s.id === event.sessionId)?.name ?? event.sessionId;
+      const name = state.sessions.find((s) => s.id === event.sessionId)?.name ?? "A session";
       return out({ ...state, queue: [...state.queue, { kind, sessionId: event.sessionId, name }] });
     }
   }
 }
 
-/** Queued notices go out as one line once nothing else is talking, speaking or being confirmed. */
+/** A held reply, else the queued notices as one line, go out once nothing else is talking, speaking or being confirmed. */
 function flush(r: VoiceStep): VoiceStep {
   const { state, effects } = r;
   const idle = state.mode === "listening" || state.mode === "waiting";
-  if (!idle || state.talking || !state.queue.length || effects.some((e) => e.type === "speak")) return r;
+  if (!idle || state.talking || effects.some((e) => e.type === "speak")) return r;
+  if (state.held) return { state: { ...state, mode: "speaking", held: null }, effects: [...effects, { type: "speak", line: state.held }] };
+  if (!state.queue.length) return r;
   return { state: { ...state, mode: "speaking", queue: [] }, effects: [...effects, { type: "speak", line: mergeNotices(state.queue) }] };
 }
 
 function mergeNotices(queue: Notice[]): string {
   const parts: string[] = [];
   for (const kind of NOTICE_ORDER) {
-    const names = [...new Set(queue.filter((n) => n.kind === kind).map((n) => n.name))];
+    const names = [...new Map(queue.filter((n) => n.kind === kind).map((n) => [n.sessionId, n.name])).values()];
     if (names.length === 1) parts.push(`${names[0]} ${NOTICE_ONE[kind]}`);
     else if (names.length > 1) parts.push(`${NUMBER_WORDS[names.length] ?? names.length} sessions ${NOTICE_MANY[kind]}`);
   }
