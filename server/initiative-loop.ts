@@ -1117,16 +1117,23 @@ export function createInitiativeLoop(
         await reconcile(api, await readConfig(), init, phaseDir, story, true);
         // Still running its step after the turn: the session stopped without its marker.
         const after = readStoryFiles(phaseDir).find((item) => item.id === story.id);
+        const state = after?.meta.worktree ? readText(stateFile(after.meta.worktree)) : "";
         if (
           after?.meta.agent === event.agent.id &&
           after.meta.worktree &&
           SUPERVISED.has(after.meta.status ?? "") &&
           SUPERVISED_STEPS.has(after.meta.step ?? "") &&
-          readMarker(readText(stateFile(after.meta.worktree))).marker === `${after.meta.step}-running`
+          readMarker(state).marker === `${after.meta.step}-running`
         ) {
           // This turn's items are those after the last user message.
           const items = (event.timeline ?? []) as readonly ToolItem[];
           const lastUser = items.map((item) => item.type).lastIndexOf("user_message");
+          // A parent that ticked a cycle since the last turn end is making progress: its retries start
+          // over. One whose turn ended on a subagent call is waiting on it, and that isn't a stall.
+          const ticked = readCycles(state).filter((cycle) => cycle.done).length;
+          if (ticked > (Number(after.meta.ticked_cycles) || 0)) writeFrontmatter(after.path, { ticked_cycles: ticked, retries: null });
+          const lastCall = items.slice(lastUser + 1).filter((item) => item.type === "tool_call").at(-1);
+          const waiting = lastCall?.detail?.type === "sub_agent";
           let failTests: string[] = [];
           try {
             const parsed: unknown = JSON.parse(after.meta.fail_tests || "[]");
@@ -1159,7 +1166,7 @@ export function createInitiativeLoop(
             // Unsent, the session would sit idle with nothing for the tick to act on: stall it instead.
             const sent = await api.agents.ref(event.agent.id).send(nudgePrompt(why)).then(() => true, () => false);
             writeFrontmatter(after.path, sent ? { stuck_nudged: 1 } : { stalled: why });
-          } else {
+          } else if (!waiting) {
             writeFrontmatter(after.path, { stalled: "It ended its turn without writing the step's marker." });
           }
         }

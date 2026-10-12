@@ -202,7 +202,9 @@ If you cannot go on (a missing decision, broken tooling, a dependency that isn't
 const IMPLEMENT_PARENT = `## This step: run the cycles in subagents
 The cycles to run are under \`## Cycles to run\` below the story head, in order, with the plan pasted there.
 1. Work the cycles one at a time, in order, never in parallel. For each, start a subagent and give it the
-   \`## Cycle brief\` below plus that cycle's line. Wait for its fail → pass report.
+   \`## Cycle brief\` below plus that cycle's line. Run it in the foreground (\`run_in_background: false\`) and
+   wait for its fail → pass report. Never end your turn while a subagent is running: the loop reads that as a
+   stall.
 2. When it reports the cycle done, tick its line in \`## Cycles\` (\`- [x]\`) and move on to the next cycle.
 3. If a subagent cannot go on, stop: set \`## Status\` to \`${MARKERS.implementBlocked}\` and put its reason on the
    next line.

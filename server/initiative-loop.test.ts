@@ -850,6 +850,40 @@ const failingRun = {
   detail: { type: "shell", command: ".harness/bin/brief npm test", output: "brief: exit 1\nnot ok 1 - parses a turn\n# tests 5\n# fail 1" },
 };
 
+test("a parent turn that ticked a cycle resets its retries, so the tick nudges it instead of blocking", async () => {
+  const { story, worktree, labels } = fixture("a1");
+  writeFrontmatter(story, { cycles: "subagents", retries: 2, ticked_cycles: 1 });
+  writeFileSync(
+    join(worktree, ".harness", "state.md"),
+    "# S1 — Demo story\n\n## Status\nimplement-running\n\n## Cycles\n- [x] Cycle 1 — A: a\n- [x] Cycle 2 — B: b\n- [ ] Cycle 3 — C: c\n",
+    "utf8",
+  );
+  const { api, sent } = fakePaseo([{ id: "a1", labels: { ...labels, "loop-cycles": "subagents" } }]);
+  const initiative = loop();
+
+  await initiative.onTurnEnded(api, ended("a1", { kind: "completed" }));
+  await initiative.tick();
+
+  assert.deepEqual(sent.map((item) => item.id), ["a1"]);
+  const meta = storyMeta(story);
+  assert.deepEqual([meta.status, meta.retries, meta.ticked_cycles], ["implementing", "1", "2"]);
+});
+
+test("a turn that ended on a subagent call is waiting on it, not stalled", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { retries: 2 });
+  const { api, sent } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  const subagent = { type: "tool_call", status: "running", detail: { type: "sub_agent", description: "Cycle 3" } };
+
+  await initiative.onTurnEnded(api, ended("a1", { kind: "completed" }, [{ type: "user_message" }, readCall, subagent]));
+  await initiative.tick();
+
+  assert.deepEqual(sent, []);
+  const meta = storyMeta(story);
+  assert.deepEqual([meta.status, meta.stalled, meta.retries], ["implementing", undefined, "2"]);
+});
+
 test("an Implement turn end with no edit at stuckTurns sends one stuck nudge, with no retry and no stall", async () => {
   const { story, labels } = fixture("a1");
   writeFrontmatter(story, { idle_turns: 2 });
