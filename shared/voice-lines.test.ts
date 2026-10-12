@@ -27,3 +27,9 @@ test("spokenLine full caps at 1500 characters on a sentence end", () => {
   const line = spokenLine(Array.from({ length: 200 }, (_, i) => `Sentence number ${i}.`).join(" "), true);
   assert.ok(line.length <= 1500 && line.endsWith("."));
 });
+
+test("spokenLine says a file's name, not its path", () => {
+  assert.equal(spokenLine("Edited `server/speak-replies.ts:55` and /Users/me/app/index.ts."), "Edited speak-replies.ts and index.ts.");
+  assert.equal(spokenLine("Opened ~/.paseo/plugins/orchestrator, see ./a/b.md, (src/x.ts)."), "Opened orchestrator, see b.md, (x.ts).");
+  assert.equal(spokenLine("Use yes/no or and/or, see https://github.com/a/b on 10/12/2026."), "Use yes/no or and/or, see https://github.com/a/b on 10/12/2026.");
+});

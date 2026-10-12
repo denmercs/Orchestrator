@@ -82,11 +82,23 @@ function plainText(text: string): string {
   return text
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/`/g, "")
+    .replace(/[^\s()]+/g, fileNameOnly)
     .replace(/(^|\s)#+\s+/g, "$1")
     .replace(/\*+/g, "")
     .replace(/(^|[\s(])_+([^_]+?)_+(?=$|[\s).,;:!?])/g, "$1$2")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** A file path as said: just the file name ("src/app/a.ts:12" → "a.ts"). URLs, dates and "and/or" are left alone. */
+function fileNameOnly(token: string): string {
+  const [, core, tail] = /^(.*?)([.,;:!?]*)$/.exec(token) ?? [, token, ""];
+  if (!core.includes("/") || core.includes("://") || /^[\d/]+$/.test(core)) return token;
+  const parts = core.split("/").filter(Boolean);
+  const last = parts[parts.length - 1]?.replace(/:\d+(?::\d+)?$/, "");
+  const anchored = /^(?:~|\.{1,2})?\//.test(core) || /^\.{1,2}\//.test(core);
+  if (!last || !(anchored || parts.length > 2 || /\.\w+$/.test(last))) return token;
+  return `${last}${tail}`;
 }
 
 function cap(line: string, limit: number): string {
