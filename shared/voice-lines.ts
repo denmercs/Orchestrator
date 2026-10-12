@@ -10,12 +10,17 @@ export const WAKE_LINE = "I'm listening.";
 export const SLEEP_LINE = "Going quiet. Say Jarvis to wake me.";
 export const ASLEEP_NOTE = "Jarvis is asleep. Say Jarvis to wake it.";
 export const NOTHING_SENT = "Nothing sent.";
+export const NOTHING_TO_CONFIRM = "Nothing to confirm.";
+export const STOPPED_NOTE = "Stopped before sending.";
 
 export const sentLine = (name: string) => `Sent to ${name}.`;
 export const switchedLine = (name: string) => `Now on ${name}.`;
 export const noSessionLine = (spoken: string) => `No session called ${spoken}.`;
 export const sendFailedLine = (name: string, error: string) => `Couldn't send to ${name}: ${error}`;
 export const confirmLine = (text: string, name: string) => `Send "${text}" to ${name}? Say one to send, or two to cancel.`;
+
+/** A Jarvis session or the Voice helper: sending to it would talk to itself. */
+export const notTargetLine = (name: string) => `${name} is a voice session, so it can't be the target. Pick another session.`;
 
 export function whichLine(names: string[]): string {
   return `Which one: ${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}?`;

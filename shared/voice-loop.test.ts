@@ -420,3 +420,33 @@ test("asleep, words that start with the name wake it; the rest is then heard as 
   assert.deepEqual(say(asleep, "Jarvis, ignore me").state.mode, "asleep");
   assert.deepEqual(say(asleep, "run the tests").effects, []);
 });
+
+test("Voice's own sessions are never a target: pick, switch by name, a stale target and a send are refused", () => {
+  const jarvis: VoiceSession = { id: "j1", name: "Jarvis phone" };
+  const line = "Jarvis phone is a voice session, so it can't be the target. Pick another session.";
+  const state = awake({ blocked: [jarvis] });
+  const picked = step(state, { type: "pick", session: jarvis });
+  assert.deepEqual(picked.effects, [{ type: "speak", line }]);
+  assert.equal(picked.state.session?.id, "s1");
+  assert.deepEqual(step({ ...state, mode: "asleep" }, { type: "pick", session: jarvis }).state.session?.id, "s1");
+  assert.deepEqual(say(state, "Jarvis, switch to jarvis phone").effects, [{ type: "speak", line }]);
+  const dropped = step(awake({ session: jarvis }), { type: "sessions", list: [api, docs], blocked: [jarvis] });
+  assert.equal(dropped.state.session, null);
+  const sneaked = heardAs({ ...awake({ session: jarvis }), blocked: [jarvis] }, "run the tests", { type: "send", text: "run the tests" });
+  assert.deepEqual(sneaked.effects, [{ type: "speak", line }]);
+  assert.equal(sneaked.state.session, null);
+});
+
+test("'one' with nothing to confirm says so", () => {
+  assert.deepEqual(say(awake(), "one").effects, [{ type: "speak", line: "Nothing to confirm." }]);
+});
+
+test("asleep, only the name itself wakes it, not a mishearing", () => {
+  const asleep = { ...awake(), mode: "asleep" as const };
+  for (const heard of ["Travis, wake up", "service the car", "Jervis", "javis run the tests"]) {
+    assert.deepEqual(say(asleep, heard).effects, [], heard);
+  }
+  assert.equal(say(asleep, "OK Jarvis").state.mode, "listening");
+  // Awake, the mishearings still count as the name.
+  assert.deepEqual(say(awake(), "Travis, ignore me").effects, [{ type: "sleep" }]);
+});

@@ -11,7 +11,7 @@ const MODE_TITLES: Record<Exclude<VoiceMode, "asleep">, string> = {
 };
 
 // Shared with the Jarvis router, which names sessions the same way.
-export { sessionName, voiceSessions } from "../shared/voice-loop";
+export { canTarget, sessionName, splitSessions, voiceSessions } from "../shared/voice-loop";
 
 export function voicePill(
   agent: { id: string },

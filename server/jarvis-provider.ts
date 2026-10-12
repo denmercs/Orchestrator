@@ -11,19 +11,26 @@ import type {
   ProviderPrompt,
   ProviderRegistration,
 } from "@getpaseo/plugin/server/provider";
+import { ROUTER_PROVIDER_ID } from "../shared/voice-loop";
 import type { RouteResult } from "./jarvis-router";
 
-export const JARVIS_PROVIDER_ID = "jarvis";
+export { ROUTER_PROVIDER_ID as JARVIS_PROVIDER_ID } from "../shared/voice-loop";
 export const JARVIS_MODEL = "router";
 // session.persistence is required: voice on/off reopens the session, and Paseo refuses to without a handle.
 const CAPABILITIES = ["prompt.message", "session.persistence"] as const;
 const SPEAK_TIMEOUT_MS = 90_000;
 
 type Fetch = typeof fetch;
-type Session = { routerId: string; mcpServers: Readonly<Record<string, ProviderMcpServerConfig>>; turnId: string | null };
+type Session = {
+  routerId: string;
+  mcpServers: Readonly<Record<string, ProviderMcpServerConfig>>;
+  turnId: string | null;
+  /** Aborts the open turn's steer if it hasn't gone out yet. */
+  abort: AbortController | null;
+};
 
 export type JarvisProviderDeps = {
-  route(routerId: string, text: string): Promise<RouteResult>;
+  route(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult>;
   fetch?: Fetch;
 };
 
@@ -92,17 +99,19 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
   const live = (sessionId: string, turnId: string) => sessions.get(sessionId)?.turnId === turnId;
   const end = (sessionId: string, turnId: string, state: "completed" | "failed", error?: string) => {
     if (!live(sessionId, turnId)) return;
-    (sessions.get(sessionId) as Session).turnId = null;
+    const session = sessions.get(sessionId) as Session;
+    session.turnId = null;
+    session.abort = null;
     emit({ type: "session.turn", sessionId, turnId, state, ...(error ? { error: { message: error } } : {}) });
   };
 
-  async function runTurn(sessionId: string, prompt: ProviderPrompt, turnId: string) {
+  async function runTurn(sessionId: string, prompt: ProviderPrompt, turnId: string, signal: AbortSignal) {
     const session = sessions.get(sessionId);
     if (!session) return;
-    emit({ type: "session.turn", sessionId, turnId, state: "started" });
+    if (live(sessionId, turnId)) emit({ type: "session.turn", sessionId, turnId, state: "started" });
     const text = promptText(prompt);
     const spoken = spokenText(text);
-    const result = await deps.route(session.routerId, spoken ?? text);
+    const result = await deps.route(session.routerId, spoken ?? text, signal);
     const reply = result.spoken.join(" ") || result.note || "";
     if (reply && live(sessionId, turnId)) {
       emit({ type: "timeline.item", sessionId, item: { id: `${turnId}-reply`, type: "assistant_message", text: reply } });
@@ -130,7 +139,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
         return;
       case "session.open": {
         const routerId = routerIdOf(input.persistence) ?? randomUUID();
-        sessions.set(input.sessionId, { routerId, mcpServers: input.config.mcpServers, turnId: null });
+        sessions.set(input.sessionId, { routerId, mcpServers: input.config.mcpServers, turnId: null, abort: null });
         later({
           type: "session.opened",
           requestId: input.requestId,
@@ -155,11 +164,17 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
           });
           return;
         }
+        // A new prompt while a turn is open (you spoke again mid-speak) completes the earlier turn first, so
+        // none is left running; its steer still goes out.
+        const earlier = session.turnId;
+        if (earlier) later({ type: "session.turn", sessionId: input.sessionId, turnId: earlier, state: "completed" });
         const turnId = randomUUID();
+        const abort = new AbortController();
         session.turnId = turnId;
+        session.abort = abort;
         later({ type: "session.prompt_result", sessionId: input.sessionId, clientMessageId: input.prompt.clientMessageId, result: { type: "turn", turnId } });
         setImmediate(() => {
-          runTurn(input.sessionId, input.prompt, turnId).catch((error) =>
+          runTurn(input.sessionId, input.prompt, turnId, abort.signal).catch((error) =>
             end(input.sessionId, turnId, "failed", error instanceof Error ? error.message : String(error)),
           );
         });
@@ -169,6 +184,9 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
         const session = sessions.get(input.sessionId);
         const turnId = session?.turnId;
         if (session && turnId) {
+          // Stops the steer if it hasn't gone out; one already sent stays sent.
+          session.abort?.abort();
+          session.abort = null;
           session.turnId = null;
           later({ type: "session.turn", sessionId: input.sessionId, turnId, state: "canceled" });
         }
@@ -204,7 +222,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
 
 export function createJarvisProvider(deps: JarvisProviderDeps): ProviderRegistration {
   return {
-    id: JARVIS_PROVIDER_ID,
+    id: ROUTER_PROVIDER_ID,
     label: "Jarvis",
     description: "Talk to your sessions hands-free with Paseo voice mode.",
     async status() {

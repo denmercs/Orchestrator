@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { VOICE_HELPER_SYSTEM_PROMPT, helperPrompt, parseHelperReply } from "../shared/voice-interpreter";
-import type { InterpretResult, VoiceSession } from "../shared/voice-loop";
+import { VOICE_HELPER_KIND, type InterpretResult, type VoiceSession } from "../shared/voice-loop";
 import { withMcpScope } from "./mcp-scope";
 
 // The Voice helper's agent lifecycle (see CONTEXT.md, "Voice helper"): one Haiku agent per voice-on
@@ -10,7 +10,8 @@ import { withMcpScope } from "./mcp-scope";
 // to Paseo only through the ports, so tests use fakes.
 
 export const VOICE_HELPER_MODEL = "claude/claude-haiku-4-5";
-export const VOICE_HELPER_KIND = "voice-helper";
+// Shared, so the Voice loop can keep the helper out of its targets.
+export { VOICE_HELPER_KIND } from "../shared/voice-loop";
 
 // Claude provider options are strict (allowedTools, disallowedTools, extraArgs, sandbox, settings...);
 // none is a "no tools" switch, but extraArgs passes `--tools ""` to Claude Code, which disables every

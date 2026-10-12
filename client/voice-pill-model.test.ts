@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sessionName, voicePill, voiceSessions } from "./voice-pill-model";
+import { canTarget, sessionName, splitSessions, voicePill, voiceSessions } from "./voice-pill-model";
 
 const target = { id: "abcdef123456", title: "Build" };
 const other = { id: "zzzzzzzz9999", title: "Docs" };
@@ -33,5 +33,19 @@ test("voiceSessions lists id and name", () => {
   assert.deepEqual(voiceSessions([target, { id: "abcdef999" }]), [
     { id: "abcdef123456", name: "Build" },
     { id: "abcdef999", name: "abcdef99" },
+  ]);
+});
+
+test("Jarvis sessions and the Voice helper are not targets: left out of the list and split off as blocked", () => {
+  const agents = [
+    { id: "a1", title: "Build", provider: "claude" },
+    { id: "j1", title: "Jarvis", provider: "jarvis" },
+    { id: "h1", title: "Voice helper", provider: "claude", labels: { kind: "voice-helper" } },
+  ];
+  assert.deepEqual(agents.map(canTarget), [true, false, false]);
+  assert.deepEqual(voiceSessions(agents), [{ id: "a1", name: "Build" }]);
+  assert.deepEqual(splitSessions(agents).blocked, [
+    { id: "j1", name: "Jarvis" },
+    { id: "h1", name: "Voice helper" },
   ]);
 });

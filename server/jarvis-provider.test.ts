@@ -177,3 +177,59 @@ test("the provider registers as Jarvis with one model", async () => {
   assert.ok(catalog.type === "catalog");
   assert.deepEqual(catalog.catalog.models.map((m) => m.id), ["router"]);
 });
+
+test("a new prompt while a turn is open completes the earlier turn first", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const connection = createJarvisConnection({
+    route: async (_id, text) => {
+      if (text === "first") await gate;
+      return { spoken: [`heard ${text}`], note: null };
+    },
+    fetch: fakeFetch({ body: OK_JSON }).impl,
+  });
+  const events: ProviderEvent[] = [];
+  connection.onEvent((e) => events.push(e));
+  await connection.send(open());
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt("first") });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "started");
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: { ...prompt("second"), clientMessageId: "m2" } });
+  const turns = () => events.filter((e) => e.type === "session.prompt_result").map((e) => (e.type === "session.prompt_result" && e.result.type === "turn" ? e.result.turnId : ""));
+  await settle(events, () => events.filter((e) => e.type === "session.turn" && e.state === "completed").length === 2);
+  release();
+  await settle(events, () => false);
+  const [first, second] = turns();
+  const states = (id: string) => events.filter((e) => e.type === "session.turn" && e.turnId === id).map((e) => (e.type === "session.turn" ? e.state : ""));
+  assert.deepEqual(states(first), ["started", "completed"]);
+  assert.deepEqual(states(second), ["started", "completed"]);
+  // The earlier turn, already closed, adds nothing to the chat when its route finishes.
+  const items = events.filter((e) => e.type === "timeline.item").map((e) => (e.type === "timeline.item" && e.item.type === "assistant_message" ? e.item.text : ""));
+  assert.deepEqual(items, ["heard second"]);
+});
+
+test("interrupt aborts the open turn's route and cancels the turn", async () => {
+  let signal: AbortSignal | undefined;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const connection = createJarvisConnection({
+    route: async (_id, _text, s) => {
+      signal = s;
+      await gate;
+      return { spoken: s?.aborted ? [] : ["Sent to docs."], note: s?.aborted ? "Stopped before sending." : null };
+    },
+    fetch: fakeFetch({ body: OK_JSON }).impl,
+  });
+  const events: ProviderEvent[] = [];
+  connection.onEvent((e) => events.push(e));
+  await connection.send(open());
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "started");
+  await connection.send({ type: "session.interrupt", requestId: "q9", sessionId: "p1" });
+  await settle(events, (e) => e.type === "request.completed");
+  assert.equal(signal?.aborted, true);
+  release();
+  await settle(events, () => false);
+  const states = events.filter((e) => e.type === "session.turn").map((e) => (e.type === "session.turn" ? e.state : ""));
+  assert.deepEqual(states, ["started", "canceled"]);
+  assert.equal(events.filter((e) => e.type === "timeline.item").length, 0);
+});

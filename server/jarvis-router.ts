@@ -3,16 +3,13 @@
 // (shared/voice-lines.ts). Each utterance is stepped through the loop and its effects become steers to the
 // target plus lines to say back. The state is kept here, keyed by the router id in the session's persistence
 // handle, because Paseo reopens the provider session whenever voice mode turns on or off.
-import { CONFIRM_CANCEL, initialVoiceState, step, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
+import { CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
 import { namelessPassThrough, type Interpreter } from "../shared/voice-interpreter";
-import { ASLEEP_NOTE, NOTHING_SENT, sendFailedLine, SLEEP_LINE } from "../shared/voice-lines";
-
-/** A confirm left unanswered this long is dropped by the next utterance (voice round trips are slow). */
-export const CONFIRM_EXPIRY_MS = 60_000;
+import { ASLEEP_NOTE, NOTHING_SENT, notTargetLine, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
 
 export type JarvisRouterPorts = {
-  /** Live sessions the router may send to, Jarvis sessions left out. */
-  sessions(): Promise<VoiceSession[]>;
+  /** Live sessions: `list` may be targets, `blocked` are Voice's own (Jarvis, the Voice helper). See `splitSessions`. */
+  sessions(): Promise<{ list: VoiceSession[]; blocked: VoiceSession[] }>;
   /** Sends text to a session as a steer. */
   send(sessionId: string, text: string): Promise<unknown>;
   /**
@@ -36,6 +33,12 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
   const entries = new Map<string, Entry>();
   const chains = new Map<string, Promise<unknown>>();
   let drawerTarget: VoiceSession | null = null;
+  let lastBlocked: VoiceSession[] = [];
+  const refresh = async () => {
+    const split = await ports.sessions().catch(() => null);
+    if (split) lastBlocked = split.blocked;
+    return split;
+  };
 
   // A new router starts awake, on the drawer's target if there is one.
   function entryFor(routerId: string): Entry {
@@ -47,12 +50,13 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     return entry;
   }
 
-  async function routeNow(routerId: string, text: string): Promise<RouteResult> {
+  async function routeNow(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult> {
     const entry = entryFor(routerId);
     let state = entry.state;
-    const list = await ports.sessions().catch(() => null);
-    if (list) state = step(state, { type: "sessions", list }).state;
-    if (state.mode === "confirming" && now() - entry.confirmAt > CONFIRM_EXPIRY_MS) {
+    const split = await refresh();
+    if (split) state = step(state, { type: "sessions", ...split }).state;
+    // The same timeout as the drawer's, checked when the next words arrive (there is no timer on the phone).
+    if (state.mode === "confirming" && now() - entry.confirmAt > CONFIRM_TIMEOUT_MS) {
       state = step(state, { type: "confirm", word: CONFIRM_CANCEL }).state;
     }
     const wasConfirming = state.mode === "confirming";
@@ -72,6 +76,8 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
             break;
           }
           case "send":
+            // Interrupted before the steer went out: nothing is sent and the state is left as it was.
+            if (signal?.aborted) return { spoken: [], note: STOPPED_NOTE };
             try {
               await ports.send(effect.session.id, effect.text);
             } catch (error) {
@@ -104,15 +110,21 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
 
   return {
     /** One utterance (or typed message) at a time per router, so a confirm can't race its answer. */
-    route(routerId: string, text: string): Promise<RouteResult> {
-      const run = (chains.get(routerId) ?? Promise.resolve()).then(() => routeNow(routerId, text));
+    route(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult> {
+      const run = (chains.get(routerId) ?? Promise.resolve()).then(() => routeNow(routerId, text, signal));
       chains.set(routerId, run.catch(() => undefined));
       return run;
     },
-    /** The Voice drawer picked a target: every router follows it. */
-    setTarget(session: VoiceSession) {
+    /** The Voice drawer picked a target: every router follows it, unless it is one of Voice's own sessions. */
+    async setTarget(session: VoiceSession): Promise<{ ok: boolean; line: string | null }> {
+      const split = await refresh();
+      if (lastBlocked.some((s) => s.id === session.id)) return { ok: false, line: notTargetLine(session.name) };
       drawerTarget = session;
-      for (const entry of entries.values()) entry.state = step(entry.state, { type: "pick", session }).state;
+      for (const entry of entries.values()) {
+        const state = split ? step(entry.state, { type: "sessions", ...split }).state : entry.state;
+        entry.state = step(state, { type: "pick", session }).state;
+      }
+      return { ok: true, line: null };
     },
     /** A router's loop state, for tests. */
     stateOf: (routerId: string): VoiceState | null => entries.get(routerId)?.state ?? null,

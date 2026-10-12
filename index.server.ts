@@ -44,10 +44,9 @@ import { join, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./server/voice-helper";
 import { transcribeVoice, voiceHelperStart, voiceHelperStop, voiceInterpret, voiceTarget } from "./shared/voice-rpc";
-import { createJarvisProvider, JARVIS_PROVIDER_ID } from "./server/jarvis-provider";
+import { createJarvisProvider } from "./server/jarvis-provider";
 import { createJarvisRouter } from "./server/jarvis-router";
-import { VOICE_HELPER_KIND } from "./server/voice-helper";
-import { voiceSessions } from "./shared/voice-loop";
+import { splitSessions } from "./shared/voice-loop";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -535,19 +534,16 @@ export default function contribute(
   const jarvis = createJarvisRouter({
     async sessions() {
       const listed = await jarvisPaseo().agents.list({ filter: { includeArchived: false }, page: { limit: 200 } });
-      return voiceSessions(
-        listed.entries
-          .map((entry) => entry.agent)
-          .filter((agent) => agent.status !== "closed" && !agent.archivedAt)
-          .filter((agent) => agent.provider !== JARVIS_PROVIDER_ID && agent.labels?.kind !== VOICE_HELPER_KIND),
+      return splitSessions(
+        listed.entries.map((entry) => entry.agent).filter((agent) => agent.status !== "closed" && !agent.archivedAt),
       );
     },
     send: (sessionId, text) => jarvisPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
   });
-  server.handle(voiceTarget, (session, { paseo }) => {
+  // A Jarvis session or the Voice helper is refused (ok: false), or Jarvis would steer itself.
+  server.handle(voiceTarget, async (session, { paseo }) => {
     helperPaseo = paseo;
-    jarvis.setTarget(session);
-    return { ok: true };
+    return { ok: (await jarvis.setTarget(session)).ok };
   });
   // Paseo 0.11.0+ only, like the usage source.
   server.registerProvider?.(createJarvisProvider({ route: jarvis.route }));
