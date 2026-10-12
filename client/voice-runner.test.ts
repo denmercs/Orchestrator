@@ -305,3 +305,39 @@ test("on() opens the recorder; a failure lands in error", async () => {
   assert.match(bad.runner.getState().error ?? "", /no mic/);
   assert.equal(bad.runner.getState().mode, "listening");
 });
+
+test("a rejected interpreter drops the utterance and records the error", async () => {
+  const { runner } = setup({ interpreter: async () => Promise.reject(new Error("helper down")) });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "please run the tests" });
+  await flush();
+  assert.equal(runner.getState().pending, null);
+  assert.equal(runner.getState().transcripts.at(-1)?.outcome, "dropped");
+  assert.match(runner.getState().error ?? "", /helper down/);
+});
+
+test("a confirm from the button or the timeout updates the transcript that asked", async () => {
+  const sent = talkSetup();
+  sent.runner.dispatch({ type: "utterance", text: "merge it" });
+  await flush();
+  assert.equal(sent.runner.getState().transcripts.at(-1)?.outcome, "asked to confirm");
+  sent.runner.confirm("merge");
+  assert.equal(sent.runner.getState().transcripts.at(-1)?.outcome, "sent to Alpha");
+  const timedOut = talkSetup();
+  timedOut.runner.dispatch({ type: "utterance", text: "merge it" });
+  await flush();
+  timedOut.timers.at(-1)?.fn();
+  assert.equal(timedOut.runner.getState().transcripts.at(-1)?.outcome, "cancelled");
+});
+
+test("setSessions with the same list does not notify subscribers", () => {
+  const { runner } = setup();
+  runner.setSessions([alpha]);
+  let calls = 0;
+  runner.subscribe(() => calls++);
+  runner.setSessions([{ ...alpha }]);
+  assert.equal(calls, 0);
+  runner.setSessions([{ ...alpha, name: "Renamed" }]);
+  assert.equal(calls, 1);
+});

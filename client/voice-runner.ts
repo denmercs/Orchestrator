@@ -36,6 +36,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   let nextEntry = 0;
   let confirmTimer: unknown = null;
   let lastSent: number | null = null;
+  let confirmEntry: number | null = null; // the transcript that asked to confirm
   const listeners = new Set<() => void>();
   let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], transcripts: [], error: null };
 
@@ -74,7 +75,10 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       case "interpret":
         interpreter(effect.text).then(
           (result) => dispatch({ type: "interpreted", seq: effect.seq, result }),
-          fail,
+          (err) => {
+            fail(err);
+            dispatch({ type: "interpreted", seq: effect.seq, result: { type: "drop" } });
+          },
         );
         return;
       case "receipt":
@@ -114,8 +118,13 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       const id = waiting.get(event.seq) as number;
       waiting.delete(event.seq);
       setOutcome(id, outcomeOf(effects) ?? "dropped");
+      if (effects.some((e) => e.type === "askConfirm")) confirmEntry = id;
     }
-    if (effects.some((e) => e.type === "send")) lastSent = entries.at(-1)?.id ?? null;
+    // A button or the timeout settles a confirm without a new transcript: mark the one that asked.
+    const settled = event.type === "confirm" && state.mode !== "confirming" ? confirmEntry : null;
+    if (settled !== null) setOutcome(settled, outcomeOf(effects) ?? "cancelled");
+    if (state.mode !== "confirming") confirmEntry = null;
+    if (effects.some((e) => e.type === "send")) lastSent = settled ?? entries.at(-1)?.id ?? null;
     effects.forEach(perform);
   }
 
@@ -185,7 +194,11 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     },
     confirm: (word: string) => dispatch({ type: "confirm", word }),
     interrupt: () => dispatch({ type: "interrupt" }),
-    setSessions: (list: VoiceSession[]) => dispatch({ type: "sessions", list }),
+    setSessions(list: VoiceSession[]) {
+      // The pills resync often; only a real change should reach the loop and wake subscribers.
+      const same = list.length === snapshot.sessions.length && list.every((s, i) => s.id === snapshot.sessions[i]?.id && s.name === snapshot.sessions[i]?.name);
+      if (!same) dispatch({ type: "sessions", list });
+    },
     pick: (session: VoiceSession) => dispatch({ type: "pick", session }),
   };
 }
