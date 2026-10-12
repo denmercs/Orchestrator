@@ -60,6 +60,9 @@ export function initialVoiceState(): VoiceState {
 const NAMES = "jarvis|jervis|javis|travis|jarvus|service";
 const NEVER_MIND = new Set(["never mind", "nevermind", "cancel that", "forget it", "belay that"]);
 const CRITICAL = /\b(merge|interrupt|stop|delete)\b/;
+// Confirm choices: "one" sends, "two" cancels (the word itself still sends; "to"/"too" are how "two" is often heard).
+const CONFIRM_YES = new Set(["one", "1"]);
+const CONFIRM_NO = new Set(["two", "2", "to", "too"]);
 const NOTICE_ORDER: NoticeKind[] = ["finished", "needsYou", "error", "costCap"];
 const NOTICE_ONE: Record<NoticeKind, string> = { finished: "finished", needsYou: "needs you", error: "hit an error", costCap: "hit the cost cap" };
 const NOTICE_MANY: Record<NoticeKind, string> = { finished: "finished", needsYou: "need you", error: "hit an error", costCap: "hit the cost cap" };
@@ -82,7 +85,7 @@ function askConfirm(state: VoiceState, text: string, word: string): VoiceStep {
   const session = state.session;
   if (!session) return out(state);
   const next = { ...state, mode: "confirming" as const, pending: null, confirm: { word, text } };
-  return out(next, { type: "askConfirm", word, line: `Send "${text}" to ${session.name}? Say ${word} to confirm.` });
+  return out(next, { type: "askConfirm", word, line: `Send "${text}" to ${session.name}? Say one to send, or two to cancel.` });
 }
 
 function cancelled(state: VoiceState): VoiceStep {
@@ -116,7 +119,10 @@ function onUtterance(state: VoiceState, text: string): VoiceStep {
   const ignore = new RegExp(`^(?:(?:hey|ok|okay) )?(?:(${NAMES}) )?ignor(?:e|ing)( me)?$`).exec(heard);
   if (ignore && (ignore[1] || ignore[2])) return sleep(state);
   if (NEVER_MIND.has(cleaned)) return state.confirm ? cancelled(state) : out({ ...state, pending: null });
-  if (state.confirm) return cleaned === state.confirm.word ? sentTo(state, state.confirm.text) : out(state);
+  if (state.confirm) {
+    if (CONFIRM_NO.has(cleaned)) return cancelled(state);
+    return CONFIRM_YES.has(cleaned) || cleaned === state.confirm.word ? sentTo(state, state.confirm.text) : out(state);
+  }
   // Without the name, "switch to X" is only a switch when X is a session; otherwise it is a request for the session.
   const toName = /^switch to (.+)$/.exec(cleaned);
   if (toName && (cleaned !== heard || matching(state.sessions, toName[1]).length)) return switchTo(state, toName[1]);

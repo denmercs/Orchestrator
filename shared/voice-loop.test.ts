@@ -110,7 +110,7 @@ test("a critical word asks for confirmation naming the session and the word, and
     assert.deepEqual(types(r.effects), ["askConfirm"], heard);
     assert.equal(r.state.mode, "confirming");
     const ask = r.effects[0];
-    assert.ok(ask.type === "askConfirm" && ask.word === word && ask.line.includes("api-refactor") && ask.line.includes(word), heard);
+    assert.ok(ask.type === "askConfirm" && ask.word === word && ask.line.includes("api-refactor") && ask.line.includes("Say one to send, or two to cancel."), heard);
   }
 });
 
@@ -129,6 +129,16 @@ test("the exact word, spoken or confirm(word), sends with a receipt; yes and oth
   assert.deepEqual(step(asked, { type: "confirm", word: "merge" }).effects, expected);
 });
 
+test("'one' sends and 'two' cancels a confirmation", () => {
+  const asked = heardAs(awake(), "merge it", { type: "send", text: "Merge the branch" }).state;
+  for (const yes of ["one", "Jarvis, one.", "1"]) assert.deepEqual(types(say(asked, yes).effects), ["send", "receipt"], yes);
+  for (const no of ["two", "Two.", "to", "2"]) {
+    const r = say(asked, no);
+    assert.deepEqual(r.effects, [{ type: "speak", line: "Cancelled." }], no);
+    assert.equal(r.state.mode, "listening");
+  }
+});
+
 test("'never mind' and confirm(cancel) cancel a confirmation", () => {
   const asked = heardAs(awake(), "merge it", { type: "send", text: "Merge the branch" }).state;
   for (const r of [say(asked, "never mind"), step(asked, { type: "confirm", word: "cancel" })]) {
@@ -140,7 +150,7 @@ test("'never mind' and confirm(cancel) cancel a confirmation", () => {
 
 test("interpreted confirm(text) asks even without a critical word", () => {
   const r = heardAs(awake(), "rename the module", { type: "confirm", text: "Rename the module" });
-  assert.deepEqual(r.effects, [{ type: "askConfirm", word: "send", line: 'Send "Rename the module" to api-refactor? Say send to confirm.' }]);
+  assert.deepEqual(r.effects, [{ type: "askConfirm", word: "send", line: 'Send "Rename the module" to api-refactor? Say one to send, or two to cancel.' }]);
   assert.equal(r.state.mode, "confirming");
 });
 
