@@ -22,7 +22,9 @@ export const switchedLine = (name: string) => `Now on ${name}.`;
 export const noSessionLine = (spoken: string, names: string[] = [], total = names.length) =>
   names.length ? `No session called ${spoken}. ${listLine(names, total)}` : `No session called ${spoken}.`;
 export const sendFailedLine = (name: string, error: string) => `Couldn't send to ${name}: ${error}`;
-export const confirmLine = (text: string, name: string) => `Send "${text}" to ${name}? Say one to send, or two to cancel.`;
+/** How to answer a confirm; said again when the answer was anything else. */
+export const CONFIRM_AGAIN = "Say one to send, or two to cancel.";
+export const confirmLine = (text: string, name: string) => `Send "${text}" to ${name}? ${CONFIRM_AGAIN}`;
 
 /** A Jarvis session or the Voice helper: sending to it would talk to itself. */
 export const notTargetLine = (name: string) => `${name} is a voice session, so it can't be the target. Pick another session.`;

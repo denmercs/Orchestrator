@@ -4,8 +4,6 @@
 
 const CARDINALS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"];
 const ORDINALS = ["", "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
-/** How a spoken number is often transcribed. Only for a bare numbered answer, never inside a name. */
-const HEARD_AS: Record<string, number> = { to: 2, too: 2, for: 4, won: 1 };
 const FILLER = new Set(["the", "a", "an", "session", "please"]);
 const SHORT_WORDS = 6;
 
@@ -85,7 +83,10 @@ const LEAD_VERB = new Set(["pick", "use", "open", "choose", "select", "say"]);
 const LEAD_TO = new Set(["switch", "go", "talk", "change", "move"]);
 const LEAD_WORD = new Set(["the", "number", "option", "choice"]);
 
-/** The number in a bare numbered answer: "two", "2", "number two", "the second one", "switch to two". Else null. */
+/**
+ * The number in a bare answer to a numbered list: "two", "2", "number two", "the second one", "switch to two".
+ * Else null. Sound-alikes ("to", "for", "won") don't count: a lone word of noise must not pick a session.
+ */
 export function choiceNumber(text: string): number | null {
   let words = text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
   if (LEAD_TO.has(words[0]) && words[1] === "to") words = words.slice(2);
@@ -99,6 +100,5 @@ export function choiceNumber(text: string): number | null {
   const cardinal = CARDINALS.indexOf(word);
   if (cardinal > 0) return cardinal;
   const ordinal = ORDINALS.indexOf(word);
-  if (ordinal > 0) return ordinal;
-  return HEARD_AS[word] ?? null;
+  return ordinal > 0 ? ordinal : null;
 }

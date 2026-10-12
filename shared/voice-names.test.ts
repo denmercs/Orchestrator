@@ -46,10 +46,10 @@ test("an exact name is the whole full or short name, word for word", () => {
   assert.deepEqual(ids(exactSessions(all, "Let's do this for.")), []);
 });
 
-test("numbered answers: words, digits, ordinals and the way 'two' is often heard", () => {
+test("numbered answers: words, digits and ordinals, never a sound-alike", () => {
   const cases: [string, number | null][] = [
     ["one", 1], ["1", 1], ["number one", 1], ["the first one", 1], ["first", 1], ["1st", 1],
-    ["two", 2], ["to", 2], ["too", 2], ["number 2", 2], ["switch to two", 2], ["pick three", 3], ["the third", 3], ["option four", 4], ["six please", 6],
+    ["two", 2], ["number 2", 2], ["to", null], ["too", null], ["for", null], ["won", null], ["switch to two", 2], ["pick three", 3], ["the third", 3], ["option four", 4], ["six please", 6],
     ["Phase One architecture", null], ["check", null], ["switch to check", null], ["zero", null], ["", null],
   ];
   for (const [text, n] of cases) assert.equal(choiceNumber(text), n, text);

@@ -146,10 +146,12 @@ test("a critical word asks for confirmation naming the session and the word, and
   }
 });
 
-test("the exact word, spoken or confirm(word), sends with a receipt; yes and other speech do nothing", () => {
+test("the exact word, spoken or confirm(word), sends with a receipt; yes and other speech ask again", () => {
   const asked = heardAs(awake(), "merge it", { type: "send", text: "Merge the branch" }).state;
-  assert.deepEqual(say(asked, "yes").effects, []);
-  assert.deepEqual(say(asked, "fix the tests").effects, []);
+  const again = [{ type: "speak", line: "Say one to send, or two to cancel." }];
+  assert.deepEqual(say(asked, "yes").effects, again);
+  assert.deepEqual(say(asked, "fix the tests").effects, again);
+  assert.equal(say(asked, "yes").state.confirm?.word, "merge", "still waiting");
   assert.deepEqual(step(asked, { type: "confirm", word: "delete" }).effects, []);
   const expected = [
     { type: "send", session: api, text: "Merge the branch", behavior: "steer" },
@@ -513,14 +515,13 @@ test("'list sessions' reads up to six short names, numbered; a bare number then 
     assert.equal(r.state.choices?.length, 6);
   }
   const listed = say(phone(), "list sessions").state;
-  for (const [heard, session] of [["two", check], ["2", check], ["number two", check], ["switch to two", check], ["the first one", phase], ["one", phase], ["third", s4], ["to", check]] as const) {
+  for (const [heard, session] of [["two", check], ["2", check], ["number two", check], ["switch to two", check], ["the first one", phase], ["one", phase], ["third", s4]] as const) {
     const r = say(listed, heard);
     assert.equal(r.state.session, session, heard);
     assert.equal(r.state.choices, null, heard);
   }
   assert.deepEqual(say(listed, "nine").effects, [{ type: "speak", line: "There's no number nine. Say a number from one to five." }]);
   assert.equal(say(listed, "nine").state.choices?.length, 5, "a wrong number keeps the list");
-  assert.equal(say(listed, "uh").state.choices?.length, 5, "noise keeps the list");
   assert.equal(say(listed, "Which to ask for").state.choices?.length, 4, "a new list replaces it");
   assert.equal(say({ ...listed, session: check }, "run the tests please").state.choices, null, "anything else forgets it");
   assert.deepEqual(say(phone({ sessions: [] }), "list sessions").effects, [{ type: "speak", line: "No sessions are open." }]);
@@ -539,7 +540,7 @@ test("a pending confirm beats a stale list: 'one' sends, 'two' cancels, the word
   const asking = heardAs(listed, "merge it", { type: "send", text: "merge it" });
   assert.deepEqual(asking.effects, [{ type: "askConfirm", word: "merge", line: 'Send "merge it" to Check? Say one to send, or two to cancel.' }]);
   assert.equal(asking.state.choices, null);
-  for (const yes of ["one", "1", "number one", "the first one", "merge"]) {
+  for (const yes of ["one", "1", "number one", "merge"]) {
     const r = say(asking.state, yes);
     assert.deepEqual(types(r.effects), ["send", "receipt"], yes);
     assert.equal(r.state.session, check, yes);
@@ -557,4 +558,42 @@ test("receipts, replies and notices use the short name", () => {
   assert.deepEqual(sent.effects[1], { type: "receipt", session: phase, line: "Sent to Phase 1 architecture." });
   assert.deepEqual(step({ ...on, mode: "listening" }, { type: "reply", sessionId: "p", text: "Done." }).effects, [{ type: "speak", line: "Phase 1 architecture: Done." }]);
   assert.deepEqual(step(on, { type: "notice", kind: "needsYou", sessionId: "s4" }).effects, [{ type: "speak", line: "S4 Plan needs you." }]);
+});
+
+// Review fixes: strict confirms, numbers that belong to the target, noise and stale lists.
+test("a confirm sends only on an exact one, number one or the word said back; anything else asks again", () => {
+  const asking = heardAs(awake(), "merge it", { type: "send", text: "merge it" }).state;
+  for (const loose of ["won", "first", "the one", "number one please", "the first one", "option one", "yes", "uh"]) {
+    const r = say(asking, loose);
+    assert.deepEqual(r.effects, [{ type: "speak", line: "Say one to send, or two to cancel." }], loose);
+    assert.equal(r.state.mode, "confirming", loose);
+  }
+  for (const yes of ["one", "1", "number one", "One.", "merge"]) assert.deepEqual(types(say(asking, yes).effects), ["send", "receipt"], yes);
+  for (const no of ["two", "2", "number two", "never mind"]) assert.deepEqual(say(asking, no).effects, [{ type: "speak", line: "Cancelled." }], no);
+});
+
+test("with a target and nothing pending, only a bare 'one' gets 'Nothing to confirm'; numbered speech goes to the target", () => {
+  for (const bare of ["one", "1", "One."]) assert.deepEqual(say(awake(), bare).effects, [{ type: "speak", line: "Nothing to confirm." }], bare);
+  for (const heard of ["option one", "the first one", "pick one", "number one please"]) {
+    assert.deepEqual(types(say(awake(), heard).effects), ["interpret"], heard);
+  }
+});
+
+test("a list ignores sound-alikes, expires, and is forgotten by any other words; its own echo picks nothing", () => {
+  const listed = say(awake({ sessions: [api, docs, apiTwo] }), "list sessions").state;
+  for (const noise of ["to", "too", "for", "won"]) {
+    const r = say(listed, noise);
+    assert.equal(r.state.session, api, noise);
+    assert.equal(r.state.choices, null, noise);
+  }
+  const expired = step(listed, { type: "choicesExpired" });
+  assert.deepEqual(expired.effects, []);
+  assert.equal(say(expired.state, "two").state.session, api, "an expired list picks nothing");
+  // Jarvis hearing its own list read back.
+  const echo = say(listed, "Two, docs.");
+  assert.equal(echo.state.session, api);
+  assert.equal(echo.state.choices, null);
+  assert.deepEqual(types(echo.effects), ["interpret"]);
+  const noTarget = say({ ...listed, session: null }, "Two, docs.");
+  assert.equal(noTarget.state.session, null);
 });

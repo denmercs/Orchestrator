@@ -23,7 +23,7 @@ export type JarvisRouterPorts = {
 /** `spoken` is said back (and shown); `note` is shown only, when there is nothing to say. */
 export type RouteResult = { spoken: string[]; note: string | null };
 
-type Entry = { state: VoiceState; confirmAt: number };
+type Entry = { state: VoiceState; confirmAt: number; choicesAt: number };
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -44,7 +44,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
   function entryFor(routerId: string): Entry {
     let entry = entries.get(routerId);
     if (!entry) {
-      entry = { state: step({ ...initialVoiceState(), session: drawerTarget }, { type: "wake" }).state, confirmAt: 0 };
+      entry = { state: step({ ...initialVoiceState(), session: drawerTarget }, { type: "wake" }).state, confirmAt: 0, choicesAt: 0 };
       entries.set(routerId, entry);
     }
     return entry;
@@ -59,6 +59,9 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     if (state.mode === "confirming" && now() - entry.confirmAt > CONFIRM_TIMEOUT_MS) {
       state = step(state, { type: "confirm", word: CONFIRM_CANCEL }).state;
     }
+    // A numbered list expires the same way.
+    if (state.choices && now() - entry.choicesAt > CONFIRM_TIMEOUT_MS) state = step(state, { type: "choicesExpired" }).state;
+    const choicesBefore = state.choices;
     const wasConfirming = state.mode === "confirming";
     const spoken: string[] = [];
     const events: VoiceEvent[] = [{ type: "utterance", text }];
@@ -103,6 +106,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
       }
     }
     if (state.mode === "confirming" && !wasConfirming) entry.confirmAt = now();
+    if (state.choices && state.choices !== choicesBefore) entry.choicesAt = now();
     entry.state = state;
     if (spoken.length) return { spoken, note: null };
     return { spoken, note: state.mode === "asleep" ? ASLEEP_NOTE : NOTHING_SENT };

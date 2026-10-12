@@ -36,6 +36,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   const waiting = new Map<number, number>(); // interpret seq -> entry id
   let nextEntry = 0;
   let confirmTimer: unknown = null;
+  let choicesTimer: unknown = null;
   let lastSent: number | null = null;
   let confirmEntry: number | null = null; // the transcript that asked to confirm
   const listeners = new Set<() => void>();
@@ -95,6 +96,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   }
 
   function dispatch(event: VoiceEvent) {
+    const choicesBefore = snapshot.choices;
     const { state, effects } = step(snapshot, event);
     // Store the new state before any effect runs, so effects that dispatch see it.
     publish(state);
@@ -106,6 +108,16 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     } else if (state.mode !== "confirming" && confirmTimer !== null) {
       clock.clearTimeout(confirmTimer);
       confirmTimer = null;
+    }
+    // A numbered list waits as long as a confirm for its number, then is forgotten.
+    if (state.choices !== choicesBefore) {
+      if (choicesTimer !== null) clock.clearTimeout(choicesTimer);
+      choicesTimer = state.choices
+        ? clock.setTimeout(() => {
+            choicesTimer = null;
+            dispatch({ type: "choicesExpired" });
+          }, CONFIRM_TIMEOUT_MS)
+        : null;
     }
     let entryId: number | null = null;
     if (event.type === "utterance" && event.text.trim()) {

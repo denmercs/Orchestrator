@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createVoiceRunner, type VoiceRunnerPorts } from "./voice-runner";
+import { CONFIRM_TIMEOUT_MS, createVoiceRunner, type VoiceRunnerPorts } from "./voice-runner";
 
 const alpha = { id: "a1", name: "Alpha" };
 
@@ -455,4 +455,21 @@ test("setSessions passes Voice's own sessions to the loop as blocked, and only o
   const before = notified;
   runner.setSessions([alpha], [{ ...jarvis }]);
   assert.equal(notified, before);
+});
+
+test("a numbered list is forgotten after the confirm timeout, like on the phone", () => {
+  const beta = { id: "b1", name: "beta" };
+  const { runner, timers } = talkSetup({ sessions: [alpha, beta] });
+  runner.dispatch({ type: "utterance", text: "list sessions" });
+  assert.equal(runner.getState().choices?.length, 2);
+  const timer = timers.find((t) => t.ms === CONFIRM_TIMEOUT_MS && !t.cleared);
+  assert.ok(timer);
+  timer.fn();
+  assert.equal(runner.getState().choices, null);
+  runner.dispatch({ type: "utterance", text: "two" });
+  assert.equal(runner.getState().session?.id, alpha.id);
+  runner.dispatch({ type: "utterance", text: "list sessions" });
+  runner.dispatch({ type: "utterance", text: "two" });
+  assert.equal(runner.getState().session?.id, beta.id);
+  assert.equal(timers.filter((t) => t.ms === CONFIRM_TIMEOUT_MS).every((t) => t.cleared || t === timer), true, "a picked list's timer is cleared");
 });

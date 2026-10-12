@@ -2,7 +2,7 @@
 // step(state, event) → { state, effects }. Adapters (mic, transcriber, interpreter, session link, speaker) only carry
 // events in and effects out; the loop holds no clocks and imports only its own wording (voice-lines) and name
 // matching (voice-names), so any bundle can reach it. The Voice runner (drawer, Mac) and the Jarvis router (phone) both run it.
-import { CANCELLED, confirmLine, listLine, noChoiceLine, noSessionLine, notTargetLine, NOTHING_TO_CONFIRM, pickFirstLine, sentLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
+import { CANCELLED, CONFIRM_AGAIN, confirmLine, listLine, noChoiceLine, noSessionLine, notTargetLine, NOTHING_TO_CONFIRM, pickFirstLine, sentLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
 import { choiceNumber, exactSessions, matchSessions, shortName } from "./voice-names";
 
 export type VoiceMode = "asleep" | "listening" | "confirming" | "waiting" | "speaking";
@@ -41,6 +41,8 @@ export type VoiceEvent =
   | { type: "confirm"; word: string }
   | { type: "pick"; session: VoiceSession }
   | { type: "sessions"; list: VoiceSession[]; blocked?: VoiceSession[] }
+  /** A numbered list unanswered for `CONFIRM_TIMEOUT_MS` (the runner's timer, or Jarvis on the next words) is forgotten. */
+  | { type: "choicesExpired" }
   | { type: "notice"; kind: string; sessionId: string }
   | { type: "interrupt" }
   /** Sleep from the drawer (the runner's off switch): same as "Jarvis, ignore me". */
@@ -59,7 +61,7 @@ export type VoiceEffect =
 
 export type VoiceStep = { state: VoiceState; effects: VoiceEffect[] };
 
-/** How long a confirm waits for its word, on the Mac (the runner's timer) and the phone (Jarvis), before it is cancelled. */
+/** How long a confirm waits for its word, and a numbered list for its number, on the Mac (the runner's timer) and the phone (Jarvis), before it is dropped. */
 export const CONFIRM_TIMEOUT_MS = 20_000;
 
 /** Jarvis's provider id and the Voice helper's label: Voice's own sessions, never a target. */
@@ -76,6 +78,10 @@ export function initialVoiceState(): VoiceState {
 const NAMES = "jarvis|jervis|javis|travis|jarvus|service";
 const NEVER_MIND = new Set(["never mind", "nevermind", "cancel that", "forget it", "belay that"]);
 const CRITICAL = /\b(merge|interrupt|stop|delete)\b/;
+// A confirm is answered only by these exact words (or the critical word said back); anything else asks again.
+// "to"/"too" are how "two" is often heard: cancelling on a mishearing is safe, sending on one is not.
+const CONFIRM_YES = new Set(["one", "1", "number one", "number 1"]);
+const CONFIRM_NO = new Set(["two", "2", "number two", "number 2", "to", "too"]);
 // Numbered lists: "list sessions" reads up to six; "Pick a session first" up to four.
 const LIST_SHOWN = 6;
 const PICK_SHOWN = 4;
@@ -170,16 +176,18 @@ function onUtterance(state: VoiceState, text: string): VoiceStep {
   const ignore = new RegExp(`^(?:(?:hey|ok|okay) )?(?:(${NAMES}) )?(?:ignor(?:e|ing)( me)?|(silent mode))$`).exec(heard);
   if (ignore && (ignore[1] || ignore[2] || ignore[3])) return sleep(state);
   if (NEVER_MIND.has(cleaned)) return state.confirm ? cancelled(state) : out({ ...state, pending: null, choices: null });
-  const number = choiceNumber(cleaned);
-  // A pending confirm is the latest numbered question: "one" (or the word said back) sends, "two" cancels.
+  // A pending confirm is the latest numbered question, and only an exact answer settles it.
   if (state.confirm) {
-    if (number === 2) return cancelled(state);
-    return number === 1 || cleaned === state.confirm.word ? sentTo(state, state.confirm.text) : out(state);
+    if (CONFIRM_NO.has(cleaned)) return cancelled(state);
+    if (CONFIRM_YES.has(cleaned) || cleaned === state.confirm.word) return sentTo(state, state.confirm.text);
+    return out(state, { type: "speak", line: CONFIRM_AGAIN });
   }
+  // A list is answered by the next words or not at all: anything that isn't a number forgets it.
+  const number = state.choices ? choiceNumber(cleaned) : null;
   if (state.choices && number !== null) return pickNumber(state, state.choices, number);
   const base = { ...state, choices: null };
-  // "One" with nothing waiting (it was cancelled or timed out) says so rather than nothing.
-  if (number === 1) return out({ ...base, pending: null }, { type: "speak", line: NOTHING_TO_CONFIRM });
+  // A bare "one" with nothing waiting (cancelled or timed out) says so; anything longer is speech for the target.
+  if (cleaned === "one" || cleaned === "1") return out({ ...base, pending: null }, { type: "speak", line: NOTHING_TO_CONFIRM });
   if (LIST_SESSIONS.test(cleaned)) return numberedList({ ...base, pending: null }, LIST_SHOWN, listLine);
   // Without the name and with a target, "switch to X" is only a switch when X is a session (and "use X", "open X"
   // only when X is exactly one); otherwise it is a request for the session.
@@ -195,7 +203,7 @@ function onUtterance(state: VoiceState, text: string): VoiceStep {
     if (named.length === 1) return switched(base, named[0]);
     if (named.length > 1) return askWhich({ ...base, pending: null }, named);
   }
-  if (cleaned.split(" ").filter(Boolean).length < 2 && !critical(cleaned)) return out(state);
+  if (cleaned.split(" ").filter(Boolean).length < 2 && !critical(cleaned)) return out(base);
   if (!state.session) return numberedList({ ...base, pending: null }, PICK_SHOWN, pickFirstLine);
   const seq = state.seq + 1;
   return out({ ...base, seq, pending: { seq, heard: text } }, { type: "interpret", seq, text });
@@ -221,6 +229,7 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
     const choices = state.choices?.every((c) => event.list.some((s) => s.id === c.id)) ? state.choices : null;
     return out({ ...state, sessions: event.list, blocked, session, choices });
   }
+  if (event.type === "choicesExpired") return out({ ...state, choices: null });
   if (event.type === "pick" && isBlocked(state, event.session.id)) {
     return state.mode === "asleep" ? out(state) : out(state, { type: "speak", line: notTargetLine(event.session.name) });
   }

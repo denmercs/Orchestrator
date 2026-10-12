@@ -50,13 +50,13 @@ test("the Voice drawer's target is followed by new and existing routers", async 
   assert.deepEqual(sent, [["s1", "run the tests"], ["s1", "check the build"]]);
 });
 
-test("a critical word asks first; one sends it, two cancels, and nothing else does", async () => {
+test("a critical word asks first; one sends it, two cancels, and anything else asks again", async () => {
   const { router, sent } = setup();
   await router.setTarget(api);
   const ask = await router.route("r1", "merge it");
   assert.match(ask.spoken[0], /^Send "merge it" to api-refactor\? Say one to send, or two to cancel\.$/);
   assert.deepEqual(sent, []);
-  assert.deepEqual((await router.route("r1", "yes")).spoken, []);
+  assert.deepEqual((await router.route("r1", "yes")).spoken, ["Say one to send, or two to cancel."]);
   assert.deepEqual((await router.route("r1", "one")).spoken, ["Sent to api-refactor."]);
   assert.deepEqual(sent, [["s1", "merge it"]]);
   await router.route("r1", "stop the build");
@@ -177,4 +177,15 @@ test("on the phone: a list, then a bare number, picks across separate utterances
   const fresh = setup({ sessions: [phase, check] });
   assert.deepEqual((await fresh.router.route("r2", "Phase One architecture.")).spoken, ["Now on Phase 1 architecture."]);
   assert.deepEqual(sent, [["c", "run the tests please"]]);
+});
+
+test("a numbered list expires after the confirm timeout, so a late number picks nothing", async () => {
+  const { router, tick } = setup();
+  await router.route("r1", "list sessions");
+  tick(CONFIRM_TIMEOUT_MS + 1);
+  assert.deepEqual((await router.route("r1", "two")).spoken, []);
+  assert.equal(router.stateOf("r1")?.session, null);
+  await router.route("r1", "list sessions");
+  tick(CONFIRM_TIMEOUT_MS - 1);
+  assert.deepEqual((await router.route("r1", "two")).spoken, ["Now on docs."]);
 });
