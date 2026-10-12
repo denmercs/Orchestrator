@@ -1,9 +1,12 @@
 // Every line Voice says or shows, in one place, so the Voice drawer (Mac) and Jarvis (phone) word things the
 // same way. Pure: no imports, so any bundle can reach it.
 
-/** How many session names a line lists before "and more". */
-const NAMES_SHOWN = 5;
 const SPOKEN_CAP = 300;
+const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+
+/** A choice number as said: "one" … "ten", then digits. */
+export const numberWord = (n: number): string => NUMBER_WORDS[n] ?? String(n);
+const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
 export const CANCELLED = "Cancelled.";
 export const WAKE_LINE = "I'm listening.";
@@ -15,23 +18,39 @@ export const STOPPED_NOTE = "Stopped before sending.";
 
 export const sentLine = (name: string) => `Sent to ${name}.`;
 export const switchedLine = (name: string) => `Now on ${name}.`;
-export const noSessionLine = (spoken: string) => `No session called ${spoken}.`;
+/** No session by that name; with names, the numbered list follows so a number can answer it. */
+export const noSessionLine = (spoken: string, names: string[] = [], total = names.length) =>
+  names.length ? `No session called ${spoken}. ${listLine(names, total)}` : `No session called ${spoken}.`;
 export const sendFailedLine = (name: string, error: string) => `Couldn't send to ${name}: ${error}`;
-export const confirmLine = (text: string, name: string) => `Send "${text}" to ${name}? Say one to send, or two to cancel.`;
+/** How to answer a confirm; said again when the answer was anything else. */
+export const CONFIRM_AGAIN = "Say one to send, or two to cancel.";
+export const confirmLine = (text: string, name: string) => `Send "${text}" to ${name}? ${CONFIRM_AGAIN}`;
 
 /** A Jarvis session or the Voice helper: sending to it would talk to itself. */
 export const notTargetLine = (name: string) => `${name} is a voice session, so it can't be the target. Pick another session.`;
 
-export function whichLine(names: string[]): string {
-  return `Which one: ${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}?`;
+/** After a numbered list or question: how to answer it. */
+export const SAY_A_NUMBER = "Say a number, or switch to and a name.";
+export const NO_SESSIONS = "No sessions are open.";
+
+/** Numbered session names, as read for "list sessions": "One, Check. Two, S4 Plan. … Say a number…". */
+export function listLine(names: string[], total = names.length): string {
+  if (!names.length) return NO_SESSIONS;
+  const items = names.map((name, i) => `${capital(numberWord(i + 1))}, ${name}.`).join(" ");
+  return `${items}${total > names.length ? " And more." : ""} ${SAY_A_NUMBER}`;
 }
 
-/** Said with no target: how to pick one, and the first few session names. */
-export function pickFirstLine(names: string[]): string {
-  const known = names.length
-    ? `Sessions: ${names.slice(0, NAMES_SHOWN).join(", ")}${names.length > NAMES_SHOWN ? ", and more" : ""}.`
-    : "No sessions are open.";
-  return `Pick a session first: say switch to, then a name. ${known}`;
+/** Several sessions fit the name: numbered, so "one" or "two" picks. */
+export function whichLine(names: string[]): string {
+  return `Did you mean: ${names.map((name, i) => `${numberWord(i + 1)}, ${name}`).join("; ")}? Say a number.`;
+}
+
+/** A number past the end of the last numbered list. */
+export const noChoiceLine = (n: number, count: number) => `There's no number ${numberWord(n)}. Say a number from one to ${numberWord(count)}.`;
+
+/** Said with no target: how to pick one, with the first few sessions numbered. */
+export function pickFirstLine(names: string[], total = names.length): string {
+  return `Pick a session first. ${listLine(names, total)}`;
 }
 
 /** d5: a reply as spoken: the first paragraph that isn't a code fence, markdown stripped, capped at 300 characters. */
