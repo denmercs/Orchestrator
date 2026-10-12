@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { access, constants } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
 import { spokenLine } from "../shared/voice-lines";
 
@@ -13,7 +14,8 @@ export type SpeakPorts = {
   scriptReady: () => Promise<boolean>;
 };
 
-export const SPEAK_SCRIPT = fileURLToPath(new URL("../scripts/speak", import.meta.url));
+// Paseo bundles the plugin as CJS, which has no module URL, so find the script by install path.
+export const SPEAK_SCRIPT = join(process.env.PASEO_HOME ?? join(homedir(), ".paseo"), "plugins", "orchestrator", "scripts", "speak");
 
 export function realSpeakPorts(script = SPEAK_SCRIPT): SpeakPorts {
   return {
