@@ -391,8 +391,8 @@ const spokenTurn = (id: string) => ({
 test("speak replies: the RPCs switch a session on, and its turns warm, hush and speak", async () => {
   const { handlers, listeners, runs, stop } = speakWired();
   const paseo = { agents: { ref: () => ({ refresh: async () => null }) } };
-  await handlers.get(speakRepliesSet.name)!({ agentId: "s1", on: true }, { paseo });
-  assert.deepEqual(await handlers.get(speakRepliesState.name)!({}, { paseo }), { agentIds: ["s1"] });
+  await handlers.get(speakRepliesSet.name)!({ agentId: "s1", mode: "short" }, { paseo });
+  assert.deepEqual(await handlers.get(speakRepliesState.name)!({}, { paseo }), { modes: { s1: "short" } });
   await listeners.get("agent.turn_started")!({ agent: spokenTurn("s1").agent, turnId: null }, { paseo });
   await listeners.get("agent.turn_ended")!(spokenTurn("s1"), { paseo });
   await listeners.get("agent.turn_ended")!(spokenTurn("s2"), { paseo });
@@ -407,7 +407,7 @@ test("speak replies: the RPCs switch a session on, and its turns warm, hush and 
 test("speak replies: a memory-replay turn end stays silent even for a switched-on session", async () => {
   const { handlers, listeners, runs, stop } = speakWired(["s1"]);
   const paseo = { agents: { ref: () => ({ refresh: async () => null }) } };
-  await handlers.get(speakRepliesSet.name)!({ agentId: "s1", on: true }, { paseo });
+  await handlers.get(speakRepliesSet.name)!({ agentId: "s1", mode: "short" }, { paseo });
   runs.length = 0;
   await listeners.get("agent.turn_ended")!(spokenTurn("s1"), { paseo });
   assert.deepEqual(runs, []);

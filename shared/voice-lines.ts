@@ -2,6 +2,8 @@
 // same way. Pure: no imports, so any bundle can reach it.
 
 const SPOKEN_CAP = 300;
+const FULL_SPOKEN_CAP = 1500;
+const LIST_MARKER = /^(?:[-*+]|\d+[.)])\s+/;
 const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 
 /** A choice number as said: "one" … "ten", then digits. */
@@ -53,8 +55,9 @@ export function pickFirstLine(names: string[], total = names.length): string {
   return `Pick a session first. ${listLine(names, total)}`;
 }
 
-/** d5: a reply as spoken: the first paragraph that isn't a code fence, markdown stripped, capped at 300 characters. */
-export function spokenLine(text: string): string {
+/** d5: a reply as spoken: the first paragraph that isn't a code fence, markdown stripped, capped at 300 characters.
+ *  Full: every paragraph, minus code fences and table rows, list markers dropped, capped at 1500 characters. */
+export function spokenLine(text: string, full = false): string {
   const paragraphs: string[][] = [[]];
   let fenced = false;
   for (const raw of text.split("\n")) {
@@ -64,27 +67,31 @@ export function spokenLine(text: string): string {
       continue;
     }
     if (fenced) continue;
+    if (full && line.startsWith("|")) continue;
     if (!line) paragraphs.push([]);
+    else if (full && LIST_MARKER.test(line)) paragraphs.push([line.replace(LIST_MARKER, "")]);
     else paragraphs[paragraphs.length - 1].push(line);
   }
-  for (const lines of paragraphs) {
-    const plain = lines
-      .join(" ")
-      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
-      .replace(/`/g, "")
-      .replace(/(^|\s)#+\s+/g, "$1")
-      .replace(/\*+/g, "")
-      .replace(/(^|[\s(])_+([^_]+?)_+(?=$|[\s).,;:!?])/g, "$1$2")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (plain) return cap(plain);
-  }
-  return "";
+  const plains = paragraphs.map((lines) => plainText(lines.join(" "))).filter(Boolean);
+  if (!full) return plains[0] ? cap(plains[0], SPOKEN_CAP) : "";
+  // A heading or list item has no full stop; add one so the voice pauses instead of running on.
+  return cap(plains.map((plain) => (/[.!?:]$/.test(plain) ? plain : `${plain}.`)).join(" "), FULL_SPOKEN_CAP);
 }
 
-function cap(line: string): string {
-  if (line.length <= SPOKEN_CAP) return line;
-  const cut = line.slice(0, SPOKEN_CAP);
+function plainText(text: string): string {
+  return text
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/`/g, "")
+    .replace(/(^|\s)#+\s+/g, "$1")
+    .replace(/\*+/g, "")
+    .replace(/(^|[\s(])_+([^_]+?)_+(?=$|[\s).,;:!?])/g, "$1$2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cap(line: string, limit: number): string {
+  if (line.length <= limit) return line;
+  const cut = line.slice(0, limit);
   const ends = [...cut.matchAll(/[.!?](?=\s)/g)];
   if (ends.length) return cut.slice(0, ends[ends.length - 1].index + 1);
   const space = cut.lastIndexOf(" ");

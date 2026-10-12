@@ -17,3 +17,13 @@ test("lines are whole sentences, and replies are spoken as their first plain par
   assert.equal(sentLine("docs"), "Sent to docs.");
   assert.equal(spokenLine("```ts\nx\n```\n**Done**, see `a.ts`.\n\nMore."), "Done, see a.ts.");
 });
+
+test("spokenLine full reads every paragraph without code, tables or list markers", () => {
+  const text = "# Result\n\nAll **green**.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n1. First\n2. Second\n\n```ts\nx\n```\n\nSee [docs](http://x).";
+  assert.equal(spokenLine(text, true), "Result. All green. First. Second. See docs.");
+});
+
+test("spokenLine full caps at 1500 characters on a sentence end", () => {
+  const line = spokenLine(Array.from({ length: 200 }, (_, i) => `Sentence number ${i}.`).join(" "), true);
+  assert.ok(line.length <= 1500 && line.endsWith("."));
+});
