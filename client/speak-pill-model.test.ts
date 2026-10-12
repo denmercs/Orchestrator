@@ -10,9 +10,17 @@ test("speakPill off offers Speak with the muted speaker", () => {
   });
 });
 
-test("speakPill short shows Speak · short and offers full next", () => {
+test("speakPill medium shows Speak · medium", () => {
+  assert.deepEqual(speakPill("medium"), {
+    title: "Replies are spoken in brief: the gist, and what needs you. Press to speak the full reply",
+    label: "Speak · medium",
+    icon: "Volume2",
+  });
+});
+
+test("speakPill short shows Speak · short and offers medium next", () => {
   assert.deepEqual(speakPill("short"), {
-    title: "The first line of each reply is spoken. Press to speak the full reply",
+    title: "The first line of each reply is spoken. Press for a medium read",
     label: "Speak · short",
     icon: "Volume2",
   });
@@ -26,8 +34,9 @@ test("speakPill full shows Speak · full and offers off next", () => {
   });
 });
 
-test("a press cycles off, short, full, off", () => {
+test("a press cycles off, short, medium, full, off", () => {
   assert.equal(nextSpeakMode("off"), "short");
-  assert.equal(nextSpeakMode("short"), "full");
+  assert.equal(nextSpeakMode("short"), "medium");
+  assert.equal(nextSpeakMode("medium"), "full");
   assert.equal(nextSpeakMode("full"), "off");
 });
