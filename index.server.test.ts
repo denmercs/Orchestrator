@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "./index.server";
+import type { SpeakPorts } from "./server/speak-replies";
+import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { voiceHelperStart, voiceHelperStop, voiceInterpret } from "./shared/voice-rpc";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -111,6 +113,7 @@ function wired(
   replayStart?: { file: string; everyMs: number },
   loopStart?: { file: string; everyMs: number },
   voiceHelperCwd?: string,
+  speak?: SpeakPorts,
 ) {
   const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
   const listeners = new Map<string, (event: unknown, context: unknown) => unknown>();
@@ -137,7 +140,7 @@ function wired(
       return () => noop;
     },
   });
-  const stop = contribute(server, { replay: runner, signedIn: async () => signedIn, replayStart, loopStart, voiceHelperCwd });
+  const stop = contribute(server, { replay: runner, signedIn: async () => signedIn, replayStart, loopStart, voiceHelperCwd, speak });
   return { handlers, listeners, fake, stop };
 }
 
@@ -370,4 +373,43 @@ test("disposing the plugin archives the voice helper", async () => {
   stop();
   await new Promise((r) => setTimeout(r, 20));
   assert.ok(calls.includes("archive:helper-1"));
+});
+
+function speakWired(pending: string[] = []) {
+  const runs: { args: string[]; stdin?: string }[] = [];
+  const speak: SpeakPorts = { script: "/s", run: (args, stdin) => void runs.push({ args, stdin }), scriptReady: async () => true };
+  return { runs, ...wired(pending, true, undefined, undefined, undefined, speak) };
+}
+
+const spokenTurn = (id: string) => ({
+  agent: { id, workspaceId: null, parentAgentId: null, provider: "claude", cwd: "/x", title: null },
+  turnId: null,
+  outcome: { kind: "completed" },
+  timeline: [{ type: "assistant_message", text: "All done." }],
+});
+
+test("speak replies: the RPCs switch a session on, and its turns warm, hush and speak", async () => {
+  const { handlers, listeners, runs, stop } = speakWired();
+  const paseo = { agents: { ref: () => ({ refresh: async () => null }) } };
+  await handlers.get(speakRepliesSet.name)!({ agentId: "s1", on: true }, { paseo });
+  assert.deepEqual(await handlers.get(speakRepliesState.name)!({}, { paseo }), { agentIds: ["s1"] });
+  await listeners.get("agent.turn_started")!({ agent: spokenTurn("s1").agent, turnId: null }, { paseo });
+  await listeners.get("agent.turn_ended")!(spokenTurn("s1"), { paseo });
+  await listeners.get("agent.turn_ended")!(spokenTurn("s2"), { paseo });
+  assert.deepEqual(runs, [
+    { args: ["--warm"], stdin: undefined },
+    { args: ["--hush"], stdin: undefined },
+    { args: [], stdin: "All done." },
+  ]);
+  stop();
+});
+
+test("speak replies: a memory-replay turn end stays silent even for a switched-on session", async () => {
+  const { handlers, listeners, runs, stop } = speakWired(["s1"]);
+  const paseo = { agents: { ref: () => ({ refresh: async () => null }) } };
+  await handlers.get(speakRepliesSet.name)!({ agentId: "s1", on: true }, { paseo });
+  runs.length = 0;
+  await listeners.get("agent.turn_ended")!(spokenTurn("s1"), { paseo });
+  assert.deepEqual(runs, []);
+  stop();
 });

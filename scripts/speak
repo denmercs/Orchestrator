@@ -1,0 +1,62 @@
+#!/bin/bash
+# speak: say text aloud in the cloned Chatterbox Turbo voice, falling back to macOS `say`.
+#
+#   speak "hello"            text as an argument
+#   echo "hello" | speak     text on stdin
+#   speak --stop             stop the warm worker (frees ~3 GB of memory)
+#   speak --status           report whether the worker is warm
+#   speak --warm             start the worker without speaking (so the first reply is not a `say` fallback)
+#   speak --hush             stop talking now: empty the queue and cut the clip, keep the worker loaded
+#
+# The first call starts a warm worker in the background (model load takes ~15-60 s) and speaks that
+# line with `say`, so a reply is never silent. Once the worker is warm, calls return right away and
+# the voice plays sentence by sentence.
+#
+# Files: venv ~/.local/share/speak/venv, voice ~/.local/share/speak/voice/reference.wav,
+# socket ~/.local/share/speak/speak.sock, log ~/.local/share/speak/worker.log. See scripts/SPEAK.md.
+
+HOME_DIR="$HOME/.local/share/speak"
+SOCK="$HOME_DIR/speak.sock"
+PY="$HOME_DIR/venv/bin/python"
+WORKER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/speak_worker.py"
+
+worker_pid() { pgrep -f "speak_worker.py" | head -1; }
+
+start_worker() {
+  if [ -z "$(worker_pid)" ]; then
+    nohup "$PY" "$WORKER" >>"$HOME_DIR/worker.log" 2>&1 &
+    disown
+  fi
+}
+
+venv_ready() { [ -x "$PY" ] && [ -f "$HOME_DIR/voice/reference.wav" ]; }
+
+case "$1" in
+  --stop) pid=$(worker_pid); [ -n "$pid" ] && kill "$pid" && rm -f "$SOCK" && echo "stopped"; exit 0 ;;
+  --status) [ -S "$SOCK" ] && echo "warm" || { [ -n "$(worker_pid)" ] && echo "loading" || echo "off"; }; exit 0 ;;
+  --warm) venv_ready && [ ! -S "$SOCK" ] && start_worker; exit 0 ;;
+  --hush)
+    if [ -S "$SOCK" ]; then
+      printf '{"cmd": "hush"}\n' | nc -U -w 5 "$SOCK" >/dev/null 2>&1
+    else
+      pkill -x say 2>/dev/null  # no warm worker: the `say` fallback is what is talking
+    fi
+    exit 0 ;;
+esac
+
+if [ $# -gt 0 ]; then text="$*"; else text="$(cat)"; fi
+[ -z "${text//[[:space:]]/}" ] && exit 0
+
+fallback() { say "$text"; }
+
+venv_ready || { fallback; exit 0; }
+
+if [ -S "$SOCK" ]; then
+  reply=$(printf '%s' "$text" | "$PY" -c 'import json,sys; print(json.dumps({"text": sys.stdin.read()}))' \
+    | nc -U -w 5 "$SOCK" 2>/dev/null)
+  [ "$reply" = "ok" ] && exit 0
+  rm -f "$SOCK"  # stale socket from a dead worker
+fi
+
+start_worker
+fallback
