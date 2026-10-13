@@ -378,3 +378,11 @@ test("brief() ends an open briefing on words that are not an answer", async () =
   assert.equal(await router.brief("drawer", "yes"), null);
   assert.deepEqual(started, []);
 });
+
+test("event() carries a watched reply from a non-target session to every router, one line each", async () => {
+  const { router } = setup();
+  await router.setTarget(api);
+  await router.route("r1", "hello");
+  const lines = await router.event({ type: "reply", sessionId: "s2", text: "All **done**.", watched: true });
+  assert.deepEqual(lines, { r1: ["docs: All done."] });
+});

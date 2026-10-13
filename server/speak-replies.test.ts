@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
-import { createSpeakReplies } from "./speak-replies";
+import { createSpeakReplies, speakRoute } from "./speak-replies";
 
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 type Outcome = TurnEnded["outcome"];
@@ -89,4 +89,16 @@ test("server code avoids import.meta, which is undefined in Paseo's CJS plugin b
     .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
     .filter((name) => readFileSync(new URL(name, dir), "utf8").includes("import.meta"));
   assert.deepEqual(offenders, []);
+});
+
+test("a switched-on session is heard on the phone only when the phone is active and phone audio is on, else on the Mac; never both", () => {
+  const table: [boolean, boolean, boolean, string][] = [
+    [true, true, true, "phone"],
+    [true, true, false, "mac"],
+    [true, false, true, "mac"],
+    [true, false, false, "mac"],
+    [false, true, true, "none"],
+    [false, false, false, "none"],
+  ];
+  for (const [pill, phoneActive, phoneAudio, route] of table) assert.equal(speakRoute({ pill, phoneActive, phoneAudio }), route, `${pill} ${phoneActive} ${phoneAudio}`);
 });
