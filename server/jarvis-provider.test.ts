@@ -405,3 +405,14 @@ test("with phone audio on the line goes to the phone, not to the Mac's voice", a
   assert.deepEqual(spoken, []);
   assert.equal(calls.length, 0);
 });
+
+test("a multi-line briefing reply is spoken once, in one piece, through the Mac's Speaker and not Paseo's speak", async () => {
+  const spoken: string[] = [];
+  const lines = ["Good morning, Dennis.", "It is 7:42.", "Shall I start the loop?"];
+  const { connection, events, calls } = connect({ spoken: lines, note: null }, OK_JSON, undefined, async (text) => (spoken.push(text), true));
+  await connection.send(open());
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
+  assert.deepEqual(spoken, [lines.join(" ")]);
+  assert.equal(calls.length, 0);
+});

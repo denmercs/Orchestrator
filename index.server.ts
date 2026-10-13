@@ -55,6 +55,7 @@ import { permissionEvents, turnEvents } from "./shared/voice-turns";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
 import { createJarvisRouter } from "./server/jarvis-router";
+import { createMorningBrief, fetchWeather } from "./server/morning-brief";
 import { splitSessions, type VoiceEvent } from "./shared/voice-loop";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
@@ -589,6 +590,17 @@ export default function contribute(
       );
     },
     send: (sessionId, text) => jarvisPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
+    // "Good morning, Jarvis": weather, the verse, your Jira stories and the priority initiative, one beat at a time.
+    brief: createMorningBrief({
+      weather: () => fetchWeather(),
+      verse: () => loadDailyVerse(),
+      stories: () => listMyWorkStories(),
+      boards: async () => {
+        const { repo } = await readHarness();
+        return repo ? (await loadHarnessBoards([repo], await readHarness())).boards : [];
+      },
+      startLoop: (target) => startLoop(target, jarvisPaseo()),
+    }),
   });
   // What each event says to the phone: the router steps it into every router's loop, and the open voice-mode
   // session says (or is owed) the lines. The drawer reads the same events from the hub.

@@ -3,7 +3,8 @@
 // (shared/voice-lines.ts). Each utterance is stepped through the loop and its effects become steers to the
 // target plus lines to say back. The state is kept here, keyed by the router id in the session's persistence
 // handle, because Paseo reopens the provider session whenever voice mode turns on or off.
-import { CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
+import { isBriefGreeting, replyBrief, startBrief, type BriefData, type BriefState } from "../shared/morning-brief";
+import { addressed, CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
 import { namelessPassThrough, type Interpreter } from "../shared/voice-interpreter";
 import { ASLEEP_NOTE, NOTHING_SENT, notTargetLine, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
 
@@ -17,11 +18,20 @@ export type JarvisRouterPorts = {
    * The seam for the speech-cleanup helper: pass `withFallback(helper, namelessPassThrough)`, unwrapped to its result.
    */
   interpreter?: Interpreter;
+  /** The morning briefing: "good morning" gathers the data and walks through it, one beat per reply. */
+  brief?: {
+    gather(): Promise<BriefData>;
+    /** Starts the priority initiative's loop; resolves to an error to say, or null when it started. */
+    startInitiative(): Promise<string | null>;
+  };
   now?(): number;
 };
 
 /** `spoken` is said back (and shown); `note` is shown only, when there is nothing to say. */
 export type RouteResult = { spoken: string[]; note: string | null };
+
+// A briefing waiting on your answer lapses after this, so a later "yes" isn't taken for it.
+const BRIEF_TIMEOUT_MS = 120_000;
 
 type Entry = { state: VoiceState; confirmAt: number; choicesAt: number; owed: string[] };
 
@@ -32,6 +42,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
   const interpreter = ports.interpreter ?? namelessPassThrough;
   const entries = new Map<string, Entry>();
   const chains = new Map<string, Promise<unknown>>();
+  const briefs = new Map<string, { state: BriefState; at: number }>();
   let drawerTarget: VoiceSession | null = null;
   let lastBlocked: VoiceSession[] = [];
   const refresh = async () => {
@@ -50,7 +61,50 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     return entry;
   }
 
+  // The morning briefing runs ahead of the Voice loop: "good morning" starts it, and its answers are taken until
+  // the words are not one (they then go on to the loop as usual). Null means the loop should have the words.
+  async function routeBrief(routerId: string, text: string): Promise<RouteResult | null> {
+    const brief = ports.brief;
+    if (!brief) return null;
+    const open = briefs.get(routerId);
+    const live = open && now() - open.at <= BRIEF_TIMEOUT_MS ? open.state : null;
+    if (!live) {
+      briefs.delete(routerId);
+      if (!isBriefGreeting(text)) return null;
+      const entry = entryFor(routerId);
+      // Asleep, only the name wakes it: a "good morning" to someone else in the room is not for Jarvis.
+      if (entry.state.mode === "asleep") {
+        if (!addressed(text)) return null;
+        entry.state = step(entry.state, { type: "wake" }).state;
+      }
+      let data: BriefData;
+      try {
+        data = await brief.gather();
+      } catch (error) {
+        return { spoken: [`I couldn't pull the briefing together: ${errorText(error)}`], note: null };
+      }
+      const started = startBrief(data);
+      if (started.state) briefs.set(routerId, { state: started.state, at: now() });
+      return { spoken: started.lines, note: null };
+    }
+    const next = replyBrief(live, text);
+    if (next.passThrough) {
+      briefs.delete(routerId);
+      return null;
+    }
+    if (next.state) briefs.set(routerId, { state: next.state, at: now() });
+    else briefs.delete(routerId);
+    let spoken = next.lines;
+    if (next.effect === "startInitiative") {
+      const error = await brief.startInitiative().catch(errorText);
+      if (error) spoken = [`I couldn't start it: ${error}`];
+    }
+    return { spoken: [...spoken, ...next.rest], note: null };
+  }
+
   async function routeNow(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult> {
+    const briefed = await routeBrief(routerId, text);
+    if (briefed) return briefed;
     const entry = entryFor(routerId);
     let state = entry.state;
     const split = await refresh();
