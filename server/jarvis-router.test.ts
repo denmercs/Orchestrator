@@ -191,6 +191,24 @@ test("a numbered list expires after the confirm timeout, so a late number picks 
   assert.deepEqual((await router.route("r1", "two")).spoken, ["Now on docs."]);
 });
 
+test("event() steps every router and returns lines per router; owed lines are prepended once to the next route()", async () => {
+  const { router } = setup();
+  await router.setTarget(api);
+  await router.route("r1", "hello");
+  await router.route("r2", "hello");
+  const lines = await router.event({ type: "reply", sessionId: "s1", text: "All done." });
+  assert.deepEqual(lines, { r1: ["api-refactor: All done."], r2: ["api-refactor: All done."] });
+  // Other sessions' notices come out as one line per router; replies for non-targets say nothing.
+  assert.deepEqual(await router.event({ type: "reply", sessionId: "s2", text: "ignored" }), { r1: [], r2: [] });
+  router.playbackEnded("r1");
+  assert.equal(router.stateOf("r1")?.mode, "listening");
+  assert.equal(router.stateOf("r2")?.mode, "speaking");
+  // A line Jarvis could not say is owed: said first at the next words, once.
+  router.owe("r1", ["Docs finished."]);
+  assert.deepEqual((await router.route("r1", "run the tests")).spoken, ["Docs finished.", "Sent to api-refactor."]);
+  assert.deepEqual((await router.route("r1", "run the tests")).spoken, ["Sent to api-refactor."]);
+});
+
 // The morning briefing.
 const briefData: BriefData = {
   name: "Dennis",
@@ -272,4 +290,15 @@ test("if the data can't be gathered it says so instead of going quiet", async ()
   const { router } = briefSetup({ gather: async () => Promise.reject(new Error("offline")) });
   const r = await router.route("r1", "good morning");
   assert.deepEqual(r.spoken, ["I couldn't pull the briefing together: offline"]);
+});
+
+test("a line owed to the next words is not spoken with the briefing, and is said once after it", async () => {
+  const { router } = briefSetup();
+  router.owe("r1", ["Docs finished."]);
+  const brief = await router.route("r1", "good morning");
+  assert.doesNotMatch(brief.spoken.join(" "), /Docs finished/);
+  await router.route("r1", "never mind");
+  const after = await router.route("r1", "Jarvis, switch to docs");
+  assert.equal(after.spoken.filter((line) => line === "Docs finished.").length, 1);
+  assert.equal((await router.route("r1", "Jarvis, switch to api")).spoken.includes("Docs finished."), false);
 });

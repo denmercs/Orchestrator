@@ -33,7 +33,7 @@ export type RouteResult = { spoken: string[]; note: string | null };
 // A briefing waiting on your answer lapses after this, so a later "yes" isn't taken for it.
 const BRIEF_TIMEOUT_MS = 120_000;
 
-type Entry = { state: VoiceState; confirmAt: number; choicesAt: number };
+type Entry = { state: VoiceState; confirmAt: number; choicesAt: number; owed: string[] };
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -55,7 +55,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
   function entryFor(routerId: string): Entry {
     let entry = entries.get(routerId);
     if (!entry) {
-      entry = { state: step({ ...initialVoiceState(), session: drawerTarget }, { type: "wake" }).state, confirmAt: 0, choicesAt: 0 };
+      entry = { state: step({ ...initialVoiceState(), session: drawerTarget }, { type: "wake" }).state, confirmAt: 0, choicesAt: 0, owed: [] };
       entries.set(routerId, entry);
     }
     return entry;
@@ -117,7 +117,8 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     if (state.choices && now() - entry.choicesAt > CONFIRM_TIMEOUT_MS) state = step(state, { type: "choicesExpired" }).state;
     const choicesBefore = state.choices;
     const wasConfirming = state.mode === "confirming";
-    const spoken: string[] = [];
+    // Lines Jarvis couldn't say out of turn come first, once.
+    const spoken: string[] = entry.owed.splice(0);
     const events: VoiceEvent[] = [{ type: "utterance", text }];
     for (let event = events.shift(); event; event = events.shift()) {
       const r = step(state, event);
@@ -172,6 +173,37 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
       const run = (chains.get(routerId) ?? Promise.resolve()).then(() => routeNow(routerId, text, signal));
       chains.set(routerId, run.catch(() => undefined));
       return run;
+    },
+    /**
+     * A turn event (reply, notice) goes through every router's loop; the lines each should say come back by router id.
+     * A router whose loop says a line is left `speaking` until `playbackEnded`.
+     */
+    async event(event: VoiceEvent): Promise<Record<string, string[]>> {
+      const split = await refresh();
+      const lines: Record<string, string[]> = {};
+      await Promise.all(
+        [...entries.keys()].map((routerId) => {
+          const run = (chains.get(routerId) ?? Promise.resolve()).then(() => {
+            const entry = entryFor(routerId);
+            const state = split ? step(entry.state, { type: "sessions", ...split }).state : entry.state;
+            const r = step(state, event);
+            entry.state = r.state;
+            lines[routerId] = r.effects.flatMap((effect) => (effect.type === "speak" ? [effect.line] : []));
+          });
+          chains.set(routerId, run.catch(() => undefined));
+          return run;
+        }),
+      );
+      return lines;
+    },
+    /** What Jarvis said has finished playing (or failed to), so the loop is no longer `speaking`. */
+    playbackEnded(routerId: string): void {
+      const entry = entries.get(routerId);
+      if (entry) entry.state = step(entry.state, { type: "playbackEnded" }).state;
+    },
+    /** Lines that couldn't be said out of turn: said first at the router's next words, once. */
+    owe(routerId: string, lines: string[]): void {
+      entryFor(routerId).owed.push(...lines);
     },
     /** The Voice drawer picked a target: every router follows it, unless it is one of Voice's own sessions. */
     async setTarget(session: VoiceSession): Promise<{ ok: boolean; line: string | null }> {

@@ -560,6 +560,26 @@ test("receipts, replies and notices use the short name", () => {
   assert.deepEqual(step(on, { type: "notice", kind: "needsYou", sessionId: "s4" }).effects, [{ type: "speak", line: "S4 Plan needs you." }]);
 });
 
+// S4 parity: the server feeds both loops a turn's reply and its finished notice together.
+test("a finished turn's reply and notice: the target is read, another session is only announced, costCap merges", () => {
+  const turn = (state: VoiceState, sessionId: string) =>
+    [{ type: "reply", sessionId, text: "All done." }, { type: "notice", kind: "finished", sessionId }].reduce<{ state: VoiceState; spoken: string[] }>(
+      (acc, event) => {
+        const r = step(acc.state, event as VoiceEvent);
+        return { state: r.state, spoken: [...acc.spoken, ...r.effects.flatMap((e) => (e.type === "speak" ? [e.line] : []))] };
+      },
+      { state: state, spoken: [] },
+    );
+  assert.deepEqual(turn(awake(), "s1").spoken, ["api-refactor: All done."]);
+  assert.deepEqual(turn(awake(), "s2").spoken, ["Docs finished."]);
+  const busy = awake({ mode: "confirming", confirm: { word: "merge", text: "x" }, sessions: [api, docs, apiTwo] });
+  const held = turn(busy, "s1");
+  assert.deepEqual(held.spoken, []);
+  assert.equal(held.state.held, "api-refactor: All done.");
+  const capped = ["s2", "s3"].reduce((s, sessionId) => step(s, { type: "notice", kind: "costCap", sessionId }).state, awake({ talking: true, sessions: [api, docs, apiTwo] }));
+  assert.deepEqual(say(capped, "uh").effects, [{ type: "speak", line: "Two sessions hit the cost cap." }]);
+});
+
 // Review fixes: strict confirms, numbers that belong to the target, noise and stale lists.
 test("a confirm sends only on an exact one, number one or the word said back; anything else asks again", () => {
   const asking = heardAs(awake(), "merge it", { type: "send", text: "merge it" }).state;

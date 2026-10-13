@@ -8,7 +8,9 @@ import { startMemoryReplay } from "./shared/replay-rpc";
 import { createVoiceLink } from "./client/voice-link";
 import { createVoiceMic, createVoiceTranscriber } from "./client/voice-mic";
 import { createVoiceRunner } from "./client/voice-runner";
-import { voiceTarget } from "./shared/voice-rpc";
+import { createVoiceSpeaker } from "./client/voice-speaker";
+import { createVoiceLineRenderer, voiceLineSchema } from "./client/voice-line-renderer";
+import { voiceEvents, voiceTarget } from "./shared/voice-rpc";
 
 const TITLE = INSTALL_LABEL ? `Orchestration (${INSTALL_LABEL})` : "Orchestration";
 
@@ -17,6 +19,15 @@ export default function contribute(client: PluginClientContext) {
     link: createVoiceLink(client.paseo.agents),
     recorder: createVoiceMic(),
     transcriber: createVoiceTranscriber(client.rpc),
+    events: { read: (after) => client.rpc(voiceEvents, { after }) },
+    speaker: createVoiceSpeaker(client.rpc, client.playAudio),
+  });
+  // Jarvis lines for the phone (behind voice.phoneAudio) arrive as timeline items; the renderer speaks each once.
+  const offVoiceLines = client.addTimelineRenderer({
+    kind: "voice-line",
+    version: 1,
+    schema: voiceLineSchema,
+    Component: createVoiceLineRenderer(createVoiceSpeaker(client.rpc, client.playAudio)),
   });
   // The Jarvis router (server) sends to the drawer's target, so every new target is passed on.
   let toldTarget: string | undefined;
@@ -72,6 +83,6 @@ export default function contribute(client: PluginClientContext) {
   return async () => {
     offTarget();
     voice.off();
-    await Promise.all([offAttach(), offPills(), ...offThemes.map((off) => off())]);
+    await Promise.all([offVoiceLines(), offAttach(), offPills(), ...offThemes.map((off) => off())]);
   };
 }

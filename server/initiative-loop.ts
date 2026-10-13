@@ -275,6 +275,8 @@ export function createInitiativeLoop(
   readInitials: () => Promise<string | null> = async () => null,
   // The cost cap: a story at or over it blocks at its turn end. Absent, nothing is capped.
   readCost?: ReadCost,
+  // Told when a story blocks on the cost cap, with the agent whose turn hit it (Voice says so).
+  onCostCap?: (agentId: string) => void,
 ) {
   let paseo: PaseoApi | null = null;
   // Providers at their plan limit, from the last read of live plan usage: since when the loop has seen
@@ -1217,6 +1219,7 @@ export function createInitiativeLoop(
           const cap = storyCap(story, await readCost.cap());
           if (spent !== null && cap > 0 && spent >= cap) {
             block(story, `cost cap ($${spent.toFixed(2)} of ${budgetMoney(cap)})`, "cost-cap");
+            onCostCap?.(event.agent.id);
             return;
           }
         }
