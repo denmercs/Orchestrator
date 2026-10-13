@@ -522,11 +522,13 @@ export default function contribute(
     // A session on the Speak pill is heard on one device only. Phone active with voice.phoneAudio on: its reply goes through the
     // router as a watched reply (a `voice-line`), and the Mac stays quiet. Otherwise the pill speaks it on the Mac and its reply is
     // kept from the drawer and Jarvis, so it is never said twice.
-    const route = speakRoute({
+    // A reply is never heard nowhere: if every phone loop is asleep it would drop the watched reply, so the Mac plays it instead.
+    const picked = speakRoute({
       pill: speakReplies.has(event.agent.id),
       phoneActive: jarvisConnection?.isActive(Date.now()) ?? false,
       phoneAudio,
     });
+    const route = picked === "phone" && !jarvis.listening() ? "mac" : picked;
     if (route !== "phone") speakReplies.onTurnEnded(event);
     publishVoice(turnEvents(event, { watched: route === "phone" }).filter((e) => !(e.type === "reply" && route === "mac")));
     loop.rememberPaseo(paseo);

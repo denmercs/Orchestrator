@@ -535,8 +535,9 @@ test("turn_ended / permission_requested reach the hub and the router; orchestrat
   }
 });
 
-for (const phoneAudio of [true, false]) {
-  test(`speak replies on the phone: voice.phoneAudio ${phoneAudio ? "on sends another session's reply to the phone as one voice-line and the Mac stays quiet" : "off keeps it on the Mac and off the hub"}`, async () => {
+// "asleep": phone audio on and the phone active, but the Voice loop was put to sleep, so the phone would not say it: the Mac must.
+for (const [phoneAudio, asleep] of [[true, false], [false, false], [true, true]]) {
+  test(`speak replies on the phone: voice.phoneAudio ${asleep ? "on but the loop asleep falls back to the Mac, never heard nowhere" : phoneAudio ? "on sends another session's reply to the phone as one voice-line and the Mac stays quiet" : "off keeps it on the Mac and off the hub"}`, async () => {
     voicePhoneAudio = phoneAudio;
     const { handlers, listeners, providers, plays, stop } = speakWired();
     try {
@@ -562,12 +563,24 @@ for (const phoneAudio of [true, false]) {
         prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "hello" }] } },
       });
       await until(() => seen.some((e) => e.type === "session.turn" && e.state === "completed"));
+      if (asleep) {
+        await jarvis.send({
+          type: "session.prompt",
+          sessionId: "p1",
+          prompt: { clientMessageId: "m2", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Jarvis, ignore me" }] } },
+        });
+        await until(() => seen.filter((e) => e.type === "session.turn" && e.state === "completed").length >= 2);
+      }
       await handlers.get(speakRepliesSet.name)!({ agentId: "s2", mode: "short" }, { paseo });
       listeners.get("agent.turn_ended")!({ ...spokenTurn("s2"), agent: watched }, { paseo });
       await tick();
       const read = (await handlers.get(voiceEvents.name)!({ after: 0 }, { paseo })) as { events: { type: string; sessionId: string; watched?: boolean }[] };
       const lineItems = seen.filter((e) => e.item?.kind === "voice-line").map((e) => e.item?.data?.text);
-      if (phoneAudio) {
+      if (asleep) {
+        assert.deepEqual(lineItems, [], "the phone says nothing");
+        assert.deepEqual(plays, ["audio:All done."], "so the Mac says it");
+        assert.deepEqual(read.events.map((e) => `${e.type}:${e.sessionId}`), ["notice:s2"]);
+      } else if (phoneAudio) {
         assert.deepEqual(read.events, [{ type: "reply", sessionId: "s2", text: "All done.", watched: true }]);
         assert.deepEqual(lineItems, ["docs: All done."]);
         assert.deepEqual(plays, [], "the Mac says nothing");

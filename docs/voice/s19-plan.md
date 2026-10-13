@@ -20,6 +20,7 @@
    session is on the pill AND phoneActive AND phoneAudio; "mac" when on the pill otherwise; "none" off the pill.
 3. `index.server.ts` turn-end: "phone" -> publish the reply with `watched: true`, Mac pill NOT called; "mac" ->
    unchanged. So a reply is spoken on exactly one device. No new RPC, no Paseo change, no new setting.
+- Fallback: if "phone" is picked but every phone loop is asleep (`jarvis.listening()` false), the loop would drop the reply, so the Mac pill plays it instead (still one device).
 - Pill modes (short/medium/full) only apply to the Mac; on the phone every reply is the short line.
 
 ## Guess (unverified)

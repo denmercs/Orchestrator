@@ -227,6 +227,10 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
       );
       return lines;
     },
+    /** Whether any phone router's loop is awake: a watched reply is dropped by a sleeping loop, so the Mac must say it. The drawer's own briefing entry doesn't count. */
+    listening(): boolean {
+      return [...entries].some(([routerId, entry]) => routerId !== "drawer" && entry.state.mode !== "asleep");
+    },
     /** What Jarvis said has finished playing (or failed to), so the loop is no longer `speaking`. */
     playbackEnded(routerId: string): void {
       const entry = entries.get(routerId);
