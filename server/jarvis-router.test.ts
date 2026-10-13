@@ -302,3 +302,22 @@ test("a line owed to the next words is not spoken with the briefing, and is said
   assert.equal(after.spoken.filter((line) => line === "Docs finished.").length, 1);
   assert.equal((await router.route("r1", "Jarvis, switch to api")).spoken.includes("Docs finished."), false);
 });
+
+test("brief() answers a good morning and its replies without touching the Voice loop; other words are null", async () => {
+  const { router, started, sent } = briefSetup();
+  assert.equal(await router.brief("drawer", "run the tests"), null);
+  const open = await router.brief("drawer", "good morning");
+  assert.match(open?.spoken[0] ?? "", /^Good morning, Dennis\./);
+  const go = await router.brief("drawer", "do it");
+  assert.equal(go?.spoken[0], "Starting Orchestration Redesign.");
+  assert.deepEqual(started, ["start"]);
+  assert.deepEqual(sent, []);
+});
+
+test("brief() ends an open briefing on words that are not an answer", async () => {
+  const { router, started } = briefSetup();
+  await router.brief("drawer", "good morning");
+  assert.equal(await router.brief("drawer", "run the tests please"), null);
+  assert.equal(await router.brief("drawer", "yes"), null);
+  assert.deepEqual(started, []);
+});

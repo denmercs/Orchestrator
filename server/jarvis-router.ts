@@ -175,6 +175,15 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
       return run;
     },
     /**
+     * The briefing alone, for the Voice drawer: "good morning" and an open briefing's answers, on the same chain as
+     * `route`. Null means the words are not for the briefing and the caller carries on.
+     */
+    brief(routerId: string, text: string): Promise<RouteResult | null> {
+      const run = (chains.get(routerId) ?? Promise.resolve()).then(() => routeBrief(routerId, text));
+      chains.set(routerId, run.catch(() => undefined));
+      return run;
+    },
+    /**
      * A turn event (reply, notice) goes through every router's loop; the lines each should say come back by router id.
      * A router whose loop says a line is left `speaking` until `playbackEnded`.
      */

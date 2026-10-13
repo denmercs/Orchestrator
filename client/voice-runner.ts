@@ -23,6 +23,8 @@ export type VoiceRunnerPorts = {
   events?: { read(after: number): Promise<{ cursor: number; events: VoiceEvent[]; phoneActive: boolean }> };
   /** Speaks a line aloud: resolves "ended" when it finished, "stopped" when stop() cut it off. */
   speaker?: { speak(text: string, replyId: string): Promise<"ended" | "stopped">; stop(): void };
+  /** The morning briefing: lines to say when the words are "good morning" or an open briefing's answer, null when they are not. */
+  brief?: (text: string) => Promise<string[] | null>;
   /** Timer port; defaults to the global setTimeout. */
   clock?: { setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
 };
@@ -70,6 +72,18 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     return null;
   };
 
+  // Shows a line and plays it. `endsPlayback`: the loop is `speaking` until it has finished.
+  function showAndSpeak(line: string, endsPlayback = false) {
+    publish({ lines: keepLast(snapshot.lines, [line], MAX_LINES) });
+    if (!ports.speaker) return;
+    // The phone is speaking: the text stays on screen, but nothing plays here and the loop moves on.
+    if (snapshot.phoneActive) return void (endsPlayback && dispatch({ type: "playbackEnded" }));
+    ports.speaker.speak(line, `drawer-${nextReply++}`).then(
+      (result) => result === "ended" && endsPlayback && dispatch({ type: "playbackEnded" }),
+      fail,
+    );
+  }
+
   function perform(effect: VoiceEffect) {
     switch (effect.type) {
       case "send":
@@ -93,14 +107,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       case "receipt":
       case "speak":
       case "askConfirm":
-        publish({ lines: keepLast(snapshot.lines, [effect.line], MAX_LINES) });
-        if (!ports.speaker) return;
-        // The phone is speaking: the text stays on screen, but nothing plays here and the loop moves on.
-        if (snapshot.phoneActive) return void (effect.type === "speak" && dispatch({ type: "playbackEnded" }));
-        ports.speaker.speak(effect.line, `drawer-${nextReply++}`).then(
-          (result) => result === "ended" && effect.type === "speak" && dispatch({ type: "playbackEnded" }),
-          fail,
-        );
+        showAndSpeak(effect.line, effect.type === "speak");
         return;
       case "stopPlayback":
       case "sleep":
@@ -111,7 +118,24 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     }
   }
 
+  // Words go to the briefing first (awake only): its lines are shown and spoken and the session never hears them.
+  // If it has nothing for them, or fails, they go to the loop as usual.
   function dispatch(event: VoiceEvent) {
+    const brief = ports.brief;
+    if (!brief || event.type !== "utterance" || !event.text.trim() || snapshot.mode === "asleep") return run(event);
+    brief(event.text).then(
+      (lines) => {
+        if (!lines) return run(event);
+        entries.push({ id: nextEntry++, text: event.text, outcome: "briefing" });
+        entries.splice(0, Math.max(0, entries.length - MAX_TRANSCRIPTS));
+        showEntries();
+        lines.forEach((line) => showAndSpeak(line));
+      },
+      () => run(event),
+    );
+  }
+
+  function run(event: VoiceEvent) {
     const choicesBefore = snapshot.choices;
     const { state, effects } = step(snapshot, event);
     // Store the new state before any effect runs, so effects that dispatch see it.

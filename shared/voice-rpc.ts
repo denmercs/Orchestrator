@@ -75,3 +75,11 @@ export const voiceEvents = defineRpc({
     phoneActive: z.boolean(),
   }),
 });
+
+// The morning briefing for the drawer: spoken lines when the words are "good morning" or an open briefing's answer,
+// null when they are not for it and the drawer carries on as usual.
+export const voiceBrief = defineRpc({
+  name: "orchestration.voice.brief",
+  input: z.object({ text: z.string().max(2000) }),
+  output: z.object({ spoken: z.array(z.string()) }).nullable(),
+});

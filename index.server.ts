@@ -49,7 +49,7 @@ import { join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./server/voice-helper";
-import { transcribeVoice, voiceEvents, voiceHelperStart, voiceHelperStop, voiceInterpret, voiceSpeak, voiceTarget } from "./shared/voice-rpc";
+import { transcribeVoice, voiceEvents, voiceHelperStart, voiceHelperStop, voiceBrief, voiceInterpret, voiceSpeak, voiceTarget } from "./shared/voice-rpc";
 import { voiceSettings } from "./shared/settings";
 import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
@@ -615,6 +615,11 @@ export default function contribute(
     }
   };
   server.handle(voiceEvents, async ({ after }) => ({ ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false }));
+  // The drawer's "good morning": the same briefing as Jarvis, under its own router id so its open briefing is the drawer's.
+  server.handle(voiceBrief, async ({ text }) => {
+    const briefed = await jarvis.brief("drawer", text);
+    return briefed && { spoken: briefed.spoken };
+  });
   // A Jarvis session or the Voice helper is refused (ok: false), or Jarvis would steer itself.
   server.handle(voiceTarget, async (session, { paseo }) => {
     helperPaseo = paseo;
