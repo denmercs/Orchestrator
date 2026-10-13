@@ -134,3 +134,13 @@ test("start, warm and stop drive the helper's lifecycle", async () => {
   assert.equal(calls.start, 2);
   await svc.stop();
 });
+
+test("switch off: start and warm leave the helper stopped", async () => {
+  const { helper, calls } = fakeHelper(async () => cleaned, false);
+  const svc = createVoiceInterpret(helper);
+  svc.setEnabled(false);
+  await svc.start();
+  await svc.warm();
+  assert.equal(calls.start, 0);
+  assert.equal(helper.agentId(), null);
+});

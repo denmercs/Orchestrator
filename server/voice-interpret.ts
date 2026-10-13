@@ -38,7 +38,9 @@ export function createVoiceInterpret(helper: InterpretHelper) {
     idleTimer.unref?.();
   };
 
+  // Switch off: nothing would use the helper, so don't start one. Turning it on starts it on the next utterance.
   async function start() {
+    if (!enabled) return;
     await helper.start();
     armIdle();
   }
