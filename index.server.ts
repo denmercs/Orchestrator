@@ -48,6 +48,7 @@ import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./se
 import { transcribeVoice, voiceHelperStart, voiceHelperStop, voiceInterpret, voiceTarget } from "./shared/voice-rpc";
 import { createJarvisProvider } from "./server/jarvis-provider";
 import { createJarvisRouter } from "./server/jarvis-router";
+import { createMorningBrief, fetchWeather } from "./server/morning-brief";
 import { splitSessions } from "./shared/voice-loop";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
@@ -554,6 +555,17 @@ export default function contribute(
       );
     },
     send: (sessionId, text) => jarvisPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
+    // "Good morning, Jarvis": weather, the verse, your Jira stories and the priority initiative, one beat at a time.
+    brief: createMorningBrief({
+      weather: () => fetchWeather(),
+      verse: () => loadDailyVerse(),
+      stories: () => listMyWorkStories(),
+      boards: async () => {
+        const { repo } = await readHarness();
+        return repo ? (await loadHarnessBoards([repo], await readHarness())).boards : [];
+      },
+      startLoop: (target) => startLoop(target, jarvisPaseo()),
+    }),
   });
   // A Jarvis session or the Voice helper is refused (ok: false), or Jarvis would steer itself.
   server.handle(voiceTarget, async (session, { paseo }) => {
