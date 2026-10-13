@@ -7,6 +7,7 @@ export const MAX_HOLD_MS = 30_000;
 export const MIN_HOLD_MS = 300;
 // One timeout for the drawer and Jarvis.
 export { CONFIRM_TIMEOUT_MS };
+export const POLL_BACKOFF_MS = 2_000;
 export const BASE_HINTS = ["merge", "Orchestrator", "Paseo", "Jarvis"];
 
 /** Ports the runner carries effects out through. Recorder, transcriber and clock are optional. */
@@ -18,13 +19,17 @@ export type VoiceRunnerPorts = {
   recorder?: { open?(): Promise<unknown> | unknown; close?(): Promise<unknown> | unknown; start(): Promise<unknown> | unknown; stop(): Promise<{ audio: string; ms: number }> };
   /** Audio plus hint words in, text out. */
   transcriber?: (audio: string, hints: string[]) => Promise<string>;
+  /** Turn events from the plugin server: read(after) waits for events past the cursor. `phoneActive` means the phone is speaking. */
+  events?: { read(after: number): Promise<{ cursor: number; events: VoiceEvent[]; phoneActive: boolean }> };
+  /** Speaks a line aloud: resolves "ended" when it finished, "stopped" when stop() cut it off. */
+  speaker?: { speak(text: string, replyId: string): Promise<"ended" | "stopped">; stop(): void };
   /** Timer port; defaults to the global setTimeout. */
   clock?: { setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
 };
 
 export type TranscriptEntry = { text: string; outcome: string };
 
-export type VoiceSnapshot = VoiceState & { lines: string[]; transcripts: TranscriptEntry[]; error: string | null };
+export type VoiceSnapshot = VoiceState & { lines: string[]; transcripts: TranscriptEntry[]; error: string | null; phoneActive: boolean };
 
 const passThrough = async (text: string): Promise<InterpretResult> => ({ type: "send", text });
 const keepLast = <T>(list: T[], add: T[], max: number): T[] => [...list, ...add].slice(-max);
@@ -35,12 +40,14 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   const entries: Array<{ id: number; text: string; outcome: string }> = [];
   const waiting = new Map<number, number>(); // interpret seq -> entry id
   let nextEntry = 0;
+  let nextReply = 0;
+  let polling = 0; // bumped by on() and off(): a poll from an older run stops dispatching
   let confirmTimer: unknown = null;
   let choicesTimer: unknown = null;
   let lastSent: number | null = null;
   let confirmEntry: number | null = null; // the transcript that asked to confirm
   const listeners = new Set<() => void>();
-  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], transcripts: [], error: null };
+  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], transcripts: [], error: null, phoneActive: false };
 
   const publish = (patch: Partial<VoiceSnapshot>) => {
     snapshot = { ...snapshot, ...patch };
@@ -87,10 +94,19 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       case "speak":
       case "askConfirm":
         publish({ lines: keepLast(snapshot.lines, [effect.line], MAX_LINES) });
+        if (!ports.speaker) return;
+        // The phone is speaking: the text stays on screen, but nothing plays here and the loop moves on.
+        if (snapshot.phoneActive) return void (effect.type === "speak" && dispatch({ type: "playbackEnded" }));
+        ports.speaker.speak(effect.line, `drawer-${nextReply++}`).then(
+          (result) => result === "ended" && effect.type === "speak" && dispatch({ type: "playbackEnded" }),
+          fail,
+        );
         return;
       case "stopPlayback":
-      case "listen":
       case "sleep":
+        ports.speaker?.stop();
+        return;
+      case "listen":
         return;
     }
   }
@@ -225,13 +241,35 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     dispatch({ type: "utterance", text: "" });
   }
 
+  async function poll(run: number) {
+    const events = ports.events;
+    if (!events) return;
+    let cursor = 0;
+    while (polling === run) {
+      try {
+        const batch = await events.read(cursor);
+        if (polling !== run) return;
+        cursor = batch.cursor;
+        if (batch.phoneActive !== snapshot.phoneActive) publish({ phoneActive: batch.phoneActive });
+        batch.events.forEach(dispatch);
+      } catch (err) {
+        if (polling !== run) return;
+        fail(err);
+        await new Promise<void>((resolve) => clock.setTimeout(resolve, POLL_BACKOFF_MS));
+      }
+    }
+  }
+
   function on() {
     dispatch({ type: "wake" });
     publish({ error: null });
     void openMic();
+    void poll(++polling);
   }
 
   function off() {
+    polling++;
+    publish({ phoneActive: false });
     dispatch({ type: "sleep" });
     if (holdTimer !== null) clock.clearTimeout(holdTimer);
     holdTimer = null;

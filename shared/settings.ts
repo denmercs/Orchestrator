@@ -105,3 +105,15 @@ export const budgetSettings = defineSettings({
     storyCapUsd: z.number().default(5),
   }),
 });
+
+export const voiceSettings = defineSettings({
+  id: "voice",
+  scope: "host",
+  version: 1,
+  schema: z.object({
+    // Reference clip the Speaker clones its voice from; empty uses Kokoro only.
+    referenceClip: z.string().default(""),
+    // On: the phone plays the cloned voice through the Speaker. Off: Jarvis speaks in Paseo's voice.
+    phoneAudio: z.boolean().default(false),
+  }),
+});

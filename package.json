@@ -11,9 +11,7 @@
     "index.server.tsx",
     "client/",
     "server/",
-    "shared/",
-    "scripts/speak",
-    "scripts/speak_worker.py"
+    "shared/"
   ],
   "scripts": {
     "test": "node --import ./test-support/register.mjs --test",

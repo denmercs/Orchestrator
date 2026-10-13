@@ -27,7 +27,7 @@ import { getBranchInitials } from "./shared/naming";
 import { createContextWatch, paseoPort } from "./server/context-watch";
 import { createGateActions, loopGatePort } from "./server/gate-actions";
 import { createVoiceResume } from "./server/voice-resume";
-import { createSpeakReplies, realLocalSpeak, realSpeakPorts, type SpeakPorts } from "./server/speak-replies";
+import { createSpeakReplies } from "./server/speak-replies";
 import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { gateAct } from "./shared/gates";
 import { readTelemetry, summariseTelemetry } from "./server/context-telemetry";
@@ -40,15 +40,22 @@ import { readArms, readCorpus, readCostCap, readRunName, realReplayPorts } from 
 import { claudeSignedIn } from "./server/claude-cli";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { createTranscriber, realTranscribePorts } from "./server/voice-transcribe";
+import { createLocalVoice, realLocalPorts, type LocalPorts } from "./server/voice-local";
+import { createSpeaker, DEFAULT_REFERENCE_CLIP, resolveReferenceClip, type SpeakerPorts } from "./server/voice-speaker";
+import { realSpeakerPorts } from "./server/voice-speaker-workers";
 import { REPLAY_START_FILE, REPLAY_START_POLL_MS, tickReplayStart } from "./server/replay-trigger";
 import { LOOP_START_FILE, LOOP_START_POLL_MS, tickLoopStart } from "./server/loop-trigger";
 import { join, resolve } from "node:path";
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./server/voice-helper";
-import { transcribeVoice, voiceHelperStart, voiceHelperStop, voiceInterpret, voiceTarget } from "./shared/voice-rpc";
-import { createJarvisProvider } from "./server/jarvis-provider";
+import { transcribeVoice, voiceEvents, voiceHelperStart, voiceHelperStop, voiceInterpret, voiceSpeak, voiceTarget } from "./shared/voice-rpc";
+import { voiceSettings } from "./shared/settings";
+import { permissionEvents, turnEvents } from "./shared/voice-turns";
+import { createVoiceHub, realHubPorts } from "./server/voice-turns";
+import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
 import { createJarvisRouter } from "./server/jarvis-router";
-import { splitSessions } from "./shared/voice-loop";
+import { splitSessions, type VoiceEvent } from "./shared/voice-loop";
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -128,7 +135,12 @@ export default function contribute(
     replayStart?: { file: string; everyMs: number };
     loopStart?: { file: string; everyMs: number };
     voiceHelperCwd?: string;
-    speak?: SpeakPorts;
+    // The Speaker's workers (tests stand in for the Python ones).
+    speakerPorts?: (readClip: () => string | undefined) => SpeakerPorts & { start: () => void; stop: () => void };
+    // Plays the Speaker's sentences on the Mac for the Speak pill and Jarvis (tests stand in for afplay and `say`).
+    localPorts?: (render: LocalPorts["render"]) => LocalPorts;
+    // Where the cloned voice's reference clip lives when the voice setting is empty.
+    defaultReferenceClip?: string;
   } = {},
 ) {
   // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
@@ -186,6 +198,9 @@ export default function contribute(
     const state = await pipeline.read();
     return state.status === "ready" ? state.values : null;
   };
+  // Turn events, one source: the hub feeds the drawer's long poll and the Jarvis router (see publishVoice).
+  const voiceHub = createVoiceHub(realHubPorts());
+  let publishVoice: (events: VoiceEvent[]) => void = () => undefined;
   const loopSettings = server.registerSettings(initiativeLoopSettings);
   const initiativeLoop = createInitiativeLoop(
     async () => {
@@ -206,6 +221,7 @@ export default function contribute(
       },
       rows: () => readTelemetry(),
     },
+    (sessionId) => publishVoice([{ type: "notice", kind: "costCap", sessionId }]),
   );
   // The Initiatives tab and the loop start file both start the loop here.
   const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: Parameters<typeof initiativeLoop.start>[0]) =>
@@ -429,11 +445,27 @@ export default function contribute(
     helperPaseo = paseo;
     return voiceHelper.interpret(input);
   });
-  // Spoken replies: a switched-on session says the short line (or, in full mode, the whole message) of each completed reply (scripts/SPEAK.md).
-  const speakPorts = deps.speak ?? realSpeakPorts();
-  const speakReplies = createSpeakReplies(speakPorts);
-  // Warm the cloned voice at launch so the first Jarvis reply is not a Kokoro fallback.
-  void speakPorts.scriptReady().then((ready) => ready && speakPorts.run(["--warm"]));
+  // Whether the phone plays lines in the cloned voice (voice.phoneAudio) is read once and kept current.
+  const voice = server.registerSettings(voiceSettings);
+  let phoneAudio = false;
+  let referenceClip = "";
+  const syncVoice = (state: Awaited<ReturnType<typeof voice.read>>) => {
+    phoneAudio = state.status === "ready" && state.values.phoneAudio;
+    referenceClip = state.status === "ready" ? state.values.referenceClip : "";
+  };
+  const offVoiceSettings = voice.subscribe(syncVoice);
+  void voice.read().then(syncVoice);
+  // The Speaker: the one voice for the Mac (drawer, Speak pill, Jarvis) and the phone. Its workers start now, so the cloned voice is
+  // warm at launch, and stop on cleanup. Until they are up it answers "loading" and the Mac falls back to `say`.
+  const speakerPorts = (deps.speakerPorts ?? realSpeakerPorts)(() =>
+    resolveReferenceClip(referenceClip, existsSync, deps.defaultReferenceClip ?? DEFAULT_REFERENCE_CLIP),
+  );
+  const speak = createSpeaker(speakerPorts);
+  server.handle(voiceSpeak, (input) => speak(input));
+  speakerPorts.start();
+  // Spoken replies on the Mac: a switched-on session says the short line (or, in full mode, the whole message) of each completed reply.
+  const localVoice = createLocalVoice((deps.localPorts ?? realLocalPorts)(speak));
+  const speakReplies = createSpeakReplies({ speak: (text) => localVoice.speak(text), hush: () => localVoice.hush() });
   server.handle(speakRepliesSet, async ({ agentId, mode }) => {
     await speakReplies.set(agentId, mode);
     return { ok: true };
@@ -468,6 +500,8 @@ export default function contribute(
       return;
     }
     speakReplies.onTurnEnded(event);
+    // A session on the Speak pill is spoken by the pill alone: its reply is kept from the drawer and Jarvis so the Mac never says it twice.
+    publishVoice(turnEvents(event).filter((e) => !(e.type === "reply" && speakReplies.has(e.sessionId))));
     loop.rememberPaseo(paseo);
     pipelinePaseo = paseo;
     void loop.onTurnEnded(event);
@@ -501,6 +535,7 @@ export default function contribute(
   const offAgentCreated = server.on("agent.created", (_event, { paseo }) => arm(paseo));
   const offPermissionRequested = server.on("agent.permission_requested", (event, { paseo }) => {
     arm(paseo);
+    publishVoice(permissionEvents(event));
     void initiativeLoop.onPermissionRequested(paseo, event).catch((error) => {
       console.warn("orchestrator: loop permission request failed", error);
     });
@@ -555,15 +590,44 @@ export default function contribute(
     },
     send: (sessionId, text) => jarvisPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
   });
+  // What each event says to the phone: the router steps it into every router's loop, and the open voice-mode
+  // session says (or is owed) the lines. The drawer reads the same events from the hub.
+  let jarvisConnection: JarvisConnection | null = null;
+  publishVoice = (events) => {
+    for (const event of events) {
+      voiceHub.publish(event);
+      void jarvis
+        .event(event)
+        .then((byRouter) => Promise.all(Object.entries(byRouter).map(([routerId, lines]) => jarvisConnection?.say(routerId, lines))))
+        .catch((error) => console.warn("orchestrator: Jarvis event failed", error));
+    }
+  };
+  server.handle(voiceEvents, async ({ after }) => ({ ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false }));
   // A Jarvis session or the Voice helper is refused (ok: false), or Jarvis would steer itself.
   server.handle(voiceTarget, async (session, { paseo }) => {
     helperPaseo = paseo;
     return { ok: (await jarvis.setTarget(session)).ok };
   });
   // Paseo 0.11.0+ only, like the usage source.
-  server.registerProvider?.(createJarvisProvider({ route: jarvis.route, localSpeak: realLocalSpeak() }));
+  const jarvisProvider = createJarvisProvider({
+    route: jarvis.route,
+    owe: jarvis.owe,
+    playbackEnded: jarvis.playbackEnded,
+    phoneAudio: () => phoneAudio,
+    // On the Mac Jarvis speaks through the same Speaker; false (an empty line) lets Paseo's `speak` take it.
+    localSpeak: async (text) => (text.trim() ? (await localVoice.speak(text)) !== undefined : false),
+  });
+  server.registerProvider?.({
+    ...jarvisProvider,
+    async connect(...args) {
+      const connection = (await jarvisProvider.connect(...args)) as JarvisConnection;
+      jarvisConnection = connection;
+      return connection;
+    },
+  });
   return () => {
     offPulseSettings();
+    offVoiceSettings();
     stopPlanServer();
     offBeforeCreate();
     offWorkspaceCreated();
@@ -577,6 +641,7 @@ export default function contribute(
     clearInterval(replayStartTimer);
     clearInterval(loopStartTimer);
     voiceResume.stop();
+    speakerPorts.stop();
     void voiceHelper.stop().catch((error) => console.warn("orchestrator: voice helper stop failed", error));
   };
 }

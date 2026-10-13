@@ -1,57 +1,14 @@
-import { execFile, spawn } from "node:child_process";
-import { accessSync, constants as fsConstants, readdirSync, statSync } from "node:fs";
-import { access, constants } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
 import type { SpeakMode } from "../shared/speak-replies";
 import { spokenLine } from "../shared/voice-lines";
 
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 
+// The Mac's voice: the one Speaker, played locally (server/voice-local.ts).
 export type SpeakPorts = {
-  script: string;
-  // Fire and forget: runs the script with `args`, `stdin` as its text. Never throws.
-  run: (args: string[], stdin?: string) => void;
-  scriptReady: () => Promise<boolean>;
+  speak: (text: string) => Promise<unknown>;
+  hush: () => void;
 };
-
-// Paseo bundles the plugin as CJS, which has no module URL, so find the script by install path.
-// Installs land in plugins/orchestrator/<install id>/checkout/; the old layout had scripts/ directly under plugins/orchestrator/.
-export function findSpeakScript(home = process.env.PASEO_HOME ?? join(homedir(), ".paseo")): string {
-  const root = join(home, "plugins", "orchestrator");
-  const legacy = join(root, "scripts", "speak");
-  const installs: { script: string; mtime: number }[] = [];
-  try {
-    for (const id of readdirSync(root)) {
-      const script = join(root, id, "checkout", "scripts", "speak");
-      try {
-        accessSync(script, fsConstants.X_OK);
-        installs.push({ script, mtime: statSync(script).mtimeMs });
-      } catch {}
-    }
-  } catch {}
-  installs.sort((a, b) => b.mtime - a.mtime);
-  return installs[0]?.script ?? legacy;
-}
-
-export const SPEAK_SCRIPT = findSpeakScript();
-
-export function realSpeakPorts(script = SPEAK_SCRIPT): SpeakPorts {
-  return {
-    script,
-    run(args, stdin) {
-      const child = spawn(script, args, { stdio: [stdin === undefined ? "ignore" : "pipe", "ignore", "ignore"], detached: true });
-      child.on("error", (error) => console.warn("orchestrator: speak failed", error));
-      if (stdin !== undefined) child.stdin?.end(stdin);
-      child.unref();
-    },
-    scriptReady: () => access(script, constants.X_OK).then(
-      () => true,
-      () => false,
-    ),
-  };
-}
 
 function lastReply(timeline: TurnEnded["timeline"]): string {
   for (let i = timeline.length - 1; i >= 0; i--) {
@@ -66,52 +23,20 @@ export function createSpeakReplies(ports: SpeakPorts) {
   const modes = new Map<string, Exclude<SpeakMode, "off">>();
   return {
     modes: () => Object.fromEntries(modes),
+    has: (agentId: string) => modes.has(agentId),
     async set(agentId: string, mode: SpeakMode) {
-      if (mode === "off") {
-        modes.delete(agentId);
-        return;
-      }
-      if (!(await ports.scriptReady())) {
-        throw new Error(`The speak script is missing or not executable: ${ports.script}`);
-      }
-      if (!modes.has(agentId)) ports.run(["--warm"]);
-      modes.set(agentId, mode);
+      if (mode === "off") modes.delete(agentId);
+      else modes.set(agentId, mode);
     },
     onTurnEnded(event: TurnEnded) {
       const mode = modes.get(event.agent.id);
       if (!mode || event.outcome.kind !== "completed") return;
       const line = spokenLine(lastReply(event.timeline), mode);
-      if (line) ports.run([], line);
+      if (line) void ports.speak(line).catch((error) => console.warn("orchestrator: speak failed", error));
     },
     // A new turn means the user sent something: stop talking over it.
     onTurnStarted(agentId: string) {
-      if (modes.has(agentId)) ports.run(["--hush"]);
+      if (modes.has(agentId)) ports.hush();
     },
   };
-}
-
-export type LocalSpeakPorts = {
-  /** The speak script's `--status`: warm, loading or off. */
-  status: () => Promise<string>;
-  run: SpeakPorts["run"];
-};
-
-// Jarvis's reply in the cloned voice. True means the worker took the line. False (cold, loading or no script)
-// means the caller falls back to Paseo's Kokoro `speak`; a cold worker is started so the next reply is warm.
-export function createLocalSpeak(ports: LocalSpeakPorts) {
-  return async (text: string): Promise<boolean> => {
-    if ((await ports.status()) !== "warm") {
-      ports.run(["--warm"]);
-      return false;
-    }
-    ports.run([], text);
-    return true;
-  };
-}
-
-export function realLocalSpeak(script = SPEAK_SCRIPT) {
-  const run = realSpeakPorts(script).run;
-  const status = () =>
-    new Promise<string>((resolve) => execFile(script, ["--status"], (error, out) => resolve(error ? "off" : out.trim())));
-  return createLocalSpeak({ status, run });
 }

@@ -2101,7 +2101,13 @@ test("closedPr gives a story's PR number while the PR is closed, and null once i
 });
 
 // The cost cap: a fake readCost, and the ending agent's live cost from lastUsage.
-function capped(live: number, cap: number, outcome: "completed" | "failed" | "canceled" = "completed", marker = "implement-done") {
+function capped(
+  live: number,
+  cap: number,
+  outcome: "completed" | "failed" | "canceled" = "completed",
+  marker = "implement-done",
+  onCostCap?: (agentId: string) => void,
+) {
   const fx = fixture("a1");
   const { api, created } = fakePaseo([{ id: "a1", labels: fx.labels, lastUsage: { totalCostUsd: live } }]);
   writeFileSync(join(fx.worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\n${marker}\n`, "utf8");
@@ -2114,6 +2120,7 @@ function capped(live: number, cap: number, outcome: "completed" | "failed" | "ca
     noExtras,
     async () => null,
     { cap: async () => cap, rows: async () => rows },
+    onCostCap,
   );
   const event = { agent: { id: "a1" }, outcome: outcome === "failed" ? { kind: "failed", error: { message: "boom" } } : { kind: outcome } };
   const end = () => initiative.onTurnEnded(api, event as unknown as Parameters<typeof initiative.onTurnEnded>[1]);
@@ -2133,6 +2140,14 @@ test("a turn that brings the story to the cap blocks it as cost-cap and starts n
   assert.equal(storyMeta(over.story).block_kind, "cost-cap");
   assert.equal(storyMeta(over.story).blocked_reason, "cost cap ($5.00 of $5)");
   assert.deepEqual(over.created, []);
+});
+
+test("cost-cap block calls onCostCap(agentId), and a turn under the cap doesn't", async () => {
+  const hit: string[] = [];
+  await capped(4.12, 5, "completed", "implement-done", (id) => hit.push(id)).end();
+  assert.deepEqual(hit, ["a1"]);
+  await capped(3.9, 5, "completed", "implement-done", (id) => hit.push(id)).end();
+  assert.deepEqual(hit, ["a1"]);
 });
 
 test("a failed turn at the cap blocks; a canceled one and one under the cap do not", async () => {

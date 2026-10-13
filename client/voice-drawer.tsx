@@ -142,6 +142,7 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
           ))}
 
           <Text style={styles.section}>Replies</Text>
+          {state.phoneActive ? <Text style={styles.hint}>Phone is speaking</Text> : null}
           {state.lines.length === 0 ? <Text style={styles.hint}>Nothing yet.</Text> : null}
           {[...state.lines].reverse().map((line, i) => (
             <Text key={`${i}-${line}`} style={styles.hint}>

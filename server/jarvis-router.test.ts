@@ -189,3 +189,21 @@ test("a numbered list expires after the confirm timeout, so a late number picks 
   tick(CONFIRM_TIMEOUT_MS - 1);
   assert.deepEqual((await router.route("r1", "two")).spoken, ["Now on docs."]);
 });
+
+test("event() steps every router and returns lines per router; owed lines are prepended once to the next route()", async () => {
+  const { router } = setup();
+  await router.setTarget(api);
+  await router.route("r1", "hello");
+  await router.route("r2", "hello");
+  const lines = await router.event({ type: "reply", sessionId: "s1", text: "All done." });
+  assert.deepEqual(lines, { r1: ["api-refactor: All done."], r2: ["api-refactor: All done."] });
+  // Other sessions' notices come out as one line per router; replies for non-targets say nothing.
+  assert.deepEqual(await router.event({ type: "reply", sessionId: "s2", text: "ignored" }), { r1: [], r2: [] });
+  router.playbackEnded("r1");
+  assert.equal(router.stateOf("r1")?.mode, "listening");
+  assert.equal(router.stateOf("r2")?.mode, "speaking");
+  // A line Jarvis could not say is owed: said first at the next words, once.
+  router.owe("r1", ["Docs finished."]);
+  assert.deepEqual((await router.route("r1", "run the tests")).spoken, ["Docs finished.", "Sent to api-refactor."]);
+  assert.deepEqual((await router.route("r1", "run the tests")).spoken, ["Sent to api-refactor."]);
+});
