@@ -27,7 +27,7 @@ import { getBranchInitials } from "./shared/naming";
 import { createContextWatch, paseoPort } from "./server/context-watch";
 import { createGateActions, loopGatePort } from "./server/gate-actions";
 import { createVoiceResume } from "./server/voice-resume";
-import { createSpeakReplies } from "./server/speak-replies";
+import { createSpeakReplies, speakRoute } from "./server/speak-replies";
 import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { gateAct } from "./shared/gates";
 import { profilesFromConfigGet } from "./shared/agent-profiles";
@@ -519,9 +519,18 @@ export default function contribute(
         .catch((error) => console.warn("orchestrator: memory replay failed", error));
       return;
     }
-    speakReplies.onTurnEnded(event);
-    // A session on the Speak pill is spoken by the pill alone: its reply is kept from the drawer and Jarvis so the Mac never says it twice.
-    publishVoice(turnEvents(event).filter((e) => !(e.type === "reply" && speakReplies.has(e.sessionId))));
+    // A session on the Speak pill is heard on one device only. Phone active with voice.phoneAudio on: its reply goes through the
+    // router as a watched reply (a `voice-line`), and the Mac stays quiet. Otherwise the pill speaks it on the Mac and its reply is
+    // kept from the drawer and Jarvis, so it is never said twice.
+    // A reply is never heard nowhere: if every phone loop is asleep it would drop the watched reply, so the Mac plays it instead.
+    const picked = speakRoute({
+      pill: speakReplies.has(event.agent.id),
+      phoneActive: jarvisConnection?.isActive(Date.now()) ?? false,
+      phoneAudio,
+    });
+    const route = picked === "phone" && !jarvis.listening() ? "mac" : picked;
+    if (route !== "phone") speakReplies.onTurnEnded(event);
+    publishVoice(turnEvents(event, { watched: route === "phone" }).filter((e) => !(e.type === "reply" && route === "mac")));
     loop.rememberPaseo(paseo);
     pipelinePaseo = paseo;
     void loop.onTurnEnded(event);

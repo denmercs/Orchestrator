@@ -378,3 +378,21 @@ test("brief() ends an open briefing on words that are not an answer", async () =
   assert.equal(await router.brief("drawer", "yes"), null);
   assert.deepEqual(started, []);
 });
+
+test("event() carries a watched reply from a non-target session to every router, one line each", async () => {
+  const { router } = setup();
+  await router.setTarget(api);
+  await router.route("r1", "hello");
+  const lines = await router.event({ type: "reply", sessionId: "s2", text: "All **done**.", watched: true });
+  assert.deepEqual(lines, { r1: ["docs: All done."] });
+});
+
+test("listening() is true only while a phone router's loop is awake, so a reply the loop would drop can fall back to the Mac", async () => {
+  const { router } = setup();
+  assert.equal(router.listening(), false);
+  await router.setTarget(api);
+  await router.route("r1", "hello");
+  assert.equal(router.listening(), true);
+  await router.route("r1", "Jarvis, ignore me");
+  assert.equal(router.listening(), false);
+});

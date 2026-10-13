@@ -24,6 +24,8 @@ export type VoiceState = {
   /** The target's spoken reply, held while you talk or confirm. */
   held: string | null;
   queue: Notice[];
+  /** Replies of sessions you asked to hear (the Speak pill), as spoken lines, waiting their turn like the notices. */
+  heard: { sessionId: string; line: string }[];
   seq: number;
 };
 
@@ -36,7 +38,8 @@ export type VoiceEvent =
   | { type: "speechStart" }
   | { type: "utterance"; text: string }
   | { type: "interpreted"; seq: number; result: InterpretResult }
-  | { type: "reply"; sessionId: string; text: string }
+  /** `watched`: the session is on the Speak pill, so its reply is heard even when it is not the target. */
+  | { type: "reply"; sessionId: string; text: string; watched?: boolean }
   | { type: "playbackEnded" }
   | { type: "confirm"; word: string }
   | { type: "pick"; session: VoiceSession }
@@ -74,7 +77,7 @@ export const VOICE_HELPER_KIND = "voice-helper";
 export const CONFIRM_CANCEL = "cancel";
 
 export function initialVoiceState(): VoiceState {
-  return { mode: "asleep", session: null, sessions: [], blocked: [], talking: false, pending: null, confirm: null, choices: null, held: null, queue: [], seq: 0 };
+  return { mode: "asleep", session: null, sessions: [], blocked: [], talking: false, pending: null, confirm: null, choices: null, held: null, queue: [], heard: [], seq: 0 };
 }
 
 const NAMES = "jarvis|jervis|javis|travis|jarvus|service";
@@ -133,7 +136,7 @@ function cancelled(state: VoiceState): VoiceStep {
 }
 
 function sleep(state: VoiceState): VoiceStep {
-  return out({ ...state, mode: "asleep", talking: false, pending: null, confirm: null, choices: null, held: null, queue: [] }, { type: "sleep" });
+  return out({ ...state, mode: "asleep", talking: false, pending: null, confirm: null, choices: null, held: null, queue: [], heard: [] }, { type: "sleep" });
 }
 
 const short = (sessions: VoiceSession[]): string[] => sessions.map((s) => shortName(s.name));
@@ -276,7 +279,12 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
     case "interpreted":
       return onInterpreted(state, event.seq, event.result);
     case "reply": {
-      if (event.sessionId !== state.session?.id) return out(state);
+      if (event.sessionId !== state.session?.id) {
+        const line = event.watched ? spokenLine(event.text) : "";
+        if (!line) return out(state);
+        const name = shortName(state.sessions.find((s) => s.id === event.sessionId)?.name ?? "A session");
+        return out({ ...state, heard: [...state.heard, { sessionId: event.sessionId, line: `${name}: ${line}` }] });
+      }
       const line = spokenLine(event.text);
       if (!line) return out(state);
       const spoken = `${shortName(state.session.name)}: ${line}`;
@@ -310,8 +318,9 @@ function flush(r: VoiceStep): VoiceStep {
   const idle = state.mode === "listening" || state.mode === "waiting";
   if (!idle || state.talking || effects.some((e) => e.type === "speak")) return r;
   if (state.held) return { state: { ...state, mode: "speaking", held: null }, effects: [...effects, { type: "speak", line: state.held }] };
-  if (!state.queue.length) return r;
-  return { state: { ...state, mode: "speaking", queue: [] }, effects: [...effects, { type: "speak", line: mergeNotices(state.queue) }] };
+  if (!state.queue.length && !state.heard.length) return r;
+  const line = [...state.heard.map((h) => h.line), ...(state.queue.length ? [mergeNotices(state.queue)] : [])].join(" ");
+  return { state: { ...state, mode: "speaking", queue: [], heard: [] }, effects: [...effects, { type: "speak", line }] };
 }
 
 function mergeNotices(queue: Notice[]): string {
