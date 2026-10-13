@@ -397,7 +397,8 @@ test("speak replies: the RPCs switch a session on, and its turns warm, hush and 
   await listeners.get("agent.turn_ended")!(spokenTurn("s1"), { paseo });
   await listeners.get("agent.turn_ended")!(spokenTurn("s2"), { paseo });
   assert.deepEqual(runs, [
-    { args: ["--warm"], stdin: undefined },
+    { args: ["--warm"], stdin: undefined }, // at launch
+    { args: ["--warm"], stdin: undefined }, // the pill
     { args: ["--hush"], stdin: undefined },
     { args: [], stdin: "All done." },
   ]);

@@ -31,6 +31,7 @@ on the Mac running the daemon (`afplay`), not on a phone or remote client. Error
   15-30 s to load; after that calls return in 0.2 s and the first sentence is audible in about 2 s. Text plays
   sentence by sentence; calls queue.
 - If the worker, venv or voice clip is missing or fails, `speak` uses `say`, so a reply is never silent.
+- Playback runs at 1.1x (`afplay -r 1.1 -q 1`). Set `SPEAK_RATE=1.0` in the worker's environment for the model's own pace.
 - Files live outside the repo in `~/.local/share/speak/`: `venv/` (Python 3.11 via uv, `chatterbox-tts`, `setuptools<81`
   for the watermarker), `voice/reference.wav` (10 s trim of the grokbot AI-voice clip; original kept beside it),
   `worker.log`, `speak.sock`.

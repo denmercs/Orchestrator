@@ -430,7 +430,10 @@ export default function contribute(
     return voiceHelper.interpret(input);
   });
   // Spoken replies: a switched-on session says the short line (or, in full mode, the whole message) of each completed reply (scripts/SPEAK.md).
-  const speakReplies = createSpeakReplies(deps.speak ?? realSpeakPorts());
+  const speakPorts = deps.speak ?? realSpeakPorts();
+  const speakReplies = createSpeakReplies(speakPorts);
+  // Warm the cloned voice at launch so the first Jarvis reply is not a Kokoro fallback.
+  void speakPorts.scriptReady().then((ready) => ready && speakPorts.run(["--warm"]));
   server.handle(speakRepliesSet, async ({ agentId, mode }) => {
     await speakReplies.set(agentId, mode);
     return { ok: true };
