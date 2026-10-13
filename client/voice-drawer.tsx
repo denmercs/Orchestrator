@@ -4,10 +4,10 @@ import { useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import type { createVoiceRunner } from "./voice-runner";
 import { ProfileChips, useAgentProfiles } from "./runner-picker";
-import { pickProfile, profileCaption, type AgentProfile } from "../shared/agent-profiles";
+import { profileCaption, type AgentProfile } from "../shared/agent-profiles";
 import { voiceSettings } from "../shared/settings";
 import { CONFIRM_CANCEL } from "../shared/voice-loop";
-import { voiceModelLine, voiceProfileFor } from "../shared/voice-session";
+import { voiceChipId, voiceModelLine, voiceProfileFor } from "../shared/voice-session";
 
 type Theme = PluginSurfaceProps["theme"];
 type VoiceRunner = ReturnType<typeof createVoiceRunner>;
@@ -84,7 +84,7 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
                 label="Model"
                 accessibilityLabel="Voice session model"
                 profiles={[...profiles, OFF_CHIP]}
-                selectedId={chosenVoiceId(profiles, settings.values.profile)}
+                selectedId={voiceChipId(profiles, settings.values.profile)}
                 autoLabel="Auto"
                 describe={(profile) => (profile.id === OFF_CHIP.id ? "Leave new voice sessions on the Paseo default" : `Run new voice sessions on ${profileCaption(profile)}`)}
                 onPick={(id) => {
@@ -196,12 +196,6 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
       </View>
     </View>
   );
-}
-
-// The chip that stands for the setting: "off", Auto (empty or unknown), or a profile id.
-function chosenVoiceId(profiles: AgentProfile[], setting: string) {
-  if (setting.trim().toLowerCase() === "off") return OFF_CHIP.id;
-  return setting ? (pickProfile(profiles, setting)?.id ?? "") : "";
 }
 
 function createStyles(theme: Theme, compact: boolean) {

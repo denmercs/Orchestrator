@@ -80,3 +80,26 @@ test("a session this link created never gets the preamble", async () => {
   await link.say(id, "go");
   assert.equal(sent[0].text, "go");
 });
+
+test("a first steer that fails keeps the preamble for the next try", async () => {
+  const sent: string[] = [];
+  let fail = true;
+  const { paseo } = fakeAgents();
+  const link = createVoiceLink({
+    ...paseo,
+    agents: {
+      ...paseo.agents,
+      ref: (id: string) => ({
+        ...paseo.agents.ref(id),
+        send: async (text: string) => {
+          if (fail) throw new Error("offline");
+          sent.push(text);
+        },
+      }),
+    },
+  });
+  await assert.rejects(link.say("a1", "run the tests"));
+  fail = false;
+  await link.say("a1", "run the tests");
+  assert.deepEqual(sent, [`${VOICE_ROUTING_PREAMBLE}\n\nrun the tests`]);
+});

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AgentProfile } from "./agent-profiles";
-import { applyVoiceSession, VOICE_ROUTING_RULE, VOICE_SESSION_ENV, voiceModelLine, voiceProfileFor, type VoiceRequest } from "./voice-session";
+import { applyVoiceSession, VOICE_ROUTING_RULE, VOICE_SESSION_ENV, voiceChipId, voiceModelLine, voiceProfileFor, type VoiceRequest } from "./voice-session";
 
 const opus: AgentProfile = { id: "p_opus", name: "default", provider: "claude", model: "claude-opus-5-5" };
 const sonnet: AgentProfile = { id: "p_sonnet", name: "Claude | Sonnet 5.5 - Coding", provider: "claude", model: "claude-sonnet-5-5" };
@@ -108,4 +108,15 @@ test("voiceModelLine names the profile's caption, or says the default is off", (
   assert.equal(voiceModelLine(null, "off"), "Voice sessions: default off");
   assert.equal(voiceModelLine(sonnet, "off"), "Voice sessions: default off");
   assert.equal(voiceModelLine(null, ""), "Voice sessions run on the Paseo default");
+});
+
+test("voiceChipId picks Off, Auto or the named profile, and no chip for a profile that is gone", () => {
+  const profiles = [opus, sonnet];
+  assert.equal(voiceChipId(profiles, "off"), "off");
+  assert.equal(voiceChipId(profiles, " OFF "), "off");
+  assert.equal(voiceChipId(profiles, ""), "");
+  assert.equal(voiceChipId(profiles, "p_sonnet"), "p_sonnet");
+  assert.equal(voiceChipId(profiles, "Claude | Sonnet 5.5 - Coding"), "p_sonnet");
+  // The hook leaves a missing profile on the Paseo default, so Auto must not light up for it.
+  assert.equal(voiceChipId(profiles, "p_deleted"), "p_deleted");
 });

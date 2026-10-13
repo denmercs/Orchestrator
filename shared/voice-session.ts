@@ -70,6 +70,38 @@ export function applyVoiceSession<T extends VoiceRequest>(request: T, profile: A
   return { ...request, config };
 }
 
+type CreateOptions = { config: { provider: string }; env: Record<string, string> };
+
+// The slice of a Paseo handle (client or server) `createVoiceSession` uses, so a fake can stand in for it in tests.
+export type VoiceCreatePaseo = {
+  agents: {
+    ref(id: string): { refresh(): Promise<{ agent: { cwd: string; provider: string; workspaceId?: string | null } } | null | undefined> };
+    create(options: CreateOptions & { cwd: string }): Promise<{ id: string }>;
+  };
+  workspaces: { ref(id: string): { agents: { create(options: CreateOptions): Promise<{ id: string }> } } };
+};
+
+// A marked voice session in the target's folder and workspace, on its provider only: the agent.create hook picks the
+// model (see applyVoiceSession). Shared by the drawer's link and the Jarvis router.
+export async function createVoiceSession(paseo: VoiceCreatePaseo, targetId: string): Promise<string> {
+  const refreshed = await paseo.agents.ref(targetId).refresh();
+  if (!refreshed) throw new Error("That session is gone.");
+  const { cwd, provider, workspaceId } = refreshed.agent;
+  const options = { config: { provider }, env: { [VOICE_SESSION_ENV]: "1" } };
+  const agent = workspaceId
+    ? await paseo.workspaces.ref(workspaceId).agents.create(options)
+    : await paseo.agents.create({ cwd, ...options });
+  return agent.id;
+}
+
+// The drawer chip that stands for the setting: "off", Auto (""), or the profile's id. A profile that is gone lights no
+// chip, since the hook then leaves new sessions on the Paseo default rather than Auto.
+export function voiceChipId(profiles: AgentProfile[], setting: string) {
+  const value = setting.trim();
+  if (value.toLowerCase() === "off") return "off";
+  return value ? (pickProfile(profiles, value)?.id ?? value) : "";
+}
+
 // The drawer's one-line statement of what a new voice session will run on.
 export function voiceModelLine(profile: AgentProfile | null, setting: string) {
   if (setting.trim().toLowerCase() === "off") {

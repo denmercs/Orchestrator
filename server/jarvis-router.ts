@@ -6,30 +6,11 @@
 import { CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
 import { namelessPassThrough, type Interpreter } from "../shared/voice-interpreter";
 import { ASLEEP_NOTE, newSessionFailedLine, NOTHING_SENT, notTargetLine, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
-import { VOICE_ROUTING_PREAMBLE, VOICE_SESSION_ENV } from "../shared/voice-session";
+import { createVoiceSession, VOICE_ROUTING_PREAMBLE, type VoiceCreatePaseo } from "../shared/voice-session";
 
-type CreateOptions = { config: { provider: string }; env: Record<string, string> };
-
-/** The slice of the server-side Paseo handle `voiceSessionCreator` uses, so a fake can stand in for it in tests. */
-export type CreatePaseo = {
-  agents: {
-    ref(id: string): { refresh(): Promise<{ agent: { cwd: string; provider: string; workspaceId?: string | null } } | null | undefined> };
-    create(options: CreateOptions & { cwd: string }): Promise<{ id: string }>;
-  };
-  workspaces: { ref(id: string): { agents: { create(options: CreateOptions): Promise<{ id: string }> } } };
-};
-
-/** The `create` port: a marked voice session in the target's folder and workspace, on its provider only (the agent.create hook picks the voice profile). */
-export function voiceSessionCreator(paseo: () => CreatePaseo): (target: VoiceSession) => Promise<string> {
-  return async (target) => {
-    const api = paseo();
-    const refreshed = await api.agents.ref(target.id).refresh();
-    if (!refreshed) throw new Error("That session is gone.");
-    const { cwd, provider, workspaceId } = refreshed.agent;
-    const options = { config: { provider }, env: { [VOICE_SESSION_ENV]: "1" } };
-    const agent = workspaceId ? await api.workspaces.ref(workspaceId).agents.create(options) : await api.agents.create({ cwd, ...options });
-    return agent.id;
-  };
+/** The `create` port: a marked voice session beside the target. See `createVoiceSession`. */
+export function voiceSessionCreator(paseo: () => VoiceCreatePaseo): (target: VoiceSession) => Promise<string> {
+  return (target) => createVoiceSession(paseo(), target.id);
 }
 
 export type JarvisRouterPorts = {
