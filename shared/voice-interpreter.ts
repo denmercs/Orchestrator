@@ -1,5 +1,8 @@
 import { withoutName, type InterpretResult, type VoiceSession } from "./voice-loop";
 
+// The helper switch starts on; the drawer lets the user turn it off.
+export const HELPER_DEFAULT_ON = true;
+
 const DROP: InterpretResult = { type: "drop" };
 
 const unfence = (reply: string): string => {
@@ -11,7 +14,7 @@ const unfence = (reply: string): string => {
 const words = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value : null);
 
 /** Reads the helper's one-line JSON answer; anything malformed or unknown is a drop. */
-export function parseHelperReply(reply: string | null, sessions: VoiceSession[]): InterpretResult {
+export function parseHelperReply(reply: string | null, _sessions: VoiceSession[]): InterpretResult {
   if (!reply) return DROP;
   let value: unknown;
   try {
@@ -24,12 +27,14 @@ export function parseHelperReply(reply: string | null, sessions: VoiceSession[])
   if (action === "drop") return DROP;
   if (action === "send" || action === "confirm") {
     const said = words(text);
-    return said ? { type: action, text: said } : DROP;
+    return said ? { type: "send", text: said } : DROP;
   }
-  if (action === "switch") {
-    const wanted = words(session)?.trim().toLowerCase();
-    const found = wanted ? sessions.find((s) => s.name.trim().toLowerCase() === wanted) : undefined;
-    return found ? { type: "switch", name: found.name } : DROP;
+  // The loop matches loose names (matchSessions); the parser only passes them through.
+  const named = words(session)?.trim();
+  if (action === "switch") return named ? { type: "switch", name: named } : DROP;
+  if (action === "sendTo") {
+    const said = words(text);
+    return named && said ? { type: "sendTo", session: named, text: said } : DROP;
   }
   return DROP;
 }
@@ -68,23 +73,24 @@ export function helperPrompt(ctx: InterpretContext): string {
 
 export const VOICE_HELPER_SYSTEM_PROMPT = `You clean up speech-to-text for a voice interface. Each message holds one transcript with context. Choose one action:
 - "send": send the cleaned-up text to the target session. Fix mis-heard words using the vocabulary.
-- "confirm": the user means a risky command; reply with the exact words, for example "merge it".
+- "sendTo": the user wants a request sent to another session ("send that to the planning one"); "session" is how they named it and "text" is the request written out in full. Work out what "that" means from the recent messages. If you cannot, answer switch only.
 - "switch": the user wants another session; "session" is that session's name from the list.
 - "drop": a fragment or noise that is not a request. Send nothing.
 
 Reply with only that JSON, no prose and no code fence:
-{"action":"send"|"confirm"|"switch"|"drop","text"?:...,"session"?:...}
+{"action":"send"|"sendTo"|"switch"|"drop","text"?:...,"session"?:...}
 
 Examples:
 "run the tests in orchestra tour" -> {"action":"send","text":"run the tests in Orchestrator"}
 "This day" (a fragment) -> {"action":"drop"}
-"merge England" -> {"action":"confirm","text":"merge it"}
-"switch to the review session" -> {"action":"switch","session":"<the session named like that>"}`;
+"merge England" -> {"action":"send","text":"merge it"}
+"switch to the review session" -> {"action":"switch","session":"<the session named like that>"}
+"send that to the planning one" -> {"action":"sendTo","session":"planning","text":"<the request from the recent messages, in full>"}`;
 
 export type InterpretOutcome = {
   result: InterpretResult;
   via: "helper" | "passThrough";
-  reason?: "timeout" | "error";
+  reason?: "timeout" | "error" | "starting";
 };
 
 export type FallbackOptions = {

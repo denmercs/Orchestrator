@@ -28,7 +28,23 @@ export const voiceHelperStop = defineRpc({
   output: z.object({ ok: z.boolean() }),
 });
 
-// Cleans one transcript. Errors reach the client, which falls back to sending the words as heard.
+// Reads (no `enabled`) or flips the helper's switch, which lives in the server's interpret service. Both the drawer
+// and Jarvis follow it. Answers the switch as it is now.
+export const voiceHelperSwitch = defineRpc({
+  name: "orchestration.voice.helper.switch",
+  input: z.object({ enabled: z.boolean().optional() }),
+  output: z.object({ enabled: z.boolean() }),
+});
+
+const interpretResult = z.union([
+  z.object({ type: z.literal("send"), text: z.string() }),
+  z.object({ type: z.literal("switch"), name: z.string() }),
+  z.object({ type: z.literal("sendTo"), session: z.string(), text: z.string() }),
+  z.object({ type: z.literal("drop") }),
+]);
+
+// Cleans one transcript and says how: the helper, or the words as heard (with why). Never rejects on a slow or
+// failed helper; the service falls back itself.
 export const voiceInterpret = defineRpc({
   name: "orchestration.voice.interpret",
   input: z.object({
@@ -36,12 +52,11 @@ export const voiceInterpret = defineRpc({
     sessionId: z.string(),
     sessions: z.array(z.object({ id: z.string(), name: z.string() })),
   }),
-  output: z.union([
-    z.object({ type: z.literal("send"), text: z.string() }),
-    z.object({ type: z.literal("confirm"), text: z.string() }),
-    z.object({ type: z.literal("switch"), name: z.string() }),
-    z.object({ type: z.literal("drop") }),
-  ]),
+  output: z.object({
+    result: interpretResult,
+    via: z.enum(["helper", "passThrough"]),
+    reason: z.enum(["timeout", "error", "starting"]).optional(),
+  }),
 });
 
 // The Voice drawer's target, told to the server so the Jarvis router sends to the same session.

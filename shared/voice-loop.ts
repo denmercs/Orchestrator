@@ -21,6 +21,10 @@ export type VoiceState = {
   confirm: { word: string; text: string } | null;
   /** The sessions of the last numbered list or question, so a bare number ("two", "number two") picks one. */
   choices: VoiceSession[] | null;
+  /** A request waiting on that list (from the helper's `sendTo`): the pick switches, then sends it. Ignored when `choices` is null. */
+  choicesText?: string;
+  /** What was heard for that request, so its critical words are still checked after the pick. */
+  choicesHeard?: string;
   /** The target's spoken reply, held while you talk or confirm. */
   held: string | null;
   queue: Notice[];
@@ -28,7 +32,10 @@ export type VoiceState = {
 };
 
 /** What the interpreter helper (d1) made of an utterance. */
-export type InterpretResult = { type: "send"; text: string } | { type: "confirm"; text: string } | { type: "switch"; name: string } | { type: "drop" };
+export type InterpretResult = { type: "send"; text: string } | { type: "switch"; name: string }
+  /** A loose request for a named session ("send that to the planning one"): the loop matches the name, then sends the text. */
+  | { type: "sendTo"; session: string; text: string }
+  | { type: "drop" };
 
 export type VoiceEvent =
   | { type: "wake" }
@@ -141,25 +148,25 @@ function switched(state: VoiceState, session: VoiceSession): VoiceStep {
 }
 
 /** Asks which of several sessions, numbered; a bare number then answers it. */
-function askWhich(state: VoiceState, matches: VoiceSession[]): VoiceStep {
+function askWhich(state: VoiceState, matches: VoiceSession[], text?: string, heard?: string): VoiceStep {
   const choices = matches.slice(0, LIST_SHOWN);
-  return out({ ...state, choices }, { type: "speak", line: whichLine(short(choices)) });
+  return out({ ...state, choices, choicesText: text, choicesHeard: heard }, { type: "speak", line: whichLine(short(choices)) });
 }
 
 /** Reads a numbered list of sessions through `line`, and remembers it for a bare number. */
-function numberedList(state: VoiceState, shown: number, line: (names: string[], total: number) => string): VoiceStep {
+function numberedList(state: VoiceState, shown: number, line: (names: string[], total: number) => string, text?: string, heard?: string): VoiceStep {
   const choices = state.sessions.slice(0, shown);
-  return out({ ...state, choices: choices.length ? choices : null }, { type: "speak", line: line(short(choices), state.sessions.length) });
+  return out({ ...state, choices: choices.length ? choices : null, choicesText: text, choicesHeard: heard }, { type: "speak", line: line(short(choices), state.sessions.length) });
 }
 
-function switchTo(state: VoiceState, spoken: string): VoiceStep {
+function switchTo(state: VoiceState, spoken: string, text?: string, heard?: string): VoiceStep {
   const base = { ...state, pending: null, confirm: null, choices: null };
   const matches = matchSessions(state.sessions, spoken);
   const own = matches.length ? [] : matchSessions(state.blocked, spoken, false);
   if (own.length) return out(base, { type: "speak", line: notTargetLine(shortName(own[0].name)) });
   if (matches.length === 1) return switched(base, matches[0]);
-  if (matches.length > 1) return askWhich(base, matches);
-  return numberedList(base, PICK_SHOWN, (names, total) => noSessionLine(spoken, names, total));
+  if (matches.length > 1) return askWhich(base, matches, text, heard);
+  return numberedList(base, PICK_SHOWN, (names, total) => noSessionLine(spoken, names, total), text, heard);
 }
 
 /** A bare number after a numbered list or question picks that entry. */
@@ -167,7 +174,11 @@ function pickNumber(state: VoiceState, choices: VoiceSession[], n: number): Voic
   const session = choices[n - 1];
   if (!session) return out({ ...state, pending: null }, { type: "speak", line: noChoiceLine(n, choices.length) });
   if (isBlocked(state, session.id)) return out({ ...state, pending: null, choices: null }, { type: "speak", line: notTargetLine(shortName(session.name)) });
-  return switched(state, session);
+  const picked = switched(state, session);
+  const text = state.choicesText;
+  if (text === undefined) return picked;
+  // A list that carried a request: the pick makes the session the target, then the text goes the normal send path.
+  return deliver({ ...picked.state, choicesText: undefined, choicesHeard: undefined }, text, state.choicesHeard ?? text);
 }
 
 function onUtterance(state: VoiceState, text: string): VoiceStep {
@@ -215,9 +226,19 @@ function onInterpreted(state: VoiceState, seq: number, result: InterpretResult):
   const base = { ...state, pending: null };
   if (result.type === "drop") return out(base);
   if (result.type === "switch") return switchTo(base, result.name);
-  const word = critical(norm(result.text)) ?? critical(norm(pending.heard));
-  if (result.type === "confirm") return askConfirm(base, result.text, word ?? "send");
-  return word ? askConfirm(base, result.text, word) : sentTo(base, result.text);
+  if (result.type === "sendTo") {
+    const matches = matchSessions(state.sessions, result.session);
+    // One match: it becomes the target and the text goes the normal send path. Several or none: the numbered list, carrying the text. One of Voice's own: said so.
+    if (matches.length !== 1) return switchTo(base, result.session, result.text, pending.heard);
+    return deliver({ ...base, session: matches[0], choices: null }, result.text, pending.heard);
+  }
+  return deliver(base, result.text, pending.heard);
+}
+
+/** Text for the current target: a critical word (in the text or what was heard) asks the strict confirm, else it is sent. */
+function deliver(state: VoiceState, text: string, heard: string): VoiceStep {
+  const word = critical(norm(text)) ?? critical(norm(heard));
+  return word ? askConfirm(state, text, word) : sentTo(state, text);
 }
 
 function core(state: VoiceState, event: VoiceEvent): VoiceStep {

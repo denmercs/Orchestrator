@@ -12,7 +12,7 @@ const say = (state: VoiceState, text: string) => step(state, { type: "utterance"
 const types = (effects: VoiceEffect[]) => effects.map((e) => e.type);
 
 /** Runs an utterance through the interpreter stub (echo) and returns the step after `interpreted`. */
-const heardAs = (state: VoiceState, text: string, result: { type: "send"; text: string } | { type: "confirm"; text: string }) => {
+const heardAs = (state: VoiceState, text: string, result: { type: "send"; text: string }) => {
   const first = say(state, text);
   const seq = first.state.pending?.seq ?? -1;
   return step(first.state, { type: "interpreted", seq, result });
@@ -182,10 +182,25 @@ test("'never mind' and confirm(cancel) cancel a confirmation", () => {
   }
 });
 
-test("interpreted confirm(text) asks even without a critical word", () => {
-  const r = heardAs(awake(), "rename the module", { type: "confirm", text: "Rename the module" });
-  assert.deepEqual(r.effects, [{ type: "askConfirm", word: "send", line: 'Send "Rename the module" to api-refactor? Say one to send, or two to cancel.' }]);
-  assert.equal(r.state.mode, "confirming");
+test("the helper cannot confirm: a plain send is sent, a critical word in the text or the heard words is a strict confirm", () => {
+  const plain = heardAs(awake(), "rename the module", { type: "send", text: "Rename the module" });
+  assert.deepEqual(types(plain.effects), ["send", "receipt"]);
+  assert.equal(plain.state.mode, "waiting");
+  const inText = heardAs(awake(), "ship the branch please", { type: "send", text: "Merge the branch" });
+  assert.deepEqual(inText.effects, [{ type: "askConfirm", word: "merge", line: 'Send "Merge the branch" to api-refactor? Say one to send, or two to cancel.' }]);
+  const inHeard = heardAs(awake(), "please delete the old file", { type: "send", text: "Remove the old file" });
+  assert.deepEqual(types(inHeard.effects), ["askConfirm"]);
+  assert.equal(inHeard.state.mode, "confirming");
+  // A reply that still says "confirm" (an old helper) is not honoured as a confirm.
+  const old = heardAs(awake(), "rename the module", { type: "confirm", text: "Rename the module" } as never);
+  assert.ok(!types(old.effects).includes("askConfirm"));
+});
+
+test("a pending confirm or a live list never asks the helper", () => {
+  const asked = heardAs(awake(), "stop", { type: "send", text: "Stop" }).state;
+  assert.ok(!types(say(asked, "rename the module please").effects).includes("interpret"));
+  const listed = say(awake(), "list sessions").state;
+  assert.ok(!types(say(listed, "one").effects).includes("interpret"));
 });
 
 // Cycle 5
@@ -333,7 +348,6 @@ test("every mode × event: steers pair with receipts, only interrupt interrupts,
     { type: "utterance", text: "Jarvis, switch to docs" },
     { type: "interpreted", seq: 1, result: { type: "send", text: "Fix the login bug" } },
     { type: "interpreted", seq: 1, result: { type: "send", text: "Merge the branch" } },
-    { type: "interpreted", seq: 1, result: { type: "confirm", text: "Rename it" } },
     { type: "interpreted", seq: 1, result: { type: "switch", name: "docs" } },
     { type: "interpreted", seq: 1, result: { type: "drop" } },
     { type: "reply", sessionId: "s1", text: "All done." },
@@ -596,4 +610,93 @@ test("a list ignores sound-alikes, expires, and is forgotten by any other words;
   assert.deepEqual(types(echo.effects), ["interpret"]);
   const noTarget = say({ ...listed, session: null }, "Two, docs.");
   assert.equal(noTarget.state.session, null);
+});
+
+test("interpreted sendTo with one match switches to it and steers the text with a receipt", () => {
+  const planning: VoiceSession = { id: "pl", name: "Planning one — roadmap" };
+  const state = awake({ sessions: [api, docs, planning] });
+  const asked = say(state, "send that to the planning one, run the tests");
+  const r = step(asked.state, { type: "interpreted", seq: asked.state.pending?.seq ?? -1, result: { type: "sendTo", session: "planning one", text: "run the tests" } });
+  assert.deepEqual(r.effects, [
+    { type: "send", session: planning, text: "run the tests", behavior: "steer" },
+    { type: "receipt", session: planning, line: "Sent to Planning one." },
+  ]);
+  assert.equal(r.state.session, planning);
+  assert.equal(r.state.mode, "waiting");
+});
+
+test("interpreted sendTo with critical text asks the strict confirm on the new target", () => {
+  const planning: VoiceSession = { id: "pl", name: "Planning one — roadmap" };
+  const state = awake({ sessions: [api, docs, planning] });
+  const asked = say(state, "tell the planning one to merge the branch");
+  const r = step(asked.state, { type: "interpreted", seq: asked.state.pending?.seq ?? -1, result: { type: "sendTo", session: "planning one", text: "Merge the branch" } });
+  assert.deepEqual(types(r.effects), ["askConfirm"]);
+  assert.equal(r.state.session, planning);
+  assert.equal(r.state.mode, "confirming");
+  assert.equal(r.state.confirm?.text, "Merge the branch");
+});
+
+test("interpreted sendTo naming one of Voice's own sessions says so and sends nothing", () => {
+  const jarvis: VoiceSession = { id: "j1", name: "Jarvis phone" };
+  const state = awake({ blocked: [jarvis] });
+  const asked = say(state, "send that to jarvis phone, run the tests");
+  const r = step(asked.state, { type: "interpreted", seq: asked.state.pending?.seq ?? -1, result: { type: "sendTo", session: "jarvis phone", text: "run the tests" } });
+  assert.deepEqual(r.effects, [{ type: "speak", line: "Jarvis phone is a voice session, so it can't be the target. Pick another session." }]);
+  assert.equal(r.state.session, api);
+});
+
+const sendToAsked = (state: VoiceState, name: string, text: string, heard = "send that on") => {
+  const asked = say(state, heard);
+  return step(asked.state, { type: "interpreted", seq: asked.state.pending?.seq ?? -1, result: { type: "sendTo", session: name, text } });
+};
+
+test("sendTo with an ambiguous or unknown name reads the numbered list carrying the text; a number picks and sends it", () => {
+  const state = awake({ sessions: [api, docs, apiTwo] });
+  const amb = sendToAsked(state, "api", "run the tests");
+  assert.deepEqual(types(amb.effects), ["speak"]);
+  assert.match((amb.effects[0] as { line: string }).line, /Did you mean/);
+  const picked = say(amb.state, "two");
+  assert.deepEqual(picked.effects, [
+    { type: "send", session: apiTwo, text: "run the tests", behavior: "steer" },
+    { type: "receipt", session: apiTwo, line: "Sent to api-docs." },
+  ]);
+  assert.equal(picked.state.session, apiTwo);
+  const unknown = sendToAsked(state, "billing", "run the tests");
+  assert.match((unknown.effects[0] as { line: string }).line, /No session called billing/);
+  const pickedDocs = say(unknown.state, "two");
+  assert.deepEqual(types(pickedDocs.effects), ["send", "receipt"]);
+  assert.equal((pickedDocs.effects[0] as { session: VoiceSession }).session, docs);
+});
+
+test("a numbered sendTo pick of critical text asks the strict confirm after the pick", () => {
+  const state = awake({ sessions: [api, docs, apiTwo] });
+  const amb = sendToAsked(state, "api", "Merge the branch");
+  const picked = say(amb.state, "one");
+  assert.deepEqual(types(picked.effects), ["askConfirm"]);
+  assert.equal(picked.state.session, api);
+  assert.equal(picked.state.confirm?.text, "Merge the branch");
+});
+
+test("other words or choicesExpired forget a sendTo list and its text; a plain switch list carries no text", () => {
+  const state = awake({ sessions: [api, docs, apiTwo] });
+  const amb = sendToAsked(state, "api", "run the tests");
+  const expired = step(amb.state, { type: "choicesExpired" }).state;
+  assert.equal(expired.choices, null);
+  assert.ok(!types(say(expired, "two").effects).includes("send"));
+  const other = say(amb.state, "something else entirely");
+  assert.equal(other.state.choices, null);
+  const plain = say(state, "switch to api");
+  assert.deepEqual(types(say(plain.state, "two").effects), ["speak"]);
+  // A text carried by an earlier list does not leak into a later plain list.
+  const later = say(sendToAsked(state, "api", "run the tests").state, "switch to api");
+  const laterPick = say(later.state, "two");
+  assert.deepEqual(types(laterPick.effects), ["speak"]);
+});
+
+test("a numbered sendTo pick still checks the heard words for a critical word the helper cleaned out", () => {
+  const state = awake({ sessions: [api, docs, apiTwo] });
+  const amb = sendToAsked(state, "api", "Go ahead with it", "send that to api and merge it");
+  const picked = say(amb.state, "one");
+  assert.deepEqual(types(picked.effects), ["askConfirm"]);
+  assert.equal(picked.state.confirm?.text, "Go ahead with it");
 });

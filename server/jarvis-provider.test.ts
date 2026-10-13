@@ -59,7 +59,7 @@ test("speak reads an SSE reply, and throws on tool errors, HTTP errors and a mis
   await assert.rejects(speak({ type: "stdio", command: "paseo" }, "hi"), /no HTTP/);
 });
 
-function connect(result: RouteResult, fetchReply = OK_JSON) {
+function connect(result: RouteResult, fetchReply = OK_JSON, warm?: () => void) {
   const routed: [string, string][] = [];
   const { impl, calls } = fakeFetch({ body: fetchReply });
   const connection = createJarvisConnection({
@@ -68,6 +68,7 @@ function connect(result: RouteResult, fetchReply = OK_JSON) {
       return result;
     },
     fetch: impl,
+    warm,
   });
   const events: ProviderEvent[] = [];
   connection.onEvent((event) => events.push(event));
@@ -105,6 +106,20 @@ test("session.opened declares persistence with a router id, and a reopen keeps t
   assert.deepEqual(reopened && reopened.type === "session.opened" ? reopened.persistence : null, { version: 1, data: { routerId } });
 });
 
+test("session.open warms the helper, and a failing warm never blocks the session", async () => {
+  let warmed = 0;
+  const { connection, events } = connect({ spoken: [], note: null }, OK_JSON, () => void warmed++);
+  await connection.send(open());
+  await settle(events, (e) => e.type === "session.ready");
+  assert.equal(warmed, 1);
+  const broken = connect({ spoken: [], note: null }, OK_JSON, () => {
+    throw new Error("no helper");
+  });
+  await broken.connection.send(open());
+  await settle(broken.events, (e) => e.type === "session.ready");
+  assert.ok(broken.events.some((e) => e.type === "session.ready"));
+});
+
 test("a spoken turn: prompt_result, started, the reply in the chat, speak, completed", async () => {
   const { connection, events, routed, calls } = connect({ spoken: ["Sent to docs."], note: null });
   await connection.send(open({ version: 1, data: { routerId: "r1" } }));
@@ -122,6 +137,17 @@ test("a spoken turn: prompt_result, started, the reply in the chat, speak, compl
   assert.deepEqual(item.item, { id: `${result.result.turnId}-reply`, type: "assistant_message", text: "Sent to docs." });
   assert.deepEqual(routed, [["r1", "run the tests"]]);
   assert.equal(calls.length, 1);
+  assert.equal(calls[0].body.params.arguments.text, "Sent to docs.");
+});
+
+test("a note after spoken lines shows in the chat but is not spoken", async () => {
+  const { connection, events, calls } = connect({ spoken: ["Sent to docs."], note: "Helper timed out, sent as heard" });
+  await connection.send(open());
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
+  const item = events.find((e) => e.type === "timeline.item");
+  assert.ok(item && item.type === "timeline.item" && item.item.type === "assistant_message");
+  assert.equal(item.item.text, "Sent to docs. Helper timed out, sent as heard");
   assert.equal(calls[0].body.params.arguments.text, "Sent to docs.");
 });
 

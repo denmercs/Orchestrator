@@ -32,6 +32,8 @@ type Session = {
 export type JarvisProviderDeps = {
   route(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult>;
   fetch?: Fetch;
+  /** Starts the Voice helper in the background; called when a session opens. Never awaited, failures ignored. */
+  warm?(): unknown;
 };
 
 /** The prompt's text; a slash command comes back as typed. */
@@ -112,7 +114,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
     const text = promptText(prompt);
     const spoken = spokenText(text);
     const result = await deps.route(session.routerId, spoken ?? text, signal);
-    const reply = result.spoken.join(" ") || result.note || "";
+    const reply = [result.spoken.join(" "), result.note].filter(Boolean).join(" ");
     if (reply && live(sessionId, turnId)) {
       emit({ type: "timeline.item", sessionId, item: { id: `${turnId}-reply`, type: "assistant_message", text: reply } });
     }
@@ -139,6 +141,11 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
         return;
       case "session.open": {
         const routerId = routerIdOf(input.persistence) ?? randomUUID();
+        try {
+          void Promise.resolve(deps.warm?.()).catch(() => {});
+        } catch {
+          // A warm-up that throws must not stop the session opening.
+        }
         sessions.set(input.sessionId, { routerId, mcpServers: input.config.mcpServers, turnId: null, abort: null });
         later({
           type: "session.opened",

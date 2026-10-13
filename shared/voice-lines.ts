@@ -16,6 +16,14 @@ export const NOTHING_SENT = "Nothing sent.";
 export const NOTHING_TO_CONFIRM = "Nothing to confirm.";
 export const STOPPED_NOTE = "Stopped before sending.";
 
+const HELPER_NOTES = { timeout: "Helper timed out", error: "Helper failed", starting: "Helper starting" } as const;
+
+/** Shown (never spoken) when the helper could not answer and the words went as heard; null when it answered. */
+export function helperFallbackNote({ via, reason }: { via: "helper" | "passThrough"; reason?: keyof typeof HELPER_NOTES }): string | null {
+  if (via !== "passThrough" || !reason) return null;
+  return `${HELPER_NOTES[reason]}, sent as heard`;
+}
+
 export const sentLine = (name: string) => `Sent to ${name}.`;
 export const switchedLine = (name: string) => `Now on ${name}.`;
 /** No session by that name; with names, the numbered list follows so a number can answer it. */

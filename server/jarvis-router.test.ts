@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Interpreter } from "../shared/voice-interpreter";
+import type { InterpretOutcome } from "../shared/voice-interpreter";
 import { CONFIRM_TIMEOUT_MS, type VoiceSession } from "../shared/voice-loop";
 import { NOTHING_TO_CONFIRM, notTargetLine, pickFirstLine, SLEEP_LINE, STOPPED_NOTE, WAKE_LINE } from "../shared/voice-lines";
-import { createJarvisRouter } from "./jarvis-router";
+import { createJarvisRouter, type JarvisInterpreter } from "./jarvis-router";
 
 const api: VoiceSession = { id: "s1", name: "api-refactor" };
 const docs: VoiceSession = { id: "s2", name: "docs" };
 const self: VoiceSession = { id: "j1", name: "Jarvis" };
 
-function setup(opts: { sessions?: VoiceSession[]; fail?: boolean; interpreter?: Interpreter } = {}) {
+function setup(opts: { sessions?: VoiceSession[]; fail?: boolean; interpreter?: JarvisInterpreter } = {}) {
   const sent: [string, string][] = [];
   let clock = 0;
   const router = createJarvisRouter({
@@ -111,19 +111,24 @@ test("routers keep their own state", async () => {
   assert.equal(router.stateOf("r2")?.session, null);
 });
 
-test("an interpreter can clean up the words, and the loop still confirms critical ones", async () => {
-  const seen: string[] = [];
-  const helper: Interpreter = {
-    async interpret(text, ctx) {
-      seen.push(`${text}|${ctx?.targetTitle}`);
-      return text.includes("england") ? { type: "confirm", text: "merge it" } : { type: "send", text: "run the tests in Orchestrator" };
+const helped = (result: InterpretOutcome["result"]): InterpretOutcome => ({ result, via: "helper" });
+
+test("an interpreter gets the target's id and the sessions, and its result reaches the loop (critical words still confirm)", async () => {
+  const seen: unknown[] = [];
+  const helper: JarvisInterpreter = {
+    async interpret(text, req) {
+      seen.push([text, req.sessionId, req.sessions.map((s) => s.name)]);
+      return helped(text.includes("england") ? { type: "send", text: "merge it" } : { type: "send", text: "run the tests in Orchestrator" });
     },
   };
   const { router, sent } = setup({ interpreter: helper });
   await router.setTarget(api);
   assert.deepEqual((await router.route("r1", "run the tests in orchestra tour")).spoken, ["Sent to api-refactor."]);
   assert.match((await router.route("r1", "merge england")).spoken[0], /Say one to send/);
-  assert.deepEqual(seen, ["run the tests in orchestra tour|api-refactor", "merge england|api-refactor"]);
+  assert.deepEqual(seen, [
+    ["run the tests in orchestra tour", "s1", ["api-refactor", "docs"]],
+    ["merge england", "s1", ["api-refactor", "docs"]],
+  ]);
   assert.deepEqual(sent, [["s1", "run the tests in Orchestrator"]]);
 });
 
@@ -132,6 +137,27 @@ test("a failing interpreter falls back to the words as heard", async () => {
   await router.setTarget(api);
   await router.route("r1", "Jarvis, run the tests");
   assert.deepEqual(sent, [["s1", "run the tests"]]);
+});
+
+test("a fallback reason adds a note to the chat text only, never to what is spoken", async () => {
+  for (const [reason, note] of [
+    ["timeout", "Helper timed out, sent as heard"],
+    ["error", "Helper failed, sent as heard"],
+    ["starting", "Helper starting, sent as heard"],
+  ] as const) {
+    const { router, sent } = setup({
+      interpreter: { interpret: async (text) => ({ result: { type: "send", text }, via: "passThrough", reason }) },
+    });
+    await router.setTarget(api);
+    const r = await router.route("r1", "run the tests");
+    assert.deepEqual(r.spoken, ["Sent to api-refactor."]);
+    assert.equal(r.note, note);
+    assert.deepEqual(sent, [["s1", "run the tests"]]);
+  }
+  // A clean helper answer has no note.
+  const { router } = setup({ interpreter: { interpret: async (text) => helped({ type: "send", text }) } });
+  await router.setTarget(api);
+  assert.equal((await router.route("r1", "run the tests")).note, null);
 });
 
 test("Voice's own sessions are never a target: the drawer's pick and switch by name are refused", async () => {

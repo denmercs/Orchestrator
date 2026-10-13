@@ -3,6 +3,7 @@ import { Pressable, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import type { createVoiceRunner } from "./voice-runner";
+import { VoiceInterpretPanel } from "./voice-interpret-panel";
 import { CONFIRM_CANCEL } from "../shared/voice-loop";
 
 type Theme = PluginSurfaceProps["theme"];
@@ -131,6 +132,8 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
               ) : null}
             </View>
           ) : null}
+
+          <VoiceInterpretPanel theme={theme} enabled={state.helper} onToggle={(next) => runner.setHelper(next)} history={state.interprets} />
 
           <Text style={styles.section}>Heard</Text>
           {state.transcripts.length === 0 ? <Text style={styles.hint}>Nothing yet.</Text> : null}

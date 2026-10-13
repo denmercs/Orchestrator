@@ -43,7 +43,8 @@ import { LOOP_START_FILE, LOOP_START_POLL_MS, tickLoopStart } from "./server/loo
 import { join, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./server/voice-helper";
-import { transcribeVoice, voiceHelperStart, voiceHelperStop, voiceInterpret, voiceTarget } from "./shared/voice-rpc";
+import { transcribeVoice, voiceHelperStart, voiceHelperStop, voiceHelperSwitch, voiceInterpret, voiceTarget } from "./shared/voice-rpc";
+import { createVoiceInterpret } from "./server/voice-interpret";
 import { createJarvisProvider } from "./server/jarvis-provider";
 import { createJarvisRouter } from "./server/jarvis-router";
 import { splitSessions } from "./shared/voice-loop";
@@ -411,20 +412,34 @@ export default function contribute(
   // after voice turns off (the id already forgotten) must still stay telemetry only.
   const isVoiceHelper = (agent: { id: string; cwd: string }) =>
     agent.id === voiceHelper.agentId() || resolve(agent.cwd) === resolve(helperCwd);
+  // One interpret service for the drawer's RPCs and Jarvis: it owns the switch, the helper's lifecycle and the fallback.
+  const voiceInterpretService = createVoiceInterpret({
+    start: async () => {
+      await mkdir(helperCwd, { recursive: true });
+      await voiceHelper.start();
+    },
+    stop: () => voiceHelper.stop(),
+    interpret: (req) => voiceHelper.interpret(req),
+    agentId: () => voiceHelper.agentId(),
+  });
   server.handle(voiceHelperStart, async (_input, { paseo }) => {
     helperPaseo = paseo;
-    await mkdir(helperCwd, { recursive: true });
-    await voiceHelper.start();
+    await voiceInterpretService.start();
     return { ok: true };
   });
   server.handle(voiceHelperStop, async (_input, { paseo }) => {
     helperPaseo = paseo;
-    await voiceHelper.stop();
+    await voiceInterpretService.stop();
     return { ok: true };
+  });
+  server.handle(voiceHelperSwitch, (input, { paseo }) => {
+    helperPaseo = paseo;
+    if (input.enabled !== undefined) voiceInterpretService.setEnabled(input.enabled);
+    return { enabled: voiceInterpretService.enabled() };
   });
   server.handle(voiceInterpret, (input, { paseo }) => {
     helperPaseo = paseo;
-    return voiceHelper.interpret(input);
+    return voiceInterpretService.interpret(input.transcript, { sessionId: input.sessionId, sessions: input.sessions });
   });
   const offTurnEnded = server.on("agent.turn_ended", (event, { paseo }) => {
     voicePaseo = paseo;
@@ -539,6 +554,7 @@ export default function contribute(
       );
     },
     send: (sessionId, text) => jarvisPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
+    interpreter: voiceInterpretService,
   });
   // A Jarvis session or the Voice helper is refused (ok: false), or Jarvis would steer itself.
   server.handle(voiceTarget, async (session, { paseo }) => {
@@ -546,7 +562,7 @@ export default function contribute(
     return { ok: (await jarvis.setTarget(session)).ok };
   });
   // Paseo 0.11.0+ only, like the usage source.
-  server.registerProvider?.(createJarvisProvider({ route: jarvis.route }));
+  server.registerProvider?.(createJarvisProvider({ route: jarvis.route, warm: voiceInterpretService.warm }));
   return () => {
     offPulseSettings();
     stopPlanServer();
@@ -562,6 +578,6 @@ export default function contribute(
     clearInterval(replayStartTimer);
     clearInterval(loopStartTimer);
     voiceResume.stop();
-    void voiceHelper.stop().catch((error) => console.warn("orchestrator: voice helper stop failed", error));
+    void voiceInterpretService.stop().catch((error) => console.warn("orchestrator: voice helper stop failed", error));
   };
 }

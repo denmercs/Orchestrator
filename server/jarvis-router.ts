@@ -4,23 +4,25 @@
 // target plus lines to say back. The state is kept here, keyed by the router id in the session's persistence
 // handle, because Paseo reopens the provider session whenever voice mode turns on or off.
 import { CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
-import { namelessPassThrough, type Interpreter } from "../shared/voice-interpreter";
-import { ASLEEP_NOTE, NOTHING_SENT, notTargetLine, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
+import { namelessPassThrough, type InterpretOutcome } from "../shared/voice-interpreter";
+import { ASLEEP_NOTE, helperFallbackNote, NOTHING_SENT, notTargetLine, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
+
+/** The interpret service's surface (server/voice-interpret.ts): `sessionId` is the target, whose recent messages the helper reads. */
+export type JarvisInterpreter = {
+  interpret(text: string, req: { sessionId: string; sessions: VoiceSession[] }): Promise<InterpretOutcome>;
+};
 
 export type JarvisRouterPorts = {
   /** Live sessions: `list` may be targets, `blocked` are Voice's own (Jarvis, the Voice helper). See `splitSessions`. */
   sessions(): Promise<{ list: VoiceSession[]; blocked: VoiceSession[] }>;
   /** Sends text to a session as a steer. */
   send(sessionId: string, text: string): Promise<unknown>;
-  /**
-   * Turns an utterance into a loop result. Defaults to the words as heard, minus a leading "Jarvis,".
-   * The seam for the speech-cleanup helper: pass `withFallback(helper, namelessPassThrough)`, unwrapped to its result.
-   */
-  interpreter?: Interpreter;
+  /** Turns an utterance into a loop result plus how it got there. Defaults to the words as heard, minus a leading "Jarvis,". */
+  interpreter?: JarvisInterpreter;
   now?(): number;
 };
 
-/** `spoken` is said back (and shown); `note` is shown only, when there is nothing to say. */
+/** `spoken` is said back (and shown); `note` is shown only, after the spoken lines or alone when there are none. */
 export type RouteResult = { spoken: string[]; note: string | null };
 
 type Entry = { state: VoiceState; confirmAt: number; choicesAt: number };
@@ -29,7 +31,9 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 
 export function createJarvisRouter(ports: JarvisRouterPorts) {
   const now = ports.now ?? Date.now;
-  const interpreter = ports.interpreter ?? namelessPassThrough;
+  const interpreter: JarvisInterpreter = ports.interpreter ?? {
+    interpret: async (text) => ({ result: await namelessPassThrough.interpret(text), via: "passThrough" }),
+  };
   const entries = new Map<string, Entry>();
   const chains = new Map<string, Promise<unknown>>();
   let drawerTarget: VoiceSession | null = null;
@@ -64,6 +68,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     const choicesBefore = state.choices;
     const wasConfirming = state.mode === "confirming";
     const spoken: string[] = [];
+    let fallbackNote: string | null = null;
     const events: VoiceEvent[] = [{ type: "utterance", text }];
     for (let event = events.shift(); event; event = events.shift()) {
       const r = step(state, event);
@@ -72,9 +77,11 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
       for (const effect of r.effects) {
         switch (effect.type) {
           case "interpret": {
-            const result = await interpreter
-              .interpret(effect.text, { transcript: effect.text, targetTitle: state.session?.name ?? null, recent: [], sessions: state.sessions })
-              .catch(() => namelessPassThrough.interpret(effect.text));
+            const outcome: InterpretOutcome = await interpreter
+              .interpret(effect.text, { sessionId: state.session?.id ?? "", sessions: state.sessions })
+              .catch(async () => ({ result: await namelessPassThrough.interpret(effect.text), via: "passThrough" as const, reason: "error" as const }));
+            fallbackNote ??= helperFallbackNote(outcome);
+            const { result } = outcome;
             events.push({ type: "interpreted", seq: effect.seq, result });
             break;
           }
@@ -108,8 +115,8 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     if (state.mode === "confirming" && !wasConfirming) entry.confirmAt = now();
     if (state.choices && state.choices !== choicesBefore) entry.choicesAt = now();
     entry.state = state;
-    if (spoken.length) return { spoken, note: null };
-    return { spoken, note: state.mode === "asleep" ? ASLEEP_NOTE : NOTHING_SENT };
+    if (spoken.length) return { spoken, note: fallbackNote };
+    return { spoken, note: fallbackNote ?? (state.mode === "asleep" ? ASLEEP_NOTE : NOTHING_SENT) };
   }
 
   return {

@@ -1,6 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { InterpretOutcome } from "../shared/voice-interpreter";
 import { CONFIRM_TIMEOUT_MS, createVoiceRunner, type VoiceRunnerPorts } from "./voice-runner";
+
+type HelperPort = NonNullable<VoiceRunnerPorts["helper"]>;
+const fakeHelper = (over: Partial<HelperPort> = {}) => {
+  const calls: string[] = [];
+  const helper: HelperPort = {
+    start: async () => void calls.push("start"),
+    stop: async () => void calls.push("stop"),
+    getEnabled: async () => true,
+    setEnabled: async (enabled) => (calls.push(`set:${enabled}`), enabled),
+    interpret: async (text) => ({ via: "helper", result: { type: "send", text } }),
+    ...over,
+  };
+  return { helper, calls };
+};
 
 const alpha = { id: "a1", name: "Alpha" };
 
@@ -43,13 +58,72 @@ test("an utterance after a pick is sent to the session through the link", async 
   assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent to Alpha" }]);
 });
 
-test("a custom interpreter answers the interpret effect", async () => {
-  const { runner, said } = setup({ interpreter: async (text) => ({ type: "send", text: text.toUpperCase() }) });
+test("the helper port answers the interpret effect, with the target's sessionId", async () => {
+  const seen: Array<[string, string, number]> = [];
+  const { helper } = fakeHelper({
+    interpret: async (text, ctx) => {
+      seen.push([text, ctx.sessionId, ctx.sessions.length]);
+      return { via: "helper", result: { type: "send", text: text.toUpperCase() } };
+    },
+  });
+  const { runner, said } = setup({ helper });
   runner.on();
+  runner.setSessions([alpha]);
   runner.pick(alpha);
   runner.dispatch({ type: "utterance", text: "please run the tests" });
   await flush();
   assert.deepEqual(said, [["a1", "PLEASE RUN THE TESTS"]]);
+  assert.deepEqual(seen, [["please run the tests", "a1", 1]]);
+});
+
+test("interprets records heard + outcome, keeps 20", async () => {
+  const outcome: InterpretOutcome = { via: "passThrough", reason: "timeout", result: { type: "send", text: "x" } };
+  const { helper } = fakeHelper({ interpret: async () => outcome });
+  const { runner } = setup({ helper });
+  runner.on();
+  runner.pick(alpha);
+  for (let i = 0; i < 22; i++) {
+    runner.dispatch({ type: "utterance", text: `please run test ${i}` });
+    await flush();
+  }
+  const list = runner.getState().interprets;
+  assert.equal(list.length, 20);
+  assert.deepEqual(list.at(-1), { heard: "please run test 21", outcome });
+  assert.equal(list[0].heard, "please run test 2");
+});
+
+test("the helper switch mirrors the port, defaults on, refreshes on start, setHelper calls setEnabled", async () => {
+  const none = setup();
+  assert.equal(none.runner.getState().helper, true);
+  const { helper, calls } = fakeHelper({ getEnabled: async () => false });
+  const { runner } = setup({ helper });
+  assert.equal(runner.getState().helper, true);
+  runner.on();
+  await flush();
+  assert.equal(runner.getState().helper, false);
+  runner.setHelper(true);
+  await flush();
+  assert.equal(runner.getState().helper, true);
+  assert.ok(calls.includes("set:true"));
+});
+
+test("on and off start and stop the helper; failures land in error", async () => {
+  const { helper, calls } = fakeHelper();
+  const ok = setup({ helper });
+  ok.runner.on();
+  await flush();
+  ok.runner.off();
+  await flush();
+  assert.deepEqual(calls, ["start", "stop"]);
+  const bad = setup({ helper: fakeHelper({ start: async () => Promise.reject(new Error("no start")) }).helper });
+  bad.runner.on();
+  await flush();
+  assert.match(bad.runner.getState().error ?? "", /no start/);
+  const badStop = setup({ helper: fakeHelper({ stop: async () => Promise.reject(new Error("no stop")) }).helper });
+  badStop.runner.on();
+  badStop.runner.off();
+  await flush();
+  assert.match(badStop.runner.getState().error ?? "", /no stop/);
 });
 
 test("a rejected send lands in error", async () => {
@@ -306,8 +380,8 @@ test("on() opens the recorder; a failure turns voice back off with the error", a
   assert.equal(bad.runner.getState().mode, "asleep");
 });
 
-test("a rejected interpreter drops the utterance and records the error", async () => {
-  const { runner } = setup({ interpreter: async () => Promise.reject(new Error("helper down")) });
+test("a rejected helper drops the utterance and records the error", async () => {
+  const { runner } = setup({ helper: fakeHelper({ interpret: async () => Promise.reject(new Error("helper down")) }).helper });
   runner.on();
   runner.pick(alpha);
   runner.dispatch({ type: "utterance", text: "please run the tests" });

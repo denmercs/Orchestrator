@@ -1,7 +1,9 @@
-import { CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type InterpretResult, type VoiceEffect, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
+import { HELPER_DEFAULT_ON, namelessPassThrough, type InterpretOutcome } from "../shared/voice-interpreter";
+import { CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEffect, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
 
 export const MAX_LINES = 20;
 export const MAX_TRANSCRIPTS = 5;
+export const MAX_INTERPRETS = 20;
 
 export const MAX_HOLD_MS = 30_000;
 export const MIN_HOLD_MS = 300;
@@ -12,8 +14,14 @@ export const BASE_HINTS = ["merge", "Orchestrator", "Paseo", "Jarvis"];
 /** Ports the runner carries effects out through. Recorder, transcriber and clock are optional. */
 export type VoiceRunnerPorts = {
   link: { say(sessionId: string, text: string): Promise<unknown>; interrupt(sessionId: string): Promise<unknown> };
-  /** Turns an utterance into a result for the loop. Defaults to sending the text as heard. */
-  interpreter?: (text: string) => Promise<InterpretResult>;
+  /** The Voice helper (the server owns it): start/stop with voice, its switch, and interpret. Defaults to sending the text as heard. */
+  helper?: {
+    start(): Promise<unknown>;
+    stop(): Promise<unknown>;
+    getEnabled(): Promise<boolean>;
+    setEnabled(enabled: boolean): Promise<boolean>;
+    interpret(text: string, ctx: { sessionId: string; sessions: VoiceSession[] }): Promise<InterpretOutcome>;
+  };
   /** The mic: open() when voice turns on, close() when it turns off; start() begins capturing; stop() ends it and returns base64 audio and how long it ran. */
   recorder?: { open?(): Promise<unknown> | unknown; close?(): Promise<unknown> | unknown; start(): Promise<unknown> | unknown; stop(): Promise<{ audio: string; ms: number }> };
   /** Audio plus hint words in, text out. */
@@ -24,13 +32,13 @@ export type VoiceRunnerPorts = {
 
 export type TranscriptEntry = { text: string; outcome: string };
 
-export type VoiceSnapshot = VoiceState & { lines: string[]; transcripts: TranscriptEntry[]; error: string | null };
+export type InterpretRecord = { heard: string; outcome: InterpretOutcome };
 
-const passThrough = async (text: string): Promise<InterpretResult> => ({ type: "send", text });
+export type VoiceSnapshot = VoiceState & { lines: string[]; transcripts: TranscriptEntry[]; interprets: InterpretRecord[]; helper: boolean; error: string | null };
+
 const keepLast = <T>(list: T[], add: T[], max: number): T[] => [...list, ...add].slice(-max);
 
 export function createVoiceRunner(ports: VoiceRunnerPorts) {
-  const interpreter = ports.interpreter ?? passThrough;
   const clock = ports.clock ?? { setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), clearTimeout: (h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>) };
   const entries: Array<{ id: number; text: string; outcome: string }> = [];
   const waiting = new Map<number, number>(); // interpret seq -> entry id
@@ -40,7 +48,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   let lastSent: number | null = null;
   let confirmEntry: number | null = null; // the transcript that asked to confirm
   const listeners = new Set<() => void>();
-  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], transcripts: [], error: null };
+  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], transcripts: [], interprets: [], helper: HELPER_DEFAULT_ON, error: null };
 
   const publish = (patch: Partial<VoiceSnapshot>) => {
     snapshot = { ...snapshot, ...patch };
@@ -75,8 +83,14 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
         ports.link.interrupt(effect.session.id).catch(fail);
         return;
       case "interpret":
-        interpreter(effect.text).then(
-          (result) => dispatch({ type: "interpreted", seq: effect.seq, result }),
+        (ports.helper
+          ? ports.helper.interpret(effect.text, { sessionId: snapshot.session?.id ?? "", sessions: snapshot.sessions })
+          : namelessPassThrough.interpret(effect.text).then((result): InterpretOutcome => ({ result, via: "passThrough" }))
+        ).then(
+          (outcome) => {
+            publish({ interprets: keepLast(snapshot.interprets, [{ heard: effect.text, outcome }], MAX_INTERPRETS) });
+            dispatch({ type: "interpreted", seq: effect.seq, result: outcome.result });
+          },
           (err) => {
             fail(err);
             dispatch({ type: "interpreted", seq: effect.seq, result: { type: "drop" } });
@@ -229,6 +243,8 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     dispatch({ type: "wake" });
     publish({ error: null });
     void openMic();
+    ports.helper?.getEnabled().then((helper) => publish({ helper }), fail);
+    ports.helper?.start().catch(fail);
   }
 
   function off() {
@@ -242,9 +258,17 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     } catch (err) {
       fail(err);
     }
+    ports.helper?.stop().catch(fail);
+  }
+
+  /** The panel's helper switch: shown at once, then the server's answer wins. */
+  function setHelper(enabled: boolean) {
+    publish({ helper: enabled });
+    ports.helper?.setEnabled(enabled).then((helper) => publish({ helper }), fail);
   }
 
   return {
+    setHelper,
     startTalk,
     endTalk,
     toggleTalk,

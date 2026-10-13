@@ -7,6 +7,7 @@ import { INSTALL_LABEL } from "./shared/install";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { createVoiceLink } from "./client/voice-link";
 import { createVoiceMic, createVoiceTranscriber } from "./client/voice-mic";
+import { createVoiceHelperClient } from "./client/voice-helper-client";
 import { createVoiceRunner } from "./client/voice-runner";
 import { voiceTarget } from "./shared/voice-rpc";
 
@@ -17,6 +18,7 @@ export default function contribute(client: PluginClientContext) {
     link: createVoiceLink(client.paseo.agents),
     recorder: createVoiceMic(),
     transcriber: createVoiceTranscriber(client.rpc),
+    helper: createVoiceHelperClient(client.rpc),
   });
   // The Jarvis router (server) sends to the drawer's target, so every new target is passed on.
   let toldTarget: string | undefined;
