@@ -59,7 +59,7 @@ test("speak reads an SSE reply, and throws on tool errors, HTTP errors and a mis
   await assert.rejects(speak({ type: "stdio", command: "paseo" }, "hi"), /no HTTP/);
 });
 
-function connect(result: RouteResult, fetchReply = OK_JSON) {
+function connect(result: RouteResult, fetchReply = OK_JSON, localSpeak?: (text: string) => Promise<boolean>) {
   const routed: [string, string][] = [];
   const { impl, calls } = fakeFetch({ body: fetchReply });
   const connection = createJarvisConnection({
@@ -68,6 +68,7 @@ function connect(result: RouteResult, fetchReply = OK_JSON) {
       return result;
     },
     fetch: impl,
+    localSpeak,
   });
   const events: ProviderEvent[] = [];
   connection.onEvent((event) => events.push(event));
@@ -123,6 +124,29 @@ test("a spoken turn: prompt_result, started, the reply in the chat, speak, compl
   assert.deepEqual(routed, [["r1", "run the tests"]]);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].body.params.arguments.text, "Sent to docs.");
+});
+
+test("a warm local voice takes the line and Paseo's speak is not called", async () => {
+  const spoken: string[] = [];
+  const { connection, events, calls } = connect({ spoken: ["Sent to docs."], note: null }, OK_JSON, async (text) => {
+    spoken.push(text);
+    return true;
+  });
+  await connection.send(open());
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
+  assert.deepEqual(spoken, ["Sent to docs."]);
+  assert.equal(calls.length, 0);
+});
+
+test("a cold or failing local voice falls back to Paseo's speak", async () => {
+  for (const localSpeak of [async () => false, async () => Promise.reject(new Error("boom"))]) {
+    const { connection, events, calls } = connect({ spoken: ["Sent to docs."], note: null }, OK_JSON, localSpeak);
+    await connection.send(open());
+    await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+    await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
+    assert.equal(calls.length, 1);
+  }
 });
 
 test("a typed turn is routed the same but answered in the chat only", async () => {

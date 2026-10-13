@@ -36,4 +36,6 @@ on the Mac running the daemon (`afplay`), not on a phone or remote client. Error
   `worker.log`, `speak.sock`.
 - `speak_worker.py` is the warm worker. Rebuild the venv with
   `uv venv --python 3.11 ~/.local/share/speak/venv && uv pip install --python ~/.local/share/speak/venv/bin/python chatterbox-tts "setuptools<81"`.
-- Does not touch `~/.paseo/config.json` or Paseo voice mode, which still use Kokoro.
+- Jarvis (voice mode) speaks through this worker too when it is warm, so audio plays on the Mac, not the phone. When the
+  worker is cold or loading, Jarvis uses Paseo's Kokoro `speak` for that reply and starts the worker for the next one.
+- Does not touch `~/.paseo/config.json` or Paseo voice mode, which Jarvis falls back to (Kokoro).

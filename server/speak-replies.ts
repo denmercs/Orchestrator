@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { accessSync, constants as fsConstants, readdirSync, statSync } from "node:fs";
 import { access, constants } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -88,4 +88,30 @@ export function createSpeakReplies(ports: SpeakPorts) {
       if (modes.has(agentId)) ports.run(["--hush"]);
     },
   };
+}
+
+export type LocalSpeakPorts = {
+  /** The speak script's `--status`: warm, loading or off. */
+  status: () => Promise<string>;
+  run: SpeakPorts["run"];
+};
+
+// Jarvis's reply in the cloned voice. True means the worker took the line. False (cold, loading or no script)
+// means the caller falls back to Paseo's Kokoro `speak`; a cold worker is started so the next reply is warm.
+export function createLocalSpeak(ports: LocalSpeakPorts) {
+  return async (text: string): Promise<boolean> => {
+    if ((await ports.status()) !== "warm") {
+      ports.run(["--warm"]);
+      return false;
+    }
+    ports.run([], text);
+    return true;
+  };
+}
+
+export function realLocalSpeak(script = SPEAK_SCRIPT) {
+  const run = realSpeakPorts(script).run;
+  const status = () =>
+    new Promise<string>((resolve) => execFile(script, ["--status"], (error, out) => resolve(error ? "off" : out.trim())));
+  return createLocalSpeak({ status, run });
 }

@@ -27,7 +27,7 @@ import { getBranchInitials } from "./shared/naming";
 import { createContextWatch, paseoPort } from "./server/context-watch";
 import { createGateActions, loopGatePort } from "./server/gate-actions";
 import { createVoiceResume } from "./server/voice-resume";
-import { createSpeakReplies, realSpeakPorts, type SpeakPorts } from "./server/speak-replies";
+import { createSpeakReplies, realLocalSpeak, realSpeakPorts, type SpeakPorts } from "./server/speak-replies";
 import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { gateAct } from "./shared/gates";
 import { readTelemetry, summariseTelemetry } from "./server/context-telemetry";
@@ -558,7 +558,7 @@ export default function contribute(
     return { ok: (await jarvis.setTarget(session)).ok };
   });
   // Paseo 0.11.0+ only, like the usage source.
-  server.registerProvider?.(createJarvisProvider({ route: jarvis.route }));
+  server.registerProvider?.(createJarvisProvider({ route: jarvis.route, localSpeak: realLocalSpeak() }));
   return () => {
     offPulseSettings();
     stopPlanServer();
