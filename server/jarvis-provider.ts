@@ -1,7 +1,7 @@
 // The Jarvis provider: a Paseo agent provider with no model behind it. A session on it, with Paseo voice
 // mode on, hears you on the phone and hands each utterance to the Jarvis router, which steers the target
-// session. Replies are spoken through the `paseo` MCP server's `speak` tool (only there while voice mode
-// is on) and shown in the chat as assistant messages.
+// session. Replies are spoken in the cloned Chatterbox voice when its worker is warm, else through the `paseo` MCP
+// server's `speak` tool (Kokoro; only there while voice mode is on) and shown in the chat as assistant messages.
 import { randomUUID } from "node:crypto";
 import type {
   ProviderConnection,
@@ -31,6 +31,8 @@ type Session = {
 
 export type JarvisProviderDeps = {
   route(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult>;
+  /** Speaks in the local cloned voice; false means it could not, so Paseo's `speak` tool takes the line. */
+  localSpeak?(text: string): Promise<boolean>;
   fetch?: Fetch;
 };
 
@@ -118,9 +120,13 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
     }
     // Typed messages are answered in the chat only.
     if (spoken !== null && result.spoken.length && live(sessionId, turnId)) {
-      await speak(session.mcpServers.paseo, result.spoken.join(" "), fetchImpl).catch((error) =>
-        console.warn("orchestrator: Jarvis could not speak", error instanceof Error ? error.message : error),
-      );
+      const line = result.spoken.join(" ");
+      const local = await deps.localSpeak?.(line).catch(() => false);
+      if (!local) {
+        await speak(session.mcpServers.paseo, line, fetchImpl).catch((error) =>
+          console.warn("orchestrator: Jarvis could not speak", error instanceof Error ? error.message : error),
+        );
+      }
     }
     end(sessionId, turnId, "completed");
   }

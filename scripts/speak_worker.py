@@ -20,6 +20,7 @@ import time
 HOME = os.path.expanduser("~/.local/share/speak")
 SOCK = os.path.join(HOME, "speak.sock")
 REFERENCE = os.path.join(HOME, "voice", "reference.wav")
+RATE = os.environ.get("SPEAK_RATE", "1.1")  # afplay playback rate; 1.0 is the model's own pace
 MAX_CHARS = 220  # long sentences are split at commas/spaces so the first audio stays quick
 
 requests: "queue.Queue[str]" = queue.Queue()
@@ -105,7 +106,7 @@ def play_loop():
         clip_epoch, path = clips.get()
         with player_lock:
             if clip_epoch == epoch:
-                player = subprocess.Popen(["afplay", path])
+                player = subprocess.Popen(["afplay", "-r", RATE, "-q", "1", path])
         if clip_epoch == epoch and player is not None:
             player.wait()
         os.unlink(path)

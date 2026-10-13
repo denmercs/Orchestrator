@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
-import { createSpeakReplies, findSpeakScript } from "./speak-replies";
+import { createLocalSpeak, createSpeakReplies, findSpeakScript } from "./speak-replies";
 
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 type Outcome = TurnEnded["outcome"];
@@ -117,4 +117,20 @@ test("findSpeakScript finds the script inside an install's checkout folder", () 
   chmodSync(join(dir, "speak"), 0o755);
   assert.equal(findSpeakScript(home), join(dir, "speak"));
   assert.equal(findSpeakScript(join(home, "none")), join(home, "none", "plugins", "orchestrator", "scripts", "speak"));
+});
+
+test("local speak says the line when the worker is warm", async () => {
+  const runs: [string[], string | undefined][] = [];
+  const speakLocal = createLocalSpeak({ status: async () => "warm", run: (args, stdin) => void runs.push([args, stdin]) });
+  assert.equal(await speakLocal("Sent to docs."), true);
+  assert.deepEqual(runs, [[[], "Sent to docs."]]);
+});
+
+test("local speak declines and warms the worker when it is cold or loading", async () => {
+  for (const status of ["off", "loading"]) {
+    const runs: string[][] = [];
+    const speakLocal = createLocalSpeak({ status: async () => status, run: (args) => void runs.push(args) });
+    assert.equal(await speakLocal("hi"), false);
+    assert.deepEqual(runs, [["--warm"]]);
+  }
 });
