@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
-import { createVoiceResume, noiseCut, RESUME_MESSAGE, TOOL_RESUME_MESSAGE } from "./voice-resume";
+import { createVoiceResume, MAX_RESUMES_IN_A_ROW, noiseCut, RESUME_MESSAGE, TOOL_RESUME_MESSAGE } from "./voice-resume";
 
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 type Outcome = TurnEnded["outcome"];
@@ -93,23 +93,31 @@ test("a new turn in the quiet window means the user spoke, so no resume", () => 
   }
 });
 
-test("a resume that is cut again is not resumed a second time", async () => {
+test("a resume that is cut again is resumed, up to the cap, then left alone", async () => {
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
     const { resume, sent } = setup();
     resume.onTurnEnded(cut());
+    for (let i = 1; i < MAX_RESUMES_IN_A_ROW; i++) {
+      mock.timers.tick(1000);
+      await Promise.resolve();
+      resume.onTurnStarted("a1");
+      resume.onTurnEnded(cut());
+    }
     mock.timers.tick(1000);
     await Promise.resolve();
+    assert.equal(sent.length, MAX_RESUMES_IN_A_ROW);
+    // The next cut in that row is not resumed, so noise can't loop it.
     resume.onTurnStarted("a1");
     resume.onTurnEnded(cut());
     mock.timers.tick(5000);
-    assert.equal(sent.length, 1);
+    assert.equal(sent.length, MAX_RESUMES_IN_A_ROW);
     // A clean turn after that re-arms it.
     resume.onTurnEnded(turnEnded({ kind: "completed" }));
     resume.onTurnEnded(cut());
     mock.timers.tick(1000);
     await Promise.resolve();
-    assert.equal(sent.length, 2);
+    assert.equal(sent.length, MAX_RESUMES_IN_A_ROW + 1);
   } finally {
     mock.timers.reset();
   }

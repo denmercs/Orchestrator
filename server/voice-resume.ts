@@ -12,8 +12,12 @@ export const RESUME_MESSAGE =
 export const TOOL_RESUME_MESSAGE =
   "Background noise cancelled your last tool call; nobody spoke and nothing was rejected. Run it again, then carry on with what you were doing.";
 
-// Long enough for a real utterance to end and be transcribed into a new turn, which cancels the resume.
-export const RESUME_QUIET_MS = 10_000;
+// Paseo's detector already needs about a second of silence to end an utterance, and a real utterance starts
+// a new turn that cancels the pending resume, so a short wait is enough.
+export const RESUME_QUIET_MS = 3_000;
+
+// Cuts in a row that are resumed before giving up, so constant noise can't loop the agent.
+export const MAX_RESUMES_IN_A_ROW = 3;
 
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 
@@ -39,8 +43,8 @@ export function noiseCut(event: TurnEnded): "speech" | "tool" | null {
 
 export function createVoiceResume(port: ResumePort, quietMs = RESUME_QUIET_MS) {
   const pending = new Map<string, ReturnType<typeof setTimeout>>();
-  // Agents whose last turn was itself a resume: a second cut in a row isn't resumed, so noise can't loop it.
-  const resumed = new Set<string>();
+  // Resumes sent per agent since its last turn that ended without a cut.
+  const resumes = new Map<string, number>();
 
   function cancel(agentId: string) {
     const timer = pending.get(agentId);
@@ -56,15 +60,17 @@ export function createVoiceResume(port: ResumePort, quietMs = RESUME_QUIET_MS) {
       const agentId = event.agent.id;
       cancel(agentId);
       const cut = noiseCut(event);
-      if (!cut || resumed.has(agentId)) {
-        resumed.delete(agentId);
+      const count = resumes.get(agentId) ?? 0;
+      if (!cut || count >= MAX_RESUMES_IN_A_ROW) {
+        resumes.delete(agentId);
         return;
       }
       const timer = setTimeout(() => {
         pending.delete(agentId);
-        resumed.add(agentId);
+        resumes.set(agentId, count + 1);
         port.send(agentId, cut === "speech" ? RESUME_MESSAGE : TOOL_RESUME_MESSAGE).catch((error) => {
-          resumed.delete(agentId);
+          if (count) resumes.set(agentId, count);
+          else resumes.delete(agentId);
           console.warn("orchestrator: voice resume failed", error);
         });
       }, quietMs);
