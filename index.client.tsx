@@ -10,7 +10,7 @@ import { createVoiceMic, createVoiceTranscriber } from "./client/voice-mic";
 import { createVoiceRunner } from "./client/voice-runner";
 import { createVoiceSpeaker } from "./client/voice-speaker";
 import { createVoiceLineRenderer, voiceLineSchema } from "./client/voice-line-renderer";
-import { voiceEvents, voiceTarget } from "./shared/voice-rpc";
+import { voiceBrief, voiceEvents, voiceTarget } from "./shared/voice-rpc";
 
 const TITLE = INSTALL_LABEL ? `Orchestration (${INSTALL_LABEL})` : "Orchestration";
 
@@ -20,6 +20,7 @@ export default function contribute(client: PluginClientContext) {
     recorder: createVoiceMic(),
     transcriber: createVoiceTranscriber(client.rpc),
     events: { read: (after) => client.rpc(voiceEvents, { after }) },
+    brief: async (text) => (await client.rpc(voiceBrief, { text }))?.spoken ?? null,
     speaker: createVoiceSpeaker(client.rpc, client.playAudio),
   });
   // Jarvis lines for the phone (behind voice.phoneAudio) arrive as timeline items; the renderer speaks each once.

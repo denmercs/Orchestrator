@@ -578,3 +578,36 @@ test("a poll error is shown and retried after a backoff on the clock port", asyn
   assert.equal(reads.length, 2);
   assert.equal(reads[1].after, 0);
 });
+
+test("a briefing word is answered by the briefer: its lines are spoken and nothing reaches the session", async () => {
+  const asked: string[] = [];
+  const spoken: string[] = [];
+  const { runner, said } = setup({
+    brief: async (text) => {
+      asked.push(text);
+      return text === "good morning" ? ["Good morning, Dennis.", "Shall I go on?"] : null;
+    },
+    speaker: { speak: async (text) => (spoken.push(text), "ended" as const), stop: () => {} },
+  });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "good morning" });
+  await flush();
+  assert.deepEqual(spoken, ["Good morning, Dennis.", "Shall I go on?"]);
+  assert.deepEqual(runner.getState().lines, ["Good morning, Dennis.", "Shall I go on?"]);
+  assert.deepEqual(said, []);
+  // Not a briefing word: the loop has it as usual.
+  runner.dispatch({ type: "utterance", text: "run the tests" });
+  await flush();
+  assert.deepEqual(asked, ["good morning", "run the tests"]);
+  assert.deepEqual(said, [["a1", "run the tests"]]);
+});
+
+test("a briefer that fails lets the words through to the session", async () => {
+  const { runner, said } = setup({ brief: async () => Promise.reject(new Error("down")) });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "run the tests" });
+  await flush();
+  assert.deepEqual(said, [["a1", "run the tests"]]);
+});
