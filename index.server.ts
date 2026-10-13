@@ -51,7 +51,7 @@ import { mkdir } from "node:fs/promises";
 import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./server/voice-helper";
 import { transcribeVoice, voiceEvents, voiceHelperStart, voiceHelperStop, voiceInterpret, voiceSpeak, voiceTarget } from "./shared/voice-rpc";
 import { voiceSettings } from "./shared/settings";
-import { permissionEvents, turnEvents } from "./shared/voice-turns";
+import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
 import { createJarvisRouter } from "./server/jarvis-router";

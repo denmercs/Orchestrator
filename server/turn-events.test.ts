@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
-import { permissionEvents, turnEvents } from "./voice-turns";
+import { permissionEvents, turnEvents } from "./turn-events";
 
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 type Permission = PluginLifecycleEvents["agent.permission_requested"];
