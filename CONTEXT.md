@@ -327,7 +327,7 @@ _Avoid_: TTS service, voice engine.
 
 ## Voice event hub
 
-The server's single source of turn events (a session finished, needs you, hit its cost cap, replied). `server/voice-turns.ts` keeps the last 50 with a cursor. Two things read it: the **Jarvis** router (each event is stepped into every router's **Voice loop**, so the phone hears it) and the **Voice drawer** (`orchestration.voice.events`, a long poll that answers at once when there is something past its cursor, else after 20 s, with `phoneActive` so the drawer stays quiet while Jarvis is speaking on the phone). Code: `server/voice-turns.ts`, `shared/voice-turns.ts`, `shared/voice-rpc.ts`.
+The server's single source of turn events (a session finished, needs you, hit its cost cap, replied). `server/voice-turns.ts` keeps the last 50 with a cursor. Two things read it: the **Jarvis** router (each event is stepped into every router's **Voice loop**, so the phone hears it) and the **Voice drawer** (`orchestration.voice.events`, a long poll that answers at once when there is something past its cursor, else after 20 s, with `phoneActive` so the drawer stays quiet while Jarvis is speaking on the phone). Code: `server/voice-turns.ts`, `server/turn-events.ts`, `shared/voice-rpc.ts`.
 
 _Avoid_: event bus, notification queue.
 
