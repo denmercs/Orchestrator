@@ -31,6 +31,12 @@ function registeredSettingIds(): string[] {
   return ids;
 }
 
+test("registers each setting once, since the host refuses a duplicate id", () => {
+  const ids = registeredSettingIds();
+  const duplicates = ids.filter((id, i) => ids.indexOf(id) !== i);
+  assert.deepEqual(duplicates, [], `registered twice: ${duplicates.join(", ")}`);
+});
+
 test("registers the dashboard tab setting on the host", () => {
   const ids = registeredSettingIds();
   assert.ok(ids.includes("dashboard"), `registered: ${ids.join(", ")}`);

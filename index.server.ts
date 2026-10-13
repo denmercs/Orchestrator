@@ -466,7 +466,7 @@ export default function contribute(
     return voiceHelper.interpret(input);
   });
   // Whether the phone plays lines in the cloned voice (voice.phoneAudio) is read once and kept current.
-  const voice = server.registerSettings(voiceSettings);
+  const voice = voiceSetting;
   let phoneAudio = false;
   let referenceClip = "";
   const syncVoice = (state: Awaited<ReturnType<typeof voice.read>>) => {
