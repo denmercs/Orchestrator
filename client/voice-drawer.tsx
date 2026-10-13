@@ -89,7 +89,7 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
                 describe={(profile) => (profile.id === OFF_CHIP.id ? "Leave new voice sessions on the Paseo default" : `Run new voice sessions on ${profileCaption(profile)}`)}
                 onPick={(id) => {
                   const value = id === OFF_CHIP.id ? "off" : id;
-                  if (value !== settings.values.profile) void settings.save({ profile: value }, settings.revision);
+                  if (value !== settings.values.profile) void settings.save({ ...settings.values, profile: value }, settings.revision);
                 }}
               />
               {settings.saveError ? <Text style={[styles.hint, styles.danger]}>{settings.saveError}</Text> : null}
@@ -186,6 +186,7 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
           ))}
 
           <Text style={styles.section}>Replies</Text>
+          {state.phoneActive ? <Text style={styles.hint}>Phone is speaking</Text> : null}
           {state.lines.length === 0 ? <Text style={styles.hint}>Nothing yet.</Text> : null}
           {[...state.lines].reverse().map((line, i) => (
             <Text key={`${i}-${line}`} style={styles.hint}>

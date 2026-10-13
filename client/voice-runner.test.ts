@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CONFIRM_TIMEOUT_MS, createVoiceRunner, type VoiceRunnerPorts } from "./voice-runner";
+import type { VoiceEvent } from "../shared/voice-loop";
+import { CONFIRM_TIMEOUT_MS, POLL_BACKOFF_MS, createVoiceRunner, type VoiceRunnerPorts } from "./voice-runner";
 
 const alpha = { id: "a1", name: "Alpha" };
 
@@ -518,4 +519,141 @@ test("newSession() creates from the target even while voice is off", async () =>
   await flush();
   assert.deepEqual(made, [alpha]);
   assert.equal(runner.getState().session?.id, "new2");
+});
+
+type Batch = { cursor: number; events: VoiceEvent[]; phoneActive: boolean };
+
+// An events port whose reads stay pending until the test answers them.
+function eventsSetup(speakResult: "ended" | "stopped" = "ended") {
+  const reads: Array<{ after: number; resolve(b: Batch): void; reject(e: Error): void }> = [];
+  const spoken: Array<[string, string]> = [];
+  let stops = 0;
+  const timers: Array<{ fn: () => void; ms: number }> = [];
+  const base = setup({
+    events: { read: (after) => new Promise<Batch>((resolve, reject) => reads.push({ after, resolve, reject })) },
+    speaker: {
+      speak: async (text, replyId) => {
+        spoken.push([text, replyId]);
+        return speakResult;
+      },
+      stop: () => {
+        stops++;
+      },
+    },
+    clock: { setTimeout: (fn, ms) => timers.push({ fn, ms }), clearTimeout: () => {} },
+  });
+  base.runner.setSessions([alpha]);
+  base.runner.pick(alpha);
+  return { ...base, reads, spoken, timers, stops: () => stops };
+}
+
+const reply = (text: string): VoiceEvent => ({ type: "reply", sessionId: "a1", text });
+
+test("on() polls events with the cursor and dispatches them; off() stops the poll", async () => {
+  const { runner, reads, spoken } = eventsSetup();
+  runner.on();
+  await flush();
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].after, 0);
+  reads[0].resolve({ cursor: 3, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  assert.equal(spoken.length, 1);
+  assert.equal(reads.length, 2);
+  assert.equal(reads[1].after, 3);
+  runner.off();
+  reads[1].resolve({ cursor: 4, events: [reply("Late.")], phoneActive: false });
+  await flush();
+  assert.equal(spoken.length, 1);
+  assert.equal(reads.length, 2);
+});
+
+test("a spoken reply that ends dispatches playbackEnded; one that is stopped does nothing", async () => {
+  const ended = eventsSetup("ended");
+  ended.runner.on();
+  await flush();
+  ended.reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  assert.equal(ended.spoken[0][0], "Alpha: All done.");
+  assert.equal(ended.runner.getState().mode, "listening");
+  const stopped = eventsSetup("stopped");
+  stopped.runner.on();
+  await flush();
+  stopped.reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  assert.equal(stopped.spoken.length, 1);
+  assert.equal(stopped.runner.getState().mode, "speaking");
+});
+
+test("while the phone is speaking the line is shown, the speaker is not called, and playback ends at once", async () => {
+  const { runner, reads, spoken } = eventsSetup();
+  runner.on();
+  await flush();
+  reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: true });
+  await flush();
+  assert.deepEqual(spoken, []);
+  assert.deepEqual(runner.getState().lines, ["Alpha: All done."]);
+  assert.equal(runner.getState().phoneActive, true);
+  assert.equal(runner.getState().mode, "listening");
+});
+
+test("speechStart while speaking stops the speaker and never touches the link", async () => {
+  const { runner, reads, stops, said, interrupted } = eventsSetup("stopped");
+  runner.on();
+  await flush();
+  reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  assert.equal(runner.getState().mode, "speaking");
+  runner.dispatch({ type: "speechStart" });
+  assert.equal(stops(), 1);
+  assert.deepEqual(said, []);
+  assert.deepEqual(interrupted, []);
+});
+
+test("a poll error is shown and retried after a backoff on the clock port", async () => {
+  const { runner, reads, timers } = eventsSetup();
+  runner.on();
+  await flush();
+  reads[0].reject(new Error("rpc down"));
+  await flush();
+  assert.match(runner.getState().error ?? "", /rpc down/);
+  assert.equal(reads.length, 1);
+  const backoff = timers.find((t) => t.ms === POLL_BACKOFF_MS);
+  assert.ok(backoff);
+  backoff.fn();
+  await flush();
+  assert.equal(reads.length, 2);
+  assert.equal(reads[1].after, 0);
+});
+
+test("a briefing word is answered by the briefer: its lines are spoken and nothing reaches the session", async () => {
+  const asked: string[] = [];
+  const spoken: string[] = [];
+  const { runner, said } = setup({
+    brief: async (text) => {
+      asked.push(text);
+      return text === "good morning" ? ["Good morning, Dennis.", "Shall I go on?"] : null;
+    },
+    speaker: { speak: async (text) => (spoken.push(text), "ended" as const), stop: () => {} },
+  });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "good morning" });
+  await flush();
+  assert.deepEqual(spoken, ["Good morning, Dennis.", "Shall I go on?"]);
+  assert.deepEqual(runner.getState().lines, ["Good morning, Dennis.", "Shall I go on?"]);
+  assert.deepEqual(said, []);
+  // Not a briefing word: the loop has it as usual.
+  runner.dispatch({ type: "utterance", text: "run the tests" });
+  await flush();
+  assert.deepEqual(asked, ["good morning", "run the tests"]);
+  assert.deepEqual(said, [["a1", "run the tests"]]);
+});
+
+test("a briefer that fails lets the words through to the session", async () => {
+  const { runner, said } = setup({ brief: async () => Promise.reject(new Error("down")) });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "run the tests" });
+  await flush();
+  assert.deepEqual(said, [["a1", "run the tests"]]);
 });

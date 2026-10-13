@@ -52,10 +52,14 @@ test("voice settings are host-scoped at version 1", () => {
   assert.equal(voiceSettings.version, 1);
 });
 
-test("voice settings default to Auto (an empty profile)", () => {
-  assert.deepEqual(voiceSettings.schema.parse({}), { profile: "" });
+test("voice settings default to Auto profile, no reference clip, phone audio off", () => {
+  assert.deepEqual(voiceSettings.schema.parse({}), { profile: "", referenceClip: "", phoneAudio: false });
 });
 
-test("voice settings keep a given profile", () => {
-  assert.deepEqual(voiceSettings.schema.parse({ profile: "off" }), { profile: "off" });
+test("voice settings keep given values", () => {
+  assert.deepEqual(voiceSettings.schema.parse({ profile: "off", referenceClip: "/a.wav", phoneAudio: true }), {
+    profile: "off",
+    referenceClip: "/a.wav",
+    phoneAudio: true,
+  });
 });

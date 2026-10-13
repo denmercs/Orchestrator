@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { Interpreter } from "../shared/voice-interpreter";
 import { CONFIRM_TIMEOUT_MS, type VoiceSession } from "../shared/voice-loop";
 import { NOTHING_TO_CONFIRM, notTargetLine, pickFirstLine, SLEEP_LINE, STOPPED_NOTE, WAKE_LINE } from "../shared/voice-lines";
+import type { BriefData } from "../shared/morning-brief";
 import { VOICE_ROUTING_PREAMBLE, VOICE_SESSION_ENV } from "../shared/voice-session";
 import { createJarvisRouter, voiceSessionCreator } from "./jarvis-router";
 
@@ -244,4 +245,136 @@ test("a failing create speaks a failure line and keeps the old target", async ()
   assert.equal(router.stateOf("r1")?.session?.id, "s1");
   await router.route("r1", "run the tests");
   assert.equal(raw.at(-1)?.[0], "s1");
+});
+
+test("event() steps every router and returns lines per router; owed lines are prepended once to the next route()", async () => {
+  const { router } = setup();
+  await router.setTarget(api);
+  await router.route("r1", "hello");
+  await router.route("r2", "hello");
+  const lines = await router.event({ type: "reply", sessionId: "s1", text: "All done." });
+  assert.deepEqual(lines, { r1: ["api-refactor: All done."], r2: ["api-refactor: All done."] });
+  // Other sessions' notices come out as one line per router; replies for non-targets say nothing.
+  assert.deepEqual(await router.event({ type: "reply", sessionId: "s2", text: "ignored" }), { r1: [], r2: [] });
+  router.playbackEnded("r1");
+  assert.equal(router.stateOf("r1")?.mode, "listening");
+  assert.equal(router.stateOf("r2")?.mode, "speaking");
+  // A line Jarvis could not say is owed: said first at the next words, once.
+  router.owe("r1", ["Docs finished."]);
+  assert.deepEqual((await router.route("r1", "run the tests")).spoken, ["Docs finished.", "Sent to api-refactor."]);
+  assert.deepEqual((await router.route("r1", "run the tests")).spoken, ["Sent to api-refactor."]);
+});
+
+// The morning briefing.
+const briefData: BriefData = {
+  name: "Dennis",
+  at: new Date(2026, 9, 13, 7, 42).getTime(),
+  weather: null,
+  verse: { reference: "Psalm 118:24", text: "This is the day." },
+  stories: ["Fix playback resume"],
+  initiative: { title: "Orchestration Redesign", detail: "one story needs you", running: false },
+};
+
+function briefSetup(opts: { gather?: () => Promise<BriefData>; startError?: string | null } = {}) {
+  const started: string[] = [];
+  let clock = 0;
+  const sent: [string, string][] = [];
+  const router = createJarvisRouter({
+    sessions: async () => ({ list: [api, docs], blocked: [self] }),
+    send: async (id, text) => void sent.push([id, text]),
+    now: () => clock,
+    create: async () => "new1",
+    brief: {
+      gather: opts.gather ?? (async () => briefData),
+      startInitiative: async () => {
+        started.push("start");
+        return opts.startError ?? null;
+      },
+    },
+  });
+  return { router, started, sent, tick: (ms: number) => void (clock += ms) };
+}
+
+test("good morning runs the briefing, then yes starts the initiative and ends with the joke", async () => {
+  const { router, started } = briefSetup();
+  const open = await router.route("r1", "Good morning");
+  assert.match(open.spoken[0], /^Good morning, Dennis\./);
+  assert.match(open.spoken.at(-1) ?? "", /Shall I start the loop\?$/);
+  const go = await router.route("r1", "yes");
+  assert.equal(go.spoken[0], "Starting Orchestration Redesign.");
+  assert.equal(go.spoken.at(-1), "Will that be all?");
+  assert.deepEqual(started, ["start"]);
+});
+
+test("a failed start is said, and the briefing still signs off", async () => {
+  const { router } = briefSetup({ startError: "Pick a repo first." });
+  await router.route("r1", "good morning");
+  const go = await router.route("r1", "do it");
+  assert.equal(go.spoken[0], "I couldn't start it: Pick a repo first.");
+  assert.equal(go.spoken.at(-1), "Will that be all?");
+});
+
+test("words that are not an answer end the briefing and reach the normal loop", async () => {
+  const { router, started, sent } = briefSetup();
+  await router.route("r1", "Jarvis, switch to docs");
+  await router.route("r1", "good morning");
+  const r = await router.route("r1", "Jarvis, run the tests please");
+  assert.deepEqual(r.spoken, ["Sent to docs."]);
+  assert.deepEqual(sent, [["s2", `${VOICE_ROUTING_PREAMBLE}\n\nrun the tests please`]]);
+  assert.deepEqual(started, []);
+  // The briefing is over, so a bare yes is no longer its answer.
+  assert.notDeepEqual((await router.route("r1", "yes")).spoken.slice(0, 1), ["Starting Orchestration Redesign."]);
+});
+
+test("an unanswered briefing lapses, so a later yes does not start the loop", async () => {
+  const { router, started, tick } = briefSetup();
+  await router.route("r1", "good morning");
+  tick(121_000);
+  await router.route("r1", "yes");
+  assert.deepEqual(started, []);
+});
+
+test("asleep, a good morning to someone else is ignored; with the name it wakes and briefs", async () => {
+  const { router } = briefSetup();
+  await router.route("r1", "Jarvis, silent mode");
+  const ignored = await router.route("r1", "good morning");
+  assert.doesNotMatch(ignored.spoken[0] ?? "", /^Good morning, Dennis/);
+  const woke = await router.route("r1", "Jarvis, good morning");
+  assert.match(woke.spoken[0], /^Good morning, Dennis\./);
+});
+
+test("if the data can't be gathered it says so instead of going quiet", async () => {
+  const { router } = briefSetup({ gather: async () => Promise.reject(new Error("offline")) });
+  const r = await router.route("r1", "good morning");
+  assert.deepEqual(r.spoken, ["I couldn't pull the briefing together: offline"]);
+});
+
+test("a line owed to the next words is not spoken with the briefing, and is said once after it", async () => {
+  const { router } = briefSetup();
+  router.owe("r1", ["Docs finished."]);
+  const brief = await router.route("r1", "good morning");
+  assert.doesNotMatch(brief.spoken.join(" "), /Docs finished/);
+  await router.route("r1", "never mind");
+  const after = await router.route("r1", "Jarvis, switch to docs");
+  assert.equal(after.spoken.filter((line) => line === "Docs finished.").length, 1);
+  assert.equal((await router.route("r1", "Jarvis, switch to api")).spoken.includes("Docs finished."), false);
+});
+
+test("brief() answers a good morning and its replies without touching the Voice loop; other words are null", async () => {
+  const { router, started, sent } = briefSetup();
+  assert.equal(await router.brief("drawer", "run the tests"), null);
+  const open = await router.brief("drawer", "good morning");
+  assert.match(open?.spoken[0] ?? "", /^Good morning, Dennis\./);
+  const go = await router.brief("drawer", "do it");
+  assert.equal(go?.spoken[0], "Starting Orchestration Redesign.");
+  assert.deepEqual(started, ["start"]);
+  assert.deepEqual(sent, []);
+});
+
+test("brief() ends an open briefing on words that are not an answer", async () => {
+  const { router, started } = briefSetup();
+  await router.brief("drawer", "good morning");
+  assert.equal(await router.brief("drawer", "run the tests please"), null);
+  assert.equal(await router.brief("drawer", "yes"), null);
+  assert.deepEqual(started, []);
 });

@@ -38,6 +38,22 @@ test("readStories returns blocked_from as blockedFrom, empty when unset", () => 
   }
 });
 
+test("readStories returns paused_until and paused_for as pausedUntil and pausedFor, empty when unset", () => {
+  const dir = mkdtempSync(join(tmpdir(), "harness-layout-"));
+  try {
+    const stories = join(dir, "stories");
+    mkdirSync(stories);
+    writeFileSync(join(stories, "01-a.md"), "---\nid: S1\ntitle: A\nstatus: implementing\npaused_until: 2026-10-12T07:32:00.000Z\npaused_for: claude\n---\n");
+    writeFileSync(join(stories, "02-b.md"), "---\nid: S2\ntitle: B\nstatus: todo\n---\n");
+    assert.deepEqual(
+      readStories(dir).map((story) => [story.pausedUntil, story.pausedFor]),
+      [["2026-10-12T07:32:00.000Z", "claude"], ["", ""]],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("readStories returns block_kind as blockKind, empty when unset", () => {
   const dir = mkdtempSync(join(tmpdir(), "harness-layout-"));
   try {

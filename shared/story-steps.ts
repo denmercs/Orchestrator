@@ -1,5 +1,6 @@
 import { needsYou } from "./gates";
 import type { EpicBoardState, EpicStory } from "./orchestration";
+import { clockTime, providerName } from "./plan-usage";
 
 // Which first step a story runs: a feature is planned, a bug is diagnosed.
 export type Track = "plan" | "diagnose";
@@ -61,7 +62,22 @@ function waitingOn(story: EpicStory, stories: EpicStory[] | undefined): string |
   return story.dependsOn.find((id) => !merged.has(id)) ?? story.dependsOn[0];
 }
 
+// A running step waiting out a plan limit, while its resume time is still ahead; null otherwise.
+function pausedText(story: EpicStory): Text | null {
+  if (story.status !== "planning" && story.status !== "implementing" && story.status !== "reviewing") return null;
+  const until = Date.parse(story.pausedUntil);
+  if (!(until > Date.now())) return null;
+  const name = story.pausedFor ? providerName(story.pausedFor) : "plan";
+  return {
+    sub: `Paused · ${name} limit`,
+    detail: `Paused for the ${name} limit, resumes at ${clockTime(new Date(until))}`,
+    cta: "Open session",
+  };
+}
+
 function textOf(story: EpicStory, track: Track, stories: EpicStory[] | undefined): Text {
+  const paused = pausedText(story);
+  if (paused) return paused;
   const diagnose = track === "diagnose";
   const pr = story.pr === null ? "PR" : `PR #${story.pr}`;
   switch (story.status) {
