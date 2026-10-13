@@ -307,6 +307,12 @@ The right-hand drawer, opened from the header **Voice** button beside Story pipe
 
 _Avoid_: voice mode (that is Paseo's), assistant panel.
 
+## Voice session
+
+A Paseo session the **Voice drawer** ("New voice session") or **Jarvis** ("new session") creates for you to talk to, in the target's folder and workspace, and then makes the target. It carries the env marker `ORCHESTRATOR_VOICE_SESSION=1`; the plugin's `agent.create` hook sees the marker, runs the session on the Voice setting's profile (`voice.profile`: empty is Auto, the first Claude Sonnet profile; `off` keeps the Paseo default; a request that names its own model keeps it) and appends the routing rule to its system prompt: code edits go through the loop, small jobs go to a Sonnet or Haiku helper, at most one Opus helper, and every decision is offered as numbered choices. The drawer shows "Voice sessions run on <profile>" with chips to change it. A session not created this way (an existing Opus session, or plain Paseo voice mode) can't change model, because Paseo gives plugins no way to; it gets the routing rule once, as a preamble on the first steer. Code: `shared/voice-session.ts`, `client/voice-link.ts` (`create`), `client/voice-runner.ts` (`newSession`).
+
+_Avoid_: voice mode (that is Paseo's), voice agent.
+
 ## Voice pill
 
 The fourth composer pill (`session-voice`), shown on every session while voice is on. It reads the **Voice runner**'s state: on the target session it shows the loop's mode, on any other session it offers to make that session the target. Off, it is not shown. It joins the existing shared agent subscription in `client/session-role-pills.ts`, which also feeds the runner its session list. Label and title: `client/voice-pill-model.ts`.

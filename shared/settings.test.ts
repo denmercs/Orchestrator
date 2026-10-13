@@ -46,9 +46,20 @@ test("budget settings keep given values", () => {
   });
 });
 
-test("voice settings are host-scoped; referenceClip defaults to empty; phoneAudio defaults to false", () => {
+test("voice settings are host-scoped at version 1", () => {
   assert.equal(voiceSettings.id, "voice");
   assert.equal(voiceSettings.scope, "host");
-  assert.deepEqual(voiceSettings.schema.parse({}), { referenceClip: "", phoneAudio: false });
-  assert.deepEqual(voiceSettings.schema.parse({ referenceClip: "/a.wav", phoneAudio: true }), { referenceClip: "/a.wav", phoneAudio: true });
+  assert.equal(voiceSettings.version, 1);
+});
+
+test("voice settings default to Auto profile, no reference clip, phone audio off", () => {
+  assert.deepEqual(voiceSettings.schema.parse({}), { profile: "", referenceClip: "", phoneAudio: false });
+});
+
+test("voice settings keep given values", () => {
+  assert.deepEqual(voiceSettings.schema.parse({ profile: "off", referenceClip: "/a.wav", phoneAudio: true }), {
+    profile: "off",
+    referenceClip: "/a.wav",
+    phoneAudio: true,
+  });
 });

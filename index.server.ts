@@ -30,6 +30,8 @@ import { createVoiceResume } from "./server/voice-resume";
 import { createSpeakReplies } from "./server/speak-replies";
 import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { gateAct } from "./shared/gates";
+import { profilesFromConfigGet } from "./shared/agent-profiles";
+import { applyVoiceSession, VOICE_SESSION_ENV, voiceProfileFor } from "./shared/voice-session";
 import { readTelemetry, summariseTelemetry } from "./server/context-telemetry";
 import { loadStoryContext } from "./server/story-context";
 import { kiroUsageSource } from "./server/kiro-usage";
@@ -50,13 +52,13 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./server/voice-helper";
 import { transcribeVoice, voiceEvents, voiceHelperStart, voiceHelperStop, voiceBrief, voiceInterpret, voiceSpeak, voiceTarget } from "./shared/voice-rpc";
-import { voiceSettings } from "./shared/settings";
 import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
-import { createJarvisRouter } from "./server/jarvis-router";
+import { createJarvisRouter, voiceSessionCreator } from "./server/jarvis-router";
 import { createMorningBrief, fetchWeather } from "./server/morning-brief";
 import { splitSessions, type VoiceEvent } from "./shared/voice-loop";
+
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -105,6 +107,7 @@ import { agentRunnerSettings } from "./shared/agent-runner";
 import {
   budgetSettings,
   dashboardSettings,
+  voiceSettings,
   gitSettings,
   harnessSettings,
   jiraBoardSettings,
@@ -148,6 +151,7 @@ export default function contribute(
   server.registerUsageSource?.(kiroUsageSource());
   server.registerSettings(standupSettings);
   server.registerSettings(dashboardSettings);
+  const voiceSetting = server.registerSettings(voiceSettings);
   const budget = server.registerSettings(budgetSettings);
   const runnerSettings = server.registerSettings(agentRunnerSettings);
   const readRunnerProfileId = async () => {
@@ -386,25 +390,40 @@ export default function contribute(
     loop.rememberPaseo(paseo);
     return listMergedPrs();
   });
-  const offBeforeCreate = server.before("agent.create", async ({ request }) => {
+  const offBeforeCreate = server.before("agent.create", async ({ request }, { paseo }) => {
     const hostServers = pickMcpServers(
       await readHostMcpServers(request.config.cwd),
       mcpScopeFor(request.config.cwd),
       await readMcpExclude(),
     );
-    if (Object.keys(hostServers).length === 0) {
-      return;
+    const withServers =
+      Object.keys(hostServers).length === 0
+        ? request
+        : {
+            ...request,
+            config: {
+              ...request.config,
+              mcpServers: {
+                ...request.config.mcpServers,
+                ...hostServers,
+              },
+            },
+          };
+    // Only voice-marked creates need the profile; a failed config read never blocks the create.
+    if (request.env?.[VOICE_SESSION_ENV] !== "1") {
+      return withServers === request ? undefined : withServers;
     }
-    return {
-      ...request,
-      config: {
-        ...request.config,
-        mcpServers: {
-          ...request.config.mcpServers,
-          ...hostServers,
-        },
-      },
-    };
+    let profile = null;
+    try {
+      const state = await voiceSetting.read();
+      profile = voiceProfileFor(
+        profilesFromConfigGet(await paseo.config.get()),
+        state.status === "ready" ? state.values.profile : "",
+      );
+    } catch (error) {
+      console.warn("orchestrator: voice profile lookup failed", error);
+    }
+    return applyVoiceSession(withServers, profile);
   });
   const offWorkspaceCreated = server.on("workspace.created", ({ workspace }) => {
     scopeWorkerWorkspace(workspace);
@@ -590,6 +609,7 @@ export default function contribute(
       );
     },
     send: (sessionId, text) => jarvisPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
+    create: voiceSessionCreator(jarvisPaseo),
     // "Good morning, Jarvis": weather, the verse, your Jira stories and the priority initiative, one beat at a time.
     brief: createMorningBrief({
       weather: () => fetchWeather(),

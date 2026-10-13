@@ -6,13 +6,21 @@
 import { isBriefGreeting, replyBrief, startBrief, type BriefData, type BriefState } from "../shared/morning-brief";
 import { addressed, CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
 import { namelessPassThrough, type Interpreter } from "../shared/voice-interpreter";
-import { ASLEEP_NOTE, NOTHING_SENT, notTargetLine, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
+import { ASLEEP_NOTE, newSessionFailedLine, NOTHING_SENT, notTargetLine, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
+import { createVoiceSession, VOICE_ROUTING_PREAMBLE, type VoiceCreatePaseo } from "../shared/voice-session";
+
+/** The `create` port: a marked voice session beside the target. See `createVoiceSession`. */
+export function voiceSessionCreator(paseo: () => VoiceCreatePaseo): (target: VoiceSession) => Promise<string> {
+  return (target) => createVoiceSession(paseo(), target.id);
+}
 
 export type JarvisRouterPorts = {
   /** Live sessions: `list` may be targets, `blocked` are Voice's own (Jarvis, the Voice helper). See `splitSessions`. */
   sessions(): Promise<{ list: VoiceSession[]; blocked: VoiceSession[] }>;
   /** Sends text to a session as a steer. */
   send(sessionId: string, text: string): Promise<unknown>;
+  /** Starts a marked voice session beside `target` and returns its id. See `voiceSessionCreator`. */
+  create(target: VoiceSession): Promise<string>;
   /**
    * Turns an utterance into a loop result. Defaults to the words as heard, minus a leading "Jarvis,".
    * The seam for the speech-cleanup helper: pass `withFallback(helper, namelessPassThrough)`, unwrapped to its result.
@@ -42,6 +50,8 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
   const interpreter = ports.interpreter ?? namelessPassThrough;
   const entries = new Map<string, Entry>();
   const chains = new Map<string, Promise<unknown>>();
+  // Sessions that already know the routing rule: ones the router created, and ones it has already told.
+  const told = new Set<string>();
   const briefs = new Map<string, { state: BriefState; at: number }>();
   let drawerTarget: VoiceSession | null = null;
   let lastBlocked: VoiceSession[] = [];
@@ -137,10 +147,22 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
             // Interrupted before the steer went out: nothing is sent and the state is left as it was.
             if (signal?.aborted) return { spoken: [], note: STOPPED_NOTE };
             try {
-              await ports.send(effect.session.id, effect.text);
+              const first = !told.has(effect.session.id);
+              await ports.send(effect.session.id, first ? `${VOICE_ROUTING_PREAMBLE}\n\n${effect.text}` : effect.text);
+              told.add(effect.session.id);
             } catch (error) {
               failed = true;
               spoken.push(sendFailedLine(effect.session.name, errorText(error)));
+            }
+            break;
+          case "create":
+            // The new session's system prompt carries the rule, so it is never briefed. A failure keeps the old target.
+            try {
+              const id = await ports.create(effect.session);
+              told.add(id);
+              events.push({ type: "pick", session: { id, name: `${effect.session.name} (voice)` } });
+            } catch (error) {
+              spoken.push(newSessionFailedLine(errorText(error)));
             }
             break;
           case "receipt":

@@ -16,7 +16,7 @@ const TITLE = INSTALL_LABEL ? `Orchestration (${INSTALL_LABEL})` : "Orchestratio
 
 export default function contribute(client: PluginClientContext) {
   const voice = createVoiceRunner({
-    link: createVoiceLink(client.paseo.agents),
+    link: createVoiceLink(client.paseo),
     recorder: createVoiceMic(),
     transcriber: createVoiceTranscriber(client.rpc),
     events: { read: (after) => client.rpc(voiceEvents, { after }) },

@@ -475,6 +475,52 @@ test("a numbered list is forgotten after the confirm timeout, like on the phone"
   assert.equal(timers.filter((t) => t.ms === CONFIRM_TIMEOUT_MS).every((t) => t.cleared || t === timer), true, "a picked list's timer is cleared");
 });
 
+test("a create effect makes a new session through the link the target", async () => {
+  const made: Array<{ id: string; name: string }> = [];
+  const { runner, said } = setup({
+    link: {
+      say: async () => {},
+      interrupt: async () => {},
+      create: async (target) => {
+        made.push(target);
+        return "new1";
+      },
+    },
+  });
+  runner.on();
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "new session" });
+  await flush();
+  assert.deepEqual(made, [alpha]);
+  assert.equal(runner.getState().session?.id, "new1");
+  assert.equal(said.length, 0);
+});
+
+test("a failed create lands in error and keeps the target", async () => {
+  const { runner } = setup({
+    link: { say: async () => {}, interrupt: async () => {}, create: async () => Promise.reject(new Error("no create")) },
+  });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "new session" });
+  await flush();
+  assert.equal(runner.getState().error, "no create");
+  assert.equal(runner.getState().session?.id, "a1");
+});
+
+test("newSession() creates from the target even while voice is off", async () => {
+  const made: Array<{ id: string; name: string }> = [];
+  const { runner } = setup({
+    link: { say: async () => {}, interrupt: async () => {}, create: async (target) => (made.push(target), "new2") },
+  });
+  runner.pick(alpha);
+  runner.newSession();
+  await flush();
+  assert.deepEqual(made, [alpha]);
+  assert.equal(runner.getState().session?.id, "new2");
+});
+
 type Batch = { cursor: number; events: VoiceEvent[]; phoneActive: boolean };
 
 // An events port whose reads stay pending until the test answers them.
