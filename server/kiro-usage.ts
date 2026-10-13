@@ -1,6 +1,6 @@
 // Kiro plan usage (see CONTEXT.md, "Kiro usage source"): parses `kiro-cli chat --no-interactive "/usage"`.
 // Types only from the SDK, so the plugin still loads on a host without `registerUsageSource`.
-import type { UsageBalance, UsageReport, UsageSourceRegistration } from "@getpaseo/plugin/server/usage";
+import type { UsageBalance, UsageReport, UsageSourceRegistration } from "@getpaseo/plugin/server";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
