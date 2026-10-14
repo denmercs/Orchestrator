@@ -17,16 +17,39 @@ test("dashboard settings are host-scoped at version 1", () => {
   assert.equal(dashboardSettings.version, 1);
 });
 
-test("dashboard settings default to the initiatives tab", () => {
-  assert.deepEqual(dashboardSettings.schema.parse({}), { tab: "initiatives" });
+test("dashboard settings default to the initiatives tab, an open Jarvis panel and nothing seen", () => {
+  assert.deepEqual(dashboardSettings.schema.parse({}), {
+    tab: "initiatives",
+    jarvisCollapsed: false,
+    jarvisSeen: {},
+  });
+});
+
+test("dashboard settings keep a stored collapse and seen map", () => {
+  const stored = { tab: "pulse", jarvisCollapsed: true, jarvisSeen: { "S-1": "merged" } };
+  assert.deepEqual(dashboardSettings.schema.parse(stored), stored);
+});
+
+test("dashboard settings fall back for a malformed collapse or seen map", () => {
+  const parsed = dashboardSettings.schema.parse({ jarvisCollapsed: "yes", jarvisSeen: [1] });
+  assert.equal(parsed.jarvisCollapsed, false);
+  assert.deepEqual(parsed.jarvisSeen, {});
 });
 
 test("dashboard settings keep a valid stored tab", () => {
-  assert.deepEqual(dashboardSettings.schema.parse({ tab: "pulse" }), { tab: "pulse" });
+  assert.deepEqual(dashboardSettings.schema.parse({ tab: "pulse" }), {
+    tab: "pulse",
+    jarvisCollapsed: false,
+    jarvisSeen: {},
+  });
 });
 
 test("dashboard settings fall back to initiatives for an unknown tab", () => {
-  assert.deepEqual(dashboardSettings.schema.parse({ tab: "bogus" }), { tab: "initiatives" });
+  assert.deepEqual(dashboardSettings.schema.parse({ tab: "bogus" }), {
+    tab: "initiatives",
+    jarvisCollapsed: false,
+    jarvisSeen: {},
+  });
 });
 
 test("budget settings are host-scoped at version 1", () => {

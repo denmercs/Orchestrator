@@ -621,7 +621,7 @@ test("with no mic API but the loop awake, a target reply is shown once, by the l
   runner.on();
   reads[0]({ cursor: 1, events: [reply("All done.")], phoneActive: false });
   await flush();
-  assert.equal(runner.getState().lines.filter((l) => l === "All done.").length, 1);
+  assert.equal(runner.getState().lines.filter((l) => l === "Alpha: All done.").length, 1);
 });
 
 test("with a mic (hasMic absent) an asleep reply adds nothing", async () => {
@@ -1012,4 +1012,80 @@ test("a status port that fails, or an asleep loop, leaves the words to the loop"
   runner.dispatch({ type: "utterance", text: "status" });
   await flush();
   assert.equal(calls, 1, "asleep: the port is not asked");
+});
+
+test("typed text wakes an asleep loop and the status port answers it", async () => {
+  const asked: string[] = [];
+  const { runner, said } = setup({ status: async (text) => (asked.push(text), text === "status" ? ["docs needs you."] : null) });
+  runner.pick(alpha);
+  assert.equal(runner.getState().mode, "asleep");
+  runner.type("status");
+  await flush();
+  assert.notEqual(runner.getState().mode, "asleep");
+  assert.deepEqual(asked, ["status"]);
+  assert.deepEqual(runner.getState().lines, ["docs needs you."]);
+  assert.deepEqual(said, []);
+});
+
+test("typed text with a target is sent like a transcript; blank text does nothing", async () => {
+  const { runner, said } = setup();
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  runner.type("   ");
+  runner.type("");
+  await flush();
+  assert.equal(runner.getState().mode, "asleep");
+  assert.deepEqual(said, []);
+  assert.deepEqual(runner.getState().transcripts, []);
+  runner.type("fix the test");
+  await flush();
+  assert.deepEqual(said, [["a1", "fix the test"]]);
+  assert.deepEqual(runner.getState().transcripts, [{ text: "fix the test", outcome: "sent" }]);
+});
+
+test("conversation interleaves your words and Jarvis's lines in order, updates outcomes in place, keeps 40", async () => {
+  const { runner } = setup({ status: async (text) => (text === "status" ? ["docs needs you."] : null) });
+  assert.deepEqual(runner.getState().conversation, []);
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  runner.type("fix the test");
+  await flush();
+  runner.type("status");
+  await flush();
+  assert.deepEqual(runner.getState().conversation, [
+    { from: "you", text: "fix the test", outcome: "sent" },
+    { from: "you", text: "status", outcome: "status" },
+    { from: "jarvis", text: "docs needs you." },
+  ]);
+  // transcripts and lines keep working alongside
+  assert.deepEqual(runner.getState().lines, ["docs needs you."]);
+  assert.equal(runner.getState().transcripts.length, 2);
+});
+
+test("conversation outcomes update in place and the log is capped at 40", async () => {
+  const { runner } = setup({ status: async (text) => ([`reply ${text}`]) });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  runner.on();
+  await flush();
+  for (let i = 0; i < 25; i++) {
+    runner.dispatch({ type: "utterance", text: `q${i}` });
+    await flush();
+  }
+  const log = runner.getState().conversation;
+  assert.equal(log.length, 40);
+  assert.deepEqual(log.at(-1), { from: "jarvis", text: "reply q24" });
+  assert.deepEqual(log.at(-2), { from: "you", text: "q24", outcome: "status" });
+});
+
+test("a conversation outcome updates in place when the helper answers", async () => {
+  const { helper } = fakeHelper({ interpret: async (text) => ({ via: "helper", result: { type: "send", text } }) });
+  const { runner } = setup({ helper });
+  runner.on();
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "please run the tests" });
+  assert.deepEqual(runner.getState().conversation, [{ from: "you", text: "please run the tests", outcome: "working" }]);
+  await flush();
+  assert.deepEqual(runner.getState().conversation, [{ from: "you", text: "please run the tests", outcome: "sent" }]);
 });

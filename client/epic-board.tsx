@@ -348,7 +348,7 @@ type ViewProps = { epic: EpicBoards; theme: Theme; compact: boolean; navigation:
 
 // One panel per initiative, for the dashboard's scroll view, or the picker while choosing a phase.
 // `onEditPolicy` opens where the context policy is edited (the Story pipeline drawer).
-export function InitiativePanels({ epic, theme, compact, navigation, onEditPolicy }: ViewProps & { onEditPolicy?(): void }) {
+export function InitiativePanels({ epic, theme, compact, navigation, onEditPolicy, onAsk }: ViewProps & { onEditPolicy?(): void; onAsk?(story: EpicStory): void }) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   const settings = useSettings(harnessSettings);
   const toast = useToast();
@@ -429,6 +429,7 @@ export function InitiativePanels({ epic, theme, compact, navigation, onEditPolic
             onChanged={() => void refresh()}
             onDetails={() => epic.showDetails(true)}
             onEditPolicy={onEditPolicy}
+            onAsk={onAsk}
           />
         );
       })}
@@ -546,6 +547,7 @@ function InitiativePanel({
   onChanged,
   onDetails,
   onEditPolicy,
+  onAsk,
 }: {
   board: EpicBoard;
   theme: Theme;
@@ -560,6 +562,7 @@ function InitiativePanel({
   onChanged(): void;
   onDetails(): void;
   onEditPolicy?(): void;
+  onAsk?(story: EpicStory): void;
 }) {
   const removeInitiative = useRpc(deleteEpicInitiative);
   const openPlan = useRpc(openPhasePlanRpc);
@@ -781,6 +784,11 @@ function InitiativePanel({
           <Text style={[styles.nodeSub, styles.shrink, { color: kind === "needs-you" ? tone : theme.colors.foregroundMuted }]} numberOfLines={1}>
             · {bar.sub}
           </Text>
+          {onAsk ? (
+            <Pressable accessibilityRole="button" accessibilityLabel={`Ask Jarvis about ${item.id}`} onPress={() => onAsk(item)} hitSlop={6}>
+              <Text style={styles.askText}>Ask</Text>
+            </Pressable>
+          ) : null}
         </View>
         <Text style={[styles.nodeTitle, styles.cardTitle, kind === "waiting" ? styles.mutedTitle : null]} numberOfLines={1}>
           {item.title}
@@ -1700,6 +1708,7 @@ function createStyles(theme: Theme, compact: boolean) {
     cardTitle: { fontSize: 12, fontWeight: "400" as const },
     mutedTitle: { color: c.foregroundMuted },
     nodeSub: { fontSize: 10.5 },
+    askText: { color: c.accent, fontSize: 10.5, fontWeight: "600" as const },
     // A node's step bar and $ bar share one grid: glyph, bar, label.
     barRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
     barGlyph: { width: 12, textAlign: "center" as const, color: c.foregroundMuted, fontSize: 10 },

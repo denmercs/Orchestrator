@@ -16,6 +16,7 @@ import {
   type JiraIssue,
   type JiraPullRequest,
   type JiraSprint,
+  type EpicStory,
 } from "../shared/orchestration";
 import {
   agentRunnerSettings,
@@ -48,7 +49,10 @@ import { NeedsYouQueue, StatsStrip } from "./needs-you";
 import { RunnerPicker } from "./runner-picker";
 import type { DrawerTab } from "./pipeline-drawer-model";
 import { SkillsDrawer, StoryPipelineButton } from "./skills-drawer";
-import { VoiceButton, VoiceDrawer } from "./voice-drawer";
+import { JarvisPanel } from "./jarvis-panel";
+import { askDraft, briefing, placement, type StoryChip } from "./jarvis-panel-model";
+import { boardKey } from "./epic-board-model";
+import { briefingLine } from "../shared/voice-lines";
 import type { createVoiceRunner } from "./voice-runner";
 import { startJiraSession } from "./start-jira-session";
 import { StandupSection } from "./standup-section";
@@ -56,7 +60,13 @@ import { StartInput } from "./start-input";
 import { useOrchestrationCatalog } from "./use-orchestration-catalog";
 
 export function OrchestrationDashboard({ theme, layout, navigation, voice }: PluginSurfaceProps & { voice: ReturnType<typeof createVoiceRunner> }) {
-  const [voiceOpen, setVoiceOpen] = useState(false);
+  // Jarvis panel: measured width, overlay open state, the text box and the note under it, and the briefing shown first.
+  const [width, setWidth] = useState<number | undefined>(undefined);
+  const [jarvisOpened, setJarvisOpened] = useState(false);
+  const [jarvisDraft, setJarvisDraft] = useState("");
+  const [jarvisNote, setJarvisNote] = useState<string | null>(null);
+  const [intro, setIntro] = useState<string | null>(null);
+  const briefed = useRef(false);
   const paseo = usePaseo();
   const { agents, workspaces, error } = useOrchestrationCatalog();
   const listSchedules = useRpc(listOrchestrationSchedules);
@@ -241,6 +251,54 @@ export function OrchestrationDashboard({ theme, layout, navigation, voice }: Plu
     if (!saved) {
       setTabSaveError(dashboard.saveError ?? "Could not save the selected tab.");
     }
+  }
+
+  const jarvisCollapsed = dashboard.status === "ready" ? dashboard.values.jarvisCollapsed : false;
+  const jarvisPlacement = placement({ width, compact: layout.compact, collapsed: jarvisCollapsed, opened: jarvisOpened });
+  // Whether the window is wide enough to dock; only then does opening or closing the panel change the saved choice.
+  const jarvisCanDock = placement({ width, compact: layout.compact, collapsed: false }) === "docked";
+
+  function setJarvisCollapsed(collapsed: boolean) {
+    if (dashboard.status !== "ready" || dashboard.values.jarvisCollapsed === collapsed) return;
+    void dashboard.save({ ...dashboard.values, jarvisCollapsed: collapsed }, dashboard.revision);
+  }
+  function openJarvis() {
+    if (jarvisCanDock) setJarvisCollapsed(false);
+    else setJarvisOpened(true);
+  }
+  function closeJarvis() {
+    if (jarvisCanDock) setJarvisCollapsed(true);
+    else setJarvisOpened(false);
+  }
+
+  // The briefing: once, when the boards first load, against the saved map of story statuses, which is then updated.
+  useEffect(() => {
+    if (briefed.current || !epic.boards || dashboard.status !== "ready") return;
+    briefed.current = true;
+    const result = briefing(epic.boards, dashboard.values.jarvisSeen);
+    const ids = (list: { id: string }[]) => list.map((story) => story.id);
+    setIntro(briefingLine({ merged: ids(result.merged), running: ids(result.running), needsYou: ids(result.needsYou) }));
+    void dashboard.save({ ...dashboard.values, jarvisSeen: result.seen }, dashboard.revision);
+  }, [epic.boards, dashboard]);
+
+  function askJarvis(story: EpicStory) {
+    const state = voice.getState();
+    const ask = askDraft(story, state.sessions, state.session);
+    if (ask.target) {
+      voice.pick(ask.target);
+      setJarvisNote(null);
+    } else {
+      setJarvisNote(ask.note);
+    }
+    setJarvisDraft(ask.draft);
+    if (jarvisPlacement === "strip") openJarvis();
+  }
+
+  // Unfolds the story's initiative too: a folded one hides the story and its inline panel.
+  function openChip(chip: StoryChip) {
+    if (!epic.boards?.some((item) => boardKey(item) === chip.board)) return;
+    void selectTab("initiatives");
+    epic.reveal(chip.board, chip.id);
   }
 
   const selectedJiraBoard = jiraBoards.find((board) => board.id === selectedBoardId) ?? null;
@@ -449,7 +507,6 @@ export function OrchestrationDashboard({ theme, layout, navigation, voice }: Plu
         open={skillsOpen}
         onPress={() => setSkillsOpen((open) => !open)}
       />
-      <VoiceButton theme={theme} runner={voice} open={voiceOpen} onPress={() => setVoiceOpen((open) => !open)} />
     </DashboardHeader>
   );
 
@@ -488,6 +545,7 @@ export function OrchestrationDashboard({ theme, layout, navigation, voice }: Plu
               setDrawerTab("context");
               setSkillsOpen(true);
             }}
+            onAsk={askJarvis}
           />
         </>
       );
@@ -566,6 +624,7 @@ export function OrchestrationDashboard({ theme, layout, navigation, voice }: Plu
   }
 
   return (
+    <View style={styles.root} onLayout={(event) => setWidth(event.nativeEvent.layout.width)}>
     <View style={styles.screen}>
       {header}
       {/* Below the header (zIndex 10), so an outside press closes the alerts popover. */}
@@ -599,7 +658,24 @@ export function OrchestrationDashboard({ theme, layout, navigation, voice }: Plu
         onTab={setDrawerTab}
         onClose={() => setSkillsOpen(false)}
       />
-      <VoiceDrawer theme={theme} compact={layout.compact} runner={voice} open={voiceOpen} onClose={() => setVoiceOpen(false)} />
+    </View>
+      <JarvisPanel
+        theme={theme}
+        compact={layout.compact}
+        placement={jarvisPlacement}
+        runner={voice}
+        boards={epic.boards}
+        intro={intro}
+        draft={jarvisDraft}
+        note={jarvisNote}
+        onDraft={(text) => {
+          setJarvisDraft(text);
+          if (!text) setJarvisNote(null);
+        }}
+        onOpen={openJarvis}
+        onClose={closeJarvis}
+        onChip={openChip}
+      />
     </View>
   );
 }
@@ -1371,8 +1447,15 @@ function Pill({
 function createStyles(theme: PluginSurfaceProps["theme"], compact: boolean) {
   const pad = compact ? 16 : 28;
   return {
+    // The dashboard column and the Jarvis panel, side by side.
+    root: {
+      flex: 1,
+      flexDirection: "row" as const,
+      backgroundColor: theme.colors.surface0,
+    },
     screen: {
       flex: 1,
+      minWidth: 0,
       backgroundColor: theme.colors.surface0,
     },
     alertsBackdrop: {

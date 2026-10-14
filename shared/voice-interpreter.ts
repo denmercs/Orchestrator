@@ -1,6 +1,6 @@
 import { withoutName, type InterpretResult, type VoiceSession } from "./voice-loop";
 
-// The helper switch starts on; the drawer lets the user turn it off.
+// The helper switch starts on; the Jarvis panel lets the user turn it off.
 export const HELPER_DEFAULT_ON = true;
 
 const DROP: InterpretResult = { type: "drop" };

@@ -5,11 +5,12 @@ import { encodeWav } from "./voice-ears-model";
 
 export const MAX_LINES = 20;
 export const MAX_TRANSCRIPTS = 5;
+export const MAX_CONVERSATION = 40;
 export const MAX_INTERPRETS = 20;
 
 export const MAX_HOLD_MS = 30_000;
 export const MIN_HOLD_MS = 300;
-// One timeout for the drawer and Jarvis.
+// One timeout for the Jarvis panel (Mac) and Jarvis on the phone.
 export { CONFIRM_TIMEOUT_MS };
 export const POLL_BACKOFF_MS = 2_000;
 export const BASE_HINTS = ["merge", "Orchestrator", "Paseo", "Jarvis"];
@@ -53,7 +54,7 @@ export type VoiceRunnerPorts = {
     setPaused(paused: boolean): void;
     onEvent(fn: (event: EarsRunnerEvent) => void): void;
   };
-  /** False on a device with no mic API (the phone): replies to the target are shown in the drawer, not spoken. Defaults to true. */
+  /** False on a device with no mic API (the phone): replies to the target are shown in the panel, not spoken. Defaults to true. */
   hasMic?: () => boolean;
   /** The persisted `voice.micOff` setting. */
   prefs?: { read(): Promise<{ micOff: boolean }>; write(micOff: boolean): Promise<unknown> };
@@ -63,7 +64,9 @@ export type TranscriptEntry = { text: string; outcome: string };
 
 export type InterpretRecord = { heard: string; outcome: InterpretOutcome };
 
-export type VoiceSnapshot = VoiceState & { lines: string[]; transcripts: TranscriptEntry[]; interprets: InterpretRecord[]; helper: boolean; error: string | null; phoneActive: boolean; micOn: boolean };
+export type ConversationEntry = { from: "you"; text: string; outcome: string } | { from: "jarvis"; text: string };
+
+export type VoiceSnapshot = VoiceState & { lines: string[]; conversation: ConversationEntry[]; transcripts: TranscriptEntry[]; interprets: InterpretRecord[]; helper: boolean; error: string | null; phoneActive: boolean; micOn: boolean };
 
 
 export const AUTO_SLEEP_MS = 60_000;
@@ -73,6 +76,7 @@ const keepLast = <T>(list: T[], add: T[], max: number): T[] => [...list, ...add]
 export function createVoiceRunner(ports: VoiceRunnerPorts) {
   const clock = ports.clock ?? { setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), clearTimeout: (h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>) };
   const entries: Array<{ id: number; text: string; outcome: string }> = [];
+  const convo: Array<{ id?: number; from: "you" | "jarvis"; text: string; outcome?: string }> = []; // your words and Jarvis's lines, in order
   const waiting = new Map<number, number>(); // interpret seq -> entry id
   let nextEntry = 0;
   let nextReply = 0;
@@ -82,7 +86,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   let lastSent: number | null = null;
   let confirmEntry: number | null = null; // the transcript that asked to confirm
   const listeners = new Set<() => void>();
-  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], transcripts: [], interprets: [], helper: HELPER_DEFAULT_ON, error: null, phoneActive: false, micOn: false };
+  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], conversation: [], transcripts: [], interprets: [], helper: HELPER_DEFAULT_ON, error: null, phoneActive: false, micOn: false };
   let autoSleepTimer: unknown = null;
   const clearAutoSleep = () => {
     if (autoSleepTimer === null) return;
@@ -104,11 +108,17 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
 
   const fail = (err: unknown) => publish({ error: err instanceof Error ? err.message : String(err) });
 
-  const showEntries = () => publish({ transcripts: entries.map(({ text, outcome }) => ({ text, outcome })) });
+  const showConversation = (): Partial<VoiceSnapshot> => {
+    convo.splice(0, Math.max(0, convo.length - MAX_CONVERSATION));
+    return { conversation: convo.map((c): ConversationEntry => (c.from === "you" ? { from: "you", text: c.text, outcome: c.outcome ?? "" } : { from: "jarvis", text: c.text })) };
+  };
+  const showEntries = () => publish({ transcripts: entries.map(({ text, outcome }) => ({ text, outcome })), ...showConversation() });
   const setOutcome = (id: number, outcome: string) => {
     const entry = entries.find((e) => e.id === id);
     if (!entry) return;
     entry.outcome = outcome;
+    const logged = convo.find((c) => c.id === id);
+    if (logged) logged.outcome = outcome;
     showEntries();
   };
   const outcomeOf = (effects: VoiceEffect[]): string | null => {
@@ -120,7 +130,8 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
 
   // Shows a line and plays it. `endsPlayback`: the loop is `speaking` until it has finished.
   function showAndSpeak(line: string, endsPlayback = false) {
-    publish({ lines: keepLast(snapshot.lines, [line], MAX_LINES) });
+    convo.push({ from: "jarvis", text: line });
+    publish({ lines: keepLast(snapshot.lines, [line], MAX_LINES), ...showConversation() });
     if (!ports.speaker) return;
     // The phone is speaking: the text stays on screen, but nothing plays here and the loop moves on.
     if (snapshot.phoneActive) return void (endsPlayback && dispatch({ type: "playbackEnded" }));
@@ -194,7 +205,9 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       answerer.ask(text).then(
         (lines) => {
           if (!lines) return tryNext(index + 1);
-          entries.push({ id: nextEntry++, text, outcome: answerer.outcome });
+          const id = nextEntry++;
+          entries.push({ id, text, outcome: answerer.outcome });
+          convo.push({ id, from: "you", text, outcome: answerer.outcome });
           entries.splice(0, Math.max(0, entries.length - MAX_TRANSCRIPTS));
           showEntries();
           lines.forEach((line) => showAndSpeak(line));
@@ -212,7 +225,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     // Store the new state before any effect runs, so effects that dispatch see it.
     publish(state);
     ports.ears?.setAwake(state.mode === "listening" || state.mode === "confirming" || state.mode === "waiting");
-    // Speaking risks the drawer's own playback retriggering the VAD; pause the ears for it (a tap-to-talk hold
+    // Speaking risks the panel's own playback retriggering the VAD; pause the ears for it (a tap-to-talk hold
     // already paused them and owns that flag while it lasts).
     if (!holding) ports.ears?.setPaused(state.mode === "speaking");
     // 60 s of listening with no speech goes back to asleep; the timer never runs outside listening.
@@ -244,7 +257,9 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     if (event.type === "utterance" && event.text.trim()) {
       const interpret = effects.find((e) => e.type === "interpret");
       entryId = nextEntry++;
-      entries.push({ id: entryId, text: event.text, outcome: outcomeOf(effects) ?? (interpret ? "working" : "dropped") });
+      const outcome = outcomeOf(effects) ?? (interpret ? "working" : "dropped");
+      entries.push({ id: entryId, text: event.text, outcome });
+      convo.push({ id: entryId, from: "you", text: event.text, outcome });
       if (interpret) waiting.set(interpret.seq, entryId);
       entries.splice(0, Math.max(0, entries.length - MAX_TRANSCRIPTS));
       showEntries();
@@ -390,10 +405,13 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
         if (polling !== run) return;
         cursor = batch.cursor;
         if (batch.phoneActive !== snapshot.phoneActive) publish({ phoneActive: batch.phoneActive });
-        // Asleep the loop drops replies, so the drawer shows them itself; awake, the loop shows them already.
+        // Asleep the loop drops replies, so the panel shows them itself; awake, the loop shows them already.
         if (ports.hasMic && !ports.hasMic() && snapshot.mode === "asleep") {
           const shown = batch.events.map((e) => phoneReplyLine(e, snapshot.session?.id)).filter((l): l is string => l !== null);
-          if (shown.length) publish({ lines: keepLast(snapshot.lines, shown, MAX_LINES) });
+          if (shown.length) {
+            shown.forEach((text) => convo.push({ from: "jarvis", text }));
+            publish({ lines: keepLast(snapshot.lines, shown, MAX_LINES), ...showConversation() });
+          }
         }
         batch.events.forEach(dispatch);
       } catch (err) {
@@ -444,7 +462,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     void poll(++polling);
   }
 
-  /** The drawer's mic toggle: persists the pref, then opens or fully closes the mic and ears. Turning the mic off
+  /** The panel's mic switch: persists the pref, then opens or fully closes the mic and ears. Turning the mic off
    * also returns the loop to asleep, since there is no more audio to listen with. */
   async function setMic(on: boolean) {
     if (ports.prefs) await ports.prefs.write(!on);
@@ -511,7 +529,13 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       if (!same(list, snapshot.sessions) || !same(blocked, snapshot.blocked)) dispatch({ type: "sessions", list, blocked });
     },
     pick: (session: VoiceSession) => dispatch({ type: "pick", session }),
-    /** The drawer's "New voice session" button: the same create the "new session" phrase makes, voice on or off. */
+    /** Typed text: goes through the runner exactly like a transcript. Typing is deliberate, so it wakes a sleeping loop first. */
+    type(text: string) {
+      if (!text.trim()) return;
+      if (snapshot.mode === "asleep") dispatch({ type: "wake" });
+      dispatch({ type: "utterance", text });
+    },
+    /** The panel's "New voice session" button: the same create the "new session" phrase makes, voice on or off. */
     newSession() {
       if (snapshot.session) perform({ type: "create", session: snapshot.session });
     },
