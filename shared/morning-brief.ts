@@ -63,11 +63,15 @@ const REPEAT = /^(?:repeat|say that again|again|what was that|come again)\b/;
 const norm = (text: string): string =>
   withoutName(text).toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
 
-/** "Good morning" (optionally after the name) starts the briefing. */
+const plain = (text: string): string => text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+
+/** "Good morning" starts the briefing: said short, or in one sentence with the name ("Hey Jarvis, good morning"). */
 export const isBriefGreeting = (text: string): boolean => {
-  const said = norm(text);
+  // "Hey, good morning" has no name for withoutName to strip.
+  const said = norm(text).replace(/^(?:hey|hi|hello) /, "");
   // Short only: "good morning team, standup is at nine" is for someone else.
-  return GREETING.test(said) && said.split(" ").length <= 4;
+  if (GREETING.test(said) && said.split(" ").length <= 4) return true;
+  return text.split(/[.!?\n]+/).some((part) => /\bgood morning\b/.test(plain(part)) && /\bjarvis\b/.test(plain(part)));
 };
 
 const hourOf = (at: number): number => new Date(at).getHours();
