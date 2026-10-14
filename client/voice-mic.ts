@@ -19,7 +19,6 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
-
 /** Turns a getUserMedia failure into one message the drawer can show as is. */
 export function micErrorMessage(err: unknown): string {
   const name = (err as { name?: unknown } | null)?.name;

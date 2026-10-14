@@ -616,6 +616,14 @@ test("with no mic API a reply to the target is shown and never spoken; one for a
   assert.equal(runner.getState().mode, "asleep");
 });
 
+test("with no mic API but the loop awake, a target reply is shown once, by the loop", async () => {
+  const { runner, reads } = noMicSetup(() => false);
+  runner.on();
+  reads[0]({ cursor: 1, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  assert.equal(runner.getState().lines.filter((l) => l === "All done.").length, 1);
+});
+
 test("with a mic (hasMic absent) an asleep reply adds nothing", async () => {
   const { runner, reads, spoken } = noMicSetup();
   await runner.start();

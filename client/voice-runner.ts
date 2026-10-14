@@ -390,7 +390,8 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
         if (polling !== run) return;
         cursor = batch.cursor;
         if (batch.phoneActive !== snapshot.phoneActive) publish({ phoneActive: batch.phoneActive });
-        if (ports.hasMic && !ports.hasMic()) {
+        // Asleep the loop drops replies, so the drawer shows them itself; awake, the loop shows them already.
+        if (ports.hasMic && !ports.hasMic() && snapshot.mode === "asleep") {
           const shown = batch.events.map((e) => phoneReplyLine(e, snapshot.session?.id)).filter((l): l is string => l !== null);
           if (shown.length) publish({ lines: keepLast(snapshot.lines, shown, MAX_LINES) });
         }

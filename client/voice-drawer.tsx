@@ -77,7 +77,6 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
               <Text style={styles.hint}>{view.notice}</Text>
             </View>
           ) : (
-            <>
             <View style={styles.row}>
               <Pressable
                 accessibilityRole="switch"
@@ -90,7 +89,6 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
               </Pressable>
               <Text style={styles.hint}>{on ? MODE_LABEL[state.mode] : "Off"}</Text>
             </View>
-            </>
           )}
 
           <Text style={styles.section}>Voice sessions</Text>
@@ -148,7 +146,6 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
           })}
 
           {view.kind === "mic" ? (
-            <>
             <View style={styles.row}>
               <Pressable
                 accessibilityRole="button"
@@ -173,7 +170,6 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
                 <Text style={styles.actionText}>Interrupt</Text>
               </Pressable>
             </View>
-            </>
           ) : null}
 
           {state.mode === "confirming" && state.confirm ? (
