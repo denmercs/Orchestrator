@@ -2,7 +2,7 @@
 // step(state, event) → { state, effects }. Adapters (mic, transcriber, interpreter, session link, speaker) only carry
 // events in and effects out; the loop holds no clocks and imports only its own wording (voice-lines) and name
 // matching (voice-names), so any bundle can reach it. The Voice runner (drawer, Mac) and the Jarvis router (phone) both run it.
-import { CANCELLED, CONFIRM_AGAIN, confirmLine, listLine, newSessionLine, noChoiceLine, noSessionLine, notTargetLine, NOTHING_TO_CONFIRM, pickFirstLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
+import { CANCELLED, CONFIRM_AGAIN, confirmLine, listLine, newSessionLine, noChoiceLine, noSessionLine, notTargetLine, NOTHING_TO_CONFIRM, pickFirstLine, replyLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
 import { choiceNumber, exactSessions, matchSessions, shortName } from "./voice-names";
 
 export type VoiceMode = "asleep" | "listening" | "confirming" | "waiting" | "speaking";
@@ -44,7 +44,7 @@ export type VoiceEvent =
   | { type: "utterance"; text: string }
   | { type: "interpreted"; seq: number; result: InterpretResult }
   /** `watched`: the session is on the Speak pill, so its reply is heard even when it is not the target. */
-  | { type: "reply"; sessionId: string; text: string; watched?: boolean }
+  | { type: "reply"; sessionId: string; text: string; summary?: string; watched?: boolean }
   | { type: "playbackEnded" }
   | { type: "confirm"; word: string }
   | { type: "pick"; session: VoiceSession }
@@ -290,14 +290,14 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
       return onInterpreted(state, event.seq, event.result);
     case "reply": {
       if (event.sessionId !== state.session?.id) {
-        const line = event.watched ? spokenLine(event.text) : "";
+        const line = event.watched ? replyLine(event.text, event.summary) : "";
         if (!line) return out(state);
         const name = shortName(state.sessions.find((s) => s.id === event.sessionId)?.name ?? "A session");
         return out({ ...state, heard: [...state.heard, { sessionId: event.sessionId, line: `${name}: ${line}` }] });
       }
-      const line = spokenLine(event.text);
+      const line = replyLine(event.text, event.summary);
       if (!line) return out(state);
-      const spoken = line;
+      const spoken = `${shortName(state.session.name)}: ${line}`;
       if (state.mode === "confirming" || state.talking) return out({ ...state, held: spoken });
       return out({ ...state, mode: "speaking", held: null }, { type: "speak", line: spoken });
     }

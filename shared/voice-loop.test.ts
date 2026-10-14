@@ -158,17 +158,17 @@ test("only the interrupt event interrupts; a spoken 'stop' is steer text", () =>
 });
 
 // Cycle 6
-test("a target reply is spoken as its first paragraph, with no session name; others are ignored", () => {
+test("a target reply is spoken as '<short name>: <medium line>'; unwatched others are ignored", () => {
   const r = step(awake({ mode: "waiting" }), { type: "reply", sessionId: "s1", text: "## Done\n\n```ts\nconst a = 1;\n```\n\nThe **fix** is `in`. See [docs](http://x)." });
-  assert.deepEqual(r.effects, [{ type: "speak", line: "Done" }]);
+  assert.deepEqual(r.effects, [{ type: "speak", line: "api-refactor: Done. The fix is in. See docs." }]);
   assert.equal(r.state.mode, "speaking");
   const body = step(awake(), { type: "reply", sessionId: "s1", text: "```\ncode\n```\nThe **fix** is `in` _place_.\nSee [docs](http://x).\n\nSecond paragraph." });
-  assert.deepEqual(body.effects, [{ type: "speak", line: "The fix is in place. See docs." }]);
+  assert.deepEqual(body.effects, [{ type: "speak", line: "api-refactor: The fix is in place. See docs. Second paragraph." }]);
   assert.deepEqual(step(awake(), { type: "reply", sessionId: "s2", text: "hello" }).effects, []);
   assert.deepEqual(step(awake({ talking: true }), { type: "reply", sessionId: "s1", text: "hello" }).effects, []);
 });
 
-test("a long reply is cut at a sentence end, else a word, at 300 characters", () => {
+test("a long reply is cut at a sentence end, else a word, at 700 characters", () => {
   const sentence = "This is a sentence of moderate length. ";
   const spoken = (text: string) => {
     const e = step(awake(), { type: "reply", sessionId: "s1", text }).effects[0];
@@ -176,9 +176,9 @@ test("a long reply is cut at a sentence end, else a word, at 300 characters", ()
     return e.type === "speak" ? e.line : "";
   };
   const a = spoken(sentence.repeat(20));
-  assert.ok(a.length <= 300 && a.endsWith("."), a);
-  const b = spoken("word ".repeat(100));
-  assert.ok(b.length <= 301 && b.endsWith("…"), b);
+  assert.ok(a.length <= 714 && a.endsWith("."), a);
+  const b = spoken("word ".repeat(300));
+  assert.ok(b.length <= 715 && b.endsWith("…"), b);
 });
 
 test("playbackEnded returns to listening and speechStart while speaking only stops playback", () => {
@@ -330,14 +330,14 @@ test("a target reply that arrives while you talk or confirm waits, then is spoke
   const talking = step(awake({ talking: true }), reply);
   assert.deepEqual(talking.effects, []);
   const done = say(talking.state, "uh");
-  assert.deepEqual(done.effects, [{ type: "speak", line: "All done." }]);
+  assert.deepEqual(done.effects, [{ type: "speak", line: "api-refactor: All done." }]);
   assert.equal(done.state.mode, "speaking");
   const confirming = step(awake({ mode: "confirming", confirm: { word: "merge", text: "x" } }), reply);
   assert.deepEqual(confirming.effects, []);
   const cancelled = step(confirming.state, { type: "confirm", word: "cancel" });
   assert.deepEqual(types(cancelled.effects), ["speak"]);
   const after = step(cancelled.state, { type: "playbackEnded" });
-  assert.deepEqual(after.effects, [{ type: "speak", line: "All done." }]);
+  assert.deepEqual(after.effects, [{ type: "speak", line: "api-refactor: All done." }]);
   const picked = step(talking.state, { type: "pick", session: docs });
   assert.deepEqual(say(picked.state, "uh").effects, [], "a held reply is dropped when you pick another session");
 });
@@ -491,7 +491,7 @@ test("receipts, replies and notices use the short name", () => {
   const on = say(phone(), "Phase One architecture.").state;
   const sent = heardAs(on, "run the tests", { type: "send", text: "run the tests" });
   assert.deepEqual(sent.effects, [{ type: "send", session: phase, text: "run the tests", behavior: "steer" }]);
-  assert.deepEqual(step({ ...on, mode: "listening" }, { type: "reply", sessionId: "p", text: "Done." }).effects, [{ type: "speak", line: "Done." }]);
+  assert.deepEqual(step({ ...on, mode: "listening" }, { type: "reply", sessionId: "p", text: "Done." }).effects, [{ type: "speak", line: "Phase 1 architecture: Done." }]);
   assert.deepEqual(step(on, { type: "notice", kind: "needsYou", sessionId: "s4" }).effects, [{ type: "speak", line: "S4 Plan needs you." }]);
 });
 
@@ -505,12 +505,12 @@ test("a finished turn's reply and notice: the target is read, another session is
       },
       { state: state, spoken: [] },
     );
-  assert.deepEqual(turn(awake(), "s1").spoken, ["All done."]);
+  assert.deepEqual(turn(awake(), "s1").spoken, ["api-refactor: All done."]);
   assert.deepEqual(turn(awake(), "s2").spoken, ["Docs finished."]);
   const busy = awake({ mode: "confirming", confirm: { word: "merge", text: "x" }, sessions: [api, docs, apiTwo] });
   const held = turn(busy, "s1");
   assert.deepEqual(held.spoken, []);
-  assert.equal(held.state.held, "All done.");
+  assert.equal(held.state.held, "api-refactor: All done.");
   const capped = ["s2", "s3"].reduce((s, sessionId) => step(s, { type: "notice", kind: "costCap", sessionId }).state, awake({ talking: true, sessions: [api, docs, apiTwo] }));
   assert.deepEqual(say(capped, "uh").effects, [{ type: "speak", line: "Two sessions hit the cost cap." }]);
 });
@@ -623,22 +623,22 @@ test("'new session' with a target creates a voice session in its workspace; with
 const watchedReply = (sessionId: string, text = "All done."): VoiceEvent => ({ type: "reply", sessionId, text, watched: true });
 const lines = (effects: VoiceEffect[]) => effects.flatMap((e) => (e.type === "speak" ? [e.line] : []));
 
-test("a watched reply from another session is spoken as '<name>: <first paragraph>'", () => {
+test("a watched reply from another session is spoken as '<name>: <medium line>'", () => {
   const r = step(awake(), watchedReply("s2", "## Done\n\nThe **fix** is `in`. See [docs](http://x).\n\nSecond."));
-  assert.deepEqual(r.effects, [{ type: "speak", line: "docs: Done" }]);
+  assert.deepEqual(r.effects, [{ type: "speak", line: "docs: Done. The fix is in. See docs. Second." }]);
   const heard = step(awake(), watchedReply("s2", "The **fix** is `in`. See [docs](http://x).\n\nSecond."));
-  assert.deepEqual(heard.effects, [{ type: "speak", line: "docs: The fix is in. See docs." }]);
+  assert.deepEqual(heard.effects, [{ type: "speak", line: "docs: The fix is in. See docs. Second." }]);
 });
 
 test("an unwatched reply from another session is still silent; a watched reply from the target is a normal reply", () => {
   assert.deepEqual(step(awake(), { type: "reply", sessionId: "s2", text: "hi" }).effects, []);
-  assert.deepEqual(step(awake(), watchedReply("s1")).effects, [{ type: "speak", line: "All done." }]);
+  assert.deepEqual(step(awake(), watchedReply("s1")).effects, [{ type: "speak", line: "api-refactor: All done." }]);
 });
 
-test("a watched reply is cut at 300 characters and a code-only one says nothing", () => {
-  const long = "Word ".repeat(100);
+test("a watched reply is cut at 700 characters and a code-only one says nothing", () => {
+  const long = "Word ".repeat(300);
   const [line] = lines(step(awake(), watchedReply("s2", long)).effects);
-  assert.ok(line.startsWith("docs: Word") && line.length <= "docs: ".length + 300, String(line.length));
+  assert.ok(line.startsWith("docs: Word") && line.length <= "docs: ".length + 700, String(line.length));
   assert.deepEqual(step(awake(), watchedReply("s2", "```\ncode\n```")).effects, []);
 });
 
@@ -663,4 +663,34 @@ test("sleep clears queued watched replies", () => {
 
 test("asleep, a watched reply does nothing", () => {
   assert.deepEqual(step({ ...initialVoiceState(), sessions: [docs] }, watchedReply("s2")).effects, []);
+});
+
+// S30: a reply is spoken from its helper summary when it has one.
+const summaryReply = (sessionId: string, text: string, summary?: string, watched?: boolean): VoiceEvent => ({ type: "reply", sessionId, text, summary, watched });
+
+test("the target's reply is spoken as '<short name>: <summary>'", () => {
+  const r = step(awake(), summaryReply("s1", "Long first paragraph.\n\nMore detail here.", "The fix is in and tests pass."));
+  assert.deepEqual(r.effects, [{ type: "speak", line: "api-refactor: The fix is in and tests pass." }]);
+  assert.equal(r.state.mode, "speaking");
+});
+
+test("a watched reply from another session is spoken from its summary", () => {
+  const r = step(awake(), summaryReply("s2", "Long first paragraph.\n\nMore detail here.", "Docs are rebuilt.", true));
+  assert.deepEqual(r.effects, [{ type: "speak", line: "docs: Docs are rebuilt." }]);
+});
+
+test("with no summary the reply falls back to the medium line, not just the first paragraph", () => {
+  const text = "First paragraph here.\n\nSecond paragraph here.";
+  assert.deepEqual(step(awake(), summaryReply("s1", text)).effects, [{ type: "speak", line: "api-refactor: First paragraph here. Second paragraph here." }]);
+  assert.deepEqual(step(awake(), summaryReply("s2", text, undefined, true)).effects, [{ type: "speak", line: "docs: First paragraph here. Second paragraph here." }]);
+});
+
+test("a summary never sends anything, and a later merge still confirms the held send", () => {
+  const confirming = awake({ mode: "confirming", confirm: { word: "merge", text: "Merge the branch" } });
+  const word = "merge";
+  const replied = step(confirming, summaryReply("s1", "Done.", "All finished."));
+  assert.deepEqual(replied.effects, []);
+  assert.equal(replied.state.mode, "confirming");
+  const sent = step(replied.state, { type: "confirm", word });
+  assert.deepEqual(types(sent.effects).filter((t) => t === "send"), ["send"]);
 });
