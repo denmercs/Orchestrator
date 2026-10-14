@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Interpreter } from "../shared/voice-interpreter";
 import { CONFIRM_TIMEOUT_MS, type VoiceSession } from "../shared/voice-loop";
-import { NOTHING_TO_CONFIRM, notTargetLine, pickFirstLine, SLEEP_LINE, STOPPED_NOTE, WAKE_LINE } from "../shared/voice-lines";
+import { DIDNT_CATCH_NOTE, NOTHING_TO_CONFIRM, notTargetLine, pickFirstLine, SENT_NOTE, SLEEP_LINE, STOPPED_NOTE, WAKE_LINE } from "../shared/voice-lines";
 import type { BriefData } from "../shared/morning-brief";
 import { VOICE_ROUTING_PREAMBLE, VOICE_SESSION_ENV } from "../shared/voice-session";
 import { createJarvisRouter, voiceSessionCreator } from "./jarvis-router";
@@ -84,6 +84,21 @@ test("a confirm left too long is dropped by the next utterance", async () => {
   await router.route("r1", "merge it");
   tick(CONFIRM_TIMEOUT_MS + 1);
   assert.deepEqual((await router.route("r1", "one")).spoken, [NOTHING_TO_CONFIRM]);
+  assert.deepEqual(sent, []);
+});
+
+test("a steer that went out is not reported as 'Nothing sent.', and says nothing aloud", async () => {
+  const { router, sent } = setup();
+  await router.setTarget(api);
+  const r = await router.route("r1", "run the tests please");
+  assert.deepEqual(sent, [["s1", "run the tests please"]]);
+  assert.deepEqual(r, { spoken: [], note: SENT_NOTE });
+});
+
+test("empty speech is 'didn't catch that', not a routing failure", async () => {
+  const { router, sent } = setup();
+  await router.setTarget(api);
+  assert.deepEqual(await router.route("r1", "  "), { spoken: [], note: DIDNT_CATCH_NOTE });
   assert.deepEqual(sent, []);
 });
 

@@ -18,6 +18,9 @@ export const WAKE_LINE = "I'm listening.";
 export const SLEEP_LINE = "Going quiet. Say Jarvis to wake me.";
 export const ASLEEP_NOTE = "Jarvis is asleep. Say Jarvis to wake it.";
 export const NOTHING_SENT = "Nothing sent.";
+/** Shown in the chat only (never said) when a steer went out: Jarvis doesn't announce routing. */
+export const SENT_NOTE = "Sent.";
+export const DIDNT_CATCH_NOTE = "I didn't catch that.";
 export const NOTHING_TO_CONFIRM = "Nothing to confirm.";
 export const STOPPED_NOTE = "Stopped before sending.";
 

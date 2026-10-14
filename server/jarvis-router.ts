@@ -6,7 +6,7 @@
 import { isBriefGreeting, replyBrief, startBrief, type BriefData, type BriefState } from "../shared/morning-brief";
 import { addressed, CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
 import { namelessPassThrough, type Interpreter } from "../shared/voice-interpreter";
-import { ASLEEP_NOTE, newSessionFailedLine, NOTHING_SENT, notTargetLine, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
+import { ASLEEP_NOTE, DIDNT_CATCH_NOTE, newSessionFailedLine, NOTHING_SENT, notTargetLine, SENT_NOTE, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
 import { createVoiceSession, VOICE_ROUTING_PREAMBLE, type VoiceCreatePaseo } from "../shared/voice-session";
 
 /** The `create` port: a marked voice session beside the target. See `createVoiceSession`. */
@@ -115,6 +115,8 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
   async function routeNow(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult> {
     const briefed = await routeBrief(routerId, text);
     if (briefed) return briefed;
+    // Empty speech (silence, a whisper the transcriber dropped) is not a routing failure.
+    if (!text.trim()) return { spoken: [], note: DIDNT_CATCH_NOTE };
     const entry = entryFor(routerId);
     let state = entry.state;
     const split = await refresh();
@@ -129,6 +131,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     const wasConfirming = state.mode === "confirming";
     // Lines Jarvis couldn't say out of turn come first, once.
     const spoken: string[] = entry.owed.splice(0);
+    let steered = false;
     const events: VoiceEvent[] = [{ type: "utterance", text }];
     for (let event = events.shift(); event; event = events.shift()) {
       const r = step(state, event);
@@ -149,6 +152,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
               const first = !told.has(effect.session.id);
               await ports.send(effect.session.id, first ? `${VOICE_ROUTING_PREAMBLE}\n\n${effect.text}` : effect.text);
               told.add(effect.session.id);
+              steered = true;
             } catch (error) {
               spoken.push(sendFailedLine(effect.session.name, errorText(error)));
             }
@@ -181,7 +185,8 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     if (state.choices && state.choices !== choicesBefore) entry.choicesAt = now();
     entry.state = state;
     if (spoken.length) return { spoken, note: null };
-    return { spoken, note: state.mode === "asleep" ? ASLEEP_NOTE : NOTHING_SENT };
+    // A steer that went out is silent by design (no "Sent to ..."), but it was sent: never report "Nothing sent."
+    return { spoken, note: state.mode === "asleep" ? ASLEEP_NOTE : steered ? SENT_NOTE : NOTHING_SENT };
   }
 
   return {
