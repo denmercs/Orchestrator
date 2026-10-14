@@ -2,7 +2,7 @@
 // step(state, event) → { state, effects }. Adapters (mic, transcriber, interpreter, session link, speaker) only carry
 // events in and effects out; the loop holds no clocks and imports only its own wording (voice-lines) and name
 // matching (voice-names), so any bundle can reach it. The Voice runner (drawer, Mac) and the Jarvis router (phone) both run it.
-import { CANCELLED, CONFIRM_AGAIN, confirmLine, listLine, newSessionLine, noChoiceLine, noSessionLine, notTargetLine, NOTHING_TO_CONFIRM, pickFirstLine, sentLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
+import { CANCELLED, CONFIRM_AGAIN, confirmLine, listLine, newSessionLine, noChoiceLine, noSessionLine, notTargetLine, NOTHING_TO_CONFIRM, pickFirstLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
 import { choiceNumber, exactSessions, matchSessions, shortName } from "./voice-names";
 
 export type VoiceMode = "asleep" | "listening" | "confirming" | "waiting" | "speaking";
@@ -53,7 +53,6 @@ export type VoiceEvent =
 
 export type VoiceEffect =
   | { type: "send"; session: VoiceSession; text: string; behavior: "steer" }
-  | { type: "receipt"; session: VoiceSession; line: string }
   | { type: "speak"; line: string }
   | { type: "stopPlayback" }
   | { type: "askConfirm"; word: string; line: string }
@@ -121,7 +120,7 @@ function sentTo(state: VoiceState, text: string): VoiceStep {
     return out({ ...state, session: null, pending: null, confirm: null }, { type: "speak", line: notTargetLine(shortName(session.name)) });
   }
   const next = { ...state, mode: "waiting" as const, pending: null, confirm: null };
-  return out(next, { type: "send", session, text, behavior: "steer" }, { type: "receipt", session, line: sentLine(shortName(session.name)) });
+  return out(next, { type: "send", session, text, behavior: "steer" });
 }
 
 function askConfirm(state: VoiceState, text: string, word: string): VoiceStep {
@@ -287,7 +286,7 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
       }
       const line = spokenLine(event.text);
       if (!line) return out(state);
-      const spoken = `${shortName(state.session.name)}: ${line}`;
+      const spoken = line;
       if (state.mode === "confirming" || state.talking) return out({ ...state, held: spoken });
       return out({ ...state, mode: "speaking", held: null }, { type: "speak", line: spoken });
     }

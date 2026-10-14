@@ -40,8 +40,8 @@ test("an utterance after a pick is sent to the session through the link", async 
   runner.dispatch({ type: "utterance", text: "please run the tests" });
   await flush();
   assert.deepEqual(said, [["a1", "please run the tests"]]);
-  assert.deepEqual(runner.getState().lines, ["Sent to Alpha."]);
-  assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent to Alpha" }]);
+  assert.deepEqual(runner.getState().lines, []);
+  assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent" }]);
 });
 
 test("a custom interpreter answers the interpret effect", async () => {
@@ -143,7 +143,7 @@ test("tap to talk: speechStart, record, transcribe with hints, then the transcri
   assert.equal(runner.getState().talking, false);
   assert.deepEqual(said, [["a1", "please run the tests"]]);
   for (const word of ["merge", "Orchestrator", "Paseo", "Jarvis", "Alpha"]) assert.ok(hintsSeen[0].includes(word), word);
-  assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent to Alpha" }]);
+  assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent" }]);
 });
 
 test("a transcribe failure ends the recording with an empty utterance and records the error", async () => {
@@ -324,7 +324,7 @@ test("a confirm from the button or the timeout updates the transcript that asked
   await flush();
   assert.equal(sent.runner.getState().transcripts.at(-1)?.outcome, "asked to confirm");
   sent.runner.confirm("merge");
-  assert.equal(sent.runner.getState().transcripts.at(-1)?.outcome, "sent to Alpha");
+  assert.equal(sent.runner.getState().transcripts.at(-1)?.outcome, "sent");
   const timedOut = talkSetup();
   timedOut.runner.dispatch({ type: "utterance", text: "merge it" });
   await flush();
@@ -573,7 +573,7 @@ test("a spoken reply that ends dispatches playbackEnded; one that is stopped doe
   await flush();
   ended.reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: false });
   await flush();
-  assert.equal(ended.spoken[0][0], "Alpha: All done.");
+  assert.equal(ended.spoken[0][0], "All done.");
   assert.equal(ended.runner.getState().mode, "listening");
   const stopped = eventsSetup("stopped");
   stopped.runner.on();
@@ -591,7 +591,7 @@ test("while the phone is speaking the line is shown, the speaker is not called, 
   reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: true });
   await flush();
   assert.deepEqual(spoken, []);
-  assert.deepEqual(runner.getState().lines, ["Alpha: All done."]);
+  assert.deepEqual(runner.getState().lines, ["All done."]);
   assert.equal(runner.getState().phoneActive, true);
   assert.equal(runner.getState().mode, "listening");
 });

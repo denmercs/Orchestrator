@@ -528,7 +528,7 @@ test("turn_ended / permission_requested reach the hub and the router; orchestrat
       { type: "notice", kind: "needsYou", sessionId: "s1" },
     ]);
     assert.equal(answered.phoneActive, true);
-    assert.match(spoken.join(" "), /api: All done\./);
+    assert.match(spoken.join(" "), /All done\./);
   } finally {
     globalThis.fetch = realFetch;
     stop();

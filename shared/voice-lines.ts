@@ -21,7 +21,6 @@ export const NOTHING_SENT = "Nothing sent.";
 export const NOTHING_TO_CONFIRM = "Nothing to confirm.";
 export const STOPPED_NOTE = "Stopped before sending.";
 
-export const sentLine = (name: string) => `Sent to ${name}.`;
 export const switchedLine = (name: string) => `Now on ${name}.`;
 /** Said as a new voice session is created in the target's workspace. */
 export const newSessionLine = (name: string) => `Starting a voice session in ${name}.`;

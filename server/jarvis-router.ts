@@ -133,7 +133,6 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     for (let event = events.shift(); event; event = events.shift()) {
       const r = step(state, event);
       state = r.state;
-      let failed = false;
       for (const effect of r.effects) {
         switch (effect.type) {
           case "interpret": {
@@ -151,7 +150,6 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
               await ports.send(effect.session.id, first ? `${VOICE_ROUTING_PREAMBLE}\n\n${effect.text}` : effect.text);
               told.add(effect.session.id);
             } catch (error) {
-              failed = true;
               spoken.push(sendFailedLine(effect.session.name, errorText(error)));
             }
             break;
@@ -164,9 +162,6 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
             } catch (error) {
               spoken.push(newSessionFailedLine(errorText(error)));
             }
-            break;
-          case "receipt":
-            if (!failed) spoken.push(effect.line);
             break;
           case "speak":
           case "askConfirm":

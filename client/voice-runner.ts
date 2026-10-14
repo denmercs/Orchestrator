@@ -70,7 +70,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   };
   const outcomeOf = (effects: VoiceEffect[]): string | null => {
     const send = effects.find((e) => e.type === "send");
-    if (send) return `sent to ${send.session.name}`;
+    if (send) return "sent";
     if (effects.some((e) => e.type === "askConfirm")) return "asked to confirm";
     return null;
   };
@@ -116,7 +116,6 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
           },
         );
         return;
-      case "receipt":
       case "speak":
       case "askConfirm":
         showAndSpeak(effect.line, effect.type === "speak");
