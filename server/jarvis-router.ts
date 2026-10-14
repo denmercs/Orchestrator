@@ -266,6 +266,10 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     listening(): boolean {
       return [...entries].some(([routerId, entry]) => routerId !== "drawer" && entry.state.mode !== "asleep");
     },
+    /** Whether a reply from this session can be said as the target's: it is the drawer's target or some router's own. */
+    speaks(sessionId: string): boolean {
+      return drawerTarget?.id === sessionId || [...entries.values()].some((entry) => entry.state.session?.id === sessionId);
+    },
     /** What Jarvis said has finished playing (or failed to), so the loop is no longer `speaking`. */
     playbackEnded(routerId: string): void {
       const entry = entries.get(routerId);

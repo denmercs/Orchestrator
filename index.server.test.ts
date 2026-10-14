@@ -343,11 +343,11 @@ test("the voice helper RPCs start and stop one helper agent, and interpret falls
     reason: "starting",
   });
   await new Promise((r) => setTimeout(r, 20));
-  assert.equal(calls.filter((c) => c === "create").length, 1, "the fallback warmed the helper in the background");
+  assert.equal(calls.filter((c) => c === "create").length, 2, "the fallback warmed the helper and the reply summariser in the background");
   assert.deepEqual(await start({}, { paseo }), { ok: true });
   assert.equal(existsSync(cwd), true, "the helper's folder is made before the agent is created");
   await start({}, { paseo });
-  assert.equal(calls.filter((c) => c === "create").length, 1, "start finds the warmed helper");
+  assert.equal(calls.filter((c) => c === "create").length, 2, "start finds the warmed helper and summariser");
   assert.deepEqual(await halt({}, { paseo }), { ok: true });
   assert.ok(calls.includes("archive:helper-1"));
   stop();
@@ -417,7 +417,7 @@ test("disposing the plugin archives the voice helper", async () => {
 });
 
 // The Mac's players are fakes: `plays` are the sentences played, `kills` how often a sentence was cut off.
-function speakWired(pending: string[] = []) {
+function speakWired(pending: string[] = [], voiceHelperCwd?: string) {
   const plays: string[] = [];
   const says: string[] = [];
   const state = { kills: 0 };
@@ -442,7 +442,7 @@ function speakWired(pending: string[] = []) {
       return { done: Promise.resolve(), kill: () => undefined };
     },
   });
-  return { plays, says, state, ...wired(pending, true, undefined, undefined, undefined, { speakerPorts, localPorts }) };
+  return { plays, says, state, ...wired(pending, true, undefined, undefined, voiceHelperCwd, { speakerPorts, localPorts }) };
 }
 
 const spokenTurn = (id: string) => ({
@@ -838,9 +838,138 @@ test("a Jarvis session opening warms the same helper the drawer's RPCs use", asy
     history: "skip",
   });
   await new Promise((r) => setTimeout(r, 20));
-  assert.equal(calls.filter((c) => c === "create").length, 1);
+  assert.equal(calls.filter((c) => c === "create").length, 2); // the interpret helper and the reply summariser
   // The drawer's start finds it already up.
   await handlers.get(voiceHelperStart.name)!({}, { paseo });
-  assert.equal(calls.filter((c) => c === "create").length, 1);
+  assert.equal(calls.filter((c) => c === "create").length, 2);
   stop();
+});
+
+// Reply summaries: the summariser is a second helper agent; `answer` plays what it says to each reply it is run on.
+const longReply = `${"The migration touched every table and rewrote the index. ".repeat(10)}Should I run it now?`;
+const longTurn = (id: string, text = longReply) => ({
+  agent: { id, workspaceId: null, parentAgentId: null, provider: "claude", cwd: "/x", title: "api" },
+  turnId: null,
+  outcome: { kind: "completed" },
+  timeline: [{ type: "assistant_message", text }],
+});
+
+function summaryPaseo(answer: (prompt: string) => Promise<{ status: string; lastMessage: string }>) {
+  const prompts: string[] = [];
+  const promptsByAgent = new Map<string, string>();
+  let n = 0;
+  const paseo = {
+    agents: {
+      create: async (spec: { config: { systemPrompt: string } }) => {
+        n += 1;
+        promptsByAgent.set(`helper-${n}`, spec.config.systemPrompt);
+        return { id: `helper-${n}` };
+      },
+      list: async () => ({ entries: [] }),
+      ref: (id: string) => ({
+        refresh: async () => null,
+        archive: async () => undefined,
+        run: async (prompt: string) => {
+          if (!promptsByAgent.get(id)?.includes("spoken summary")) return { status: "idle", lastMessage: "{}" };
+          prompts.push(prompt);
+          return answer(prompt);
+        },
+      }),
+    },
+  };
+  return { paseo, prompts };
+}
+
+async function summaryRun(
+  answer: (prompt: string) => Promise<{ status: string; lastMessage: string }>,
+  opts: { off?: boolean; mac?: boolean; text?: string; untargeted?: boolean } = {},
+) {
+  const cwd = mkdtempSync(join(tmpdir(), "voice-helper-"));
+  const w = opts.mac ? speakWired([], cwd) : wired([], true, undefined, undefined, cwd);
+  const { paseo, prompts } = summaryPaseo(answer);
+  if (opts.off) await w.handlers.get(voiceHelperSwitch.name)!({ enabled: false }, { paseo });
+  await w.handlers.get(voiceHelperStart.name)!({}, { paseo });
+  if (opts.mac) await w.handlers.get(speakRepliesSet.name)!({ agentId: "s1", mode: "short" }, { paseo });
+  if (!opts.untargeted) await w.handlers.get(voiceTarget.name)!({ id: "s1", name: "api" }, { paseo });
+  const started = Date.now();
+  await w.listeners.get("agent.turn_ended")!(longTurn("s1", opts.text), { paseo });
+  const read = async () => (await w.handlers.get(voiceEvents.name)!({ after: 0 }, { paseo })) as { events: { type: string; text?: string; summary?: string }[] };
+  return { ...w, prompts, started, read };
+}
+
+test("a reply that will reach a loop is published with its summary, in order before the notice", async () => {
+  const run = await summaryRun(async () => ({ status: "idle", lastMessage: "The migration is ready. Should I run it now?" }));
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    const { events } = await run.read();
+    assert.deepEqual(events.map((e) => e.type), ["reply", "notice"]);
+    assert.equal(events[0].summary, "The migration is ready. Should I run it now?");
+    assert.equal(events[0].text, longReply);
+    assert.equal(run.prompts.length, 1);
+  } finally {
+    run.stop();
+  }
+});
+
+test("a reply whose summary times out is published without it, within the limit", async () => {
+  const run = await summaryRun(() => new Promise(() => undefined));
+  try {
+    await new Promise((r) => setTimeout(r, 3300));
+    const { events } = await run.read();
+    assert.ok(Date.now() - run.started < 4000);
+    assert.deepEqual(events.map((e) => e.type), ["reply", "notice"]);
+    assert.equal(events[0].summary, undefined);
+  } finally {
+    run.stop();
+  }
+});
+
+test("a failed summary is published without it, and a later event waits its turn behind the reply", async () => {
+  const run = await summaryRun(async () => {
+    throw new Error("boom");
+  });
+  try {
+    await run.listeners.get("agent.permission_requested")!({ agent: { id: "s1", provider: "claude", title: "api", cwd: "/x", labels: {} } }, { paseo: summaryPaseo(async () => ({ status: "idle", lastMessage: "" })).paseo });
+    await new Promise((r) => setTimeout(r, 50));
+    const { events } = await run.read();
+    assert.deepEqual(events.map((e) => e.type), ["reply", "notice", "notice"]);
+    assert.equal(events[0].summary, undefined);
+  } finally {
+    run.stop();
+  }
+});
+
+test("with the helper switch off a reply is published without a summary call", async () => {
+  const run = await summaryRun(async () => ({ status: "idle", lastMessage: "A summary." }), { off: true });
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    const { events } = await run.read();
+    assert.equal(events[0].summary, undefined);
+    assert.deepEqual(run.prompts, []);
+  } finally {
+    run.stop();
+  }
+});
+
+test("a Mac-route reply makes no summary call", async () => {
+  const run = await summaryRun(async () => ({ status: "idle", lastMessage: "A summary." }), { mac: true });
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(run.prompts, []);
+  } finally {
+    run.stop();
+  }
+});
+
+test("a reply from a session no loop speaks (not a target, not watched) makes no summary call and is not held", async () => {
+  const run = await summaryRun(async () => ({ status: "idle", lastMessage: "A summary." }), { untargeted: true });
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    const { events } = await run.read();
+    assert.deepEqual(events.map((e) => e.type), ["reply", "notice"]);
+    assert.equal(events[0].summary, undefined);
+    assert.deepEqual(run.prompts, []);
+  } finally {
+    run.stop();
+  }
 });

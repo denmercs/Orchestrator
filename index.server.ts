@@ -65,6 +65,7 @@ import {
   voiceTarget,
   voiceWakeModel,
 } from "./shared/voice-rpc";
+import { createReplySummary } from "./server/reply-summary";
 import { createVoiceInterpret } from "./server/voice-interpret";
 import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
@@ -220,6 +221,13 @@ export default function contribute(
   // Turn events, one source: the hub feeds the drawer's long poll and the Jarvis router (see publishVoice).
   const voiceHub = createVoiceHub(realHubPorts());
   let publishVoice: (events: VoiceEvent[]) => void = () => undefined;
+  // Events go out in the order they came, even when a reply waits (up to ~3 s) on its summary.
+  let publishChain: Promise<void> = Promise.resolve();
+  const publishInOrder = (make: () => VoiceEvent[] | Promise<VoiceEvent[]>) => {
+    publishChain = publishChain
+      .then(async () => publishVoice(await make()))
+      .catch((error) => console.warn("orchestrator: voice publish failed", error));
+  };
   const loopSettings = server.registerSettings(initiativeLoopSettings);
   const initiativeLoop = createInitiativeLoop(
     async () => {
@@ -456,12 +464,13 @@ export default function contribute(
   // The helper's ports read Paseo through this stand-in, which always points at the handle the last RPC gave.
   let helperPaseo: Parameters<typeof loop.rememberPaseo>[0] | null = null;
   const helperCwd = deps.voiceHelperCwd ?? VOICE_HELPER_CWD;
-  const voiceHelper = createVoiceHelper(
-    paseoVoiceHelperPorts(
-      new Proxy({} as NonNullable<typeof helperPaseo>, { get: (_target, key) => helperPaseo![key as keyof typeof helperPaseo] }),
-      helperCwd,
-    ),
+  const helperPorts = paseoVoiceHelperPorts(
+    new Proxy({} as NonNullable<typeof helperPaseo>, { get: (_target, key) => helperPaseo![key as keyof typeof helperPaseo] }),
+    helperCwd,
   );
+  const voiceHelper = createVoiceHelper(helperPorts);
+  // A second small agent writes the spoken summary of each long reply; it lives and dies with the interpret helper.
+  const replySummary = createReplySummary(helperPorts);
   // Turn ends carry no labels, so the helper is also known by its own folder: a turn that ends just
   // after voice turns off (the id already forgotten) must still stay telemetry only.
   const isVoiceHelper = (agent: { id: string; cwd: string }) =>
@@ -470,9 +479,11 @@ export default function contribute(
   const voiceInterpretService = createVoiceInterpret({
     start: async () => {
       await mkdir(helperCwd, { recursive: true });
-      await voiceHelper.start();
+      await Promise.all([voiceHelper.start(), replySummary.start().catch((error) => console.warn("orchestrator: reply summary start failed", error))]);
     },
-    stop: () => voiceHelper.stop(),
+    stop: async () => {
+      await Promise.all([voiceHelper.stop(), replySummary.stop()]);
+    },
     interpret: (req) => voiceHelper.interpret(req),
     agentId: () => voiceHelper.agentId(),
   });
@@ -560,7 +571,17 @@ export default function contribute(
     });
     const route = picked === "phone" && !jarvis.listening() ? "mac" : picked;
     if (route !== "phone") speakReplies.onTurnEnded(event);
-    publishVoice(turnEvents(event, { watched: route === "phone" }).filter((e) => !(e.type === "reply" && route === "mac")));
+    const events = turnEvents(event, { watched: route === "phone" }).filter((e) => !(e.type === "reply" && route === "mac"));
+    // Only a reply a loop will say gets a summary: watched, or from a target (a Mac-route reply is filtered above). Off or late, it goes without.
+    publishInOrder(async () =>
+      Promise.all(
+        events.map(async (e) => {
+          if (e.type !== "reply" || !(e.watched || jarvis.speaks(e.sessionId)) || !voiceInterpretService.enabled()) return e;
+          const summary = await replySummary.summarize(e.text).catch(() => null);
+          return summary ? { ...e, summary } : e;
+        }),
+      ),
+    );
     loop.rememberPaseo(paseo);
     pipelinePaseo = paseo;
     void loop.onTurnEnded(event);
@@ -594,7 +615,7 @@ export default function contribute(
   const offAgentCreated = server.on("agent.created", (_event, { paseo }) => arm(paseo));
   const offPermissionRequested = server.on("agent.permission_requested", (event, { paseo }) => {
     arm(paseo);
-    publishVoice(permissionEvents(event));
+    publishInOrder(() => permissionEvents(event));
     void initiativeLoop.onPermissionRequested(paseo, event).catch((error) => {
       console.warn("orchestrator: loop permission request failed", error);
     });

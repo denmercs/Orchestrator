@@ -277,7 +277,7 @@ test("event() steps every router and returns lines per router; owed lines are pr
   await router.route("r1", "hello");
   await router.route("r2", "hello");
   const lines = await router.event({ type: "reply", sessionId: "s1", text: "All done." });
-  assert.deepEqual(lines, { r1: ["All done."], r2: ["All done."] });
+  assert.deepEqual(lines, { r1: ["api-refactor: All done."], r2: ["api-refactor: All done."] });
   // Other sessions' notices come out as one line per router; replies for non-targets say nothing.
   assert.deepEqual(await router.event({ type: "reply", sessionId: "s2", text: "ignored" }), { r1: [], r2: [] });
   router.playbackEnded("r1");
@@ -409,6 +409,33 @@ test("event() carries a watched reply from a non-target session to every router,
   await router.route("r1", "hello");
   const lines = await router.event({ type: "reply", sessionId: "s2", text: "All **done**.", watched: true });
   assert.deepEqual(lines, { r1: ["docs: All done."] });
+});
+
+test("event() gives the phone the helper summary, named, for the target's reply", async () => {
+  const { router } = setup();
+  await router.setTarget(api);
+  await router.route("r1", "hello");
+  const lines = await router.event({ type: "reply", sessionId: "s1", text: "Long reply.\n\nMore detail.", summary: "Two files changed and tests pass." });
+  assert.deepEqual(lines, { r1: ["api-refactor: Two files changed and tests pass."] });
+});
+
+test("event() gives the phone the helper summary for a watched reply too", async () => {
+  const { router } = setup();
+  await router.setTarget(api);
+  await router.route("r1", "hello");
+  const lines = await router.event({ type: "reply", sessionId: "s2", text: "Long reply.\n\nMore.", summary: "Docs are done.", watched: true });
+  assert.deepEqual(lines, { r1: ["docs: Docs are done."] });
+});
+
+test("speaks() is true for the drawer's target and any router's own target, so only their replies get a summary", async () => {
+  const { router } = setup();
+  assert.equal(router.speaks("s1"), false);
+  await router.setTarget(api);
+  assert.equal(router.speaks("s1"), true);
+  assert.equal(router.speaks("s2"), false);
+  await router.route("r1", "hello");
+  assert.equal(router.stateOf("r1")?.session?.id, "s1");
+  assert.equal(router.speaks("nobody"), false);
 });
 
 test("listening() is true only while a phone router's loop is awake, so a reply the loop would drop can fall back to the Mac", async () => {

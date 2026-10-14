@@ -1,5 +1,9 @@
 // Browser-only adapters for the Voice runner: the mic (Recorder port) and the RPC transcriber. No node: imports.
+import { MIC_DENIED_MESSAGE, NO_MIC_MESSAGE } from "../shared/voice-lines";
 import { transcribeVoice } from "../shared/voice-rpc";
+import { hasMicApi } from "./voice-mic-model";
+
+export { MIC_DENIED_MESSAGE, NO_MIC_MESSAGE };
 
 export type VoiceClip = { audio: string; ms: number };
 
@@ -14,9 +18,6 @@ function blobToBase64(blob: Blob): Promise<string> {
     reader.readAsDataURL(blob);
   });
 }
-
-export const NO_MIC_MESSAGE = "This device can't record from a plugin. Use voice from the laptop.";
-export const MIC_DENIED_MESSAGE = "Microphone permission was denied. Allow the microphone for Paseo, then turn voice on again.";
 
 /** Turns a getUserMedia failure into one message the drawer can show as is. */
 export function micErrorMessage(err: unknown): string {
@@ -36,7 +37,7 @@ export function createVoiceMic() {
     async open() {
       if (stream?.active) return;
       // Paseo's phone app gives plugins no navigator.mediaDevices.
-      if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) throw new Error(NO_MIC_MESSAGE);
+      if (!hasMicApi(globalThis.navigator)) throw new Error(NO_MIC_MESSAGE);
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       } catch (err) {

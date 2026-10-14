@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { NOTHING_NEW, briefingLine, listLine, newSessionLine, noSessionLine, noStorySessionLine, pickFirstLine, spokenLine, whichLine } from "./voice-lines";
+import { NOTHING_NEW, briefingLine, listLine, newSessionLine, noSessionLine, noStorySessionLine, pickFirstLine, replyLine, spokenLine, SUMMARY_CAP, whichLine } from "./voice-lines";
 
 test("numbered lines: the session list, pick-first, did-you-mean and no-match all end in how to answer", () => {
   assert.equal(listLine(["Phase 1 architecture", "Check"]), "One, Phase 1 architecture. Two, Check. Say a number, or switch to and a name.");
@@ -82,4 +82,31 @@ test("briefingLine names what merged, what runs and what needs you, and NOTHING_
     "Merged since you last looked: S1 and S2. Running: S3. Needs you: S4.",
   );
   assert.equal(briefingLine({ merged: [], running: ["S3"], needsYou: [] }), "Running: S3.");
+});
+
+test("replyLine speaks the summary as plain text, capped at 400 characters", () => {
+  assert.equal(SUMMARY_CAP, 400);
+  assert.equal(replyLine("Long reply. More.", "**Done**, see `a.ts`."), "Done, see a.ts.");
+  const line = replyLine("Long reply.", Array.from({ length: 100 }, (_, i) => `Sentence ${i}.`).join(" "));
+  assert.ok(line.length <= 400 && line.endsWith("."));
+});
+
+test("replyLine falls back to the medium line when the summary is missing or empty", () => {
+  const text = "Pushed fix/speak-script-missing. 1242 pass, 0 fail.";
+  assert.equal(replyLine(text), spokenLine(text, "medium"));
+  assert.equal(replyLine(text, "  "), spokenLine(text, "medium"));
+  assert.equal(replyLine(text, "``"), spokenLine(text, "medium"));
+});
+
+test("replyLine drops a summary that lost the question, choice or blocker the reply carries", () => {
+  assert.equal(replyLine("Built it. Which one?", "All built."), spokenLine("Built it. Which one?", "medium"));
+  assert.equal(replyLine("Ready. Say one to merge, or two to skip.", "It is ready."), spokenLine("Ready. Say one to merge, or two to skip.", "medium"));
+  assert.equal(replyLine("Push was blocked.", "Pushed fine."), spokenLine("Push was blocked.", "medium"));
+  assert.equal(replyLine("Built it. Which one?", "Built. Which one?"), "Built. Which one?");
+});
+
+test("replyLine says the short line when the medium line is empty", () => {
+  const text = "| a | b |";
+  assert.equal(spokenLine(text, "medium"), "");
+  assert.equal(replyLine(text), "| a | b |");
 });
