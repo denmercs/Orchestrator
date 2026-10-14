@@ -136,7 +136,6 @@ test("a critical word asks for confirmation naming the session and the word, and
   for (const [heard, cleaned, word] of [
     ["please merge the branch", "Merge the branch", "merge"],
     ["wrap this up", "Delete the old files", "delete"],
-    ["Stop the build now", "Halt the build", "stop"],
   ]) {
     const r = heardAs(awake(), heard, { type: "send", text: cleaned });
     assert.deepEqual(types(r.effects), ["askConfirm"], heard);
@@ -188,12 +187,24 @@ test("interpreted confirm(text) asks even without a critical word", () => {
   assert.equal(r.state.mode, "confirming");
 });
 
+test("everyday words like stop and interrupt send without a confirm", () => {
+  for (const [heard, cleaned] of [
+    ["let's stop here", "Let's stop here"],
+    ["don't interrupt me", "Don't interrupt me"],
+    ["stop the build", "Stop the build"],
+  ]) {
+    const r = heardAs(awake(), heard, { type: "send", text: cleaned });
+    assert.deepEqual(types(r.effects), ["send", "receipt"], heard);
+    assert.equal(r.state.confirm, null, heard);
+  }
+});
+
 // Cycle 5
-test("only the interrupt event interrupts; a confirmed spoken 'stop' is steer text", () => {
+test("only the interrupt event interrupts; a confirmed spoken 'delete' is steer text", () => {
   assert.deepEqual(step(awake({ mode: "waiting" }), { type: "interrupt" }).effects, [{ type: "interrupt", session: api }]);
   assert.deepEqual(step(awake({ session: null }), { type: "interrupt" }).effects, []);
-  const asked = heardAs(awake(), "stop", { type: "send", text: "Stop" }).state;
-  const r = say(asked, "stop");
+  const asked = heardAs(awake(), "delete", { type: "send", text: "Delete" }).state;
+  const r = say(asked, "delete");
   assert.deepEqual(types(r.effects), ["send", "receipt"]);
   assert.equal(r.effects[0].type === "send" && r.effects[0].behavior, "steer");
 });
