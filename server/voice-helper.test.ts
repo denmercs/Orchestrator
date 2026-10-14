@@ -135,11 +135,11 @@ test("interpret puts the transcript, target title, session names and last 4 mess
   assert.ok(timeoutMs > 3000 && timeoutMs <= 10000);
 });
 
-test("interpret parses a switch reply against the sessions", async () => {
+test("interpret passes a switch reply name through for loose matching", async () => {
   const fake = fakePorts({ run: async () => ({ status: "idle", lastMessage: '{"action":"switch","session":"orchestrator"}' }) });
   const helper = createVoiceHelper(fake.ports);
   await helper.start();
-  assert.deepEqual(await ask(helper), { type: "switch", name: "Orchestrator" });
+  assert.deepEqual(await ask(helper), { type: "switch", name: "orchestrator" });
 });
 
 test("two interprets run on the same helper agent", async () => {

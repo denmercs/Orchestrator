@@ -58,11 +58,13 @@ import {
   voiceEvents,
   voiceHelperStart,
   voiceHelperStop,
+  voiceHelperSwitch,
   voiceInterpret,
   voiceSpeak,
   voiceTarget,
   voiceWakeModel,
 } from "./shared/voice-rpc";
+import { createVoiceInterpret } from "./server/voice-interpret";
 import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
@@ -463,20 +465,34 @@ export default function contribute(
   // after voice turns off (the id already forgotten) must still stay telemetry only.
   const isVoiceHelper = (agent: { id: string; cwd: string }) =>
     agent.id === voiceHelper.agentId() || resolve(agent.cwd) === resolve(helperCwd);
+  // One interpret service for the drawer's RPCs and Jarvis: it owns the switch, the helper's lifecycle and the fallback.
+  const voiceInterpretService = createVoiceInterpret({
+    start: async () => {
+      await mkdir(helperCwd, { recursive: true });
+      await voiceHelper.start();
+    },
+    stop: () => voiceHelper.stop(),
+    interpret: (req) => voiceHelper.interpret(req),
+    agentId: () => voiceHelper.agentId(),
+  });
   server.handle(voiceHelperStart, async (_input, { paseo }) => {
     helperPaseo = paseo;
-    await mkdir(helperCwd, { recursive: true });
-    await voiceHelper.start();
+    await voiceInterpretService.start();
     return { ok: true };
   });
   server.handle(voiceHelperStop, async (_input, { paseo }) => {
     helperPaseo = paseo;
-    await voiceHelper.stop();
+    await voiceInterpretService.stop();
     return { ok: true };
+  });
+  server.handle(voiceHelperSwitch, (input, { paseo }) => {
+    helperPaseo = paseo;
+    if (input.enabled !== undefined) voiceInterpretService.setEnabled(input.enabled);
+    return { enabled: voiceInterpretService.enabled() };
   });
   server.handle(voiceInterpret, (input, { paseo }) => {
     helperPaseo = paseo;
-    return voiceHelper.interpret(input);
+    return voiceInterpretService.interpret(input.transcript, { sessionId: input.sessionId, sessions: input.sessions });
   });
   // Whether the phone plays lines in the cloned voice (voice.phoneAudio) is read once and kept current.
   const voice = voiceSetting;
@@ -631,6 +647,7 @@ export default function contribute(
       );
     },
     send: (sessionId, text) => jarvisPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
+    interpreter: voiceInterpretService,
     create: voiceSessionCreator(jarvisPaseo),
     // "Good morning, Jarvis": weather, the verse, your Jira stories and the priority initiative, one beat at a time.
     brief: createMorningBrief({
@@ -670,6 +687,7 @@ export default function contribute(
   // Paseo 0.11.0+ only, like the usage source.
   const jarvisProvider = createJarvisProvider({
     route: jarvis.route,
+    warm: voiceInterpretService.warm,
     owe: jarvis.owe,
     playbackEnded: jarvis.playbackEnded,
     phoneAudio: () => phoneAudio,
@@ -701,6 +719,6 @@ export default function contribute(
     clearInterval(loopStartTimer);
     voiceResume.stop();
     speakerPorts.stop();
-    void voiceHelper.stop().catch((error) => console.warn("orchestrator: voice helper stop failed", error));
+    void voiceInterpretService.stop().catch((error) => console.warn("orchestrator: voice helper stop failed", error));
   };
 }

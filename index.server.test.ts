@@ -4,7 +4,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "./index.server";
 import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { startMemoryReplay } from "./shared/replay-rpc";
-import { voiceEvents, voiceHelperStart, voiceHelperStop, voiceInterpret, voiceSpeak, voiceTarget } from "./shared/voice-rpc";
+import { voiceEvents, voiceHelperStart, voiceHelperStop, voiceHelperSwitch, voiceInterpret, voiceSpeak, voiceTarget } from "./shared/voice-rpc";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -328,7 +328,7 @@ function helperPaseo() {
 
 const turnAgent = (id: string, cwd = "/x") => ({ id, workspaceId: null, parentAgentId: null, provider: "claude", cwd, title: null });
 
-test("the voice helper RPCs start and stop one helper agent, and interpret fails while it is stopped", async () => {
+test("the voice helper RPCs start and stop one helper agent, and interpret falls back while it is not started", async () => {
   const cwd = join(mkdtempSync(join(tmpdir(), "voice-helper-")), "nested", "helper");
   const { handlers, stop } = wired([], true, undefined, undefined, cwd);
   const { paseo, calls } = helperPaseo();
@@ -337,11 +337,17 @@ test("the voice helper RPCs start and stop one helper agent, and interpret fails
   const interpret = handlers.get(voiceInterpret.name);
   assert.ok(start && halt && interpret, "all three RPCs are handled");
   const input = { transcript: "hi", sessionId: "s", sessions: [{ id: "s", name: "api" }] };
-  await assert.rejects(async () => interpret(input, { paseo }), /not started/);
+  assert.deepEqual(await interpret(input, { paseo }), {
+    result: { type: "send", text: "hi" },
+    via: "passThrough",
+    reason: "starting",
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(calls.filter((c) => c === "create").length, 1, "the fallback warmed the helper in the background");
   assert.deepEqual(await start({}, { paseo }), { ok: true });
   assert.equal(existsSync(cwd), true, "the helper's folder is made before the agent is created");
   await start({}, { paseo });
-  assert.equal(calls.filter((c) => c === "create").length, 1);
+  assert.equal(calls.filter((c) => c === "create").length, 1, "start finds the warmed helper");
   assert.deepEqual(await halt({}, { paseo }), { ok: true });
   assert.ok(calls.includes("archive:helper-1"));
   stop();
@@ -766,4 +772,59 @@ test("a failing config.get still gives the marked create the rule, and warns", a
     console.warn = warn;
   }
   assert.equal(warned.length, 1);
+});
+
+test("voiceHelperSwitch reads and flips the one switch the interpret RPC obeys", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "voice-helper-"));
+  const { handlers, stop } = wired([], true, undefined, undefined, cwd);
+  const { paseo, calls } = helperPaseo();
+  const flip = handlers.get(voiceHelperSwitch.name);
+  const interpret = handlers.get(voiceInterpret.name);
+  assert.ok(flip && interpret, "both RPCs are handled");
+  const input = { transcript: "hi", sessionId: "s", sessions: [{ id: "s", name: "api" }] };
+  assert.deepEqual(await flip({}, { paseo }), { enabled: true });
+  assert.deepEqual(await flip({ enabled: false }, { paseo }), { enabled: false });
+  assert.deepEqual(await flip({}, { paseo }), { enabled: false });
+  // Off: the words go through as heard, and the helper is not even warmed.
+  assert.deepEqual(await interpret(input, { paseo }), { result: { type: "send", text: "hi" }, via: "passThrough" });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(calls.includes("create"), false);
+  assert.deepEqual(await flip({ enabled: true }, { paseo }), { enabled: true });
+  stop();
+});
+
+test("a Jarvis session opening warms the same helper the drawer's RPCs use", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "voice-helper-"));
+  const providers: { connect(): Promise<{ send(input: unknown): Promise<void>; onEvent(fn: (e: unknown) => void): unknown }> }[] = [];
+  const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
+  const noop = () => undefined;
+  const server = new Proxy({} as PluginServerContext, {
+    get: (_target, key) => {
+      if (key === "handle") return (rpc: { name: string }, h: never) => void handlers.set(rpc.name, h);
+      if (key === "registerProvider") return (p: never) => void providers.push(p);
+      if (key === "registerSettings") {
+        return () => new Proxy({}, { get: (_t, k) => (k === "read" ? async () => ({ status: "loading" }) : () => noop) });
+      }
+      return () => noop;
+    },
+  });
+  const stop = contribute(server, { signedIn: async () => true, voiceHelperCwd: cwd, speakerPorts: quietSpeaker });
+  const { paseo, calls } = helperPaseo();
+  // Providers get no Paseo handle; one RPC hands it over.
+  await handlers.get(voiceHelperSwitch.name)!({}, { paseo });
+  assert.equal(providers.length, 1, "the Jarvis provider is registered");
+  const connection = await providers[0].connect();
+  await connection.send({
+    type: "session.open",
+    requestId: "q1",
+    sessionId: "p1",
+    config: { cwd: "/repo", env: {}, mcpServers: {}, settings: {}, persist: true },
+    history: "skip",
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(calls.filter((c) => c === "create").length, 1);
+  // The drawer's start finds it already up.
+  await handlers.get(voiceHelperStart.name)!({}, { paseo });
+  assert.equal(calls.filter((c) => c === "create").length, 1);
+  stop();
 });

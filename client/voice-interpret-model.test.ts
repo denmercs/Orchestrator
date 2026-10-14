@@ -18,7 +18,7 @@ test("interpretRows: empty history gives no rows", () => {
 test("interpretRows: cleaned text per result type, no note for helper rows", () => {
   const rows = interpretRows([
     entry("um send it", { via: "helper", result: { type: "send", text: "send it" } }),
-    entry("delete uh the branch", { via: "helper", result: { type: "confirm", text: "delete the branch" } }),
+    entry("delete uh the branch", { via: "helper", result: { type: "send", text: "delete the branch" } }),
     entry("go to review", { via: "helper", result: { type: "switch", name: "review" } }),
     entry("hmm", { via: "helper", result: { type: "drop" } }),
   ]);
@@ -38,8 +38,10 @@ test("interpretRows: fallbacks carry a note, switch-off pass-through does not", 
     entry("a", { via: "passThrough", reason: "timeout", result: { type: "send", text: "a" } }),
     entry("b", { via: "passThrough", reason: "error", result: { type: "send", text: "b" } }),
     entry("c", { via: "passThrough", result: { type: "send", text: "c" } }),
+    entry("d", { via: "passThrough", reason: "starting", result: { type: "send", text: "d" } }),
   ]);
   assert.deepEqual(rows.map((r) => [r.cleaned, r.note]), [
+    ["d", "Helper starting, sent as heard"],
     ["c", null],
     ["b", "Helper failed, sent as heard"],
     ["a", "Helper timed out, sent as heard"],

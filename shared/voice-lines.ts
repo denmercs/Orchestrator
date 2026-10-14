@@ -24,6 +24,13 @@ export const DIDNT_CATCH_NOTE = "I didn't catch that.";
 export const NOTHING_TO_CONFIRM = "Nothing to confirm.";
 export const STOPPED_NOTE = "Stopped before sending.";
 
+const HELPER_NOTES = { timeout: "Helper timed out", error: "Helper failed", starting: "Helper starting" } as const;
+
+/** Shown (never spoken) when the helper could not answer and the words went as heard; null when it answered. */
+export function helperFallbackNote({ via, reason }: { via: "helper" | "passThrough"; reason?: keyof typeof HELPER_NOTES }): string | null {
+  if (via !== "passThrough" || !reason) return null;
+  return `${HELPER_NOTES[reason]}, sent as heard`;
+}
 export const switchedLine = (name: string) => `Now on ${name}.`;
 /** Said as a new voice session is created in the target's workspace. */
 export const newSessionLine = (name: string) => `Starting a voice session in ${name}.`;

@@ -55,6 +55,8 @@ export type JarvisProviderDeps = {
   /** Speaks on the Mac through the Speaker; false means it could not, so Paseo's `speak` tool takes the line. */
   localSpeak?(text: string): Promise<boolean>;
   fetch?: Fetch;
+  /** Starts the Voice helper in the background; called when a session opens. Never awaited, failures ignored. */
+  warm?(): unknown;
 };
 
 /** The prompt's text; a slash command comes back as typed. */
@@ -149,7 +151,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
     const text = promptText(prompt);
     const spoken = spokenText(text);
     const result = await deps.route(session.routerId, spoken ?? text, signal);
-    const reply = result.spoken.join(" ") || result.note || "";
+    const reply = [result.spoken.join(" "), result.note].filter(Boolean).join(" ");
     if (reply && live(sessionId, turnId)) {
       emit({ type: "timeline.item", sessionId, item: { id: `${turnId}-reply`, type: "assistant_message", text: reply } });
     }
@@ -184,6 +186,11 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
         return;
       case "session.open": {
         const routerId = routerIdOf(input.persistence) ?? randomUUID();
+        try {
+          void Promise.resolve(deps.warm?.()).catch(() => {});
+        } catch {
+          // A warm-up that throws must not stop the session opening.
+        }
         sessions.set(input.sessionId, { routerId, mcpServers: input.config.mcpServers, turnId: null, abort: null, lastActiveAt: 0, idle: [] });
         later({
           type: "session.opened",

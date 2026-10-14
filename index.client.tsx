@@ -8,6 +8,7 @@ import { startMemoryReplay } from "./shared/replay-rpc";
 import { createVoiceEars } from "./client/voice-ears";
 import { createVoiceLink } from "./client/voice-link";
 import { createVoiceMic, createVoiceTranscriber } from "./client/voice-mic";
+import { createVoiceHelperClient } from "./client/voice-helper-client";
 import { createVoicePrefs } from "./client/voice-prefs";
 import { createVoiceRunner } from "./client/voice-runner";
 import { createVoiceSpeaker } from "./client/voice-speaker";
@@ -21,6 +22,7 @@ export default function contribute(client: PluginClientContext) {
     link: createVoiceLink(client.paseo),
     recorder: createVoiceMic(),
     transcriber: createVoiceTranscriber(client.rpc),
+    helper: createVoiceHelperClient(client.rpc),
     events: { read: (after) => client.rpc(voiceEvents, { after }) },
     brief: async (text) => (await client.rpc(voiceBrief, { text }))?.spoken ?? null,
     speaker: createVoiceSpeaker(client.rpc, client.playAudio),

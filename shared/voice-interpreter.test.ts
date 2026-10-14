@@ -13,7 +13,7 @@ const drop = { type: "drop" };
 // Cycle 1
 test("the four JSON shapes map to interpret results", () => {
   assert.deepEqual(parseHelperReply('{"action":"send","text":"run the tests"}', sessions), { type: "send", text: "run the tests" });
-  assert.deepEqual(parseHelperReply('{"action":"confirm","text":"merge it"}', sessions), { type: "confirm", text: "merge it" });
+  assert.deepEqual(parseHelperReply('{"action":"confirm","text":"merge it"}', sessions), { type: "send", text: "merge it" });
   assert.deepEqual(parseHelperReply('{"action":"switch","session":"api-refactor"}', sessions), { type: "switch", name: "api-refactor" });
   assert.deepEqual(parseHelperReply('{"action":"drop"}', sessions), drop);
 });
@@ -21,11 +21,24 @@ test("the four JSON shapes map to interpret results", () => {
 test("a fence-wrapped object is unwrapped and parsed normally", () => {
   assert.deepEqual(parseHelperReply('```json\n{"action":"send","text":"hi"}\n```', sessions), { type: "send", text: "hi" });
   assert.deepEqual(parseHelperReply('```\n{"action":"drop"}\n```', sessions), drop);
-  assert.deepEqual(parseHelperReply('  ```json\n{"action":"switch","session":"docs"}\n```  ', sessions), { type: "switch", name: "Docs" });
+  assert.deepEqual(parseHelperReply('  ```json\n{"action":"switch","session":"docs"}\n```  ', sessions), { type: "switch", name: "docs" });
 });
 
-test("a switch matches the session name case-insensitively and returns the canonical name", () => {
-  assert.deepEqual(parseHelperReply('{"action":"switch","session":"  DOCS "}', sessions), { type: "switch", name: "Docs" });
+test("a switch name is passed through loosely for the loop to match", () => {
+  assert.deepEqual(parseHelperReply('{"action":"switch","session":"the planning one"}', sessions), { type: "switch", name: "the planning one" });
+  assert.deepEqual(parseHelperReply('{"action":"switch","session":"billing"}', sessions), { type: "switch", name: "billing" });
+});
+
+test("sendTo carries the loose session name and the request in full", () => {
+  assert.deepEqual(parseHelperReply('{"action":"sendTo","session":"planning","text":"add the retry tests"}', sessions), {
+    type: "sendTo",
+    session: "planning",
+    text: "add the retry tests",
+  });
+});
+
+test("a confirm reply is read as a send and the helper never yields a confirm", () => {
+  assert.deepEqual(parseHelperReply('{"action":"confirm","text":"merge it"}', sessions), { type: "send", text: "merge it" });
 });
 
 test("anything that is not a well-formed reply drops", () => {
@@ -42,7 +55,10 @@ test("anything that is not a well-formed reply drops", () => {
     '{"action":"send","text":42}',
     '{"action":"switch"}',
     '{"action":"switch","session":7}',
-    '{"action":"switch","session":"billing"}',
+    '{"action":"sendTo","text":"x"}',
+    '{"action":"sendTo","session":"planning"}',
+    '{"action":"sendTo","session":"","text":"x"}',
+    '{"action":"sendTo","session":7,"text":"x"}',
     '{"action":"explode","text":"x"}',
     '{"action":5}',
     '{"text":"no action"}',
@@ -87,11 +103,15 @@ test("only the last 4 recent messages go in, each cut to 300 characters", () => 
   assert.ok(/user: msg2-/.test(prompt) && /assistant: msg3-/.test(prompt));
 });
 
-test("the system prompt lists the three actions, the JSON shape and the three examples", () => {
-  for (const action of ["send", "switch", "drop"]) assert.ok(VOICE_HELPER_SYSTEM_PROMPT.includes(`"${action}"`), action);
-  assert.ok(VOICE_HELPER_SYSTEM_PROMPT.includes('{"action":"send"|"switch"|"drop","text"?:...,"session"?:...}'));
+test("the system prompt lists send, sendTo, switch and drop, the JSON shape and the examples, with no confirm", () => {
+  for (const action of ["send", "sendTo", "switch", "drop"]) assert.ok(VOICE_HELPER_SYSTEM_PROMPT.includes(`"${action}"`), action);
+  assert.ok(!VOICE_HELPER_SYSTEM_PROMPT.includes("confirm"));
+  assert.ok(VOICE_HELPER_SYSTEM_PROMPT.includes('{"action":"send"|"sendTo"|"switch"|"drop","text"?:...,"session"?:...}'));
   assert.ok(/only that JSON/i.test(VOICE_HELPER_SYSTEM_PROMPT));
-  for (const example of ["This day", "merge England", "merge it", "switch to the review session"]) assert.ok(VOICE_HELPER_SYSTEM_PROMPT.includes(example), example);
+  for (const example of ["This day", "merge England", "merge it", "switch to the review session", "send that to the planning one"]) assert.ok(VOICE_HELPER_SYSTEM_PROMPT.includes(example), example);
+  assert.ok(/recent messages/i.test(VOICE_HELPER_SYSTEM_PROMPT));
+  assert.ok(/in full/i.test(VOICE_HELPER_SYSTEM_PROMPT));
+  assert.ok(/switch only/i.test(VOICE_HELPER_SYSTEM_PROMPT));
 });
 
 test("passThrough sends the text as heard", async () => {
