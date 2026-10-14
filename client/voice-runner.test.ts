@@ -935,3 +935,41 @@ test("a briefer that fails lets the words through to the session", async () => {
   await flush();
   assert.deepEqual(said, [["a1", "run the tests"]]);
 });
+
+test("a status ask is answered by the status port: its line is spoken and shown and the session hears nothing", async () => {
+  const asked: string[] = [];
+  const spoken: string[] = [];
+  const { runner, said } = setup({
+    status: async (text) => {
+      asked.push(text);
+      return text === "Jarvis, status" ? ["docs needs you."] : null;
+    },
+    speaker: { speak: async (text) => (spoken.push(text), "ended" as const), stop: () => {} },
+  });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "Jarvis, status" });
+  await flush();
+  assert.deepEqual(spoken, ["docs needs you."]);
+  assert.deepEqual(runner.getState().lines, ["docs needs you."]);
+  assert.deepEqual(said, []);
+  // Not a status ask: the loop has it as usual.
+  runner.dispatch({ type: "utterance", text: "run the tests" });
+  await flush();
+  assert.deepEqual(said, [["a1", "run the tests"]]);
+});
+
+test("a status port that fails, or an asleep loop, leaves the words to the loop", async () => {
+  let calls = 0;
+  const { runner, said } = setup({ status: async () => (calls++, Promise.reject(new Error("down"))) });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "run the tests" });
+  await flush();
+  assert.deepEqual(said, [["a1", "run the tests"]]);
+  assert.equal(calls, 1);
+  runner.dispatch({ type: "sleep" });
+  runner.dispatch({ type: "utterance", text: "status" });
+  await flush();
+  assert.equal(calls, 1, "asleep: the port is not asked");
+});

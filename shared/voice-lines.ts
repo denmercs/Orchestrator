@@ -204,3 +204,25 @@ function cap(line: string, limit: number): string {
   const space = cut.lastIndexOf(" ");
   return `${space > 0 ? cut.slice(0, space) : cut}…`;
 }
+
+/** Said for "status" when nothing is running and nothing needs you. */
+export const NOTHING_RUNNING = "Nothing is running.";
+
+// "alpha", "alpha and beta", "alpha, beta and gamma", "alpha, beta, gamma and two more": at most three named.
+function namesLine(names: string[]): string {
+  const named = names.slice(0, LIST_KEPT);
+  const more = names.length - named.length;
+  if (more > 0) return `${named.join(", ")} and ${numberWord(more)} more`;
+  return named.length > 1 ? `${named.slice(0, -1).join(", ")} and ${named[named.length - 1]}` : named[0];
+}
+
+/** Sessions waiting on you: "gamma needs you." / "alpha and beta need you." */
+export const statusNeedsYouLine = (names: string[]) => `${namesLine(names)} ${names.length === 1 ? "needs" : "need"} you.`;
+/** Sessions that hit an error: "gamma hit an error." */
+export const statusErrorLine = (names: string[]) => `${namesLine(names)} hit an error.`;
+/** Sessions that are working: "alpha is running." / "alpha and beta are running." */
+export const statusRunningLine = (names: string[]) => `${namesLine(names)} ${names.length === 1 ? "is" : "are"} running.`;
+/** Sessions that are idle, by count: "Three idle." */
+export const statusIdleLine = (count: number) => `${capital(numberWord(count))} idle.`;
+/** A status line kept to the spoken cap, cut at a sentence end. */
+export const statusCapped = (line: string) => cap(line, SPOKEN_CAP);

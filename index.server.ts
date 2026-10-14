@@ -61,6 +61,7 @@ import {
   voiceHelperSwitch,
   voiceInterpret,
   voiceSpeak,
+  voiceStatus,
   voiceTarget,
   voiceWakeModel,
 } from "./shared/voice-rpc";
@@ -639,13 +640,14 @@ export default function contribute(
     if (!paseo) throw new Error("Paseo isn't ready yet. Try again in a moment.");
     return paseo;
   };
+  const liveAgents = async () => {
+    const listed = await jarvisPaseo().agents.list({ filter: { includeArchived: false }, page: { limit: 200 } });
+    return listed.entries.map((entry) => entry.agent).filter((agent) => agent.status !== "closed" && !agent.archivedAt);
+  };
   const jarvis = createJarvisRouter({
-    async sessions() {
-      const listed = await jarvisPaseo().agents.list({ filter: { includeArchived: false }, page: { limit: 200 } });
-      return splitSessions(
-        listed.entries.map((entry) => entry.agent).filter((agent) => agent.status !== "closed" && !agent.archivedAt),
-      );
-    },
+    sessions: async () => splitSessions(await liveAgents()),
+    // "Status": the same live agents; the line itself is built in shared/voice-status.ts.
+    status: liveAgents,
     send: (sessionId, text) => jarvisPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
     interpreter: voiceInterpretService,
     create: voiceSessionCreator(jarvisPaseo),
@@ -678,6 +680,11 @@ export default function contribute(
   server.handle(voiceBrief, async ({ text }) => {
     const briefed = await jarvis.brief("drawer", text);
     return briefed && { spoken: briefed.spoken };
+  });
+  // The drawer's "status": the same line as Jarvis says on the phone.
+  server.handle(voiceStatus, async ({ text }) => {
+    const answered = await jarvis.status("drawer", text);
+    return answered && { spoken: answered.spoken };
   });
   // A Jarvis session or the Voice helper is refused (ok: false), or Jarvis would steer itself.
   server.handle(voiceTarget, async (session, { paseo }) => {

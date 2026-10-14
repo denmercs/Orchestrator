@@ -7,6 +7,7 @@ import { isBriefGreeting, replyBrief, startBrief, type BriefData, type BriefStat
 import { addressed, CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
 import { namelessPassThrough, type InterpretOutcome } from "../shared/voice-interpreter";
 import { ASLEEP_NOTE, DIDNT_CATCH_NOTE, helperFallbackNote, newSessionFailedLine, NOTHING_SENT, notTargetLine, SENT_NOTE, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
+import { isStatusAsk, statusLine, type StatusAgent } from "../shared/voice-status";
 import { createVoiceSession, VOICE_ROUTING_PREAMBLE, type VoiceCreatePaseo } from "../shared/voice-session";
 
 /** The `create` port: a marked voice session beside the target. See `createVoiceSession`. */
@@ -34,6 +35,8 @@ export type JarvisRouterPorts = {
     /** Starts the priority initiative's loop; resolves to an error to say, or null when it started. */
     startInitiative(): Promise<string | null>;
   };
+  /** "Status": the live agents to summarise, from the same list as `sessions`. See `statusLine`. */
+  status?(): Promise<StatusAgent[]>;
   now?(): number;
 };
 
@@ -116,9 +119,28 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     return { spoken: [...spoken, ...next.rest], note: null };
   }
 
+  // "Status" is handled ahead of the loop, like the briefing: the loop only knows names, not what each session is doing.
+  // Null means the words are not a status ask. Asleep, only the name wakes it.
+  async function routeStatus(routerId: string, text: string): Promise<RouteResult | null> {
+    const status = ports.status;
+    if (!status || !isStatusAsk(text)) return null;
+    const entry = entryFor(routerId);
+    if (entry.state.mode === "asleep") {
+      if (!addressed(text)) return null;
+      entry.state = step(entry.state, { type: "wake" }).state;
+    }
+    try {
+      return { spoken: [statusLine(await status())], note: null };
+    } catch (error) {
+      return { spoken: [`I couldn't read the sessions: ${errorText(error)}`], note: null };
+    }
+  }
+
   async function routeNow(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult> {
     const briefed = await routeBrief(routerId, text);
     if (briefed) return briefed;
+    const statused = await routeStatus(routerId, text);
+    if (statused) return statused;
     // Empty speech (silence, a whisper the transcriber dropped) is not a routing failure.
     if (!text.trim()) return { spoken: [], note: DIDNT_CATCH_NOTE };
     const entry = entryFor(routerId);
@@ -209,6 +231,12 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
      */
     brief(routerId: string, text: string): Promise<RouteResult | null> {
       const run = (chains.get(routerId) ?? Promise.resolve()).then(() => routeBrief(routerId, text));
+      chains.set(routerId, run.catch(() => undefined));
+      return run;
+    },
+    /** "Status" alone, for the Voice drawer, on the same chain as `route`. Null means the words are not a status ask. */
+    status(routerId: string, text: string): Promise<RouteResult | null> {
+      const run = (chains.get(routerId) ?? Promise.resolve()).then(() => routeStatus(routerId, text));
       chains.set(routerId, run.catch(() => undefined));
       return run;
     },

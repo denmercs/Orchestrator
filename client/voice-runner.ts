@@ -39,6 +39,8 @@ export type VoiceRunnerPorts = {
   speaker?: { speak(text: string, replyId: string): Promise<"ended" | "stopped">; stop(): void };
   /** The morning briefing: lines to say when the words are "good morning" or an open briefing's answer, null when they are not. */
   brief?: (text: string) => Promise<string[] | null>;
+  /** "Status": one line about the sessions' states when the words are a status ask, null when they are not. Tried after the briefing. */
+  status?: (text: string) => Promise<string[] | null>;
   /** Timer port; defaults to the global setTimeout. */
   clock?: { setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
   /** The hands-free mic adapter: open/close the mic, told whether the loop is awake or a tap-to-talk is held, and
@@ -174,21 +176,30 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     }
   }
 
-  // Words go to the briefing first (awake only): its lines are shown and spoken and the session never hears them.
-  // If it has nothing for them, or fails, they go to the loop as usual.
+  // Words go to the briefing, then to the status ask (awake only): their lines are shown and spoken and the session
+  // never hears them. If neither has anything for them, or one fails, they go to the loop as usual.
   function dispatch(event: VoiceEvent) {
-    const brief = ports.brief;
-    if (!brief || event.type !== "utterance" || !event.text.trim() || snapshot.mode === "asleep") return run(event);
-    brief(event.text).then(
-      (lines) => {
-        if (!lines) return run(event);
-        entries.push({ id: nextEntry++, text: event.text, outcome: "briefing" });
-        entries.splice(0, Math.max(0, entries.length - MAX_TRANSCRIPTS));
-        showEntries();
-        lines.forEach((line) => showAndSpeak(line));
-      },
-      () => run(event),
-    );
+    const answerers = [
+      ports.brief && { ask: ports.brief, outcome: "briefing" },
+      ports.status && { ask: ports.status, outcome: "status" },
+    ].filter((a): a is { ask: (text: string) => Promise<string[] | null>; outcome: string } => !!a);
+    if (!answerers.length || event.type !== "utterance" || !event.text.trim() || snapshot.mode === "asleep") return run(event);
+    const text = event.text;
+    const tryNext = (index: number): void => {
+      const answerer = answerers[index];
+      if (!answerer) return run(event);
+      answerer.ask(text).then(
+        (lines) => {
+          if (!lines) return tryNext(index + 1);
+          entries.push({ id: nextEntry++, text, outcome: answerer.outcome });
+          entries.splice(0, Math.max(0, entries.length - MAX_TRANSCRIPTS));
+          showEntries();
+          lines.forEach((line) => showAndSpeak(line));
+        },
+        () => tryNext(index + 1),
+      );
+    };
+    tryNext(0);
   }
 
   function run(event: VoiceEvent) {
