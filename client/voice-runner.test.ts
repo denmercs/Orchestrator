@@ -1398,3 +1398,60 @@ test("the checking state follows the server: it holds speech, so the panel never
   await flush();
   assert.equal(runner.getState().settingsChecking, false);
 });
+
+// --- Round five: capped retry, off() cancels, a client with a value is not "Checking" ---
+
+test("the retry wait is capped, so settings that recover are found within seconds", async () => {
+  const { runner, timers } = timedSetup({ read: async () => transient, write: async () => {} });
+  await runner.start();
+  for (let i = 0; i < 20; i++) {
+    timers[timers.length - 1].fn();
+    await flush();
+  }
+  assert.ok(timers.length >= 20);
+  for (const t of timers) assert.ok(t.ms <= 8_000, `wait ${t.ms}`);
+  assert.equal(timers.at(-1)?.ms, 8_000);
+});
+
+test("off() cancels a pending retry: it fires later and changes nothing", async () => {
+  let answer: { micOff: boolean; unreadable?: boolean; transient?: boolean } = transient;
+  const { runner, calls, timers } = timedSetup({ read: async () => answer, write: async () => {} });
+  await runner.start();
+  runner.off();
+  answer = { micOff: false, unreadable: false };
+  const before = timers.length;
+  timers[0].fn();
+  await flush();
+  assert.ok(!calls.includes("open"), "the mic never opened");
+  assert.equal(runner.getState().micOn, false);
+  assert.equal(timers.length, before, "no new retry");
+});
+
+test("a stale server 'checking' flag does not override a client that already has a value", async () => {
+  const prefs: NonNullable<VoiceRunnerPorts["prefs"]> = { read: async () => ({ micOff: false, unreadable: false }), write: async () => {} };
+  const withPrefs = (() => {
+    const r: Array<(b: Batch) => void> = [];
+    const base = setup({ events: { read: () => new Promise<Batch>((resolve) => r.push(resolve)) }, prefs });
+    return { ...base, reads: r };
+  })();
+  await withPrefs.runner.start();
+  withPrefs.reads[0]({ cursor: 1, events: [], phoneActive: false, settingsChecking: true } as Batch);
+  await flush();
+  assert.equal(withPrefs.runner.getState().settingsChecking, false);
+});
+
+test("Repair while the server says checking still rewrites the client's last known value", async () => {
+  const repairs: Array<boolean | undefined> = [];
+  const prefs: NonNullable<VoiceRunnerPorts["prefs"]> = {
+    read: async () => ({ micOff: true, unreadable: false }),
+    write: async () => {},
+    repair: async (v?: boolean) => void repairs.push(v),
+  };
+  const r: Array<(b: Batch) => void> = [];
+  const { runner } = setup({ events: { read: () => new Promise<Batch>((resolve) => r.push(resolve)) }, prefs });
+  await runner.start();
+  r[0]({ cursor: 1, events: [], phoneActive: false, settingsChecking: true } as Batch);
+  await flush();
+  await runner.repairSettings();
+  assert.deepEqual(repairs, [true]);
+});

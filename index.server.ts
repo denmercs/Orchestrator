@@ -520,6 +520,7 @@ export default function contribute(
   };
   const offVoiceSettings = voice.subscribe(syncVoice);
   void voice.read().then(syncVoice, () => undefined);
+  void micOffGate.start();
   // The Speaker: the one voice for the Mac (drawer, Speak pill, Jarvis) and the phone. Its workers start now, so the cloned voice is
   // warm at launch, and stop on cleanup. Until they are up it answers "loading" and the Mac falls back to `say`.
   const speakerPorts = (deps.speakerPorts ?? realSpeakerPorts)(() =>
@@ -740,6 +741,7 @@ export default function contribute(
   return () => {
     offPulseSettings();
     offVoiceSettings();
+    micOffGate.stop();
     stopPlanServer();
     offBeforeCreate();
     offWorkspaceCreated();

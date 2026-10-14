@@ -450,6 +450,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
 
   function off() {
     polling++;
+    startRetry++;
     ports.helper?.stop().catch(fail);
     publish({ phoneActive: false });
     dispatch({ type: "sleep" });
@@ -473,13 +474,18 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   let serverUnreadable: boolean | undefined;
   let serverChecking: boolean | undefined;
   const showSettingsState = () =>
-    publish({ settingsUnreadable: serverUnreadable ?? localUnreadable, settingsChecking: serverChecking ?? localChecking });
+    publish({
+      settingsUnreadable: serverUnreadable ?? localUnreadable,
+      // A client that has a value is not checking, whatever a stale server flag says.
+      settingsChecking: lastMicOff !== null ? false : (serverChecking ?? localChecking),
+    });
   const RETRY_MS = 250;
+  const MAX_RETRY_MS = 8_000;
   let startRetry = 0;
 
   // Applies a value that was actually read: opens the mic unless Ignore me is on.
   async function applySaved(saved: { micOff: boolean; unreadable?: boolean }) {
-    lastMicOff = saved.micOff;
+    if (ports.prefs) lastMicOff = saved.micOff;
     localUnreadable = saved.unreadable === true;
     localChecking = false;
     publish({ micOn: !saved.micOff, ignoring: saved.micOff, micUnavailable: false, error: null });
@@ -501,7 +507,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       localChecking = true;
       publish({ micOn: false, ignoring: false, micUnavailable: false, error: null });
       showSettingsState();
-      clock.setTimeout(() => void readSaved(run, attempt + 1), RETRY_MS * 2 ** attempt);
+      clock.setTimeout(() => void readSaved(run, attempt + 1), Math.min(RETRY_MS * 2 ** attempt, MAX_RETRY_MS));
       return;
     }
     await applySaved(saved);

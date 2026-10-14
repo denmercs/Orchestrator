@@ -112,3 +112,41 @@ test("a rejecting setting: the server holds speech and the panel says it is chec
   assert.equal(gate.checking(), true);
   assert.equal(runner.getState().micOn, false);
 });
+
+test("start() rereads after a startup rejection with a growing wait until a value arrives, then stops", async () => {
+  let up = false;
+  let reads = 0;
+  const timers: Array<{ fn: () => void; ms: number }> = [];
+  const gate = createMicOffGate(async () => (reads++, up ? ready(true) : Promise.reject(new Error("down"))), () => 0, (fn, ms) => (timers.push({ fn, ms }), { stop: () => {} }));
+  await gate.start();
+  assert.equal(gate.checking(), true);
+  assert.equal(timers.length, 1);
+  timers[0].fn();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(timers.length, 2);
+  assert.ok(timers[1].ms > timers[0].ms);
+  for (let i = 0; i < 12; i++) {
+    timers.at(-1)?.fn();
+    await new Promise((r) => setImmediate(r));
+  }
+  assert.ok(timers.every((t) => t.ms <= 8_000), "capped");
+  up = true;
+  timers.at(-1)?.fn();
+  await new Promise((r) => setImmediate(r));
+  const settled = timers.length;
+  assert.equal(gate.checking(), false);
+  assert.equal(await gate.muted(), true);
+  assert.equal(timers.length, settled, "no more retries once known");
+});
+
+test("stop() cancels the pending reread", async () => {
+  const timers: Array<{ fn: () => void; ms: number; stopped: boolean }> = [];
+  const gate = createMicOffGate(() => Promise.reject(new Error("down")), () => 0, (fn, ms) => {
+    const t = { fn, ms, stopped: false };
+    timers.push(t);
+    return { stop: () => void (t.stopped = true) };
+  });
+  await gate.start();
+  gate.stop();
+  assert.equal(timers[0].stopped, true);
+});
