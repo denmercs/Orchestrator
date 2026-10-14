@@ -88,9 +88,6 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
               spoken.push(sendFailedLine(effect.session.name, errorText(error)));
             }
             break;
-          case "receipt":
-            if (!failed) spoken.push(effect.line);
-            break;
           case "speak":
           case "askConfirm":
             spoken.push(effect.line);

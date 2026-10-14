@@ -16,7 +16,6 @@ export const NOTHING_SENT = "Nothing sent.";
 export const NOTHING_TO_CONFIRM = "Nothing to confirm.";
 export const STOPPED_NOTE = "Stopped before sending.";
 
-export const sentLine = (name: string) => `Sent to ${name}.`;
 export const switchedLine = (name: string) => `Now on ${name}.`;
 /** No session by that name; with names, the numbered list follows so a number can answer it. */
 export const noSessionLine = (spoken: string, names: string[] = [], total = names.length) =>
