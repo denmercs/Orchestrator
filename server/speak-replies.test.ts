@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
-import { createSpeakReplies, findSpeakScript } from "./speak-replies";
+import { createSpeakReplies, speakRoute } from "./speak-replies";
 
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 type Outcome = TurnEnded["outcome"];
@@ -17,22 +15,33 @@ function reply(outcome: Outcome, ...texts: string[]): TurnEnded {
   return { agent: AGENT, turnId: "t1", outcome, timeline: timeline as unknown as TurnEnded["timeline"] };
 }
 
-async function setup(options: { scriptOk?: boolean } = {}) {
-  const runs: { args: string[]; stdin?: string }[] = [];
+async function setup(options: { mode?: "short" | "medium" | "full" } = {}) {
+  const runs: { op: "speak" | "hush"; text?: string }[] = [];
   const speak = createSpeakReplies({
-    script: "/repo/scripts/speak",
-    run: (args, stdin) => void runs.push({ args, stdin }),
-    scriptReady: async () => options.scriptOk ?? true,
+    speak: async (text) => void runs.push({ op: "speak", text }),
+    hush: () => void runs.push({ op: "hush" }),
   });
-  await speak.set("a1", true);
-  runs.length = 0;
+  await speak.set("a1", options.mode ?? "short");
   return { speak, runs };
 }
 
 test("a completed turn speaks the short line of the last assistant message", async () => {
   const { speak, runs } = await setup();
   speak.onTurnEnded(reply(COMPLETED, "Working on it.", "**Done.** Tests pass.\n\nMore detail follows."));
-  assert.deepEqual(runs, [{ args: [], stdin: "Done. Tests pass." }]);
+  assert.deepEqual(runs, [{ op: "speak", text: "Done. Tests pass." }]);
+});
+
+test("full mode speaks every paragraph of the last assistant message", async () => {
+  const { speak, runs } = await setup({ mode: "full" });
+  speak.onTurnEnded(reply(COMPLETED, "**Done.** Tests pass.\n\n- one\n- two\n\n```ts\nx\n```\n\nMore detail."));
+  assert.deepEqual(runs, [{ op: "speak", text: "Done. Tests pass. one. two. More detail." }]);
+});
+
+test("switching from short to full changes the mode and says nothing", async () => {
+  const { speak, runs } = await setup();
+  await speak.set("a1", "full");
+  assert.deepEqual(runs, []);
+  assert.deepEqual(speak.modes(), { a1: "full" });
 });
 
 test("a canceled or failed turn stays silent", async () => {
@@ -44,8 +53,7 @@ test("a canceled or failed turn stays silent", async () => {
 
 test("a switched-off agent stays silent", async () => {
   const { speak, runs } = await setup();
-  await speak.set("a1", false);
-  runs.length = 0;
+  await speak.set("a1", "off");
   speak.onTurnEnded(reply(COMPLETED, "Hello."));
   speak.onTurnStarted("a1");
   assert.deepEqual(runs, []);
@@ -62,29 +70,16 @@ test("a turn starting on a switched-on agent hushes the speaker", async () => {
   const { speak, runs } = await setup();
   speak.onTurnStarted("a1");
   speak.onTurnStarted("other");
-  assert.deepEqual(runs, [{ args: ["--hush"], stdin: undefined }]);
+  assert.deepEqual(runs, [{ op: "hush" }]);
 });
 
-test("switching on warms the worker and lists the agent", async () => {
-  const runs: string[][] = [];
-  const speak = createSpeakReplies({ script: "/s", run: (args) => void runs.push(args), scriptReady: async () => true });
-  await speak.set("a1", true);
-  assert.deepEqual(runs, [["--warm"]]);
-  assert.deepEqual(speak.agentIds(), ["a1"]);
-});
-
-test("switching off does not unload the worker", async () => {
+test("switching on lists the agent, and switching off removes it", async () => {
   const { speak, runs } = await setup();
-  await speak.set("a1", false);
-  assert.deepEqual(runs, []);
-  assert.deepEqual(speak.agentIds(), []);
-});
-
-test("a missing script rejects and leaves the agent off", async () => {
-  const runs: string[][] = [];
-  const speak = createSpeakReplies({ script: "/nope", run: (args) => void runs.push(args), scriptReady: async () => false });
-  await assert.rejects(speak.set("a1", true), /\/nope/);
-  assert.deepEqual(speak.agentIds(), []);
+  assert.deepEqual(speak.modes(), { a1: "short" });
+  assert.equal(speak.has("a1"), true);
+  await speak.set("a1", "off");
+  assert.deepEqual(speak.modes(), {});
+  assert.equal(speak.has("a1"), false);
   assert.deepEqual(runs, []);
 });
 
@@ -96,12 +91,14 @@ test("server code avoids import.meta, which is undefined in Paseo's CJS plugin b
   assert.deepEqual(offenders, []);
 });
 
-test("findSpeakScript finds the script inside an install's checkout folder", () => {
-  const home = mkdtempSync(join(tmpdir(), "speak-"));
-  const dir = join(home, "plugins", "orchestrator", "abc", "checkout", "scripts");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "speak"), "#!/bin/sh\n");
-  chmodSync(join(dir, "speak"), 0o755);
-  assert.equal(findSpeakScript(home), join(dir, "speak"));
-  assert.equal(findSpeakScript(join(home, "none")), join(home, "none", "plugins", "orchestrator", "scripts", "speak"));
+test("a switched-on session is heard on the phone only when the phone is active and phone audio is on, else on the Mac; never both", () => {
+  const table: [boolean, boolean, boolean, string][] = [
+    [true, true, true, "phone"],
+    [true, true, false, "mac"],
+    [true, false, true, "mac"],
+    [true, false, false, "mac"],
+    [false, true, true, "none"],
+    [false, false, false, "none"],
+  ];
+  for (const [pill, phoneActive, phoneAudio, route] of table) assert.equal(speakRoute({ pill, phoneActive, phoneAudio }), route, `${pill} ${phoneActive} ${phoneAudio}`);
 });
