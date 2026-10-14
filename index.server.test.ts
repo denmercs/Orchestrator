@@ -2,11 +2,18 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "./index.server";
+import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { startMemoryReplay } from "./shared/replay-rpc";
-import { voiceHelperStart, voiceHelperStop, voiceHelperSwitch, voiceInterpret } from "./shared/voice-rpc";
+import { voiceEvents, voiceHelperStart, voiceHelperStop, voiceHelperSwitch, voiceInterpret, voiceSpeak, voiceTarget } from "./shared/voice-rpc";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// No test starts the real Speaker: its workers spawn `uv`.
+const quietSpeaker = (readClip: () => string | undefined) => {
+  const worker = { ready: () => false, render: async () => "" };
+  return { chatterbox: worker, kokoro: worker, readClip, now: Date.now, sleep: async () => undefined, start: () => undefined, stop: () => undefined };
+};
 
 function registeredSettingIds(): string[] {
   const ids: string[] = [];
@@ -20,9 +27,15 @@ function registeredSettingIds(): string[] {
           }
         : noop,
   });
-  contribute(server);
+  contribute(server, { speakerPorts: quietSpeaker });
   return ids;
 }
+
+test("registers each setting once, since the host refuses a duplicate id", () => {
+  const ids = registeredSettingIds();
+  const duplicates = ids.filter((id, i) => ids.indexOf(id) !== i);
+  assert.deepEqual(duplicates, [], `registered twice: ${duplicates.join(", ")}`);
+});
 
 test("registers the dashboard tab setting on the host", () => {
   const ids = registeredSettingIds();
@@ -50,7 +63,7 @@ test("registers the plan usage RPC, which reads the daemon's provider usage", as
       return noop;
     },
   });
-  contribute(server);
+  contribute(server, { speakerPorts: quietSpeaker });
   const handler = handlers.get("orchestration.usage.plan");
   assert.ok(handler, "orchestration.usage.plan is handled");
   const paseo = { providers: { listUsage: async () => ({ fetchedAt: "", providers: [] }) } };
@@ -71,7 +84,7 @@ function usageSourceIds(host: Record<string, unknown>): string[] {
       return noop;
     },
   });
-  contribute(server);
+  contribute(server, { speakerPorts: quietSpeaker });
   return ids;
 }
 
@@ -95,7 +108,7 @@ test("registers the Jarvis provider", () => {
       return noop;
     },
   });
-  contribute(server);
+  contribute(server, { speakerPorts: quietSpeaker });
   assert.deepEqual(ids, ["jarvis:Jarvis"]);
 });
 
@@ -105,15 +118,20 @@ type Fake = {
   replayed: unknown[];
 };
 
+// Set by a test that needs voice.phoneAudio on in `wired`.
+let voicePhoneAudio = false;
+
 function wired(
   pending: string[] = [],
   signedIn = true,
   replayStart?: { file: string; everyMs: number },
   loopStart?: { file: string; everyMs: number },
   voiceHelperCwd?: string,
+  extra: Partial<Parameters<typeof contribute>[1]> = {},
 ) {
   const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
   const listeners = new Map<string, (event: unknown, context: unknown) => unknown>();
+  const providers: { connect(): Promise<unknown> }[] = [];
   const noop = () => undefined;
   const fake: Fake = { pending, calls: [], replayed: [] };
   const runner = {
@@ -130,15 +148,19 @@ function wired(
     get: (_target, key) => {
       if (key === "handle") return (rpc: { name: string }, h: never) => void handlers.set(rpc.name, h);
       if (key === "on") return (name: string, h: never) => (listeners.set(name, h), noop);
+      if (key === "registerProvider") return (provider: { connect(): Promise<unknown> }) => void providers.push(provider);
       if (key === "registerSettings") {
-        return () => new Proxy({}, { get: (_t, k) => (k === "read" ? async () => ({ status: "loading" }) : () => noop) });
+        return (definition: { id: string }) => {
+          const state = definition.id === "voice" && voicePhoneAudio ? { status: "ready", values: { referenceClip: "", phoneAudio: true } } : { status: "loading" };
+          return new Proxy({}, { get: (_t, k) => (k === "read" ? async () => state : () => noop) });
+        };
       }
       // Anything else hands back an unsubscribe, so the cleanup contribute returns can run.
       return () => noop;
     },
   });
-  const stop = contribute(server, { replay: runner, signedIn: async () => signedIn, replayStart, loopStart, voiceHelperCwd });
-  return { handlers, listeners, fake, stop };
+  const stop = contribute(server, { replay: runner, signedIn: async () => signedIn, replayStart, loopStart, voiceHelperCwd, speakerPorts: quietSpeaker, ...extra });
+  return { handlers, listeners, providers, fake, stop };
 }
 
 function repoWithCorpus(rows: object[] | null): string {
@@ -378,6 +400,380 @@ test("disposing the plugin archives the voice helper", async () => {
   assert.ok(calls.includes("archive:helper-1"));
 });
 
+// The Mac's players are fakes: `plays` are the sentences played, `kills` how often a sentence was cut off.
+function speakWired(pending: string[] = []) {
+  const plays: string[] = [];
+  const says: string[] = [];
+  const state = { kills: 0 };
+  const ready = { ready: () => true, render: async (text: string) => `audio:${text}` };
+  const speakerPorts = (readClip: () => string | undefined) => ({
+    chatterbox: ready,
+    kokoro: ready,
+    readClip,
+    now: () => 0,
+    sleep: () => new Promise<void>(() => undefined),
+    start: () => undefined,
+    stop: () => undefined,
+  });
+  const localPorts = (render: (input: { text: string; replyId: string }) => Promise<unknown>) => ({
+    render: render as never,
+    play: (audio: string) => {
+      plays.push(audio);
+      return { done: new Promise<void>(() => undefined), kill: () => void (state.kills += 1) };
+    },
+    say: (text: string) => {
+      says.push(text);
+      return { done: Promise.resolve(), kill: () => undefined };
+    },
+  });
+  return { plays, says, state, ...wired(pending, true, undefined, undefined, undefined, { speakerPorts, localPorts }) };
+}
+
+const spokenTurn = (id: string) => ({
+  agent: { id, workspaceId: null, parentAgentId: null, provider: "claude", cwd: "/x", title: null },
+  turnId: null,
+  outcome: { kind: "completed" },
+  timeline: [{ type: "assistant_message", text: "All done." }],
+});
+
+const paseoStub = { agents: { ref: () => ({ refresh: async () => null }) } };
+const tick = () => new Promise((r) => setTimeout(r, 10));
+
+test("speak replies: a switched-on session's reply is spoken once on the Mac, and kept from the drawer", async () => {
+  const { handlers, listeners, plays, stop } = speakWired();
+  const paseo = paseoStub;
+  await handlers.get(speakRepliesSet.name)!({ agentId: "s1", mode: "short" }, { paseo });
+  assert.deepEqual(await handlers.get(speakRepliesState.name)!({}, { paseo }), { modes: { s1: "short" } });
+  await listeners.get("agent.turn_ended")!(spokenTurn("s1"), { paseo });
+  await listeners.get("agent.turn_ended")!(spokenTurn("s2"), { paseo });
+  await tick();
+  assert.deepEqual(plays, ["audio:All done."]);
+  const read = (await handlers.get(voiceEvents.name)!({ after: 0 }, { paseo })) as { events: { type: string; sessionId: string }[] };
+  assert.deepEqual(
+    read.events.map((e) => `${e.type}:${e.sessionId}`),
+    ["notice:s1", "reply:s2", "notice:s2"],
+  );
+  stop();
+});
+
+test("speak replies: a new turn on a switched-on session hushes the Mac's voice", async () => {
+  const { handlers, listeners, plays, state, stop } = speakWired();
+  const paseo = paseoStub;
+  await handlers.get(speakRepliesSet.name)!({ agentId: "s1", mode: "short" }, { paseo });
+  await listeners.get("agent.turn_ended")!(spokenTurn("s1"), { paseo });
+  await tick();
+  assert.equal(plays.length, 1);
+  await listeners.get("agent.turn_started")!({ agent: spokenTurn("s1").agent, turnId: null }, { paseo });
+  await listeners.get("agent.turn_started")!({ agent: spokenTurn("s2").agent, turnId: null }, { paseo });
+  assert.equal(state.kills, 1);
+  stop();
+});
+
+test("speak replies: a memory-replay turn end stays silent even for a switched-on session", async () => {
+  const { handlers, listeners, plays, says, stop } = speakWired(["s1"]);
+  const paseo = paseoStub;
+  await handlers.get(speakRepliesSet.name)!({ agentId: "s1", mode: "short" }, { paseo });
+  await listeners.get("agent.turn_ended")!(spokenTurn("s1"), { paseo });
+  await tick();
+  assert.deepEqual([plays, says], [[], []]);
+  stop();
+});
+
+test("turn_ended / permission_requested reach the hub and the router; orchestration.voice.events answers with phoneActive", async () => {
+  const { handlers, listeners, providers, stop } = wired();
+  const spoken: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: string, init: RequestInit) => {
+    spoken.push(JSON.parse(init.body as string).params.arguments.text);
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch;
+  try {
+    const events = handlers.get(voiceEvents.name);
+    assert.ok(events, "orchestration.voice.events is handled");
+    const { paseo } = helperPaseo();
+    const agent = { id: "s1", provider: "claude", title: "api", cwd: "/x", labels: {} };
+    const listing = { ...paseo, agents: { ...paseo.agents, list: async () => ({ entries: [{ agent }] }) } };
+    assert.deepEqual(await events({ after: 0 }, { paseo: listing }).then((r) => (r as { phoneActive: boolean }).phoneActive), false);
+    // A phone session with voice mode on (it has a paseo MCP server); its first words make its router.
+    const jarvis = (await providers[0].connect()) as {
+      send(input: unknown): Promise<void>;
+      onEvent(listener: (e: { type: string; state?: string }) => void): void;
+    };
+    const seen: { type: string; state?: string }[] = [];
+    jarvis.onEvent((e) => seen.push(e));
+    await jarvis.send({
+      type: "session.open",
+      requestId: "q1",
+      sessionId: "p1",
+      config: { cwd: "/repo", env: {}, mcpServers: { paseo: { type: "http", url: "http://127.0.0.1:1/mcp", headers: {} } }, settings: {}, persist: true },
+      persistence: { version: 1, data: { routerId: "r1" } },
+      history: "skip",
+    });
+    await handlers.get(voiceTarget.name)!({ id: "s1", name: "api" }, { paseo: listing });
+    await jarvis.send({
+      type: "session.prompt",
+      sessionId: "p1",
+      prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "hello" }] } },
+    });
+    await until(() => seen.some((e) => e.type === "session.turn" && e.state === "completed"));
+    spoken.length = 0;
+
+    const timeline = [
+      { type: "user_message", text: "go" },
+      { type: "assistant_message", text: "All done." },
+    ];
+    listeners.get("agent.turn_ended")!({ agent, turnId: null, outcome: { kind: "completed" }, timeline }, { paseo: listing });
+    listeners.get("agent.permission_requested")!({ agent }, { paseo: listing });
+    await until(() => spoken.length > 0);
+
+    const answered = (await events({ after: 0 }, { paseo: listing })) as { cursor: number; events: unknown[]; phoneActive: boolean };
+    assert.equal(answered.cursor, 3);
+    assert.deepEqual(answered.events, [
+      { type: "reply", sessionId: "s1", text: "All done." },
+      { type: "notice", kind: "finished", sessionId: "s1" },
+      { type: "notice", kind: "needsYou", sessionId: "s1" },
+    ]);
+    assert.equal(answered.phoneActive, true);
+    assert.match(spoken.join(" "), /All done\./);
+  } finally {
+    globalThis.fetch = realFetch;
+    stop();
+  }
+});
+
+// "asleep": phone audio on and the phone active, but the Voice loop was put to sleep, so the phone would not say it: the Mac must.
+for (const [phoneAudio, asleep] of [[true, false], [false, false], [true, true]]) {
+  test(`speak replies on the phone: voice.phoneAudio ${asleep ? "on but the loop asleep falls back to the Mac, never heard nowhere" : phoneAudio ? "on sends another session's reply to the phone as one voice-line and the Mac stays quiet" : "off keeps it on the Mac and off the hub"}`, async () => {
+    voicePhoneAudio = phoneAudio;
+    const { handlers, listeners, providers, plays, stop } = speakWired();
+    try {
+      await tick();
+      const target = { id: "s1", provider: "claude", title: "api", cwd: "/x", labels: {} };
+      const watched = { id: "s2", provider: "claude", title: "docs", cwd: "/x", labels: {} };
+      const paseo = { agents: { ref: () => ({ refresh: async () => null }), list: async () => ({ entries: [{ agent: target }, { agent: watched }] }) } };
+      const jarvis = (await providers[0].connect()) as { send(input: unknown): Promise<void>; onEvent(listener: (e: { type: string; state?: string; item?: { kind?: string; data?: { text: string } } }) => void): void };
+      const seen: { type: string; state?: string; item?: { kind?: string; data?: { text: string } } }[] = [];
+      jarvis.onEvent((e) => seen.push(e));
+      await jarvis.send({
+        type: "session.open",
+        requestId: "q1",
+        sessionId: "p1",
+        config: { cwd: "/repo", env: {}, mcpServers: { paseo: { type: "http", url: "http://127.0.0.1:1/mcp", headers: {} } }, settings: {}, persist: true },
+        persistence: { version: 1, data: { routerId: "r1" } },
+        history: "skip",
+      });
+      await handlers.get(voiceTarget.name)!({ id: "s1", name: "api" }, { paseo });
+      await jarvis.send({
+        type: "session.prompt",
+        sessionId: "p1",
+        prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "hello" }] } },
+      });
+      await until(() => seen.some((e) => e.type === "session.turn" && e.state === "completed"));
+      if (asleep) {
+        await jarvis.send({
+          type: "session.prompt",
+          sessionId: "p1",
+          prompt: { clientMessageId: "m2", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Jarvis, ignore me" }] } },
+        });
+        await until(() => seen.filter((e) => e.type === "session.turn" && e.state === "completed").length >= 2);
+      }
+      await handlers.get(speakRepliesSet.name)!({ agentId: "s2", mode: "short" }, { paseo });
+      listeners.get("agent.turn_ended")!({ ...spokenTurn("s2"), agent: watched }, { paseo });
+      await tick();
+      const read = (await handlers.get(voiceEvents.name)!({ after: 0 }, { paseo })) as { events: { type: string; sessionId: string; watched?: boolean }[] };
+      const lineItems = seen.filter((e) => e.item?.kind === "voice-line").map((e) => e.item?.data?.text);
+      if (asleep) {
+        assert.deepEqual(lineItems, [], "the phone says nothing");
+        assert.deepEqual(plays, ["audio:All done."], "so the Mac says it");
+        assert.deepEqual(read.events.map((e) => `${e.type}:${e.sessionId}`), ["notice:s2"]);
+      } else if (phoneAudio) {
+        assert.deepEqual(read.events, [{ type: "reply", sessionId: "s2", text: "All done.", watched: true }]);
+        assert.deepEqual(lineItems, ["docs: All done."]);
+        assert.deepEqual(plays, [], "the Mac says nothing");
+      } else {
+        assert.deepEqual(read.events.map((e) => `${e.type}:${e.sessionId}`), ["notice:s2"]);
+        assert.deepEqual(lineItems, []);
+        assert.deepEqual(plays, ["audio:All done."]);
+      }
+    } finally {
+      voicePhoneAudio = false;
+      stop();
+    }
+  });
+}
+
+type SpeakerFake = { started: number; stopped: number; rendered: { text: string; clip?: string }[] };
+
+function withSpeaker(clip: string, defaultReferenceClip = "/no/such/reference.wav") {
+  const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
+  const settingIds: string[] = [];
+  const noop = () => undefined;
+  const fake: SpeakerFake = { started: 0, stopped: 0, rendered: [] };
+  const worker = (engine: string) => ({
+    ready: () => true,
+    render: async (text: string, c?: string) => (fake.rendered.push({ text, clip: c }), engine),
+  });
+  const ports = (readClip: () => string | undefined) => ({
+    chatterbox: worker("chatterbox-audio"),
+    kokoro: worker("kokoro-audio"),
+    readClip,
+    now: () => 0,
+    sleep: () => new Promise<void>(() => undefined),
+    start: () => void (fake.started += 1),
+    stop: () => void (fake.stopped += 1),
+  });
+  const server = new Proxy({} as PluginServerContext, {
+    get: (_target, key) => {
+      if (key === "handle") return (rpc: { name: string }, h: never) => void handlers.set(rpc.name, h);
+      if (key === "registerSettings") {
+        return (definition: { id: string }) => {
+          settingIds.push(definition.id);
+          const state = definition.id === "voice" ? { status: "ready", values: { referenceClip: clip, phoneAudio: false } } : { status: "loading" };
+          return new Proxy({}, { get: (_t, k) => (k === "read" ? async () => state : () => noop) });
+        };
+      }
+      return () => noop;
+    },
+  });
+  const stop = contribute(server, { speakerPorts: ports, defaultReferenceClip });
+  return { handlers, settingIds, fake, stop };
+}
+
+test("registers the voice settings (reference clip and phone audio)", () => {
+  assert.ok(withSpeaker("").settingIds.includes("voice"));
+});
+
+test("starts the Speaker's workers when the plugin starts", () => {
+  assert.equal(withSpeaker("").fake.started, 1);
+});
+
+test("orchestration.voice.speak renders through the Speaker with the reference clip from the voice setting", async () => {
+  const { handlers, fake } = withSpeaker("/me.wav");
+  await new Promise((r) => setTimeout(r, 10));
+  const speak = handlers.get(voiceSpeak.name);
+  assert.ok(speak, "orchestration.voice.speak is handled");
+  assert.deepEqual(await speak({ text: "Hello.", replyId: "r1" }, {}), { audio: "chatterbox-audio", engine: "chatterbox" });
+  assert.deepEqual(fake.rendered, [{ text: "Hello.", clip: "/me.wav" }]);
+});
+
+test("an empty reference clip means Kokoro only", async () => {
+  const { handlers, fake } = withSpeaker("");
+  await new Promise((r) => setTimeout(r, 10));
+  const answer = await handlers.get(voiceSpeak.name)!({ text: "Hello.", replyId: "r1" }, {});
+  assert.deepEqual(answer, { audio: "kokoro-audio", engine: "kokoro" });
+  assert.equal(fake.rendered[0].clip, undefined);
+});
+
+test("an empty reference clip setting falls back to the default clip when that file exists", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "clip-"));
+  const clip = join(dir, "reference.wav");
+  writeFileSync(clip, "wav");
+  const { handlers, fake } = withSpeaker("", clip);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(await handlers.get(voiceSpeak.name)!({ text: "Hello.", replyId: "r1" }, {}), { audio: "chatterbox-audio", engine: "chatterbox" });
+  assert.equal(fake.rendered[0].clip, clip);
+});
+
+test("a clip set in the voice setting wins over the default clip", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "clip-"));
+  const clip = join(dir, "reference.wav");
+  writeFileSync(clip, "wav");
+  const { handlers, fake } = withSpeaker("/mine.wav", clip);
+  await new Promise((r) => setTimeout(r, 10));
+  await handlers.get(voiceSpeak.name)!({ text: "Hello.", replyId: "r1" }, {});
+  assert.equal(fake.rendered[0].clip, "/mine.wav");
+});
+
+test("stops the Speaker's workers on cleanup", () => {
+  const { fake, stop } = withSpeaker("");
+  assert.equal(fake.stopped, 0);
+  stop();
+  assert.equal(fake.stopped, 1);
+});
+
+// Wires contribute with a `before` capture and a voice setting that reads as `voiceProfile`.
+function createHook(voiceProfile: string) {
+  let hook: ((input: unknown, context: unknown) => Promise<unknown>) | undefined;
+  const noop = () => undefined;
+  const server = new Proxy({} as PluginServerContext, {
+    get: (_target, key) => {
+      if (key === "before") {
+        return (name: string, h: never) => {
+          if (name === "agent.create") hook = h;
+          return noop;
+        };
+      }
+      if (key === "registerSettings") {
+        return (definition: { id: string }) =>
+          new Proxy(
+            {},
+            {
+              get: (_t, k) =>
+                k === "read"
+                  ? async () =>
+                      definition.id === "voice"
+                        ? { status: "ready", values: { profile: voiceProfile } }
+                        : { status: "loading" }
+                  : () => noop,
+            },
+          );
+      }
+      return () => noop;
+    },
+  });
+  contribute(server, { speakerPorts: quietSpeaker });
+  assert.ok(hook, "agent.create has a before hook");
+  return hook;
+}
+
+const sonnetProfiles = {
+  config: {
+    daemon: {
+      agentProfiles: [
+        { id: "opus", name: "Claude | Opus", provider: "claude", model: "claude-opus-4" },
+        { id: "sonnet", name: "Claude | Sonnet 5.5 - Coding", provider: "claude", model: "claude-sonnet-5-5", modeId: "auto" },
+      ],
+    },
+  },
+};
+
+test("a voice-marked agent.create runs on the Sonnet profile and carries the rule", async () => {
+  const hook = createHook("");
+  const request = { config: { provider: "claude", cwd: "/nowhere" }, env: { ORCHESTRATOR_VOICE_SESSION: "1" } };
+  const out = (await hook({ request }, { paseo: { config: { get: async () => sonnetProfiles } } })) as typeof request & {
+    config: { model?: string; modeId?: string; systemPrompt?: string };
+  };
+  assert.equal(out.config.model, "claude-sonnet-5-5");
+  assert.equal(out.config.modeId, "auto");
+  assert.match(out.config.systemPrompt ?? "", /Voice routing rule/);
+});
+
+test("an unmarked agent.create is left as it was, apart from host MCP servers", async () => {
+  const hook = createHook("");
+  const request = { config: { provider: "claude", cwd: "/nowhere", systemPrompt: "mine" } };
+  const out = (await hook({ request }, { paseo: { config: { get: async () => sonnetProfiles } } })) as typeof request | undefined;
+  const config = { ...(out ?? request).config, mcpServers: undefined };
+  assert.deepEqual(config, { ...request.config, mcpServers: undefined });
+});
+
+test("a failing config.get still gives the marked create the rule, and warns", async () => {
+  const hook = createHook("");
+  const request = { config: { provider: "claude", cwd: "/nowhere" }, env: { ORCHESTRATOR_VOICE_SESSION: "1" } };
+  const warn = console.warn;
+  const warned: unknown[][] = [];
+  console.warn = (...args: unknown[]) => void warned.push(args);
+  try {
+    const out = (await hook({ request }, { paseo: { config: { get: async () => Promise.reject(new Error("down")) } } })) as {
+      config: { model?: string; systemPrompt?: string };
+    };
+    assert.equal(out.config.model, undefined);
+    assert.match(out.config.systemPrompt ?? "", /Voice routing rule/);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(warned.length, 1);
+});
+
 test("voiceHelperSwitch reads and flips the one switch the interpret RPC obeys", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "voice-helper-"));
   const { handlers, stop } = wired([], true, undefined, undefined, cwd);
@@ -412,7 +808,7 @@ test("a Jarvis session opening warms the same helper the drawer's RPCs use", asy
       return () => noop;
     },
   });
-  const stop = contribute(server, { signedIn: async () => true, voiceHelperCwd: cwd });
+  const stop = contribute(server, { signedIn: async () => true, voiceHelperCwd: cwd, speakerPorts: quietSpeaker });
   const { paseo, calls } = helperPaseo();
   // Providers get no Paseo handle; one RPC hands it over.
   await handlers.get(voiceHelperSwitch.name)!({}, { paseo });

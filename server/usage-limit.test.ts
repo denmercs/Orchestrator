@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { inHoldWindow, usageLimitResumeAt } from "./usage-limit";
+import type { ProviderUsage } from "../shared/plan-usage";
+import { PLAN_LIMIT_PCT, inHoldWindow, limitNotice, planLimitUntil, usageLimitResumeAt } from "./usage-limit";
 
 const at = (hour: number, minute = 0) => new Date(2026, 9, 9, hour, minute);
 
@@ -35,4 +36,49 @@ test("the hold window may wrap midnight and is off unless both ends are set", ()
   assert.equal(inHoldWindow(22, 6, at(7)), false);
   assert.equal(inHoldWindow(6, null, at(12)), false);
   assert.equal(inHoldWindow(null, null, at(12)), false);
+});
+
+const usage = (windows: { usedPct?: number | null; resetsAt?: string | null }[], status: ProviderUsage["status"] = "available"): ProviderUsage => ({
+  providerId: "claude",
+  status,
+  planLabel: null,
+  windows: windows.map((window, i) => ({ id: `w${i}`, label: `Window ${i}`, ...window })),
+});
+
+test("a provider under the limit, or not available, is not limited", () => {
+  assert.equal(planLimitUntil(usage([{ usedPct: PLAN_LIMIT_PCT - 1, resetsAt: at(3).toISOString() }]), at(1)), null);
+  assert.equal(planLimitUntil(usage([{ usedPct: null }]), at(1)), null);
+  assert.equal(planLimitUntil(usage([{ usedPct: 100, resetsAt: at(3).toISOString() }], "error"), at(1)), null);
+  assert.equal(planLimitUntil(usage([]), at(1)), null);
+});
+
+test("a window at the limit holds until its reset, two minutes late; the latest one wins", () => {
+  const until = planLimitUntil(
+    usage([
+      { usedPct: PLAN_LIMIT_PCT, resetsAt: at(3).toISOString() },
+      { usedPct: 100, resetsAt: at(5).toISOString() },
+      { usedPct: 10, resetsAt: at(9).toISOString() },
+    ]),
+    at(1),
+  );
+  assert.deepEqual(until, at(5, 2));
+});
+
+test("a window at the limit with no reset ahead holds for an hour", () => {
+  assert.deepEqual(planLimitUntil(usage([{ usedPct: 100 }]), at(1)), at(2));
+  assert.deepEqual(planLimitUntil(usage([{ usedPct: 100, resetsAt: at(0).toISOString() }]), at(1)), at(2));
+});
+
+test("limitNotice takes Claude Code's own notice, in either form, and reads its reset", () => {
+  assert.equal(limitNotice("Claude AI usage limit reached|1760000000", at(1))?.getTime(), 1760000000 * 1000 + 120_000);
+  assert.equal(limitNotice("You've hit your session limit · resets 3am (America/Chicago)", at(1))?.getTime(), at(3).getTime() + 120_000);
+  assert.ok(limitNotice("  You\u2019ve hit your limit\n", at(1)));
+  assert.ok(limitNotice("you've hit your weekly limit", at(1)));
+});
+
+test("limitNotice refuses a reply that only mentions a limit", () => {
+  assert.equal(limitNotice("rate limit reached", at(1)), null);
+  assert.equal(limitNotice("retry limit reached", at(1)), null);
+  assert.equal(limitNotice("I added a check for the usage limit.", at(1)), null);
+  assert.equal(limitNotice(`You've hit your limit ${"and so on ".repeat(30)}`, at(1)), null);
 });

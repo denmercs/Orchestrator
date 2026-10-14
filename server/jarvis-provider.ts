@@ -1,7 +1,7 @@
 // The Jarvis provider: a Paseo agent provider with no model behind it. A session on it, with Paseo voice
 // mode on, hears you on the phone and hands each utterance to the Jarvis router, which steers the target
-// session. Replies are spoken through the `paseo` MCP server's `speak` tool (only there while voice mode
-// is on) and shown in the chat as assistant messages.
+// session. Replies are spoken in the cloned Chatterbox voice when its worker is warm, else through the `paseo` MCP
+// server's `speak` tool (Kokoro; only there while voice mode is on) and shown in the chat as assistant messages.
 import { randomUUID } from "node:crypto";
 import type {
   ProviderConnection,
@@ -18,7 +18,11 @@ export { ROUTER_PROVIDER_ID as JARVIS_PROVIDER_ID } from "../shared/voice-loop";
 export const JARVIS_MODEL = "router";
 // session.persistence is required: voice on/off reopens the session, and Paseo refuses to without a handle.
 const CAPABILITIES = ["prompt.message", "session.persistence"] as const;
+const PLUGIN_ID = "orchestrator";
+const VOICE_LINE_KIND = "voice-line";
 const SPEAK_TIMEOUT_MS = 90_000;
+/** Jarvis counts as active for this long after the last prompt or line (the phone is the speaker then). */
+export const JARVIS_ACTIVE_MS = 10 * 60 * 1000;
 
 type Fetch = typeof fetch;
 type Session = {
@@ -27,10 +31,29 @@ type Session = {
   turnId: string | null;
   /** Aborts the open turn's steer if it hasn't gone out yet. */
   abort: AbortController | null;
+  /** When this session last sent or received a line; 0 until the first prompt. */
+  lastActiveAt: number;
+  /** Callers of `say` waiting for the open turn to end. */
+  idle: (() => void)[];
+};
+
+export type JarvisConnection = ProviderConnection & {
+  /** True when a session with a `paseo` MCP server (voice mode on) was active in the last JARVIS_ACTIVE_MS. */
+  isActive(now: number): boolean;
+  /** Says a router's event lines out of turn (after any open turn ends); a line that can't be said is owed to its next words. */
+  say(routerId: string, lines: string[]): Promise<void>;
 };
 
 export type JarvisProviderDeps = {
   route(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult>;
+  /** Keeps a line Jarvis couldn't say, to say first at the router's next words. */
+  owe?(routerId: string, lines: string[]): void;
+  /** What was spoken has finished (or failed), so the router's loop leaves `speaking`. */
+  playbackEnded?(routerId: string): void;
+  /** Setting `voice.phoneAudio`: when true, lines go to the phone as `voice-line` items instead of `speak`. Default false. */
+  phoneAudio?(): boolean;
+  /** Speaks on the Mac through the Speaker; false means it could not, so Paseo's `speak` tool takes the line. */
+  localSpeak?(text: string): Promise<boolean>;
   fetch?: Fetch;
   /** Starts the Voice helper in the background; called when a session opens. Never awaited, failures ignored. */
   warm?(): unknown;
@@ -89,7 +112,7 @@ export async function speak(server: ProviderMcpServerConfig | undefined, text: s
   if (message.result?.isError) throw new Error("speak: the tool failed (is voice mode on?)");
 }
 
-export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnection {
+export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnection {
   const fetchImpl = deps.fetch ?? fetch;
   const listeners = new Set<(event: ProviderEvent) => void>();
   const sessions = new Map<string, Session>();
@@ -98,13 +121,27 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
   };
   // Emitted after send() returns, so the daemon has registered the request first.
   const later = (event: ProviderEvent) => setImmediate(() => emit(event));
+  const release = (session: Session) => {
+    if (session.turnId === null) for (const wake of session.idle.splice(0)) wake();
+  };
+  // The phone's timeline renderer plays this in the cloned voice; each line gets its own id so it plays once.
+  const voiceLine = (sessionId: string, text: string) => {
+    const lineId = randomUUID();
+    emit({
+      type: "timeline.item",
+      sessionId,
+      item: { id: lineId, type: "plugin", pluginId: PLUGIN_ID, kind: VOICE_LINE_KIND, version: 1, data: { lineId, text } },
+    });
+  };
   const live = (sessionId: string, turnId: string) => sessions.get(sessionId)?.turnId === turnId;
   const end = (sessionId: string, turnId: string, state: "completed" | "failed", error?: string) => {
     if (!live(sessionId, turnId)) return;
     const session = sessions.get(sessionId) as Session;
     session.turnId = null;
     session.abort = null;
+    session.lastActiveAt = Date.now();
     emit({ type: "session.turn", sessionId, turnId, state, ...(error ? { error: { message: error } } : {}) });
+    release(session);
   };
 
   async function runTurn(sessionId: string, prompt: ProviderPrompt, turnId: string, signal: AbortSignal) {
@@ -120,9 +157,17 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
     }
     // Typed messages are answered in the chat only.
     if (spoken !== null && result.spoken.length && live(sessionId, turnId)) {
-      await speak(session.mcpServers.paseo, result.spoken.join(" "), fetchImpl).catch((error) =>
-        console.warn("orchestrator: Jarvis could not speak", error instanceof Error ? error.message : error),
-      );
+      const line = result.spoken.join(" ");
+      if (deps.phoneAudio?.()) voiceLine(sessionId, line);
+      else {
+        const local = await deps.localSpeak?.(line).catch(() => false);
+        if (!local) {
+          await speak(session.mcpServers.paseo, line, fetchImpl).catch((error) =>
+            console.warn("orchestrator: Jarvis could not speak", error instanceof Error ? error.message : error),
+          );
+        }
+      }
+      deps.playbackEnded?.(session.routerId);
     }
     end(sessionId, turnId, "completed");
   }
@@ -146,7 +191,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
         } catch {
           // A warm-up that throws must not stop the session opening.
         }
-        sessions.set(input.sessionId, { routerId, mcpServers: input.config.mcpServers, turnId: null, abort: null });
+        sessions.set(input.sessionId, { routerId, mcpServers: input.config.mcpServers, turnId: null, abort: null, lastActiveAt: 0, idle: [] });
         later({
           type: "session.opened",
           requestId: input.requestId,
@@ -179,6 +224,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
         const abort = new AbortController();
         session.turnId = turnId;
         session.abort = abort;
+        session.lastActiveAt = Date.now();
         later({ type: "session.prompt_result", sessionId: input.sessionId, clientMessageId: input.prompt.clientMessageId, result: { type: "turn", turnId } });
         setImmediate(() => {
           runTurn(input.sessionId, input.prompt, turnId, abort.signal).catch((error) =>
@@ -195,16 +241,23 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
           session.abort?.abort();
           session.abort = null;
           session.turnId = null;
+          release(session);
           later({ type: "session.turn", sessionId: input.sessionId, turnId, state: "canceled" });
         }
         later({ type: "request.completed", requestId: input.requestId });
         return;
       }
-      case "session.close":
+      case "session.close": {
+        const closing = sessions.get(input.sessionId);
         sessions.delete(input.sessionId);
+        if (closing) {
+          closing.turnId = null;
+          release(closing);
+        }
         later({ type: "request.completed", requestId: input.requestId });
         later({ type: "session.closed", sessionId: input.sessionId });
         return;
+      }
       case "session.permission":
         return;
       default:
@@ -216,6 +269,40 @@ export function createJarvisConnection(deps: JarvisProviderDeps): ProviderConnec
     version: 1,
     capabilities: [...CAPABILITIES],
     send,
+    async say(routerId, lines) {
+      if (!lines.length) return;
+      const target = () => [...sessions.values()].find((s) => s.routerId === routerId && s.mcpServers.paseo);
+      let session = target();
+      // Never over a turn's own reply: wait for the open turn to end.
+      while (session?.turnId) {
+        await new Promise<void>((resolve) => (session as Session).idle.push(resolve));
+        session = target();
+      }
+      if (!session) {
+        deps.owe?.(routerId, lines);
+        return;
+      }
+      session.lastActiveAt = Date.now();
+      if (deps.phoneAudio?.()) {
+        const sessionId = [...sessions.entries()].find(([, s]) => s === session)?.[0] as string;
+        for (const line of lines) voiceLine(sessionId, line);
+        deps.playbackEnded?.(routerId);
+        return;
+      }
+      try {
+        await speak(session.mcpServers.paseo, lines.join(" "), fetchImpl);
+      } catch (error) {
+        console.warn("orchestrator: Jarvis could not speak", error instanceof Error ? error.message : error);
+        deps.owe?.(routerId, lines);
+      }
+      deps.playbackEnded?.(routerId);
+    },
+    isActive(now) {
+      for (const session of sessions.values()) {
+        if (session.mcpServers.paseo && now - session.lastActiveAt < JARVIS_ACTIVE_MS) return true;
+      }
+      return false;
+    },
     onEvent(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

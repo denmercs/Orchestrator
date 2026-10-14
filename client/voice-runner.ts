@@ -1,5 +1,6 @@
 import { HELPER_DEFAULT_ON, namelessPassThrough, type InterpretOutcome } from "../shared/voice-interpreter";
 import { CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEffect, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
+import { encodeWav } from "./voice-ears-model";
 
 export const MAX_LINES = 20;
 export const MAX_TRANSCRIPTS = 5;
@@ -9,11 +10,17 @@ export const MAX_HOLD_MS = 30_000;
 export const MIN_HOLD_MS = 300;
 // One timeout for the drawer and Jarvis.
 export { CONFIRM_TIMEOUT_MS };
+export const POLL_BACKOFF_MS = 2_000;
 export const BASE_HINTS = ["merge", "Orchestrator", "Paseo", "Jarvis"];
+
+export type EarsRunnerEvent = { type: "wake" } | { type: "speechStart" } | { type: "utterance"; pcm: Int16Array };
 
 /** Ports the runner carries effects out through. Recorder, transcriber and clock are optional. */
 export type VoiceRunnerPorts = {
-  link: { say(sessionId: string, text: string): Promise<unknown>; interrupt(sessionId: string): Promise<unknown> };
+  link: { say(sessionId: string, text: string): Promise<unknown>; interrupt(sessionId: string): Promise<unknown>;
+    /** Starts a voice session beside `target` and returns its id. */
+    create?(target: VoiceSession): Promise<string>;
+  };
   /** The Voice helper (the server owns it): start/stop with voice, its switch, and interpret. Defaults to sending the text as heard. */
   helper?: {
     start(): Promise<unknown>;
@@ -26,15 +33,35 @@ export type VoiceRunnerPorts = {
   recorder?: { open?(): Promise<unknown> | unknown; close?(): Promise<unknown> | unknown; start(): Promise<unknown> | unknown; stop(): Promise<{ audio: string; ms: number }> };
   /** Audio plus hint words in, text out. */
   transcriber?: (audio: string, hints: string[]) => Promise<string>;
+  /** Turn events from the plugin server: read(after) waits for events past the cursor. `phoneActive` means the phone is speaking. */
+  events?: { read(after: number): Promise<{ cursor: number; events: VoiceEvent[]; phoneActive: boolean }> };
+  /** Speaks a line aloud: resolves "ended" when it finished, "stopped" when stop() cut it off. */
+  speaker?: { speak(text: string, replyId: string): Promise<"ended" | "stopped">; stop(): void };
+  /** The morning briefing: lines to say when the words are "good morning" or an open briefing's answer, null when they are not. */
+  brief?: (text: string) => Promise<string[] | null>;
   /** Timer port; defaults to the global setTimeout. */
   clock?: { setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
+  /** The hands-free mic adapter: open/close the mic, told whether the loop is awake or a tap-to-talk is held, and
+   * the source of `wake` / `speechStart` / `utterance` events. */
+  ears?: {
+    open(): Promise<unknown> | unknown;
+    close(): Promise<unknown> | unknown;
+    setAwake(awake: boolean): void;
+    setPaused(paused: boolean): void;
+    onEvent(fn: (event: EarsRunnerEvent) => void): void;
+  };
+  /** The persisted `voice.micOff` setting. */
+  prefs?: { read(): Promise<{ micOff: boolean }>; write(micOff: boolean): Promise<unknown> };
 };
 
 export type TranscriptEntry = { text: string; outcome: string };
 
 export type InterpretRecord = { heard: string; outcome: InterpretOutcome };
 
-export type VoiceSnapshot = VoiceState & { lines: string[]; transcripts: TranscriptEntry[]; interprets: InterpretRecord[]; helper: boolean; error: string | null };
+export type VoiceSnapshot = VoiceState & { lines: string[]; transcripts: TranscriptEntry[]; interprets: InterpretRecord[]; helper: boolean; error: string | null; phoneActive: boolean; micOn: boolean };
+
+
+export const AUTO_SLEEP_MS = 60_000;
 
 const keepLast = <T>(list: T[], add: T[], max: number): T[] => [...list, ...add].slice(-max);
 
@@ -43,12 +70,27 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   const entries: Array<{ id: number; text: string; outcome: string }> = [];
   const waiting = new Map<number, number>(); // interpret seq -> entry id
   let nextEntry = 0;
+  let nextReply = 0;
+  let polling = 0; // bumped by on() and off(): a poll from an older run stops dispatching
   let confirmTimer: unknown = null;
   let choicesTimer: unknown = null;
   let lastSent: number | null = null;
   let confirmEntry: number | null = null; // the transcript that asked to confirm
   const listeners = new Set<() => void>();
-  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], transcripts: [], interprets: [], helper: HELPER_DEFAULT_ON, error: null };
+  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], transcripts: [], interprets: [], helper: HELPER_DEFAULT_ON, error: null, phoneActive: false, micOn: false };
+  let autoSleepTimer: unknown = null;
+  const clearAutoSleep = () => {
+    if (autoSleepTimer === null) return;
+    clock.clearTimeout(autoSleepTimer);
+    autoSleepTimer = null;
+  };
+  const armAutoSleep = () => {
+    clearAutoSleep();
+    autoSleepTimer = clock.setTimeout(() => {
+      autoSleepTimer = null;
+      dispatch({ type: "sleep" });
+    }, AUTO_SLEEP_MS);
+  };
 
   const publish = (patch: Partial<VoiceSnapshot>) => {
     snapshot = { ...snapshot, ...patch };
@@ -66,10 +108,22 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   };
   const outcomeOf = (effects: VoiceEffect[]): string | null => {
     const send = effects.find((e) => e.type === "send");
-    if (send) return `sent to ${send.session.name}`;
+    if (send) return "sent";
     if (effects.some((e) => e.type === "askConfirm")) return "asked to confirm";
     return null;
   };
+
+  // Shows a line and plays it. `endsPlayback`: the loop is `speaking` until it has finished.
+  function showAndSpeak(line: string, endsPlayback = false) {
+    publish({ lines: keepLast(snapshot.lines, [line], MAX_LINES) });
+    if (!ports.speaker) return;
+    // The phone is speaking: the text stays on screen, but nothing plays here and the loop moves on.
+    if (snapshot.phoneActive) return void (endsPlayback && dispatch({ type: "playbackEnded" }));
+    ports.speaker.speak(line, `drawer-${nextReply++}`).then(
+      (result) => result === "ended" && endsPlayback && dispatch({ type: "playbackEnded" }),
+      fail,
+    );
+  }
 
   function perform(effect: VoiceEffect) {
     switch (effect.type) {
@@ -82,6 +136,15 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       case "interrupt":
         ports.link.interrupt(effect.session.id).catch(fail);
         return;
+      case "create": {
+        const create = ports.link.create;
+        if (!create) return fail(new Error("This Paseo can't start a session from here."));
+        create.call(ports.link, effect.session).then(
+          (id) => dispatch({ type: "pick", session: { id, name: `${effect.session.name} (voice)` } }),
+          fail,
+        );
+        return;
+      }
       case "interpret":
         (ports.helper
           ? ports.helper.interpret(effect.text, { sessionId: snapshot.session?.id ?? "", sessions: snapshot.sessions })
@@ -97,23 +160,53 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
           },
         );
         return;
-      case "receipt":
       case "speak":
       case "askConfirm":
-        publish({ lines: keepLast(snapshot.lines, [effect.line], MAX_LINES) });
+        showAndSpeak(effect.line, effect.type === "speak");
         return;
       case "stopPlayback":
-      case "listen":
       case "sleep":
+        ports.speaker?.stop();
+        return;
+      case "listen":
+        warmHelper();
         return;
     }
   }
 
+  // Words go to the briefing first (awake only): its lines are shown and spoken and the session never hears them.
+  // If it has nothing for them, or fails, they go to the loop as usual.
   function dispatch(event: VoiceEvent) {
+    const brief = ports.brief;
+    if (!brief || event.type !== "utterance" || !event.text.trim() || snapshot.mode === "asleep") return run(event);
+    brief(event.text).then(
+      (lines) => {
+        if (!lines) return run(event);
+        entries.push({ id: nextEntry++, text: event.text, outcome: "briefing" });
+        entries.splice(0, Math.max(0, entries.length - MAX_TRANSCRIPTS));
+        showEntries();
+        lines.forEach((line) => showAndSpeak(line));
+      },
+      () => run(event),
+    );
+  }
+
+  function run(event: VoiceEvent) {
     const choicesBefore = snapshot.choices;
+    const modeBefore = snapshot.mode;
     const { state, effects } = step(snapshot, event);
     // Store the new state before any effect runs, so effects that dispatch see it.
     publish(state);
+    ports.ears?.setAwake(state.mode === "listening" || state.mode === "confirming" || state.mode === "waiting");
+    // Speaking risks the drawer's own playback retriggering the VAD; pause the ears for it (a tap-to-talk hold
+    // already paused them and owns that flag while it lasts).
+    if (!holding) ports.ears?.setPaused(state.mode === "speaking");
+    // 60 s of listening with no speech goes back to asleep; the timer never runs outside listening.
+    if (state.mode === "listening") {
+      if (modeBefore !== "listening" || event.type === "speechStart" || event.type === "utterance") armAutoSleep();
+    } else {
+      clearAutoSleep();
+    }
     if (state.mode === "confirming" && confirmTimer === null) {
       confirmTimer = clock.setTimeout(() => {
         confirmTimer = null;
@@ -195,9 +288,15 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
 
   function startTalk() {
     const recorder = ports.recorder;
-    if (holding || snapshot.mode === "asleep") return;
+    if (holding) return;
+    // Hands-free, asleep but the mic is on: a tap wakes the loop first, same as saying the name.
+    if (snapshot.mode === "asleep") {
+      if (!snapshot.micOn) return;
+      dispatch({ type: "wake" });
+    }
     if (!recorder) return fail(new Error("No microphone available."));
     holding = true;
+    ports.ears?.setPaused(true);
     dispatch({ type: "speechStart" });
     // A forgotten tap still ends: the clip is sent at 30 s.
     holdTimer = clock.setTimeout(() => void endTalk(), MAX_HOLD_MS);
@@ -209,6 +308,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     if (!holding) return;
     holding = false;
     clock.clearTimeout(holdTimer);
+    ports.ears?.setPaused(false);
     let text = "";
     try {
       await started;
@@ -230,6 +330,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     if (!holding) return;
     holding = false;
     clock.clearTimeout(holdTimer);
+    ports.ears?.setPaused(false);
     try {
       await started;
       await (ports.recorder as NonNullable<VoiceRunnerPorts["recorder"]>).stop();
@@ -239,15 +340,62 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     dispatch({ type: "utterance", text: "" });
   }
 
+  // Ears events: asleep (or speaking, since the ears were told not-awake there too) a wake either starts
+  // listening, or, while a reply is playing, is the barge-in (stop playback, start capturing). Awake, speechStart
+  // and utterance follow the same path tap-to-talk uses.
+  async function handleEarsUtterance(pcm: Int16Array) {
+    let text = "";
+    try {
+      if (pcm.length > 0 && ports.transcriber) text = await ports.transcriber(encodeWav(pcm), hints());
+    } catch (err) {
+      fail(err);
+    }
+    dispatch({ type: "utterance", text });
+  }
+  ports.ears?.onEvent((event) => {
+    switch (event.type) {
+      case "wake":
+        dispatch(snapshot.mode === "speaking" ? { type: "speechStart" } : { type: "wake" });
+        return;
+      case "speechStart":
+        dispatch({ type: "speechStart" });
+        return;
+      case "utterance":
+        void handleEarsUtterance(event.pcm);
+        return;
+    }
+  });
+
+  async function poll(run: number) {
+    const events = ports.events;
+    if (!events) return;
+    let cursor = 0;
+    while (polling === run) {
+      try {
+        const batch = await events.read(cursor);
+        if (polling !== run) return;
+        cursor = batch.cursor;
+        if (batch.phoneActive !== snapshot.phoneActive) publish({ phoneActive: batch.phoneActive });
+        batch.events.forEach(dispatch);
+      } catch (err) {
+        if (polling !== run) return;
+        fail(err);
+        await new Promise<void>((resolve) => clock.setTimeout(resolve, POLL_BACKOFF_MS));
+      }
+    }
+  }
+
   function on() {
     dispatch({ type: "wake" });
     publish({ error: null });
     void openMic();
-    ports.helper?.getEnabled().then((helper) => publish({ helper }), fail);
-    ports.helper?.start().catch(fail);
+    void poll(++polling);
   }
 
   function off() {
+    polling++;
+    ports.helper?.stop().catch(fail);
+    publish({ phoneActive: false });
     dispatch({ type: "sleep" });
     if (holdTimer !== null) clock.clearTimeout(holdTimer);
     holdTimer = null;
@@ -255,10 +403,60 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     opening = null;
     try {
       Promise.resolve(ports.recorder?.close?.()).catch(fail);
+      Promise.resolve(ports.ears?.close()).catch(fail);
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  /** Called once at launch: loads the mic pref, opens the mic and ears if it is on, and starts the events poll.
+   * The loop itself stays asleep; a real wake word (or a tap) is what starts listening. A device with no mic (the
+   * phone) fails quietly here, since that is expected rather than an error to show. */
+  async function start() {
+    const micOff = ports.prefs ? (await ports.prefs.read()).micOff : false;
+    publish({ micOn: !micOff, error: null });
+    if (!micOff && ports.ears) {
+      try {
+        await ports.ears.open();
+      } catch {
+        publish({ micOn: false });
+      }
+    }
+    void poll(++polling);
+  }
+
+  /** The drawer's mic toggle: persists the pref, then opens or fully closes the mic and ears. Turning the mic off
+   * also returns the loop to asleep, since there is no more audio to listen with. */
+  async function setMic(on: boolean) {
+    if (ports.prefs) await ports.prefs.write(!on);
+    if (!ports.ears) {
+      publish({ micOn: on });
+      return;
+    }
+    if (on) {
+      try {
+        await ports.ears.open();
+        publish({ micOn: true, error: null });
+      } catch (err) {
+        publish({ micOn: false });
+        fail(err);
+      }
+      return;
+    }
+    publish({ micOn: false });
+    dispatch({ type: "sleep" });
+    try {
+      await ports.ears.close();
     } catch (err) {
       fail(err);
     }
     ports.helper?.stop().catch(fail);
+  }
+
+  /** Voice woke: read the server's switch and start the helper, so the first answer doesn't wait on a cold start. */
+  function warmHelper() {
+    ports.helper?.getEnabled().then((helper) => publish({ helper }), fail);
+    ports.helper?.start().catch(fail);
   }
 
   /** The panel's helper switch: shown at once, then the server's answer wins. */
@@ -283,6 +481,8 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     },
     on,
     off,
+    start,
+    setMic,
     confirm: (word: string) => dispatch({ type: "confirm", word }),
     interrupt: () => dispatch({ type: "interrupt" }),
     /** `blocked` are Voice's own sessions (Jarvis, the Voice helper), never a target. */
@@ -292,5 +492,9 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       if (!same(list, snapshot.sessions) || !same(blocked, snapshot.blocked)) dispatch({ type: "sessions", list, blocked });
     },
     pick: (session: VoiceSession) => dispatch({ type: "pick", session }),
+    /** The drawer's "New voice session" button: the same create the "new session" phrase makes, voice on or off. */
+    newSession() {
+      if (snapshot.session) perform({ type: "create", session: snapshot.session });
+    },
   };
 }

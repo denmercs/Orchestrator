@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { InterpretOutcome } from "../shared/voice-interpreter";
-import { CONFIRM_TIMEOUT_MS, createVoiceRunner, type VoiceRunnerPorts } from "./voice-runner";
+import type { VoiceEvent } from "../shared/voice-loop";
+import { CONFIRM_TIMEOUT_MS, POLL_BACKOFF_MS, createVoiceRunner, type EarsRunnerEvent, type VoiceRunnerPorts } from "./voice-runner";
 
 type HelperPort = NonNullable<VoiceRunnerPorts["helper"]>;
 const fakeHelper = (over: Partial<HelperPort> = {}) => {
@@ -54,8 +55,8 @@ test("an utterance after a pick is sent to the session through the link", async 
   runner.dispatch({ type: "utterance", text: "please run the tests" });
   await flush();
   assert.deepEqual(said, [["a1", "please run the tests"]]);
-  assert.deepEqual(runner.getState().lines, ["Sent to Alpha."]);
-  assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent to Alpha" }]);
+  assert.deepEqual(runner.getState().lines, []);
+  assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent" }]);
 });
 
 test("the helper port answers the interpret effect, with the target's sessionId", async () => {
@@ -216,7 +217,7 @@ test("tap to talk: speechStart, record, transcribe with hints, then the transcri
   assert.equal(runner.getState().talking, false);
   assert.deepEqual(said, [["a1", "please run the tests"]]);
   for (const word of ["merge", "Orchestrator", "Paseo", "Jarvis", "Alpha"]) assert.ok(hintsSeen[0].includes(word), word);
-  assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent to Alpha" }]);
+  assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent" }]);
 });
 
 test("a transcribe failure ends the recording with an empty utterance and records the error", async () => {
@@ -265,7 +266,7 @@ test("transcripts keep the last five with how each ended", async () => {
   const { runner } = talkSetup();
   runner.dispatch({ type: "utterance", text: "merge it" });
   await flush();
-  assert.deepEqual(runner.getState().transcripts, [{ text: "merge it", outcome: "asked to confirm" }]);
+  assert.deepEqual(runner.getState().transcripts, [{ text: "merge it", outcome: "sent" }]);
   for (let i = 0; i < 6; i++) runner.dispatch({ type: "utterance", text: `Jarvis switch to nobody ${i}` });
   const t = runner.getState().transcripts;
   assert.equal(t.length, 5);
@@ -279,65 +280,6 @@ test("setSessions and pick reach the loop", () => {
   runner.pick(alpha);
   assert.deepEqual(runner.getState().sessions, [alpha]);
   assert.deepEqual(runner.getState().session, alpha);
-});
-
-test("a risky utterance asks to confirm and sends nothing; yes does nothing; merge sends", async () => {
-  const { runner, said } = talkSetup();
-  runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  assert.deepEqual(said, []);
-  assert.equal(runner.getState().mode, "confirming");
-  assert.match(runner.getState().lines.at(-1) ?? "", /Say one to send/);
-  runner.dispatch({ type: "utterance", text: "yes" });
-  await flush();
-  assert.deepEqual(said, []);
-  assert.equal(runner.getState().mode, "confirming");
-  runner.dispatch({ type: "utterance", text: "merge" });
-  await flush();
-  assert.deepEqual(said, [["a1", "merge it"]]);
-});
-
-test("saying one sends the confirmed text", async () => {
-  const { runner, said } = talkSetup();
-  runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  runner.dispatch({ type: "utterance", text: "one" });
-  await flush();
-  assert.deepEqual(said, [["a1", "merge it"]]);
-});
-
-test("confirm(word) from a button sends", async () => {
-  const { runner, said } = talkSetup();
-  runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  runner.confirm("merge");
-  await flush();
-  assert.deepEqual(said, [["a1", "merge it"]]);
-  assert.equal(runner.getState().mode, "waiting");
-});
-
-test("the confirm times out after the shared 20 seconds and cancels", async () => {
-  const { runner, said, timers } = talkSetup();
-  runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  const timer = timers.at(-1);
-  assert.equal(timer?.ms, 20_000);
-  timer?.fn();
-  await flush();
-  assert.equal(runner.getState().mode, "listening");
-  assert.equal(runner.getState().confirm, null);
-  assert.deepEqual(said, []);
-});
-
-test("sending clears the confirm timer", async () => {
-  const { runner, timers } = talkSetup();
-  runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  const timer = timers.at(-1);
-  assert.equal(timer?.cleared, false);
-  runner.confirm("merge");
-  await flush();
-  assert.equal(timer?.cleared, true);
 });
 
 test("off() sleeps the loop, clears timers and closes the mic", async () => {
@@ -359,12 +301,8 @@ test("off() sleeps the loop, clears timers and closes the mic", async () => {
   });
   runner.on();
   runner.pick(alpha);
-  runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  const timer = timers.at(-1);
   runner.off();
   assert.equal(runner.getState().mode, "asleep");
-  assert.equal(timer?.cleared, true);
   assert.deepEqual(closed, ["close"]);
 });
 
@@ -389,20 +327,6 @@ test("a rejected helper drops the utterance and records the error", async () => 
   assert.equal(runner.getState().pending, null);
   assert.equal(runner.getState().transcripts.at(-1)?.outcome, "dropped");
   assert.match(runner.getState().error ?? "", /helper down/);
-});
-
-test("a confirm from the button or the timeout updates the transcript that asked", async () => {
-  const sent = talkSetup();
-  sent.runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  assert.equal(sent.runner.getState().transcripts.at(-1)?.outcome, "asked to confirm");
-  sent.runner.confirm("merge");
-  assert.equal(sent.runner.getState().transcripts.at(-1)?.outcome, "sent to Alpha");
-  const timedOut = talkSetup();
-  timedOut.runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  timedOut.timers.at(-1)?.fn();
-  assert.equal(timedOut.runner.getState().transcripts.at(-1)?.outcome, "cancelled");
 });
 
 test("setSessions with the same list does not notify subscribers", () => {
@@ -546,4 +470,468 @@ test("a numbered list is forgotten after the confirm timeout, like on the phone"
   runner.dispatch({ type: "utterance", text: "two" });
   assert.equal(runner.getState().session?.id, beta.id);
   assert.equal(timers.filter((t) => t.ms === CONFIRM_TIMEOUT_MS).every((t) => t.cleared || t === timer), true, "a picked list's timer is cleared");
+});
+
+test("a create effect makes a new session through the link the target", async () => {
+  const made: Array<{ id: string; name: string }> = [];
+  const { runner, said } = setup({
+    link: {
+      say: async () => {},
+      interrupt: async () => {},
+      create: async (target) => {
+        made.push(target);
+        return "new1";
+      },
+    },
+  });
+  runner.on();
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "new session" });
+  await flush();
+  assert.deepEqual(made, [alpha]);
+  assert.equal(runner.getState().session?.id, "new1");
+  assert.equal(said.length, 0);
+});
+
+test("a failed create lands in error and keeps the target", async () => {
+  const { runner } = setup({
+    link: { say: async () => {}, interrupt: async () => {}, create: async () => Promise.reject(new Error("no create")) },
+  });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "new session" });
+  await flush();
+  assert.equal(runner.getState().error, "no create");
+  assert.equal(runner.getState().session?.id, "a1");
+});
+
+test("newSession() creates from the target even while voice is off", async () => {
+  const made: Array<{ id: string; name: string }> = [];
+  const { runner } = setup({
+    link: { say: async () => {}, interrupt: async () => {}, create: async (target) => (made.push(target), "new2") },
+  });
+  runner.pick(alpha);
+  runner.newSession();
+  await flush();
+  assert.deepEqual(made, [alpha]);
+  assert.equal(runner.getState().session?.id, "new2");
+});
+
+type Batch = { cursor: number; events: VoiceEvent[]; phoneActive: boolean };
+
+// An events port whose reads stay pending until the test answers them.
+function eventsSetup(speakResult: "ended" | "stopped" = "ended") {
+  const reads: Array<{ after: number; resolve(b: Batch): void; reject(e: Error): void }> = [];
+  const spoken: Array<[string, string]> = [];
+  let stops = 0;
+  const timers: Array<{ fn: () => void; ms: number }> = [];
+  const base = setup({
+    events: { read: (after) => new Promise<Batch>((resolve, reject) => reads.push({ after, resolve, reject })) },
+    speaker: {
+      speak: async (text, replyId) => {
+        spoken.push([text, replyId]);
+        return speakResult;
+      },
+      stop: () => {
+        stops++;
+      },
+    },
+    clock: { setTimeout: (fn, ms) => timers.push({ fn, ms }), clearTimeout: () => {} },
+  });
+  base.runner.setSessions([alpha]);
+  base.runner.pick(alpha);
+  return { ...base, reads, spoken, timers, stops: () => stops };
+}
+
+const reply = (text: string): VoiceEvent => ({ type: "reply", sessionId: "a1", text });
+
+test("on() polls events with the cursor and dispatches them; off() stops the poll", async () => {
+  const { runner, reads, spoken } = eventsSetup();
+  runner.on();
+  await flush();
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].after, 0);
+  reads[0].resolve({ cursor: 3, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  assert.equal(spoken.length, 1);
+  assert.equal(reads.length, 2);
+  assert.equal(reads[1].after, 3);
+  runner.off();
+  reads[1].resolve({ cursor: 4, events: [reply("Late.")], phoneActive: false });
+  await flush();
+  assert.equal(spoken.length, 1);
+  assert.equal(reads.length, 2);
+});
+
+test("a spoken reply that ends dispatches playbackEnded; one that is stopped does nothing", async () => {
+  const ended = eventsSetup("ended");
+  ended.runner.on();
+  await flush();
+  ended.reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  assert.equal(ended.spoken[0][0], "All done.");
+  assert.equal(ended.runner.getState().mode, "listening");
+  const stopped = eventsSetup("stopped");
+  stopped.runner.on();
+  await flush();
+  stopped.reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  assert.equal(stopped.spoken.length, 1);
+  assert.equal(stopped.runner.getState().mode, "speaking");
+});
+
+test("while the phone is speaking the line is shown, the speaker is not called, and playback ends at once", async () => {
+  const { runner, reads, spoken } = eventsSetup();
+  runner.on();
+  await flush();
+  reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: true });
+  await flush();
+  assert.deepEqual(spoken, []);
+  assert.deepEqual(runner.getState().lines, ["All done."]);
+  assert.equal(runner.getState().phoneActive, true);
+  assert.equal(runner.getState().mode, "listening");
+});
+
+test("speechStart while speaking stops the speaker and never touches the link", async () => {
+  const { runner, reads, stops, said, interrupted } = eventsSetup("stopped");
+  runner.on();
+  await flush();
+  reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  assert.equal(runner.getState().mode, "speaking");
+  runner.dispatch({ type: "speechStart" });
+  assert.equal(stops(), 1);
+  assert.deepEqual(said, []);
+  assert.deepEqual(interrupted, []);
+});
+
+test("a poll error is shown and retried after a backoff on the clock port", async () => {
+  const { runner, reads, timers } = eventsSetup();
+  runner.on();
+  await flush();
+  reads[0].reject(new Error("rpc down"));
+  await flush();
+  assert.match(runner.getState().error ?? "", /rpc down/);
+  assert.equal(reads.length, 1);
+  const backoff = timers.find((t) => t.ms === POLL_BACKOFF_MS);
+  assert.ok(backoff);
+  backoff.fn();
+  await flush();
+  assert.equal(reads.length, 2);
+  assert.equal(reads[1].after, 0);
+});
+
+// --- Launch and mute (S5): start() at launch, setMic() as the drawer's mic toggle ---
+
+function earsSetup(overrides: Partial<VoiceRunnerPorts> = {}) {
+  const calls: string[] = [];
+  let handler: ((event: EarsRunnerEvent) => void) | null = null;
+  const awakeCalls: boolean[] = [];
+  const pausedCalls: boolean[] = [];
+  const ears: NonNullable<VoiceRunnerPorts["ears"]> = {
+    open: async () => void calls.push("open"),
+    close: async () => void calls.push("close"),
+    setAwake: (awake) => awakeCalls.push(awake),
+    setPaused: (paused) => pausedCalls.push(paused),
+    onEvent: (fn) => {
+      handler = fn;
+    },
+  };
+  const base = setup({ ears, ...overrides });
+  return { ...base, calls, awakeCalls, pausedCalls, emit: (e: EarsRunnerEvent) => handler?.(e) };
+}
+
+function prefsSetup(micOff: boolean) {
+  const writes: boolean[] = [];
+  const prefs: NonNullable<VoiceRunnerPorts["prefs"]> = {
+    read: async () => ({ micOff }),
+    write: async (value) => void writes.push(value),
+  };
+  return { prefs, writes };
+}
+
+test("start() opens the mic and ears, stays asleep, and does not transcribe", async () => {
+  const { prefs } = prefsSetup(false);
+  const calls: string[] = [];
+  const { runner } = earsSetup({ prefs, transcriber: async () => (calls.push("transcribe"), "x") });
+  await runner.start();
+  assert.equal(runner.getState().mode, "asleep");
+  assert.equal(runner.getState().micOn, true);
+  assert.deepEqual(calls, []);
+});
+
+test("start() with micOff opens nothing", async () => {
+  const { prefs } = prefsSetup(true);
+  const { runner, calls } = earsSetup({ prefs });
+  await runner.start();
+  assert.deepEqual(calls, []);
+  assert.equal(runner.getState().micOn, false);
+});
+
+test("a no-mic device: start() sets no error", async () => {
+  const { prefs } = prefsSetup(false);
+  const { runner } = earsSetup({
+    prefs,
+    ears: {
+      open: async () => Promise.reject(new Error("no plugin mic")),
+      close: async () => {},
+      setAwake: () => {},
+      setPaused: () => {},
+      onEvent: () => {},
+    },
+  });
+  await runner.start();
+  assert.equal(runner.getState().error, null);
+  assert.equal(runner.getState().micOn, false);
+});
+
+test("setMic(false) closes the mic and ears and saves micOff: true; setMic(true) saves false and reopens asleep", async () => {
+  const { prefs, writes } = prefsSetup(false);
+  const { runner, calls } = earsSetup({ prefs });
+  await runner.start();
+  await runner.setMic(false);
+  assert.deepEqual(writes, [true]);
+  assert.deepEqual(calls, ["open", "close"]);
+  assert.equal(runner.getState().micOn, false);
+  assert.equal(runner.getState().mode, "asleep");
+  await runner.setMic(true);
+  assert.deepEqual(writes, [true, false]);
+  assert.deepEqual(calls, ["open", "close", "open"]);
+  assert.equal(runner.getState().micOn, true);
+  assert.equal(runner.getState().mode, "asleep");
+});
+
+test("setMic(false) while listening returns the loop to asleep", async () => {
+  const { prefs } = prefsSetup(false);
+  const { runner } = earsSetup({ prefs });
+  await runner.start();
+  runner.dispatch({ type: "wake" });
+  assert.equal(runner.getState().mode, "listening");
+  await runner.setMic(false);
+  assert.equal(runner.getState().mode, "asleep");
+});
+
+// --- Hands-free (S5): ears events drive the loop the same way tap-to-talk does ---
+
+test("ears wake moves to listening and tells the ears it is awake", async () => {
+  const { prefs } = prefsSetup(false);
+  const { runner, awakeCalls, emit } = earsSetup({ prefs });
+  await runner.start();
+  emit({ type: "wake" });
+  assert.equal(runner.getState().mode, "listening");
+  assert.deepEqual(awakeCalls.slice(-1), [true]);
+});
+
+test('an ears utterance is transcribed and sent, "Hey Jarvis," dropped by the default interpreter', async () => {
+  const { prefs } = prefsSetup(false);
+  const transcriptCalls: Array<[string, string[]]> = [];
+  const { runner, emit, said } = earsSetup({
+    prefs,
+    transcriber: async (audio, hints) => {
+      transcriptCalls.push([audio, hints]);
+      return "Hey Jarvis, run the tests";
+    },
+  });
+  await runner.start();
+  emit({ type: "wake" });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  emit({ type: "speechStart" });
+  assert.equal(runner.getState().talking, true);
+  emit({ type: "utterance", pcm: new Int16Array([1, 2, 3]) });
+  await flush();
+  assert.equal(transcriptCalls.length, 1);
+  assert.deepEqual(said, [["a1", "run the tests"]]);
+});
+
+test('"Jarvis, ignore me" goes back to asleep, sends nothing, and tells the ears it is asleep', async () => {
+  const { prefs } = prefsSetup(false);
+  const { runner, emit, awakeCalls, said } = earsSetup({ prefs, transcriber: async () => "Jarvis, ignore me" });
+  await runner.start();
+  emit({ type: "wake" });
+  emit({ type: "speechStart" });
+  emit({ type: "utterance", pcm: new Int16Array([1]) });
+  await flush();
+  assert.equal(runner.getState().mode, "asleep");
+  assert.deepEqual(said, []);
+  assert.deepEqual(awakeCalls.slice(-1), [false]);
+});
+
+test("a one-word noise transcript sends nothing", async () => {
+  const { prefs } = prefsSetup(false);
+  const { runner, emit, said } = earsSetup({ prefs, transcriber: async () => "hello" });
+  await runner.start();
+  emit({ type: "wake" });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  emit({ type: "speechStart" });
+  emit({ type: "utterance", pcm: new Int16Array([1]) });
+  await flush();
+  assert.deepEqual(said, []);
+});
+
+test("an empty-pcm utterance (cancel) is not transcribed", async () => {
+  const { prefs } = prefsSetup(false);
+  const transcribed: string[] = [];
+  const { runner, emit } = earsSetup({ prefs, transcriber: async () => (transcribed.push("called"), "x") });
+  await runner.start();
+  emit({ type: "wake" });
+  emit({ type: "utterance", pcm: new Int16Array([]) });
+  await flush();
+  assert.deepEqual(transcribed, []);
+});
+
+test("wake while speaking stops the speaker and captures instead of just listening", async () => {
+  const { prefs } = prefsSetup(false);
+  const reads: Array<{ after: number; resolve(b: Batch): void; reject(e: Error): void }> = [];
+  const stops: string[] = [];
+  const { runner, emit } = earsSetup({
+    prefs,
+    events: { read: (after) => new Promise<Batch>((resolve, reject) => reads.push({ after, resolve, reject })) },
+    speaker: { speak: async () => "stopped", stop: () => void stops.push("stop") },
+  });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  await runner.start();
+  emit({ type: "wake" });
+  await flush();
+  reads[0]!.resolve({ cursor: 1, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  assert.equal(runner.getState().mode, "speaking");
+  emit({ type: "wake" });
+  assert.equal(runner.getState().talking, true);
+  assert.equal(stops.length, 1);
+});
+
+test("the ears are paused while the loop is speaking, and unpaused once it stops", async () => {
+  const { prefs } = prefsSetup(false);
+  const reads: Array<{ after: number; resolve(b: Batch): void; reject(e: Error): void }> = [];
+  const { runner, pausedCalls, emit } = earsSetup({
+    prefs,
+    events: { read: (after) => new Promise<Batch>((resolve, reject) => reads.push({ after, resolve, reject })) },
+    speaker: { speak: async () => "ended", stop: () => {} },
+  });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  await runner.start();
+  emit({ type: "wake" });
+  await flush();
+  reads[0]!.resolve({ cursor: 1, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  // the mock speaker resolves "ended" at once, so the loop is paused for speaking and unpaused again by here
+  assert.deepEqual(pausedCalls.slice(-3), [false, true, false]);
+  assert.equal(runner.getState().mode, "listening");
+});
+
+// --- Tap while asleep, and auto-sleep (S5 cycle 7) ---
+
+test("tap to talk while asleep (mic on) wakes the loop and records; Cancel still sends nothing", async () => {
+  const { prefs } = prefsSetup(false);
+  const { runner, said } = earsSetup({
+    prefs,
+    recorder: { start: async () => {}, stop: async () => ({ audio: "QUJD", ms: 2000 }) },
+    transcriber: async () => "please run the tests",
+  });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  await runner.start();
+  assert.equal(runner.getState().mode, "asleep");
+  runner.toggleTalk();
+  assert.equal(runner.getState().mode, "listening");
+  assert.equal(runner.getState().talking, true);
+  await runner.cancelTalk();
+  await flush();
+  assert.equal(runner.getState().talking, false);
+  assert.deepEqual(said, []);
+});
+
+test("tap to talk while asleep with the mic off does nothing", async () => {
+  const { prefs } = prefsSetup(true);
+  const { runner } = earsSetup({ prefs, recorder: { start: async () => {}, stop: async () => ({ audio: "", ms: 0 }) } });
+  await runner.start();
+  runner.toggleTalk();
+  assert.equal(runner.getState().mode, "asleep");
+  assert.equal(runner.getState().talking, false);
+});
+
+test("60 s of listening with no speech dispatches sleep via the clock port", async () => {
+  const { prefs } = prefsSetup(false);
+  const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = [];
+  const clock = {
+    setTimeout: (fn: () => void, ms: number) => {
+      const t = { fn, ms, cleared: false };
+      timers.push(t);
+      return t;
+    },
+    clearTimeout: (h: unknown) => {
+      (h as { cleared: boolean }).cleared = true;
+    },
+  };
+  const { runner, emit } = earsSetup({ prefs, clock });
+  await runner.start();
+  emit({ type: "wake" });
+  const autoSleep = timers.find((t) => t.ms === 60_000 && !t.cleared);
+  assert.ok(autoSleep, "a 60 s timer is armed on entering listening");
+  autoSleep.fn();
+  assert.equal(runner.getState().mode, "asleep");
+});
+
+test("the auto-sleep timer does not run while waiting or speaking", async () => {
+  const { prefs } = prefsSetup(false);
+  const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = [];
+  const clock = {
+    setTimeout: (fn: () => void, ms: number) => {
+      const t = { fn, ms, cleared: false };
+      timers.push(t);
+      return t;
+    },
+    clearTimeout: (h: unknown) => {
+      (h as { cleared: boolean }).cleared = true;
+    },
+  };
+  const { runner, emit } = earsSetup({ prefs, clock, transcriber: async () => "merge it" });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  await runner.start();
+  emit({ type: "wake" });
+  emit({ type: "speechStart" });
+  emit({ type: "utterance", pcm: new Int16Array([1]) });
+  await flush();
+  // "merge it" sends and the loop waits: no 60 s auto-sleep timer should be left running meanwhile.
+  assert.equal(runner.getState().mode, "waiting");
+  assert.equal(timers.some((t) => t.ms === 60_000 && !t.cleared), false);
+});
+
+test("a briefing word is answered by the briefer: its lines are spoken and nothing reaches the session", async () => {
+  const asked: string[] = [];
+  const spoken: string[] = [];
+  const { runner, said } = setup({
+    brief: async (text) => {
+      asked.push(text);
+      return text === "good morning" ? ["Good morning, Dennis.", "Shall I go on?"] : null;
+    },
+    speaker: { speak: async (text) => (spoken.push(text), "ended" as const), stop: () => {} },
+  });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "good morning" });
+  await flush();
+  assert.deepEqual(spoken, ["Good morning, Dennis.", "Shall I go on?"]);
+  assert.deepEqual(runner.getState().lines, ["Good morning, Dennis.", "Shall I go on?"]);
+  assert.deepEqual(said, []);
+  // Not a briefing word: the loop has it as usual.
+  runner.dispatch({ type: "utterance", text: "run the tests" });
+  await flush();
+  assert.deepEqual(asked, ["good morning", "run the tests"]);
+  assert.deepEqual(said, [["a1", "run the tests"]]);
+});
+
+test("a briefer that fails lets the words through to the session", async () => {
+  const { runner, said } = setup({ brief: async () => Promise.reject(new Error("down")) });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "run the tests" });
+  await flush();
+  assert.deepEqual(said, [["a1", "run the tests"]]);
 });

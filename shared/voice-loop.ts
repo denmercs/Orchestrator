@@ -2,7 +2,7 @@
 // step(state, event) → { state, effects }. Adapters (mic, transcriber, interpreter, session link, speaker) only carry
 // events in and effects out; the loop holds no clocks and imports only its own wording (voice-lines) and name
 // matching (voice-names), so any bundle can reach it. The Voice runner (drawer, Mac) and the Jarvis router (phone) both run it.
-import { CANCELLED, CONFIRM_AGAIN, confirmLine, listLine, noChoiceLine, noSessionLine, notTargetLine, NOTHING_TO_CONFIRM, pickFirstLine, sentLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
+import { CANCELLED, CONFIRM_AGAIN, confirmLine, listLine, newSessionLine, noChoiceLine, noSessionLine, notTargetLine, NOTHING_TO_CONFIRM, pickFirstLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
 import { choiceNumber, exactSessions, matchSessions, shortName } from "./voice-names";
 
 export type VoiceMode = "asleep" | "listening" | "confirming" | "waiting" | "speaking";
@@ -23,11 +23,11 @@ export type VoiceState = {
   choices: VoiceSession[] | null;
   /** A request waiting on that list (from the helper's `sendTo`): the pick switches, then sends it. Ignored when `choices` is null. */
   choicesText?: string;
-  /** What was heard for that request, so its critical words are still checked after the pick. */
-  choicesHeard?: string;
   /** The target's spoken reply, held while you talk or confirm. */
   held: string | null;
   queue: Notice[];
+  /** Replies of sessions you asked to hear (the Speak pill), as spoken lines, waiting their turn like the notices. */
+  heard: { sessionId: string; line: string }[];
   seq: number;
 };
 
@@ -43,7 +43,8 @@ export type VoiceEvent =
   | { type: "speechStart" }
   | { type: "utterance"; text: string }
   | { type: "interpreted"; seq: number; result: InterpretResult }
-  | { type: "reply"; sessionId: string; text: string }
+  /** `watched`: the session is on the Speak pill, so its reply is heard even when it is not the target. */
+  | { type: "reply"; sessionId: string; text: string; watched?: boolean }
   | { type: "playbackEnded" }
   | { type: "confirm"; word: string }
   | { type: "pick"; session: VoiceSession }
@@ -57,14 +58,15 @@ export type VoiceEvent =
 
 export type VoiceEffect =
   | { type: "send"; session: VoiceSession; text: string; behavior: "steer" }
-  | { type: "receipt"; session: VoiceSession; line: string }
   | { type: "speak"; line: string }
   | { type: "stopPlayback" }
   | { type: "askConfirm"; word: string; line: string }
   | { type: "listen" }
   | { type: "sleep" }
   | { type: "interpret"; seq: number; text: string }
-  | { type: "interrupt"; session: VoiceSession };
+  | { type: "interrupt"; session: VoiceSession }
+  /** Start a new voice session in `session`'s workspace (the target when it was asked for). */
+  | { type: "create"; session: VoiceSession };
 
 export type VoiceStep = { state: VoiceState; effects: VoiceEffect[] };
 
@@ -79,12 +81,11 @@ export const VOICE_HELPER_KIND = "voice-helper";
 export const CONFIRM_CANCEL = "cancel";
 
 export function initialVoiceState(): VoiceState {
-  return { mode: "asleep", session: null, sessions: [], blocked: [], talking: false, pending: null, confirm: null, choices: null, held: null, queue: [], seq: 0 };
+  return { mode: "asleep", session: null, sessions: [], blocked: [], talking: false, pending: null, confirm: null, choices: null, held: null, queue: [], heard: [], seq: 0 };
 }
 
 const NAMES = "jarvis|jervis|javis|travis|jarvus|service";
 const NEVER_MIND = new Set(["never mind", "nevermind", "cancel that", "forget it", "belay that"]);
-const CRITICAL = /\b(merge|interrupt|stop|delete)\b/;
 // A confirm is answered only by these exact words (or the critical word said back); anything else asks again.
 // "to"/"too" are how "two" is often heard: cancelling on a mishearing is safe, sending on one is not.
 const CONFIRM_YES = new Set(["one", "1", "number one", "number 1"]);
@@ -95,6 +96,7 @@ const PICK_SHOWN = 4;
 const LIST_SESSIONS = /^(?:(?:list|show|read|which|what)(?: me)?(?: the| all| my)? sessions?(?: (?:are )?(?:there|open|running))?|sessions)$/;
 // "switch to X" (and "go/talk/change/move to X"), or "use/pick/open/choose/select X".
 const SWITCH_TO = /^(?:(switch|go|talk|change|move) to|(use|pick|open|choose|select)) (.+)$/;
+const NEW_SESSION = /^(?:start |create |open )?(?:a )?new (?:voice )?session$/;
 const NOTICE_ORDER: NoticeKind[] = ["finished", "needsYou", "error", "costCap"];
 const NOTICE_ONE: Record<NoticeKind, string> = { finished: "finished", needsYou: "needs you", error: "hit an error", costCap: "hit the cost cap" };
 const NOTICE_MANY: Record<NoticeKind, string> = { finished: "finished", needsYou: "need you", error: "hit an error", costCap: "hit the cost cap" };
@@ -112,7 +114,6 @@ export const addressed = (text: string): boolean => stripName(norm(text)) !== no
 /** The words without a leading "Jarvis," (or "hey Jarvis"), punctuation and case kept. */
 export const withoutName = (text: string): string =>
   text.replace(new RegExp(`^\\s*(?:(?:hey|ok|okay)[\\s,]+)?(?:${NAMES})\\b[\\s,.!?]*`, "i"), "").trim() || text.trim();
-const critical = (text: string): string | null => CRITICAL.exec(text)?.[1] ?? null;
 const out = (state: VoiceState, ...effects: VoiceEffect[]): VoiceStep => ({ state, effects });
 
 function sentTo(state: VoiceState, text: string): VoiceStep {
@@ -122,7 +123,7 @@ function sentTo(state: VoiceState, text: string): VoiceStep {
     return out({ ...state, session: null, pending: null, confirm: null }, { type: "speak", line: notTargetLine(shortName(session.name)) });
   }
   const next = { ...state, mode: "waiting" as const, pending: null, confirm: null };
-  return out(next, { type: "send", session, text, behavior: "steer" }, { type: "receipt", session, line: sentLine(shortName(session.name)) });
+  return out(next, { type: "send", session, text, behavior: "steer" });
 }
 
 function askConfirm(state: VoiceState, text: string, word: string): VoiceStep {
@@ -137,7 +138,7 @@ function cancelled(state: VoiceState): VoiceStep {
 }
 
 function sleep(state: VoiceState): VoiceStep {
-  return out({ ...state, mode: "asleep", talking: false, pending: null, confirm: null, choices: null, held: null, queue: [] }, { type: "sleep" });
+  return out({ ...state, mode: "asleep", talking: false, pending: null, confirm: null, choices: null, held: null, queue: [], heard: [] }, { type: "sleep" });
 }
 
 const short = (sessions: VoiceSession[]): string[] => sessions.map((s) => shortName(s.name));
@@ -148,25 +149,25 @@ function switched(state: VoiceState, session: VoiceSession): VoiceStep {
 }
 
 /** Asks which of several sessions, numbered; a bare number then answers it. */
-function askWhich(state: VoiceState, matches: VoiceSession[], text?: string, heard?: string): VoiceStep {
+function askWhich(state: VoiceState, matches: VoiceSession[], text?: string): VoiceStep {
   const choices = matches.slice(0, LIST_SHOWN);
-  return out({ ...state, choices, choicesText: text, choicesHeard: heard }, { type: "speak", line: whichLine(short(choices)) });
+  return out({ ...state, choices, choicesText: text }, { type: "speak", line: whichLine(short(choices)) });
 }
 
 /** Reads a numbered list of sessions through `line`, and remembers it for a bare number. */
-function numberedList(state: VoiceState, shown: number, line: (names: string[], total: number) => string, text?: string, heard?: string): VoiceStep {
+function numberedList(state: VoiceState, shown: number, line: (names: string[], total: number) => string, text?: string): VoiceStep {
   const choices = state.sessions.slice(0, shown);
-  return out({ ...state, choices: choices.length ? choices : null, choicesText: text, choicesHeard: heard }, { type: "speak", line: line(short(choices), state.sessions.length) });
+  return out({ ...state, choices: choices.length ? choices : null, choicesText: text }, { type: "speak", line: line(short(choices), state.sessions.length) });
 }
 
-function switchTo(state: VoiceState, spoken: string, text?: string, heard?: string): VoiceStep {
+function switchTo(state: VoiceState, spoken: string, text?: string): VoiceStep {
   const base = { ...state, pending: null, confirm: null, choices: null };
   const matches = matchSessions(state.sessions, spoken);
   const own = matches.length ? [] : matchSessions(state.blocked, spoken, false);
   if (own.length) return out(base, { type: "speak", line: notTargetLine(shortName(own[0].name)) });
   if (matches.length === 1) return switched(base, matches[0]);
-  if (matches.length > 1) return askWhich(base, matches, text, heard);
-  return numberedList(base, PICK_SHOWN, (names, total) => noSessionLine(spoken, names, total), text, heard);
+  if (matches.length > 1) return askWhich(base, matches, text);
+  return numberedList(base, PICK_SHOWN, (names, total) => noSessionLine(spoken, names, total), text);
 }
 
 /** A bare number after a numbered list or question picks that entry. */
@@ -178,7 +179,7 @@ function pickNumber(state: VoiceState, choices: VoiceSession[], n: number): Voic
   const text = state.choicesText;
   if (text === undefined) return picked;
   // A list that carried a request: the pick makes the session the target, then the text goes the normal send path.
-  return deliver({ ...picked.state, choicesText: undefined, choicesHeard: undefined }, text, state.choicesHeard ?? text);
+  return sentTo({ ...picked.state, choicesText: undefined }, text);
 }
 
 function onUtterance(state: VoiceState, text: string): VoiceStep {
@@ -200,6 +201,11 @@ function onUtterance(state: VoiceState, text: string): VoiceStep {
   // A bare "one" with nothing waiting (cancelled or timed out) says so; anything longer is speech for the target.
   if (cleaned === "one" || cleaned === "1") return out({ ...base, pending: null }, { type: "speak", line: NOTHING_TO_CONFIRM });
   if (LIST_SESSIONS.test(cleaned)) return numberedList({ ...base, pending: null }, LIST_SHOWN, listLine);
+  if (NEW_SESSION.test(cleaned)) {
+    const target = state.session;
+    if (!target) return numberedList({ ...base, pending: null }, PICK_SHOWN, pickFirstLine);
+    return out({ ...base, pending: null }, { type: "create", session: target }, { type: "speak", line: newSessionLine(shortName(target.name)) });
+  }
   // Without the name and with a target, "switch to X" is only a switch when X is a session (and "use X", "open X"
   // only when X is exactly one); otherwise it is a request for the session.
   const toName = SWITCH_TO.exec(cleaned);
@@ -214,7 +220,7 @@ function onUtterance(state: VoiceState, text: string): VoiceStep {
     if (named.length === 1) return switched(base, named[0]);
     if (named.length > 1) return askWhich({ ...base, pending: null }, named);
   }
-  if (cleaned.split(" ").filter(Boolean).length < 2 && !critical(cleaned)) return out(base);
+  if (cleaned.split(" ").filter(Boolean).length < 2) return out(base);
   if (!state.session) return numberedList({ ...base, pending: null }, PICK_SHOWN, pickFirstLine);
   const seq = state.seq + 1;
   return out({ ...base, seq, pending: { seq, heard: text } }, { type: "interpret", seq, text });
@@ -228,17 +234,11 @@ function onInterpreted(state: VoiceState, seq: number, result: InterpretResult):
   if (result.type === "switch") return switchTo(base, result.name);
   if (result.type === "sendTo") {
     const matches = matchSessions(state.sessions, result.session);
-    // One match: it becomes the target and the text goes the normal send path. Several or none: the numbered list, carrying the text. One of Voice's own: said so.
-    if (matches.length !== 1) return switchTo(base, result.session, result.text, pending.heard);
-    return deliver({ ...base, session: matches[0], choices: null }, result.text, pending.heard);
+    // One match: it becomes the target and the text is sent. Several or none: the numbered list, carrying the text. One of Voice's own: said so.
+    if (matches.length !== 1) return switchTo(base, result.session, result.text);
+    return sentTo({ ...base, session: matches[0], choices: null }, result.text);
   }
-  return deliver(base, result.text, pending.heard);
-}
-
-/** Text for the current target: a critical word (in the text or what was heard) asks the strict confirm, else it is sent. */
-function deliver(state: VoiceState, text: string, heard: string): VoiceStep {
-  const word = critical(norm(text)) ?? critical(norm(heard));
-  return word ? askConfirm(state, text, word) : sentTo(state, text);
+  return sentTo(base, result.text);
 }
 
 function core(state: VoiceState, event: VoiceEvent): VoiceStep {
@@ -289,10 +289,15 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
     case "interpreted":
       return onInterpreted(state, event.seq, event.result);
     case "reply": {
-      if (event.sessionId !== state.session?.id) return out(state);
+      if (event.sessionId !== state.session?.id) {
+        const line = event.watched ? spokenLine(event.text) : "";
+        if (!line) return out(state);
+        const name = shortName(state.sessions.find((s) => s.id === event.sessionId)?.name ?? "A session");
+        return out({ ...state, heard: [...state.heard, { sessionId: event.sessionId, line: `${name}: ${line}` }] });
+      }
       const line = spokenLine(event.text);
       if (!line) return out(state);
-      const spoken = `${shortName(state.session.name)}: ${line}`;
+      const spoken = line;
       if (state.mode === "confirming" || state.talking) return out({ ...state, held: spoken });
       return out({ ...state, mode: "speaking", held: null }, { type: "speak", line: spoken });
     }
@@ -323,8 +328,9 @@ function flush(r: VoiceStep): VoiceStep {
   const idle = state.mode === "listening" || state.mode === "waiting";
   if (!idle || state.talking || effects.some((e) => e.type === "speak")) return r;
   if (state.held) return { state: { ...state, mode: "speaking", held: null }, effects: [...effects, { type: "speak", line: state.held }] };
-  if (!state.queue.length) return r;
-  return { state: { ...state, mode: "speaking", queue: [] }, effects: [...effects, { type: "speak", line: mergeNotices(state.queue) }] };
+  if (!state.queue.length && !state.heard.length) return r;
+  const line = [...state.heard.map((h) => h.line), ...(state.queue.length ? [mergeNotices(state.queue)] : [])].join(" ");
+  return { state: { ...state, mode: "speaking", queue: [], heard: [] }, effects: [...effects, { type: "speak", line }] };
 }
 
 function mergeNotices(queue: Notice[]): string {

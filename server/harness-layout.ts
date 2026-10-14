@@ -138,6 +138,8 @@ export function readStories(epicDir: string): EpicStory[] {
       blockedReason: story.blocked_reason ?? "",
       blockedFrom: story.blocked_from ?? "",
       blockKind: story.block_kind ?? "",
+      pausedUntil: story.paused_until ?? "",
+      pausedFor: story.paused_for ?? "",
       skillWarnings: story.skill_warnings ?? "",
       discoveredFrom: story.discovered_from ?? "",
       pr: Number(story.pr) || null,
