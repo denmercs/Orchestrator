@@ -1,34 +1,20 @@
-import { spawn } from "node:child_process";
-import { access, constants } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
+import type { SpeakMode } from "../shared/speak-replies";
 import { spokenLine } from "../shared/voice-lines";
 
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 
+// The Mac's voice: the one Speaker, played locally (server/voice-local.ts).
 export type SpeakPorts = {
-  script: string;
-  // Fire and forget: runs the script with `args`, `stdin` as its text. Never throws.
-  run: (args: string[], stdin?: string) => void;
-  scriptReady: () => Promise<boolean>;
+  speak: (text: string) => Promise<unknown>;
+  hush: () => void;
 };
 
-export const SPEAK_SCRIPT = fileURLToPath(new URL("../scripts/speak", import.meta.url));
-
-export function realSpeakPorts(script = SPEAK_SCRIPT): SpeakPorts {
-  return {
-    script,
-    run(args, stdin) {
-      const child = spawn(script, args, { stdio: [stdin === undefined ? "ignore" : "pipe", "ignore", "ignore"], detached: true });
-      child.on("error", (error) => console.warn("orchestrator: speak failed", error));
-      if (stdin !== undefined) child.stdin?.end(stdin);
-      child.unref();
-    },
-    scriptReady: () => access(script, constants.X_OK).then(
-      () => true,
-      () => false,
-    ),
-  };
+/** Where a session's reply is heard: the phone (through the router, as a `voice-line`) only when it is on the pill, the phone is
+ *  active and `voice.phoneAudio` is on; the Mac otherwise; "none" when it is not on the pill. Never both. */
+export function speakRoute(input: { pill: boolean; phoneActive: boolean; phoneAudio: boolean }): "phone" | "mac" | "none" {
+  if (!input.pill) return "none";
+  return input.phoneActive && input.phoneAudio ? "phone" : "mac";
 }
 
 function lastReply(timeline: TurnEnded["timeline"]): string {
@@ -39,30 +25,25 @@ function lastReply(timeline: TurnEnded["timeline"]): string {
   return "";
 }
 
-// The sessions switched on to speak their replies. In memory only, so a daemon restart turns them all off.
+// The sessions switched on to speak their replies, short, medium or full. In memory only, so a daemon restart turns them all off.
 export function createSpeakReplies(ports: SpeakPorts) {
-  const on = new Set<string>();
+  const modes = new Map<string, Exclude<SpeakMode, "off">>();
   return {
-    agentIds: () => [...on],
-    async set(agentId: string, enabled: boolean) {
-      if (!enabled) {
-        on.delete(agentId);
-        return;
-      }
-      if (!(await ports.scriptReady())) {
-        throw new Error(`The speak script is missing or not executable: ${ports.script}`);
-      }
-      ports.run(["--warm"]);
-      on.add(agentId);
+    modes: () => Object.fromEntries(modes),
+    has: (agentId: string) => modes.has(agentId),
+    async set(agentId: string, mode: SpeakMode) {
+      if (mode === "off") modes.delete(agentId);
+      else modes.set(agentId, mode);
     },
     onTurnEnded(event: TurnEnded) {
-      if (!on.has(event.agent.id) || event.outcome.kind !== "completed") return;
-      const line = spokenLine(lastReply(event.timeline));
-      if (line) ports.run([], line);
+      const mode = modes.get(event.agent.id);
+      if (!mode || event.outcome.kind !== "completed") return;
+      const line = spokenLine(lastReply(event.timeline), mode);
+      if (line) void ports.speak(line).catch((error) => console.warn("orchestrator: speak failed", error));
     },
     // A new turn means the user sent something: stop talking over it.
     onTurnStarted(agentId: string) {
-      if (on.has(agentId)) ports.run(["--hush"]);
+      if (modes.has(agentId)) ports.hush();
     },
   };
 }

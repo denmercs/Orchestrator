@@ -56,7 +56,7 @@ import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } fro
 import { activeBriefRuns, briefRuns, worktreeFingerprint } from "./turn-progress";
 import { clockTime, providerName } from "../shared/plan-usage";
 import { readPlanUsage } from "./plan-usage";
-import { inHoldWindow, planLimitUntil, usageLimitResumeAt } from "./usage-limit";
+import { inHoldWindow, limitNotice, planLimitUntil, usageLimitResumeAt } from "./usage-limit";
 
 // The stuck evidence a step carries in its frontmatter; a new step or a reopen starts it clean.
 const STUCK_CLEAR = {
@@ -275,6 +275,8 @@ export function createInitiativeLoop(
   readInitials: () => Promise<string | null> = async () => null,
   // The cost cap: a story at or over it blocks at its turn end. Absent, nothing is capped.
   readCost?: ReadCost,
+  // Told when a story blocks on the cost cap, with the agent whose turn hit it (Voice says so).
+  onCostCap?: (agentId: string) => void,
 ) {
   let paseo: PaseoApi | null = null;
   // Providers at their plan limit, from the last read of live plan usage: since when the loop has seen
@@ -292,11 +294,15 @@ export function createInitiativeLoop(
     return run;
   };
 
-  // Brings `limits` up to date from Paseo's live plan usage. A daemon that can't answer leaves it as it was.
+  // Brings `limits` up to date from Paseo's live plan usage. A daemon that can't answer leaves it as it
+  // was, except that a limit whose reset has passed is dropped: nothing can renew it.
   async function refreshLimits(api: PaseoApi) {
     stepProviders.clear();
     const { providers } = await readPlanUsage(api);
-    if (!providers) return;
+    if (!providers) {
+      for (const [id, limit] of [...limits]) if (limit.until <= Date.now()) limits.delete(id);
+      return;
+    }
     const now = new Date();
     const limited = new Set<string>();
     for (const usage of providers) {
@@ -322,7 +328,8 @@ export function createInitiativeLoop(
     }
     const provider = stepProviders.get(step);
     const limit = provider ? limits.get(provider) : undefined;
-    return provider && limit ? { provider, since: limit.since, until: new Date(limit.until) } : null;
+    // A limit that has reset no longer gates, even if the usage read hasn't confirmed it yet.
+    return provider && limit && limit.until > Date.now() ? { provider, since: limit.since, until: new Date(limit.until) } : null;
   }
 
   async function loopAgents(api: PaseoApi) {
@@ -430,6 +437,7 @@ export function createInitiativeLoop(
         blocked_reason: null,
         blocked_from: null,
         blocked_at: null,
+        limit_recovered: null,
         block_kind: null,
         stalled: null,
         paused_until: null,
@@ -880,7 +888,8 @@ export function createInitiativeLoop(
   // A story the loop gave up on while its step's provider was hitting its plan limit: those retries
   // went into the wall, so it goes back to its step as a pause and resumes after the reset. A block
   // from well before the limit began (30 minutes' grace) had another cause and stays. `since` is when
-  // this process first saw the limit, so after a restart only blocks from then on are recovered.
+  // this process first saw the limit, so after a restart only blocks from then on are recovered. Each
+  // story is recovered once per limit (limit_recovered), so a long weekly limit can't loop it.
   async function recoverLimitBlock(api: PaseoApi, config: LoopConfig, story: StoryFile) {
     const { meta } = story;
     const step = meta.step as LoopStep;
@@ -888,7 +897,11 @@ export function createInitiativeLoop(
     const blockedAt = Date.parse(meta.blocked_at ?? "");
     const limit = Number.isNaN(blockedAt) ? null : await limitFor(api, config, step);
     if (!limit || blockedAt < limit.since - LIMIT_GRACE_MS) return false;
+    // Once per limit episode: a story that blocks again in the same one is broken, not caught by it.
+    const episode = new Date(limit.since).toISOString();
+    if (meta.limit_recovered === episode) return false;
     writeFrontmatter(story.path, {
+      limit_recovered: episode,
       status: meta.blocked_from ?? null,
       blocked_reason: null,
       blocked_from: null,
@@ -1076,6 +1089,7 @@ export function createInitiativeLoop(
           blocked_reason: null,
           blocked_from: null,
           blocked_at: null,
+          limit_recovered: null,
           block_kind: null,
           waiting_on: null,
           stalled: null,
@@ -1205,6 +1219,7 @@ export function createInitiativeLoop(
           const cap = storyCap(story, await readCost.cap());
           if (spent !== null && cap > 0 && spent >= cap) {
             block(story, `cost cap ($${spent.toFixed(2)} of ${budgetMoney(cap)})`, "cost-cap");
+            onCostCap?.(event.agent.id);
             return;
           }
         }
@@ -1249,14 +1264,16 @@ export function createInitiativeLoop(
             waiting_subagent_since: waiting ? new Date().toISOString() : null,
           });
           // Claude Code can end the turn normally with the plan limit as its only reply, rather than
-          // failing it: that waits for the reset like a failed turn would, and isn't a stall.
+          // failing it: that waits for the reset like a failed turn would, and isn't a stall. Only its
+          // own notice counts, not a reply that talks about limits. It comes from Claude Code, so the
+          // pause is for Claude and gates by provider rather than holding every story.
           const reply = items
             .slice(lastUser + 1)
             .filter((item): item is ToolItem & { text: string } => item.type === "assistant_message" && typeof (item as { text?: unknown }).text === "string")
             .at(-1)?.text;
-          const resumeAt = reply ? usageLimitResumeAt(reply, new Date()) : null;
+          const resumeAt = reply ? limitNotice(reply, new Date()) : null;
           if (resumeAt) {
-            writeFrontmatter(after.path, { paused_until: resumeAt.toISOString(), stalled: null });
+            writeFrontmatter(after.path, { paused_until: resumeAt.toISOString(), paused_for: "claude", stalled: null });
             return;
           }
           let failTests: string[] = [];

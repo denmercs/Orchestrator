@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DEFAULT_PHASES, type Phase } from "../shared/pipeline";
-import { DRAWER_TABS, handoffChip, handoffChips, nextOpen, phaseSummary, THEN_OPTION_LABEL } from "./pipeline-drawer-model";
+import { DEFAULT_PHASES, MACHINE_SOURCE, type Phase, type SkillSource, type SourceStatus } from "../shared/pipeline";
+import { ADD_MODES, DRAWER_TABS, draftKind, handoffChip, handoffChips, nextOpen, phaseSummary, repoHint, SCOPE_LABEL, sourceRows, THEN_OPTION_LABEL } from "./pipeline-drawer-model";
 
 function phase(id: Phase["id"], rest: Partial<Phase> = {}): Phase {
   const base = DEFAULT_PHASES.find((p) => p.id === id) as Phase;
@@ -73,4 +73,99 @@ test("handoffChips: one chip under every card, so Done ends on the merge chip", 
     handoffChips(DEFAULT_PHASES).map((c) => c.label),
     ["wait for you → Implement", "auto → Review", "on PASS → Done", "on merge"],
   );
+});
+
+function src(rest: Partial<SkillSource> = {}): SkillSource {
+  return { id: "s1", label: "Team skills", location: "owner/repo", kind: "team", enabled: true, pin: "1234567890abcdef", ...rest };
+}
+function status(rest: Partial<SourceStatus> = {}): SourceStatus {
+  return { id: "s1", ok: true, error: null, commit: "abc1234def5678", skillCount: 3, ...rest };
+}
+
+test("SCOPE_LABEL: Team, Personal, Imported", () => {
+  assert.deepEqual(SCOPE_LABEL, { team: "Team", personal: "Personal", imported: "Imported" });
+});
+
+test("sourceRows: the machine row comes first, global and fixed", () => {
+  const [machine] = sourceRows([], [], 5);
+  assert.deepEqual(machine, {
+    id: MACHINE_SOURCE,
+    name: "This machine",
+    icon: "machine",
+    scope: "Global",
+    detail: "~/.claude/skills · ~/.agents/skills · ~/.claude/commands",
+    meta: "5 skills · already global, nothing copied",
+    fixed: true,
+    error: false,
+  });
+  assert.equal(sourceRows([], [], 1)[0]?.meta, "1 skill · already global, nothing copied");
+});
+
+test("sourceRows: a pinned source is a github row with the short status commit", () => {
+  const rows = sourceRows([src()], [status()], 0);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[1], {
+    id: "s1",
+    name: "Team skills",
+    icon: "github",
+    scope: "Team",
+    detail: "owner/repo",
+    meta: "Pinned @ abc1234 · 3 skills",
+    fixed: false,
+    error: false,
+  });
+});
+
+test("sourceRows: with no status commit the pin is shortened, and the count is 0", () => {
+  assert.equal(sourceRows([src()], [], 0)[1]?.meta, "Pinned @ 1234567 · 0 skills");
+});
+
+test("sourceRows: an unpinned source is a folder row read live, with its own scope label", () => {
+  const row = sourceRows([src({ pin: null, kind: "personal", location: "/x" })], [status({ commit: null, skillCount: 1 })], 0)[1];
+  assert.equal(row?.icon, "folder");
+  assert.equal(row?.scope, "Personal");
+  assert.equal(row?.detail, "/x");
+  assert.equal(row?.meta, "Folder · read live · 1 skill");
+});
+
+test("sourceRows: a turned-off source adds off", () => {
+  assert.equal(sourceRows([src({ enabled: false })], [status()], 0)[1]?.meta, "Pinned @ abc1234 · 3 skills · off");
+});
+
+test("sourceRows: a failing status shows its error in place of the count and flags the row", () => {
+  const row = sourceRows([src({ pin: null })], [status({ ok: false, error: "not a folder", skillCount: 0 })], 0)[1];
+  assert.equal(row?.meta, "Folder · read live · not a folder");
+  assert.equal(row?.error, true);
+});
+
+test("sourceRows: a failing status with no message says error", () => {
+  assert.equal(sourceRows([src()], [status({ ok: false, error: null })], 0)[1]?.meta, "Pinned @ abc1234 · error");
+});
+
+test("draftKind: a draft starting with / or ~ is a folder, anything else is github", () => {
+  assert.equal(draftKind("/x"), "folder");
+  assert.equal(draftKind("~/x"), "folder");
+  assert.equal(draftKind("owner/repo"), "github");
+  assert.equal(draftKind("https://github.com/owner/repo"), "github");
+});
+
+test("draftKind: trims first, and an empty or blank draft defaults to github", () => {
+  assert.equal(draftKind("  /x"), "folder");
+  assert.equal(draftKind(""), "github");
+  assert.equal(draftKind("   "), "github");
+});
+
+test("repoHint: empty, folder and git wording", () => {
+  assert.equal(repoHint(""), "Git repos are cloned and pinned to the current commit. Folders are read live.");
+  assert.equal(repoHint("   "), "Git repos are cloned and pinned to the current commit. Folders are read live.");
+  assert.equal(repoHint("/x"), "Folder: read live, changes show up on Reload.");
+  assert.equal(repoHint("~/x"), "Folder: read live, changes show up on Reload.");
+  assert.equal(repoHint("owner/repo"), "Git repo: cloned and pinned to the current commit.");
+});
+
+test("ADD_MODES: Connect repo then Search skills.sh", () => {
+  assert.deepEqual(ADD_MODES, [
+    { id: "repo", label: "Connect repo" },
+    { id: "search", label: "Search skills.sh" },
+  ]);
 });
