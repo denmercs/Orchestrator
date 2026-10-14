@@ -856,13 +856,13 @@ const longTurn = (id: string, text = longReply) => ({
 
 function summaryPaseo(answer: (prompt: string) => Promise<{ status: string; lastMessage: string }>) {
   const prompts: string[] = [];
-  const prompts_by_agent = new Map<string, string>();
+  const promptsByAgent = new Map<string, string>();
   let n = 0;
   const paseo = {
     agents: {
       create: async (spec: { config: { systemPrompt: string } }) => {
         n += 1;
-        prompts_by_agent.set(`helper-${n}`, spec.config.systemPrompt);
+        promptsByAgent.set(`helper-${n}`, spec.config.systemPrompt);
         return { id: `helper-${n}` };
       },
       list: async () => ({ entries: [] }),
@@ -870,7 +870,7 @@ function summaryPaseo(answer: (prompt: string) => Promise<{ status: string; last
         refresh: async () => null,
         archive: async () => undefined,
         run: async (prompt: string) => {
-          if (!prompts_by_agent.get(id)?.includes("spoken summary")) return { status: "idle", lastMessage: "{}" };
+          if (!promptsByAgent.get(id)?.includes("spoken summary")) return { status: "idle", lastMessage: "{}" };
           prompts.push(prompt);
           return answer(prompt);
         },
@@ -882,7 +882,7 @@ function summaryPaseo(answer: (prompt: string) => Promise<{ status: string; last
 
 async function summaryRun(
   answer: (prompt: string) => Promise<{ status: string; lastMessage: string }>,
-  opts: { off?: boolean; mac?: boolean; text?: string } = {},
+  opts: { off?: boolean; mac?: boolean; text?: string; untargeted?: boolean } = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "voice-helper-"));
   const w = opts.mac ? speakWired([], cwd) : wired([], true, undefined, undefined, cwd);
@@ -890,6 +890,7 @@ async function summaryRun(
   if (opts.off) await w.handlers.get(voiceHelperSwitch.name)!({ enabled: false }, { paseo });
   await w.handlers.get(voiceHelperStart.name)!({}, { paseo });
   if (opts.mac) await w.handlers.get(speakRepliesSet.name)!({ agentId: "s1", mode: "short" }, { paseo });
+  if (!opts.untargeted) await w.handlers.get(voiceTarget.name)!({ id: "s1", name: "api" }, { paseo });
   const started = Date.now();
   await w.listeners.get("agent.turn_ended")!(longTurn("s1", opts.text), { paseo });
   const read = async () => (await w.handlers.get(voiceEvents.name)!({ after: 0 }, { paseo })) as { events: { type: string; text?: string; summary?: string }[] };
@@ -954,6 +955,19 @@ test("a Mac-route reply makes no summary call", async () => {
   const run = await summaryRun(async () => ({ status: "idle", lastMessage: "A summary." }), { mac: true });
   try {
     await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(run.prompts, []);
+  } finally {
+    run.stop();
+  }
+});
+
+test("a reply from a session no loop speaks (not a target, not watched) makes no summary call and is not held", async () => {
+  const run = await summaryRun(async () => ({ status: "idle", lastMessage: "A summary." }), { untargeted: true });
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    const { events } = await run.read();
+    assert.deepEqual(events.map((e) => e.type), ["reply", "notice"]);
+    assert.equal(events[0].summary, undefined);
     assert.deepEqual(run.prompts, []);
   } finally {
     run.stop();

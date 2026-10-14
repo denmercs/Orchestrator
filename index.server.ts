@@ -572,11 +572,11 @@ export default function contribute(
     const route = picked === "phone" && !jarvis.listening() ? "mac" : picked;
     if (route !== "phone") speakReplies.onTurnEnded(event);
     const events = turnEvents(event, { watched: route === "phone" }).filter((e) => !(e.type === "reply" && route === "mac"));
-    // A Mac-route reply never reaches a loop (it is filtered above), so only these get a summary; off or late, the reply goes without.
+    // Only a reply a loop will say gets a summary: watched, or from a target (a Mac-route reply is filtered above). Off or late, it goes without.
     publishInOrder(async () =>
       Promise.all(
         events.map(async (e) => {
-          if (e.type !== "reply" || !voiceInterpretService.enabled()) return e;
+          if (e.type !== "reply" || !(e.watched || jarvis.speaks(e.sessionId)) || !voiceInterpretService.enabled()) return e;
           const summary = await replySummary.summarize(e.text).catch(() => null);
           return summary ? { ...e, summary } : e;
         }),

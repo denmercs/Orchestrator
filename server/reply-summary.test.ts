@@ -134,3 +134,16 @@ test("the prompt is only the reply text, code fences left out, capped at 4000", 
   await s.summarize("word ".repeat(2000));
   assert.equal(fake.runs[1].prompt.length, 4000);
 });
+
+test("after voice turns off and on, a run left over from the old agent does not make the new one busy", async () => {
+  const fake = fakePorts(() => new Promise<Run>(() => {}));
+  let n = 0;
+  fake.ports.createAgent = async () => ({ id: `summary-${++n}` });
+  const s = createReplySummary(fake.ports, { timeoutMs: 1 });
+  await s.start();
+  assert.equal(await s.summarize(LONG), null);
+  await s.stop();
+  await s.start();
+  await s.summarize(LONG);
+  assert.deepEqual(fake.runs.map((r) => r.agentId), ["summary-1", "summary-2"]);
+});

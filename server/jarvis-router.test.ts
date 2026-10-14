@@ -427,6 +427,17 @@ test("event() gives the phone the helper summary for a watched reply too", async
   assert.deepEqual(lines, { r1: ["docs: Docs are done."] });
 });
 
+test("speaks() is true for the drawer's target and any router's own target, so only their replies get a summary", async () => {
+  const { router } = setup();
+  assert.equal(router.speaks("s1"), false);
+  await router.setTarget(api);
+  assert.equal(router.speaks("s1"), true);
+  assert.equal(router.speaks("s2"), false);
+  await router.route("r1", "hello");
+  assert.equal(router.stateOf("r1")?.session?.id, "s1");
+  assert.equal(router.speaks("nobody"), false);
+});
+
 test("listening() is true only while a phone router's loop is awake, so a reply the loop would drop can fall back to the Mac", async () => {
   const { router } = setup();
   assert.equal(router.listening(), false);

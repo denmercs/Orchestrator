@@ -21,7 +21,8 @@ export function createReplySummary(ports: VoiceHelperPorts, opts: { timeoutMs?: 
   const timeoutMs = opts.timeoutMs ?? SUMMARY_FALLBACK_MS;
   let id: string | null = null;
   let starting: Promise<void> | null = null;
-  let running = false;
+  // The agent a run is in flight on; a leftover run on an archived agent does not make a new one busy.
+  let runningOn: string | null = null;
 
   function start(): Promise<void> {
     if (id) return Promise.resolve();
@@ -54,16 +55,18 @@ export function createReplySummary(ports: VoiceHelperPorts, opts: { timeoutMs?: 
   /** The summary, or null at once when it can't help: not started, busy, short reply, error, or past the limit. */
   async function summarize(text: string): Promise<string | null> {
     const agentId = id;
-    if (!agentId || running) return null;
+    if (!agentId || runningOn === agentId) return null;
     // Already short enough to say as it is.
     if (spokenLine(text, "full").length <= SUMMARY_CAP) return null;
     const prompt = withoutFences(text).slice(0, SUMMARY_PROMPT_CHARS);
-    running = true;
+    runningOn = agentId;
     const run = ports.run(agentId, prompt, SUMMARY_RUN_TIMEOUT_MS).then(
       (r) => (r.status === "idle" && r.lastMessage?.trim() ? r.lastMessage.trim() : null),
       () => null,
     );
-    void run.then(() => (running = false));
+    void run.then(() => {
+      if (runningOn === agentId) runningOn = null;
+    });
     let timer: ReturnType<typeof setTimeout> | undefined;
     const late = new Promise<null>((resolve) => {
       timer = setTimeout(() => resolve(null), timeoutMs);
