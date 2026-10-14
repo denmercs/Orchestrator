@@ -22,6 +22,16 @@ test("a greeting, with or without the name, starts the briefing", () => {
   assert.equal(isBriefGreeting("start the loop"), false);
 });
 
+test("good morning plus the name in one sentence starts the briefing, in any order", () => {
+  assert.equal(isBriefGreeting("Good morning, Jarvis. Jarvis, good morning."), true);
+  assert.equal(isBriefGreeting("Hey Jarvis, good morning"), true);
+  assert.equal(isBriefGreeting("Jarvis, good morning to you"), true);
+  assert.equal(isBriefGreeting("Hey, good morning"), true);
+  assert.equal(isBriefGreeting("hello good morning"), true);
+  assert.equal(isBriefGreeting("Good morning team, standup is at nine"), false);
+  assert.equal(isBriefGreeting("Good morning team. Jarvis, start the loop"), false);
+});
+
 test("the opening says greeting, weather, verse, then the first two stories and waits", () => {
   const r = startBrief(data());
   assert.equal(r.lines[0], "Good morning, Dennis. It's 7:42 AM, Tuesday, October 13th. It's 41 degrees and clear in Portage, with a high of 55.");
