@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { listLine, newSessionLine, noSessionLine, pickFirstLine, spokenLine, whichLine } from "./voice-lines";
+import { NOTHING_NEW, briefingLine, listLine, newSessionLine, noSessionLine, noStorySessionLine, pickFirstLine, spokenLine, whichLine } from "./voice-lines";
 
 test("numbered lines: the session list, pick-first, did-you-mean and no-match all end in how to answer", () => {
   assert.equal(listLine(["Phase 1 architecture", "Check"]), "One, Phase 1 architecture. Two, Check. Say a number, or switch to and a name.");
@@ -67,4 +67,19 @@ test("spokenLine medium stays near 700 characters yet never drops the question",
   assert.ok(line.startsWith("Start here. Filler paragraph number 0"));
   assert.ok(line.endsWith("Say one to merge, or two to skip."));
   assert.ok(line.length <= 760, String(line.length));
+});
+
+test("noStorySessionLine says the story has no session and where the message goes", () => {
+  assert.equal(noStorySessionLine("S17", "Other"), "S17 has no session, so this goes to Other.");
+  assert.equal(noStorySessionLine("S17", null), "S17 has no session, and no target is picked yet. Pick a session first.");
+});
+
+test("briefingLine names what merged, what runs and what needs you, and NOTHING_NEW when there is none", () => {
+  assert.equal(NOTHING_NEW, "Nothing new since you last looked.");
+  assert.equal(briefingLine({ merged: [], running: [], needsYou: [] }), NOTHING_NEW);
+  assert.equal(
+    briefingLine({ merged: ["S1", "S2"], running: ["S3"], needsYou: ["S4"] }),
+    "Merged since you last looked: S1 and S2. Running: S3. Needs you: S4.",
+  );
+  assert.equal(briefingLine({ merged: [], running: ["S3"], needsYou: [] }), "Running: S3.");
 });

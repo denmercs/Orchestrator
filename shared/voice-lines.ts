@@ -226,3 +226,20 @@ export const statusRunningLine = (names: string[]) => `${namesLine(names)} ${nam
 export const statusIdleLine = (count: number) => `${capital(numberWord(count))} idle.`;
 /** A status line kept to the spoken cap, cut at a sentence end. */
 export const statusCapped = (line: string) => cap(line, SPOKEN_CAP);
+
+/** Shown (never said) when Ask is tapped on a story with no running session: the text box is still filled. */
+export const noStorySessionLine = (id: string, target: string | null) =>
+  target ? `${id} has no session, so this goes to ${target}.` : `${id} has no session, and no target is picked yet. Pick a session first.`;
+
+/** The briefing when nothing merged, runs or needs you since the panel was last open. */
+export const NOTHING_NEW = "Nothing new since you last looked.";
+
+/** The briefing, shown (never said) when the panel opens: "Merged since you last looked: S1 and S2. Running: S3. Needs you: S4." */
+export function briefingLine({ merged, running, needsYou }: { merged: string[]; running: string[]; needsYou: string[] }): string {
+  const parts = [
+    merged.length ? `Merged since you last looked: ${namesLine(merged)}.` : "",
+    running.length ? `Running: ${namesLine(running)}.` : "",
+    needsYou.length ? `Needs you: ${namesLine(needsYou)}.` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" ") : NOTHING_NEW;
+}
