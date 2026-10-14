@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { FALLBACK_AGENT_CONFIG } from "../shared/agent-runner";
@@ -797,6 +797,33 @@ test("a reply that only talks about the usage limit mid-work is still a stall", 
   assert.equal(storyMeta(story).stalled, "It ended its turn without writing the step's marker.");
 });
 
+test("a reply that only mentions a limit is a stall, not a pause: no hold on new stories", async () => {
+  for (const text of [
+    "rate limit reached",
+    "retry limit reached",
+    `The loop pauses on the usage limit. ${"More detail on how. ".repeat(12)}`,
+  ]) {
+    const { story, labels } = fixture("a1");
+    const { api } = fakePaseo([{ id: "a1", labels }]);
+
+    await loop().onTurnEnded(api, ended("a1", { kind: "completed" }, [{ type: "assistant_message", text }]));
+
+    assert.equal(storyMeta(story).paused_until, undefined, text);
+    assert.equal(storyMeta(story).stalled, "It ended its turn without writing the step's marker.", text);
+  }
+});
+
+test("the real notice as the reply pauses the story for Claude, so only Claude's stories are held", async () => {
+  const { story, labels } = fixture("a1");
+  const { api } = fakePaseo([{ id: "a1", labels }]);
+  const timeline = [{ type: "assistant_message", text: limitMessage(new Date(Date.now() + 3_600_000)) }];
+
+  await loop().onTurnEnded(api, ended("a1", { kind: "completed" }, timeline));
+
+  assert.equal(storyMeta(story).paused_for, "claude");
+  assert.ok(Date.parse(storyMeta(story).paused_until ?? "") > Date.now());
+});
+
 test("once the reset has passed, the tick nudges the paused session without counting a retry", async () => {
   const { story, labels } = fixture("a1");
   writeFrontmatter(story, { retries: 1, paused_until: new Date(Date.now() - 1000).toISOString() });
@@ -975,6 +1002,60 @@ test("a retry-limit block makes the block time and the step's provider at its li
   writeFrontmatter(story, { paused_until: new Date(Date.now() - 1000).toISOString() });
   await initiative.tick();
   assert.deepEqual(sent, [{ id: "a1", text: nudgePrompt("The usage limit has reset.") }]);
+});
+
+test("a limit whose reset passed while the daemon can't answer is dropped: the story is nudged and a ready one starts", async () => {
+  const { root, story, labels } = fixture("a1");
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+  execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: root });
+  const next = join(dirname(story), "02-next.md");
+  writeFileSync(next, "---\nid: S2\ntitle: Next\nstatus: todo\n---\n\n## Goal\n\nLater.\n", "utf8");
+  const usage: { providers: unknown[] | null } = { providers: claudeAt(100) };
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels }], usage);
+  const git = api as unknown as { projects: unknown; workspaces: Record<string, unknown> };
+  git.projects = { list: async () => ({ projects: [] }) };
+  git.workspaces.create = async () => ({ id: "ws-new", directory: join(root, "wt2") });
+  mkdirSync(join(root, "wt2"), { recursive: true });
+  const initiative = createInitiativeLoop(async () => ({ ...DEFAULT_LOOP_CONFIG, parallel: 2 }), async () => FALLBACK_AGENT_CONFIG, noExtras, async () => "dm");
+  initiative.rememberPaseo(api);
+  writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker." });
+  await initiative.tick();
+  assert.deepEqual([sent, created], [[], []]);
+
+  mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  try {
+    usage.providers = null;
+    mock.timers.tick(2 * 3_600_000);
+    await initiative.tick();
+    await initiative.tick();
+  } finally {
+    mock.timers.reset();
+  }
+
+  assert.equal(sent.length, 1);
+  assert.equal(storyMeta(story).paused_for, undefined);
+  assert.equal(created.length, 1);
+});
+
+test("a story recovered from a retry-limit block once stays blocked when it blocks again in the same limit", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker.", retries: 2 });
+  const usage: { providers: unknown[] | null } = { providers: claudeAt(10) };
+  const { api } = fakePaseo([{ id: "a1", labels }], usage);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+  await initiative.tick();
+  assert.equal(storyMeta(story).block_kind, "retry-limit");
+
+  usage.providers = claudeAt(100);
+  await initiative.tick();
+  assert.equal(storyMeta(story).status, "implementing");
+  assert.ok(storyMeta(story).limit_recovered);
+
+  writeFrontmatter(story, { status: "blocked", blocked_from: "implementing", block_kind: "retry-limit", blocked_reason: "gave up", blocked_at: new Date().toISOString() });
+  await initiative.tick();
+
+  assert.equal(storyMeta(story).status, "blocked");
 });
 
 test("a retry-limit block from well before the limit started stays blocked", async () => {
@@ -2020,7 +2101,13 @@ test("closedPr gives a story's PR number while the PR is closed, and null once i
 });
 
 // The cost cap: a fake readCost, and the ending agent's live cost from lastUsage.
-function capped(live: number, cap: number, outcome: "completed" | "failed" | "canceled" = "completed", marker = "implement-done") {
+function capped(
+  live: number,
+  cap: number,
+  outcome: "completed" | "failed" | "canceled" = "completed",
+  marker = "implement-done",
+  onCostCap?: (agentId: string) => void,
+) {
   const fx = fixture("a1");
   const { api, created } = fakePaseo([{ id: "a1", labels: fx.labels, lastUsage: { totalCostUsd: live } }]);
   writeFileSync(join(fx.worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\n${marker}\n`, "utf8");
@@ -2033,6 +2120,7 @@ function capped(live: number, cap: number, outcome: "completed" | "failed" | "ca
     noExtras,
     async () => null,
     { cap: async () => cap, rows: async () => rows },
+    onCostCap,
   );
   const event = { agent: { id: "a1" }, outcome: outcome === "failed" ? { kind: "failed", error: { message: "boom" } } : { kind: outcome } };
   const end = () => initiative.onTurnEnded(api, event as unknown as Parameters<typeof initiative.onTurnEnded>[1]);
@@ -2052,6 +2140,14 @@ test("a turn that brings the story to the cap blocks it as cost-cap and starts n
   assert.equal(storyMeta(over.story).block_kind, "cost-cap");
   assert.equal(storyMeta(over.story).blocked_reason, "cost cap ($5.00 of $5)");
   assert.deepEqual(over.created, []);
+});
+
+test("cost-cap block calls onCostCap(agentId), and a turn under the cap doesn't", async () => {
+  const hit: string[] = [];
+  await capped(4.12, 5, "completed", "implement-done", (id) => hit.push(id)).end();
+  assert.deepEqual(hit, ["a1"]);
+  await capped(3.9, 5, "completed", "implement-done", (id) => hit.push(id)).end();
+  assert.deepEqual(hit, ["a1"]);
 });
 
 test("a failed turn at the cap blocks; a canceled one and one under the cap do not", async () => {
