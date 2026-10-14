@@ -69,6 +69,7 @@ import { createReplySummary } from "./server/reply-summary";
 import { createVoiceInterpret } from "./server/voice-interpret";
 import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
+import { createMicOffGate } from "./server/mic-off-gate";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
 import { createJarvisRouter, voiceSessionCreator } from "./server/jarvis-router";
 import { createMorningBrief, fetchWeather } from "./server/morning-brief";
@@ -402,7 +403,7 @@ export default function contribute(
     await applyProdPulseAutomation(lastAutoSchedule).catch(() => undefined);
   };
   const offPulseSettings = pulseSettings.subscribe(syncPulseSettings);
-  void pulseSettings.read().then(syncPulseSettings);
+  void pulseSettings.read().then(syncPulseSettings, () => undefined);
   server.handle(listOrchestrationFolders, listFolders);
   server.handle(upsertOrchestrationStandupNote, upsertStandupNote);
   server.handle(listOrchestrationStandupTodos, listStandupTodos);
@@ -510,15 +511,15 @@ export default function contribute(
   const voice = voiceSetting;
   let phoneAudio = false;
   let referenceClip = "";
-  // null until the saved value is known; Ignore me fails closed until then, and a state that is not ready keeps the last one.
-  let micOff: boolean | null = null;
+  // Ignore me: closed until the saved value is known, open if it can't be read (see server/mic-off-gate.ts).
+  const micOffGate = createMicOffGate(() => voice.read());
   const syncVoice = (state: Awaited<ReturnType<typeof voice.read>>) => {
     phoneAudio = state.status === "ready" && state.values.phoneAudio;
     referenceClip = state.status === "ready" ? state.values.referenceClip : "";
-    if (state.status === "ready") micOff = state.values.micOff;
+    micOffGate.sync(state);
   };
   const offVoiceSettings = voice.subscribe(syncVoice);
-  void voice.read().then(syncVoice);
+  void voice.read().then(syncVoice, () => undefined);
   // The Speaker: the one voice for the Mac (drawer, Speak pill, Jarvis) and the phone. Its workers start now, so the cloned voice is
   // warm at launch, and stop on cleanup. Until they are up it answers "loading" and the Mac falls back to `say`.
   const speakerPorts = (deps.speakerPorts ?? realSpeakerPorts)(() =>
@@ -699,7 +700,7 @@ export default function contribute(
         .catch((error) => console.warn("orchestrator: Jarvis event failed", error));
     }
   };
-  server.handle(voiceEvents, async ({ after }) => ({ ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false, voice: jarvisConnection?.voiceState() ?? "unknown" }));
+  server.handle(voiceEvents, async ({ after }) => ({ ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false, voice: jarvisConnection?.voiceState(Date.now()) ?? "unknown", settingsUnreadable: micOffGate.unreadable() }));
   // The drawer's "good morning": the same briefing as Jarvis, under its own router id so its open briefing is the drawer's.
   server.handle(voiceBrief, async ({ text }) => {
     const briefed = await jarvis.brief("drawer", text);
@@ -723,7 +724,7 @@ export default function contribute(
     playbackEnded: jarvis.playbackEnded,
     phoneAudio: () => phoneAudio,
     // voice.micOff: what Paseo voice mode heard is dropped before the router; the drawer shows what got through.
-    muted: async () => micOff ?? (await voice.read().then(syncVoice, () => undefined), micOff ?? true),
+    muted: () => micOffGate.muted(),
     heard: (_routerId, text) => voiceHub.publish({ type: "heard", text }),
     // On the Mac Jarvis speaks through the same Speaker; false (an empty line) lets Paseo's `speak` take it.
     localSpeak: async (text) => (text.trim() ? (await localVoice.speak(text)) !== undefined : false),

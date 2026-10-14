@@ -5,7 +5,7 @@ import { ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
 import type { EpicBoard } from "../shared/orchestration";
 import type { createVoiceRunner } from "./voice-runner";
 import { VoiceInterpretPanel } from "./voice-interpret-panel";
-import { drawerMicView, hasMicApi, ignoreMeView, PASEO_STOP_HINT, voiceOffNotice, voiceStatusLine } from "./voice-mic-model";
+import { drawerMicView, hasMicApi, ignoreMeView, openChatView, PASEO_STOP_HINT, SETTINGS_UNREADABLE_NOTICE, voiceOffNotice, voiceStatusLine } from "./voice-mic-model";
 import { ProfileChips, useAgentProfiles } from "./runner-picker";
 import { PANEL_WIDTH, replyActions, storyChips, type PanelPlacement, type StoryChip } from "./jarvis-panel-model";
 import { profileCaption, type AgentProfile } from "../shared/agent-profiles";
@@ -46,6 +46,8 @@ export type JarvisPanelProps = {
   // Docked: collapse to the strip. Overlay: close it.
   onClose(): void;
   onChip(chip: StoryChip): void;
+  // Opens a Paseo agent's chat; absent when the host gives the plugin no navigation.
+  navigation?: PluginSurfaceProps["navigation"];
 };
 
 // The Jarvis panel: a strip, the docked panel beside the dashboard, or the same panel lying over it.
@@ -90,7 +92,7 @@ function Strip({ styles, runner, onPress }: { styles: Styles; runner: VoiceRunne
   );
 }
 
-function PanelBody({ theme, compact, runner, boards, intro, draft, note, onDraft, onClose, onChip, placement, styles }: JarvisPanelProps & { styles: Styles }) {
+function PanelBody({ theme, compact, runner, navigation, boards, intro, draft, note, onDraft, onClose, onChip, placement, styles }: JarvisPanelProps & { styles: Styles }) {
   const state = useRunner(runner);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const scroll = useRef<{ scrollToEnd?(options?: { animated?: boolean }): void } | null>(null);
@@ -103,6 +105,7 @@ function PanelBody({ theme, compact, runner, boards, intro, draft, note, onDraft
   const profiles = useAgentProfiles();
   const profileSetting = voice.status === "ready" ? voice.values.profile : "";
   const offNotice = voiceOffNotice(profileSetting);
+  const chat = openChatView(state.jarvisAgentId, !!navigation);
   const needsWhisper = view.error ? /whisper|ffmpeg|model/i.test(view.error) : false;
   const actions = replyActions(state);
   const chipsFor = (text: string) => storyChips(text, boards ?? [], state.sessions);
@@ -156,6 +159,14 @@ function PanelBody({ theme, compact, runner, boards, intro, draft, note, onDraft
 
       {state.phoneActive ? <Text style={[styles.hint, styles.pad]}>Phone is speaking</Text> : null}
       {ignore.status ? <Text style={[styles.hint, styles.pad, styles.danger]}>{ignore.status}</Text> : null}
+      {state.settingsUnreadable ? (
+        <View style={[styles.row, styles.pad]}>
+          <Text style={[styles.hint, styles.danger, styles.flex1]}>{SETTINGS_UNREADABLE_NOTICE}</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel="Repair voice settings" onPress={() => void runner.repairSettings()} style={styles.action}>
+            <Text style={styles.actionText}>Repair</Text>
+          </Pressable>
+        </View>
+      ) : null}
       {micApi && state.micUnavailable && !state.ignoring ? <Text style={[styles.hint, styles.pad, styles.danger]}>Mic unavailable. Allow the microphone for Paseo.</Text> : null}
 
       <ScrollView
@@ -242,6 +253,18 @@ function PanelBody({ theme, compact, runner, boards, intro, draft, note, onDraft
           <Text style={styles.hint}>{ignore.on ? "On" : "Off"}</Text>
         </View>
         {!micApi ? <Text style={styles.hint}>{PASEO_STOP_HINT}</Text> : null}
+        <View style={styles.row}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={chat.label}
+            disabled={chat.disabled}
+            onPress={() => state.jarvisAgentId && navigation?.openAgent({ agentId: state.jarvisAgentId })}
+            style={[styles.action, chat.disabled ? styles.disabled : null]}
+          >
+            <Text style={styles.actionText}>{chat.label}</Text>
+          </Pressable>
+          {chat.reason ? <Text style={styles.hint}>{chat.reason}</Text> : null}
+        </View>
         {voice.status === "ready" ? <Text style={styles.hint}>{voiceModelLine(voiceProfileFor(profiles, profileSetting), profileSetting)}</Text> : null}
         {offNotice ? <Text style={[styles.hint, styles.danger]}>{offNotice}</Text> : null}
         {view.kind === "paseo-voice" ? (

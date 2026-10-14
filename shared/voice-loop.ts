@@ -361,6 +361,11 @@ export function canTarget(agent: { provider?: string; labels?: Record<string, st
   return agent.provider !== ROUTER_PROVIDER_ID && agent.labels?.kind !== VOICE_HELPER_KIND;
 }
 
+/** Jarvis's own sessions, for opening its Paseo chat. */
+export function jarvisSessions(agents: AgentLike[]): VoiceSession[] {
+  return agents.filter((a) => a.provider === ROUTER_PROVIDER_ID).map((a) => ({ id: a.id, name: sessionName(a) }));
+}
+
 /** The sessions Voice may send to; Voice's own sessions are left out. */
 export function voiceSessions(agents: AgentLike[]): VoiceSession[] {
   return splitSessions(agents).list;

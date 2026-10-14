@@ -53,3 +53,13 @@ export function voiceStatusLine(guess: "on" | "off" | "unknown"): string {
 
 // Paseo's recorder is Paseo's: a plugin can't stop or mute it, so the drawer says where the real control is.
 export const PASEO_STOP_HINT = "Ignore me only drops what Jarvis acts on. To stop the recording itself, use Paseo's own Stop or Mute button.";
+
+export const SETTINGS_UNREADABLE_NOTICE = "Can't read voice settings, using defaults (the mic is on and you are heard).";
+
+// Pure: the drawer's link to the Jarvis session's Paseo chat. The plugin can open it but not embed or focus its composer.
+export function openChatView(agentId: string | null, hasNavigation: boolean): { label: string; disabled: boolean; reason: string | null } {
+  const label = "Open in Paseo chat";
+  if (!hasNavigation) return { label, disabled: true, reason: "This Paseo can't open a chat from here." };
+  if (!agentId) return { label, disabled: true, reason: "No Jarvis session yet. Start one to chat." };
+  return { label, disabled: false, reason: null };
+}

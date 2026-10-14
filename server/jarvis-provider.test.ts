@@ -532,13 +532,23 @@ test("the router is told whether a prompt was typed or spoken", async () => {
 
 test("voiceState is a best guess from the sessions Paseo opened: the paseo MCP server means voice mode is on", async () => {
   const { connection, events } = connectWith({});
-  assert.equal(connection.voiceState(), "unknown");
+  assert.equal(connection.voiceState(Date.now()), "unknown");
   const noVoice = { ...open({ version: 1, data: { routerId: "r1" } }) } as Extract<ProviderInput, { type: "session.open" }>;
   await connection.send({ ...noVoice, config: { ...noVoice.config, mcpServers: {} } });
   await settle(events, (e) => e.type === "session.ready");
-  assert.equal(connection.voiceState(), "off");
+  assert.equal(connection.voiceState(Date.now()), "off");
   await connection.send({ ...(open({ version: 1, data: { routerId: "r1" } }) as Extract<ProviderInput, { type: "session.open" }>), sessionId: "p2" });
-  assert.equal(connection.voiceState(), "on");
+  assert.equal(connection.voiceState(Date.now()), "on");
   await connection.send({ type: "session.close", requestId: "c", sessionId: "p2" });
-  assert.equal(connection.voiceState(), "off");
+  assert.equal(connection.voiceState(Date.now()), "off");
+});
+
+test("voiceState decays to unknown once a session has been quiet for JARVIS_ACTIVE_MS", async () => {
+  const { connection, events } = connectWith({});
+  await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await settle(events, (e) => e.type === "session.ready");
+  const now = Date.now();
+  assert.equal(connection.voiceState(now), "on");
+  assert.equal(connection.voiceState(now + JARVIS_ACTIVE_MS - 1000), "on");
+  assert.equal(connection.voiceState(now + JARVIS_ACTIVE_MS + 1000), "unknown");
 });

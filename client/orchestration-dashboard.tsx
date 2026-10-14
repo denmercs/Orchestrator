@@ -675,6 +675,7 @@ export function OrchestrationDashboard({ theme, layout, navigation, voice }: Plu
         onOpen={openJarvis}
         onClose={closeJarvis}
         onChip={openChip}
+        navigation={navigation}
       />
     </View>
   );

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { voiceSettings } from "../shared/settings";
 import { MIC_DENIED_MESSAGE, NO_MIC_MESSAGE, PASEO_VOICE_LINE, PASEO_VOICE_TITLE } from "../shared/voice-lines";
-import { drawerMicView, hasMicApi, ignoreMeView, PASEO_STOP_HINT, phoneReplyLine, voiceOffNotice, voiceStatusLine } from "./voice-mic-model";
+import { drawerMicView, hasMicApi, ignoreMeView, openChatView, PASEO_STOP_HINT, SETTINGS_UNREADABLE_NOTICE, phoneReplyLine, voiceOffNotice, voiceStatusLine } from "./voice-mic-model";
 
 test("hasMicApi is true only when mediaDevices.getUserMedia is a function", () => {
   assert.equal(hasMicApi(undefined), false);
@@ -64,4 +64,16 @@ test("voiceStatusLine labels the indirect voice signal as a best guess and never
   assert.doesNotMatch(voiceStatusLine("unknown"), /Voice (on|off)/);
   assert.match(voiceStatusLine("unknown"), /unknown/i);
   assert.match(PASEO_STOP_HINT, /Paseo's own (Stop|Mute)/i);
+});
+
+test("openChatView is enabled with a Jarvis agent id and navigation, else disabled with a reason", () => {
+  assert.deepEqual(openChatView("j1", true), { label: "Open in Paseo chat", disabled: false, reason: null });
+  assert.equal(openChatView(null, true).disabled, true);
+  assert.match(openChatView(null, true).reason ?? "", /no Jarvis session/i);
+  assert.equal(openChatView("j1", false).disabled, true);
+  assert.match(openChatView("j1", false).reason ?? "", /can't open/i);
+});
+
+test("the unreadable-settings notice says what happens and how to repair", () => {
+  assert.match(SETTINGS_UNREADABLE_NOTICE, /Can't read voice settings, using defaults/);
 });

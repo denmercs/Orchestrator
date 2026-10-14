@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { addressed, initialVoiceState, step, withoutName, type VoiceEffect, type VoiceEvent, type VoiceMode, type VoiceSession, type VoiceState } from "./voice-loop";
+import { ROUTER_PROVIDER_ID } from "./voice-loop";
+import { addressed, initialVoiceState, jarvisSessions, step, withoutName, type VoiceEffect, type VoiceEvent, type VoiceMode, type VoiceSession, type VoiceState } from "./voice-loop";
 
 const api: VoiceSession = { id: "s1", name: "api-refactor" };
 const docs: VoiceSession = { id: "s2", name: "docs" };
@@ -706,4 +707,13 @@ test("typed text skips the helper: no interpret effect, so a helper drop cannot 
   const typed = step(awake(), { type: "utterance", text: "please run the tests", typed: true });
   assert.deepEqual(types(typed.effects), ["send"]);
   assert.deepEqual(types(say(awake(), "please run the tests").effects), ["interpret"]);
+});
+
+test("jarvisSessions picks only the Jarvis provider's sessions", () => {
+  const agents = [
+    { id: "a1", title: "Alpha", provider: "claude" },
+    { id: "j1", title: "Jarvis", provider: ROUTER_PROVIDER_ID },
+  ];
+  assert.deepEqual(jarvisSessions(agents), [{ id: "j1", name: "Jarvis" }]);
+  assert.deepEqual(jarvisSessions([agents[0]]), []);
 });

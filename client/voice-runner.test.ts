@@ -1235,3 +1235,73 @@ test("awake, [heard A, reply A, heard B] renders in true order", async () => {
   assert.match(convoText(runner)[1], /^jarvis:.*rA/);
   assert.equal(convoText(runner)[2], "you:B");
 });
+
+// --- Unreadable voice settings: default mic-on, say so, and a way to repair ---
+
+test("start() with an unreadable voice setting: not ignoring, a notice, and the mic opens", async () => {
+  const prefs: NonNullable<VoiceRunnerPorts["prefs"]> = { read: async () => ({ micOff: false, unreadable: true }), write: async () => {} };
+  const { runner, calls } = earsSetup({ prefs });
+  await runner.start();
+  assert.equal(runner.getState().ignoring, false);
+  assert.equal(runner.getState().settingsUnreadable, true);
+  assert.equal(runner.getState().micOn, true);
+  assert.deepEqual(calls, ["open"]);
+});
+
+test("a prefs read that rejects is treated as unreadable, not an unhandled error", async () => {
+  const prefs: NonNullable<VoiceRunnerPorts["prefs"]> = { read: async () => Promise.reject(new Error("rpc down")), write: async () => {} };
+  const { runner } = earsSetup({ prefs });
+  await runner.start();
+  assert.equal(runner.getState().ignoring, false);
+  assert.equal(runner.getState().settingsUnreadable, true);
+});
+
+test("a readable setting has no notice", async () => {
+  const { prefs } = prefsSetup(true);
+  const { runner } = earsSetup({ prefs });
+  await runner.start();
+  assert.equal(runner.getState().settingsUnreadable, false);
+});
+
+test("the server saying its settings are unreadable shows the notice too (panel and server agree)", async () => {
+  const { runner, reads } = noMicSetup(() => false);
+  await runner.start();
+  assert.equal(runner.getState().settingsUnreadable, false);
+  reads[0]({ cursor: 1, events: [], phoneActive: false, settingsUnreadable: true } as Batch);
+  await flush();
+  assert.equal(runner.getState().settingsUnreadable, true);
+});
+
+test("repairSettings re-saves the defaults and clears the notice", async () => {
+  let repaired = 0;
+  const prefs: NonNullable<VoiceRunnerPorts["prefs"]> = {
+    read: async () => ({ micOff: false, unreadable: true }),
+    write: async () => {},
+    repair: async () => void repaired++,
+  };
+  const { runner } = earsSetup({ prefs });
+  await runner.start();
+  await runner.repairSettings();
+  assert.equal(repaired, 1);
+  assert.equal(runner.getState().settingsUnreadable, false);
+});
+
+test("setMic saves over an unreadable setting, which repairs it", async () => {
+  const writes: boolean[] = [];
+  const prefs: NonNullable<VoiceRunnerPorts["prefs"]> = { read: async () => ({ micOff: false, unreadable: true }), write: async (v) => void writes.push(v) };
+  const { runner } = earsSetup({ prefs });
+  await runner.start();
+  await runner.setMic(false);
+  assert.deepEqual(writes, [true]);
+  assert.equal(runner.getState().settingsUnreadable, false);
+  assert.equal(runner.getState().ignoring, true);
+});
+
+test("the Jarvis session's agent id comes from setSessions' third argument, and clears when it is gone", () => {
+  const { runner } = setup();
+  assert.equal(runner.getState().jarvisAgentId, null);
+  runner.setSessions([alpha], [], [{ id: "j1", name: "Jarvis" }]);
+  assert.equal(runner.getState().jarvisAgentId, "j1");
+  runner.setSessions([alpha], [], []);
+  assert.equal(runner.getState().jarvisAgentId, null);
+});

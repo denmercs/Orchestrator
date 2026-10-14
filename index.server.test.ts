@@ -1033,3 +1033,17 @@ test("with Ignore me off, spoken input reaches the router; a not-ready settings 
   assert.deepEqual(await on.turns(SPOKEN_WORDS), [], "still dropped after a not-ready state");
   on.stop();
 });
+
+test("an invalid voice setting fails open: spoken input reaches the router", async () => {
+  const bad = micOffHarness(async () => ({ status: "invalid", revision: "1", error: "corrupt" }));
+  assert.equal((await bad.turns(SPOKEN_WORDS)).length, 1, "routed");
+  bad.stop();
+});
+
+test("a voice setting read that keeps rejecting is dropped for a short window, then fails open", async () => {
+  const down = micOffHarness(() => Promise.reject(new Error("rpc down")));
+  assert.deepEqual(await down.turns(SPOKEN_WORDS), []);
+  assert.deepEqual(await down.turns(SPOKEN_WORDS), []);
+  assert.equal((await down.turns(SPOKEN_WORDS)).length, 1, "routed once it keeps failing");
+  down.stop();
+});
