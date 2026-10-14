@@ -1,7 +1,7 @@
 // The Voice loop: a pure state machine that decides everything the Jarvis panel does.
 // step(state, event) → { state, effects }. Adapters (mic, transcriber, interpreter, session link, speaker) only carry
 // events in and effects out; the loop holds no clocks and imports only its own wording (voice-lines) and name
-// matching (voice-names), so any bundle can reach it. The Voice runner (drawer, Mac) and the Jarvis router (phone) both run it.
+// matching (voice-names), so any bundle can reach it. The Voice runner (Jarvis panel, Mac) and the Jarvis router (phone) both run it.
 import { CANCELLED, CONFIRM_AGAIN, confirmLine, listLine, newSessionLine, noChoiceLine, noSessionLine, notTargetLine, NOTHING_TO_CONFIRM, pickFirstLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
 import { choiceNumber, exactSessions, matchSessions, shortName } from "./voice-names";
 

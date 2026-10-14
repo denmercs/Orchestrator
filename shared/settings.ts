@@ -94,7 +94,7 @@ export const dashboardSettings = defineSettings({
     tab: z.enum(TAB_IDS).default("initiatives").catch("initiatives"),
     // Whether the docked Jarvis panel is collapsed to its strip.
     jarvisCollapsed: z.boolean().default(false).catch(false),
-    // Story id -> status as of the last briefing; the panel diffs against it for "since you last looked".
+    // Initiative board + story id -> status as of the last briefing; the panel diffs against it for "since you last looked".
     jarvisSeen: z.record(z.string(), z.string()).default({}).catch({}),
   }),
 });

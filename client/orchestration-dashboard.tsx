@@ -294,11 +294,11 @@ export function OrchestrationDashboard({ theme, layout, navigation, voice }: Plu
     if (jarvisPlacement === "strip") openJarvis();
   }
 
+  // Unfolds the story's initiative too: a folded one hides the story and its inline panel.
   function openChip(chip: StoryChip) {
-    const board = epic.boards?.find((item) => boardKey(item) === chip.board);
-    if (!board) return;
+    if (!epic.boards?.some((item) => boardKey(item) === chip.board)) return;
     void selectTab("initiatives");
-    epic.select(board, chip.id);
+    epic.reveal(chip.board, chip.id);
   }
 
   const selectedJiraBoard = jiraBoards.find((board) => board.id === selectedBoardId) ?? null;
