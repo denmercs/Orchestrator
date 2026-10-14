@@ -4,6 +4,8 @@
 const SPOKEN_CAP = 300;
 const FULL_SPOKEN_CAP = 1500;
 const MEDIUM_SPOKEN_CAP = 700;
+/** The most characters of a helper summary that is said. */
+export const SUMMARY_CAP = 400;
 const LIST_KEPT = 3;
 const NEEDS_YOU = /\?|\bsay (?:one|two|three|merge|yes|skip)\b|\b(?:blocked|denied|failed|failing|error|errors|needs? you|conflicts?)\b/i;
 const LIST_MARKER = /^(?:[-*+]|\d+[.)])\s+/;
@@ -113,6 +115,14 @@ export function spokenLine(text: string, level: SpokenLevel = "short"): string {
   // A heading or list item has no full stop; add one so the voice pauses instead of running on.
   const sentences = plains.map((plain) => (/[.!?:]$/.test(plain) ? plain : `${plain}.`));
   return cap((medium ? squeeze(sentences) : sentences).join(" "), FULL_SPOKEN_CAP);
+}
+
+/** A reply as said with its helper summary: the summary as plain text, kept to 400 characters. Dropped when empty, or
+ *  when it lost a question, choice or blocker the reply carries; then the medium line, or the short one if that is empty. */
+export function replyLine(text: string, summary?: string): string {
+  const said = summary ? cap(plainText(summary), SUMMARY_CAP) : "";
+  if (said && !(NEEDS_YOU.test(text) && !NEEDS_YOU.test(said))) return said;
+  return spokenLine(text, "medium") || spokenLine(text);
 }
 
 /** Medium: keep every paragraph that asks, offers a choice or reports a blocker, then fill what is left of the budget

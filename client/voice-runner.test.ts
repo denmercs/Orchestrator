@@ -570,7 +570,7 @@ test("a spoken reply that ends dispatches playbackEnded; one that is stopped doe
   await flush();
   ended.reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: false });
   await flush();
-  assert.equal(ended.spoken[0][0], "All done.");
+  assert.equal(ended.spoken[0][0], "Alpha: All done.");
   assert.equal(ended.runner.getState().mode, "listening");
   const stopped = eventsSetup("stopped");
   stopped.runner.on();
@@ -588,7 +588,7 @@ test("while the phone is speaking the line is shown, the speaker is not called, 
   reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: true });
   await flush();
   assert.deepEqual(spoken, []);
-  assert.deepEqual(runner.getState().lines, ["All done."]);
+  assert.deepEqual(runner.getState().lines, ["Alpha: All done."]);
   assert.equal(runner.getState().phoneActive, true);
   assert.equal(runner.getState().mode, "listening");
 });
