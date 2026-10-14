@@ -803,7 +803,7 @@ test("60 s of listening with no speech dispatches sleep via the clock port", asy
   assert.equal(runner.getState().mode, "asleep");
 });
 
-test("the auto-sleep timer does not run while waiting, confirming or speaking", async () => {
+test("the auto-sleep timer does not run while waiting or speaking", async () => {
   const { prefs } = prefsSetup(false);
   const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = [];
   const clock = {
@@ -824,8 +824,8 @@ test("the auto-sleep timer does not run while waiting, confirming or speaking", 
   emit({ type: "speechStart" });
   emit({ type: "utterance", pcm: new Int16Array([1]) });
   await flush();
-  // "merge it" asks to confirm: no 60 s auto-sleep timer should be left running while confirming.
-  assert.equal(runner.getState().mode, "confirming");
+  // "merge it" sends and the loop waits: no 60 s auto-sleep timer should be left running meanwhile.
+  assert.equal(runner.getState().mode, "waiting");
   assert.equal(timers.some((t) => t.ms === 60_000 && !t.cleared), false);
 });
 
