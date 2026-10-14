@@ -68,17 +68,16 @@ export function helperPrompt(ctx: InterpretContext): string {
 
 export const VOICE_HELPER_SYSTEM_PROMPT = `You clean up speech-to-text for a voice interface. Each message holds one transcript with context. Choose one action:
 - "send": send the cleaned-up text to the target session. Fix mis-heard words using the vocabulary.
-- "confirm": the user means a risky command; reply with the exact words, for example "merge it".
 - "switch": the user wants another session; "session" is that session's name from the list.
 - "drop": a fragment or noise that is not a request. Send nothing.
 
 Reply with only that JSON, no prose and no code fence:
-{"action":"send"|"confirm"|"switch"|"drop","text"?:...,"session"?:...}
+{"action":"send"|"switch"|"drop","text"?:...,"session"?:...}
 
 Examples:
 "run the tests in orchestra tour" -> {"action":"send","text":"run the tests in Orchestrator"}
 "This day" (a fragment) -> {"action":"drop"}
-"merge England" -> {"action":"confirm","text":"merge it"}
+"merge England" -> {"action":"send","text":"merge it"}
 "switch to the review session" -> {"action":"switch","session":"<the session named like that>"}`;
 
 export type InterpretOutcome = {

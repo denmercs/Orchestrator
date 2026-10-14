@@ -50,37 +50,14 @@ test("the Voice drawer's target is followed by new and existing routers", async 
   assert.deepEqual(sent, [["s1", "run the tests"], ["s1", "check the build"]]);
 });
 
-test("a critical word asks first; one sends it, two cancels, and anything else asks again", async () => {
-  const { router, sent } = setup();
-  await router.setTarget(api);
-  const ask = await router.route("r1", "merge it");
-  assert.match(ask.spoken[0], /^Send "merge it" to api-refactor\? Say one to send, or two to cancel\.$/);
-  assert.deepEqual(sent, []);
-  assert.deepEqual((await router.route("r1", "yes")).spoken, ["Say one to send, or two to cancel."]);
-  assert.deepEqual((await router.route("r1", "one")).spoken, ["Sent to api-refactor."]);
-  assert.deepEqual(sent, [["s1", "merge it"]]);
-  await router.route("r1", "delete the files");
-  assert.deepEqual((await router.route("r1", "two")).spoken, ["Cancelled."]);
-  await router.route("r1", "delete the branch");
-  assert.deepEqual((await router.route("r1", "never mind")).spoken, ["Cancelled."]);
-  assert.equal(sent.length, 1);
-});
-
-test("stop and interrupt in ordinary speech send without a confirm", async () => {
+test("no word, merge and delete included, asks for a confirm", async () => {
   const { router, sent } = setup();
   await router.setTarget(api);
   assert.deepEqual((await router.route("r1", "let's stop the build here")).spoken, ["Sent to api-refactor."]);
   assert.deepEqual((await router.route("r1", "don't interrupt the run")).spoken, ["Sent to api-refactor."]);
-  assert.equal(sent.length, 2);
-});
-
-test("a confirm left too long is dropped by the next utterance", async () => {
-  const { router, sent, tick } = setup();
-  await router.setTarget(api);
-  await router.route("r1", "merge it");
-  tick(CONFIRM_TIMEOUT_MS + 1);
-  assert.deepEqual((await router.route("r1", "one")).spoken, [NOTHING_TO_CONFIRM]);
-  assert.deepEqual(sent, []);
+  assert.deepEqual((await router.route("r1", "merge it")).spoken, ["Sent to api-refactor."]);
+  assert.deepEqual((await router.route("r1", "delete the branch")).spoken, ["Sent to api-refactor."]);
+  assert.equal(sent.length, 4);
 });
 
 test("fragments do nothing and say nothing", async () => {
@@ -119,7 +96,7 @@ test("routers keep their own state", async () => {
   assert.equal(router.stateOf("r2")?.session, null);
 });
 
-test("an interpreter can clean up the words, and the loop still confirms critical ones", async () => {
+test("an interpreter can clean up the words, and a risky one still just sends", async () => {
   const seen: string[] = [];
   const helper: Interpreter = {
     async interpret(text, ctx) {
@@ -130,9 +107,9 @@ test("an interpreter can clean up the words, and the loop still confirms critica
   const { router, sent } = setup({ interpreter: helper });
   await router.setTarget(api);
   assert.deepEqual((await router.route("r1", "run the tests in orchestra tour")).spoken, ["Sent to api-refactor."]);
-  assert.match((await router.route("r1", "merge england")).spoken[0], /Say one to send/);
+  assert.deepEqual((await router.route("r1", "merge england")).spoken, ["Sent to api-refactor."]);
   assert.deepEqual(seen, ["run the tests in orchestra tour|api-refactor", "merge england|api-refactor"]);
-  assert.deepEqual(sent, [["s1", "run the tests in Orchestrator"]]);
+  assert.deepEqual(sent, [["s1", "run the tests in Orchestrator"], ["s1", "merge it"]]);
 });
 
 test("a failing interpreter falls back to the words as heard", async () => {
@@ -170,9 +147,6 @@ test("an aborted route sends nothing and leaves the state as it was", async () =
   assert.deepEqual(await router.route("r1", "run the tests", abort.signal), { spoken: [], note: STOPPED_NOTE });
   assert.deepEqual(sent, []);
   assert.equal(router.stateOf("r1")?.mode, "listening");
-  await router.route("r1", "merge it");
-  assert.deepEqual(await router.route("r1", "one", abort.signal), { spoken: [], note: STOPPED_NOTE });
-  assert.equal(router.stateOf("r1")?.mode, "confirming");
 });
 
 test("on the phone: a list, then a bare number, picks across separate utterances", async () => {

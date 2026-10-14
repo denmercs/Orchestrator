@@ -87,9 +87,9 @@ test("only the last 4 recent messages go in, each cut to 300 characters", () => 
   assert.ok(/user: msg2-/.test(prompt) && /assistant: msg3-/.test(prompt));
 });
 
-test("the system prompt lists the four actions, the JSON shape and the three examples", () => {
-  for (const action of ["send", "confirm", "switch", "drop"]) assert.ok(VOICE_HELPER_SYSTEM_PROMPT.includes(`"${action}"`), action);
-  assert.ok(VOICE_HELPER_SYSTEM_PROMPT.includes('{"action":"send"|"confirm"|"switch"|"drop","text"?:...,"session"?:...}'));
+test("the system prompt lists the three actions, the JSON shape and the three examples", () => {
+  for (const action of ["send", "switch", "drop"]) assert.ok(VOICE_HELPER_SYSTEM_PROMPT.includes(`"${action}"`), action);
+  assert.ok(VOICE_HELPER_SYSTEM_PROMPT.includes('{"action":"send"|"switch"|"drop","text"?:...,"session"?:...}'));
   assert.ok(/only that JSON/i.test(VOICE_HELPER_SYSTEM_PROMPT));
   for (const example of ["This day", "merge England", "merge it", "switch to the review session"]) assert.ok(VOICE_HELPER_SYSTEM_PROMPT.includes(example), example);
 });

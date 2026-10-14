@@ -191,7 +191,7 @@ test("transcripts keep the last five with how each ended", async () => {
   const { runner } = talkSetup();
   runner.dispatch({ type: "utterance", text: "merge it" });
   await flush();
-  assert.deepEqual(runner.getState().transcripts, [{ text: "merge it", outcome: "asked to confirm" }]);
+  assert.deepEqual(runner.getState().transcripts, [{ text: "merge it", outcome: "sent to Alpha" }]);
   for (let i = 0; i < 6; i++) runner.dispatch({ type: "utterance", text: `Jarvis switch to nobody ${i}` });
   const t = runner.getState().transcripts;
   assert.equal(t.length, 5);
@@ -205,65 +205,6 @@ test("setSessions and pick reach the loop", () => {
   runner.pick(alpha);
   assert.deepEqual(runner.getState().sessions, [alpha]);
   assert.deepEqual(runner.getState().session, alpha);
-});
-
-test("a risky utterance asks to confirm and sends nothing; yes does nothing; merge sends", async () => {
-  const { runner, said } = talkSetup();
-  runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  assert.deepEqual(said, []);
-  assert.equal(runner.getState().mode, "confirming");
-  assert.match(runner.getState().lines.at(-1) ?? "", /Say one to send/);
-  runner.dispatch({ type: "utterance", text: "yes" });
-  await flush();
-  assert.deepEqual(said, []);
-  assert.equal(runner.getState().mode, "confirming");
-  runner.dispatch({ type: "utterance", text: "merge" });
-  await flush();
-  assert.deepEqual(said, [["a1", "merge it"]]);
-});
-
-test("saying one sends the confirmed text", async () => {
-  const { runner, said } = talkSetup();
-  runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  runner.dispatch({ type: "utterance", text: "one" });
-  await flush();
-  assert.deepEqual(said, [["a1", "merge it"]]);
-});
-
-test("confirm(word) from a button sends", async () => {
-  const { runner, said } = talkSetup();
-  runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  runner.confirm("merge");
-  await flush();
-  assert.deepEqual(said, [["a1", "merge it"]]);
-  assert.equal(runner.getState().mode, "waiting");
-});
-
-test("the confirm times out after the shared 20 seconds and cancels", async () => {
-  const { runner, said, timers } = talkSetup();
-  runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  const timer = timers.at(-1);
-  assert.equal(timer?.ms, 20_000);
-  timer?.fn();
-  await flush();
-  assert.equal(runner.getState().mode, "listening");
-  assert.equal(runner.getState().confirm, null);
-  assert.deepEqual(said, []);
-});
-
-test("sending clears the confirm timer", async () => {
-  const { runner, timers } = talkSetup();
-  runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  const timer = timers.at(-1);
-  assert.equal(timer?.cleared, false);
-  runner.confirm("merge");
-  await flush();
-  assert.equal(timer?.cleared, true);
 });
 
 test("off() sleeps the loop, clears timers and closes the mic", async () => {
@@ -285,12 +226,8 @@ test("off() sleeps the loop, clears timers and closes the mic", async () => {
   });
   runner.on();
   runner.pick(alpha);
-  runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  const timer = timers.at(-1);
   runner.off();
   assert.equal(runner.getState().mode, "asleep");
-  assert.equal(timer?.cleared, true);
   assert.deepEqual(closed, ["close"]);
 });
 
@@ -315,20 +252,6 @@ test("a rejected interpreter drops the utterance and records the error", async (
   assert.equal(runner.getState().pending, null);
   assert.equal(runner.getState().transcripts.at(-1)?.outcome, "dropped");
   assert.match(runner.getState().error ?? "", /helper down/);
-});
-
-test("a confirm from the button or the timeout updates the transcript that asked", async () => {
-  const sent = talkSetup();
-  sent.runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  assert.equal(sent.runner.getState().transcripts.at(-1)?.outcome, "asked to confirm");
-  sent.runner.confirm("merge");
-  assert.equal(sent.runner.getState().transcripts.at(-1)?.outcome, "sent to Alpha");
-  const timedOut = talkSetup();
-  timedOut.runner.dispatch({ type: "utterance", text: "merge it" });
-  await flush();
-  timedOut.timers.at(-1)?.fn();
-  assert.equal(timedOut.runner.getState().transcripts.at(-1)?.outcome, "cancelled");
 });
 
 test("setSessions with the same list does not notify subscribers", () => {
