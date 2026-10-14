@@ -335,7 +335,7 @@ function SessionsAndSettings({ theme, compact, runner, styles }: { theme: Theme;
 
 function createStyles(theme: Theme, compact: boolean) {
   const c = theme.colors;
-  const pad = compact ? 16 : 16;
+  const pad = 16;
   return {
     overlay: {
       // Above the dashboard header, which sits at zIndex 10 so its menus clear the tab body.

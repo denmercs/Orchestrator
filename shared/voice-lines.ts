@@ -1,4 +1,4 @@
-// Every line Voice says or shows, in one place, so the Voice drawer (Mac) and Jarvis (phone) word things the
+// Every line Voice says or shows, in one place, so the Jarvis panel (Mac) and Jarvis (phone) word things the
 // same way. Pure: no imports, so any bundle can reach it.
 
 const SPOKEN_CAP = 300;

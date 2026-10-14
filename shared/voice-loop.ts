@@ -1,4 +1,4 @@
-// The Voice loop: a pure state machine that decides everything the Voice drawer does.
+// The Voice loop: a pure state machine that decides everything the Jarvis panel does.
 // step(state, event) → { state, effects }. Adapters (mic, transcriber, interpreter, session link, speaker) only carry
 // events in and effects out; the loop holds no clocks and imports only its own wording (voice-lines) and name
 // matching (voice-names), so any bundle can reach it. The Voice runner (drawer, Mac) and the Jarvis router (phone) both run it.

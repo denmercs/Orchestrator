@@ -67,19 +67,28 @@ export function askDraft(story: EpicStory, sessions: readonly VoiceSession[], cu
 
 export type Briefing = { merged: EpicStory[]; running: EpicStory[]; needsYou: EpicStory[]; seen: Record<string, string> };
 
-// What changed since `seen` (story id → status, saved last time): stories merged since, those running now, and those
-// needing you now (plan approval, blocked, PR ready), plus the map to save next. An empty `seen` is a first run, so
-// nothing counts as merged since: the first briefing isn't a wall of history.
-export function briefing(stories: readonly EpicStory[], seen: Record<string, string>): Briefing {
+// What changed since `seen` (board and story id → status, saved last time): stories merged since, those running now, and
+// those needing you now (plan approval, blocked, PR ready), plus the map to save next. Keys carry the board because
+// story ids repeat across initiatives. A board that could not be read keeps its saved statuses. An empty `seen` is a
+// first run, so nothing counts as merged since: the first briefing isn't a wall of history.
+export function briefing(boards: readonly EpicBoard[], seen: Record<string, string>): Briefing {
   const first = Object.keys(seen).length === 0;
   const result: Briefing = { merged: [], running: [], needsYou: [], seen: {} };
-  for (const story of stories) {
-    result.seen[story.id] = story.status;
-    const kind = nodeKind(story);
-    if (kind === "merged") {
-      if (!first && seen[story.id] !== "merged") result.merged.push(story);
-    } else if (kind === "needs-you") result.needsYou.push(story);
-    else if (kind === "running") result.running.push(story);
+  for (const board of boards) {
+    const prefix = `${boardKey(board)}\n`;
+    if (!board.state) {
+      for (const [key, status] of Object.entries(seen)) if (key.startsWith(prefix)) result.seen[key] = status;
+      continue;
+    }
+    for (const story of board.state.stories) {
+      const key = prefix + story.id;
+      result.seen[key] = story.status;
+      const kind = nodeKind(story);
+      if (kind === "merged") {
+        if (!first && seen[key] !== "merged") result.merged.push(story);
+      } else if (kind === "needs-you") result.needsYou.push(story);
+      else if (kind === "running") result.running.push(story);
+    }
   }
   return result;
 }

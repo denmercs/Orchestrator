@@ -83,26 +83,44 @@ test("askDraft leaves the target alone and says so when the story has no session
 });
 
 test("briefing lists what merged since the saved map, what runs now and what needs you, and the next map", () => {
-  const stories = [
+  const board = chipBoard([
     chipStory("S1", { status: "merged" }),
     chipStory("S2", { status: "merged" }),
     chipStory("S3", { status: "implementing", agent: "a1" }),
     chipStory("S4", { status: "blocked" }),
     chipStory("S5", { status: "merged" }),
-  ];
-  const seen = { S1: "merged", S2: "implementing", S3: "planning", S4: "todo" };
-  const result = briefing(stories, seen);
+  ]);
+  const key = (id: string) => `${boardKey(board)}\n${id}`;
+  const seen = { [key("S1")]: "merged", [key("S2")]: "implementing", [key("S3")]: "planning", [key("S4")]: "todo" };
+  const result = briefing([board], seen);
   assert.deepEqual(result.merged.map((story) => story.id), ["S2", "S5"]);
   assert.deepEqual(result.running.map((story) => story.id), ["S3"]);
   assert.deepEqual(result.needsYou.map((story) => story.id), ["S4"]);
-  assert.deepEqual(result.seen, { S1: "merged", S2: "merged", S3: "implementing", S4: "blocked", S5: "merged" });
+  assert.deepEqual(result.seen, { [key("S1")]: "merged", [key("S2")]: "merged", [key("S3")]: "implementing", [key("S4")]: "blocked", [key("S5")]: "merged" });
 });
 
 test("briefing on a first run (empty map) reports nothing as merged since, but still fills the map", () => {
-  const result = briefing([chipStory("S1", { status: "merged" }), chipStory("S2", { status: "implementing" })], {});
+  const board = chipBoard([chipStory("S1", { status: "merged" }), chipStory("S2", { status: "implementing" })]);
+  const result = briefing([board], {});
   assert.deepEqual(result.merged, []);
   assert.deepEqual(result.running.map((story) => story.id), ["S2"]);
-  assert.deepEqual(result.seen, { S1: "merged", S2: "implementing" });
+  assert.deepEqual(result.seen, { [`${boardKey(board)}\nS1`]: "merged", [`${boardKey(board)}\nS2`]: "implementing" });
+});
+
+test("briefing tells apart the same id on two initiatives, so a repeat id is not reported as merged every time", () => {
+  const first = chipBoard([chipStory("S1", { status: "merged" })], "first");
+  const second = chipBoard([chipStory("S1", { status: "todo" })], "second");
+  const once = briefing([first, second], { other: "todo" });
+  const again = briefing([first, second], once.seen);
+  assert.deepEqual(again.merged, []);
+});
+
+test("briefing keeps the saved statuses of an initiative it could not read this time", () => {
+  const ok = chipBoard([chipStory("S1", { status: "implementing" })], "ok");
+  const failed = chipBoard([chipStory("S2", { status: "todo" })], "failed");
+  const seen = briefing([ok, failed], { other: "todo" }).seen;
+  const result = briefing([ok, { ...failed, state: null }], seen);
+  assert.equal(result.seen[`${boardKey(failed)}\nS2`], "todo");
 });
 
 const voiceApi: VoiceSession = { id: "s1", name: "api-refactor" };

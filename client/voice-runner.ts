@@ -9,7 +9,7 @@ export const MAX_INTERPRETS = 20;
 
 export const MAX_HOLD_MS = 30_000;
 export const MIN_HOLD_MS = 300;
-// One timeout for the drawer and Jarvis.
+// One timeout for the Jarvis panel (Mac) and Jarvis on the phone.
 export { CONFIRM_TIMEOUT_MS };
 export const POLL_BACKOFF_MS = 2_000;
 export const BASE_HINTS = ["merge", "Orchestrator", "Paseo", "Jarvis"];
@@ -222,7 +222,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     // Store the new state before any effect runs, so effects that dispatch see it.
     publish(state);
     ports.ears?.setAwake(state.mode === "listening" || state.mode === "confirming" || state.mode === "waiting");
-    // Speaking risks the drawer's own playback retriggering the VAD; pause the ears for it (a tap-to-talk hold
+    // Speaking risks the panel's own playback retriggering the VAD; pause the ears for it (a tap-to-talk hold
     // already paused them and owns that flag while it lasts).
     if (!holding) ports.ears?.setPaused(state.mode === "speaking");
     // 60 s of listening with no speech goes back to asleep; the timer never runs outside listening.
@@ -451,7 +451,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     void poll(++polling);
   }
 
-  /** The drawer's mic toggle: persists the pref, then opens or fully closes the mic and ears. Turning the mic off
+  /** The panel's mic switch: persists the pref, then opens or fully closes the mic and ears. Turning the mic off
    * also returns the loop to asleep, since there is no more audio to listen with. */
   async function setMic(on: boolean) {
     if (ports.prefs) await ports.prefs.write(!on);
@@ -524,7 +524,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       if (snapshot.mode === "asleep") dispatch({ type: "wake" });
       dispatch({ type: "utterance", text });
     },
-    /** The drawer's "New voice session" button: the same create the "new session" phrase makes, voice on or off. */
+    /** The panel's "New voice session" button: the same create the "new session" phrase makes, voice on or off. */
     newSession() {
       if (snapshot.session) perform({ type: "create", session: snapshot.session });
     },

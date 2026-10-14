@@ -275,8 +275,7 @@ export function OrchestrationDashboard({ theme, layout, navigation, voice }: Plu
   useEffect(() => {
     if (briefed.current || !epic.boards || dashboard.status !== "ready") return;
     briefed.current = true;
-    const stories = epic.boards.flatMap((board) => board.state?.stories ?? []);
-    const result = briefing(stories, dashboard.values.jarvisSeen);
+    const result = briefing(epic.boards, dashboard.values.jarvisSeen);
     const ids = (list: { id: string }[]) => list.map((story) => story.id);
     setIntro(briefingLine({ merged: ids(result.merged), running: ids(result.running), needsYou: ids(result.needsYou) }));
     void dashboard.save({ ...dashboard.values, jarvisSeen: result.seen }, dashboard.revision);
