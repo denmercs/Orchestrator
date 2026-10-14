@@ -81,7 +81,6 @@ export function initialVoiceState(): VoiceState {
 
 const NAMES = "jarvis|jervis|javis|travis|jarvus|service";
 const NEVER_MIND = new Set(["never mind", "nevermind", "cancel that", "forget it", "belay that"]);
-const CRITICAL = /\b(merge|delete)\b/;
 // A confirm is answered only by these exact words (or the critical word said back); anything else asks again.
 // "to"/"too" are how "two" is often heard: cancelling on a mishearing is safe, sending on one is not.
 const CONFIRM_YES = new Set(["one", "1", "number one", "number 1"]);
@@ -110,7 +109,6 @@ export const addressed = (text: string): boolean => stripName(norm(text)) !== no
 /** The words without a leading "Jarvis," (or "hey Jarvis"), punctuation and case kept. */
 export const withoutName = (text: string): string =>
   text.replace(new RegExp(`^\\s*(?:(?:hey|ok|okay)[\\s,]+)?(?:${NAMES})\\b[\\s,.!?]*`, "i"), "").trim() || text.trim();
-const critical = (text: string): string | null => CRITICAL.exec(text)?.[1] ?? null;
 const out = (state: VoiceState, ...effects: VoiceEffect[]): VoiceStep => ({ state, effects });
 
 function sentTo(state: VoiceState, text: string): VoiceStep {
@@ -213,7 +211,7 @@ function onUtterance(state: VoiceState, text: string): VoiceStep {
     if (named.length === 1) return switched(base, named[0]);
     if (named.length > 1) return askWhich({ ...base, pending: null }, named);
   }
-  if (cleaned.split(" ").filter(Boolean).length < 2 && !critical(cleaned)) return out(base);
+  if (cleaned.split(" ").filter(Boolean).length < 2) return out(base);
   if (!state.session) return numberedList({ ...base, pending: null }, PICK_SHOWN, pickFirstLine);
   const seq = state.seq + 1;
   return out({ ...base, seq, pending: { seq, heard: text } }, { type: "interpret", seq, text });
@@ -225,9 +223,7 @@ function onInterpreted(state: VoiceState, seq: number, result: InterpretResult):
   const base = { ...state, pending: null };
   if (result.type === "drop") return out(base);
   if (result.type === "switch") return switchTo(base, result.name);
-  const word = critical(norm(result.text)) ?? critical(norm(pending.heard));
-  if (result.type === "confirm") return askConfirm(base, result.text, word ?? "send");
-  return word ? askConfirm(base, result.text, word) : sentTo(base, result.text);
+  return sentTo(base, result.text);
 }
 
 function core(state: VoiceState, event: VoiceEvent): VoiceStep {
