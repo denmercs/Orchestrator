@@ -100,6 +100,8 @@ export const voiceEvents = defineRpc({
     voice: z.enum(["on", "off", "unknown"]).optional(),
     // The saved voice setting can't be read, so Ignore me is off and speech goes through; the drawer says so.
     settingsUnreadable: z.boolean().optional(),
+    // The saved Ignore me value hasn't been read yet, so the server is holding speech; the drawer says it is checking.
+    settingsChecking: z.boolean().optional(),
   }),
 });
 

@@ -35,11 +35,15 @@ export function voiceOffNotice(profile: string): string | null {
 
 // Pure: the drawer's "Ignore me" switch. It shows the saved voice.micOff pref (`ignoring`), never whether the mic opened: on
 // means what you say is dropped. Default is off (you are heard), also after a reload.
-export function ignoreMeView(ignoring: boolean): { label: string; on: boolean; status: string | null; action: string } {
+export function ignoreMeView(ignoring: boolean, checking = false): { label: string; on: boolean; status: string | null; action: string } {
   return {
     label: "Ignore me",
     on: ignoring,
-    status: ignoring ? "Ignoring you. Jarvis won't act on what you say." : null,
+    status: ignoring
+      ? "Ignoring you. Jarvis won't act on what you say."
+      : checking
+        ? "Checking voice settings. Speech is held until they load."
+        : null,
     action: ignoring ? "Turn Ignore me off" : "Turn Ignore me on",
   };
 }

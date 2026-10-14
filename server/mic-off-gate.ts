@@ -1,43 +1,46 @@
-// The server's view of voice.micOff (Ignore me). Fails closed only in the short window before the saved value is known;
-// a setting that is unreadable (invalid, or a read that keeps failing) fails open, so speech goes through as for a
-// default user, and `unreadable()` lets the drawer say so.
-export const MIC_OFF_MAX_MISSES = 3;
+// The server's view of voice.micOff (Ignore me). It remembers the last value actually read and keeps using it through any
+// glitch (a rejected read, a loading state, a later invalid one). It fails closed (speech is dropped) while no value has
+// ever been read, rereading with a backoff; it fails open (the default, mic on) only when nothing was ever read and the
+// stored value is definitively invalid. `unreadable()` lets the drawer say so; `checking()` says the value isn't known yet.
+export const MIC_OFF_RETRY_MS = 250;
+const MAX_RETRY_MS = 8_000;
 
 type SettingsState = { status: string; values?: { micOff?: boolean } };
 
-export function createMicOffGate(read: () => Promise<SettingsState>) {
-  let micOff: boolean | null = null;
+export function createMicOffGate(read: () => Promise<SettingsState>, now: () => number = Date.now) {
+  let lastKnown: boolean | null = null;
   let unreadable = false;
   let misses = 0;
+  let nextTryAt = 0;
   const sync = (state: SettingsState) => {
     if (state.status === "ready") {
-      micOff = state.values?.micOff === true;
+      lastKnown = state.values?.micOff === true;
       unreadable = false;
       misses = 0;
-    } else if (state.status === "loading") {
-      // No answer yet: keep what we know.
-    } else {
-      micOff = false;
+    } else if (state.status === "invalid") {
       unreadable = true;
+      if (lastKnown === null) lastKnown = false;
     }
+    // Anything else (loading, error) is no answer: keep what we know.
   };
   return {
     sync,
     unreadable: () => unreadable,
+    lastKnown: () => lastKnown,
+    /** No value has been read yet, so speech is held. */
+    checking: () => lastKnown === null,
     async muted(): Promise<boolean> {
-      if (micOff !== null) return micOff;
+      if (lastKnown !== null) return lastKnown;
+      if (now() < nextTryAt) return true;
       try {
         sync(await read());
       } catch {
-        // Counted below.
+        // Retried after the backoff.
       }
-      if (micOff !== null) return micOff;
+      if (lastKnown !== null) return lastKnown;
       misses += 1;
-      if (misses >= MIC_OFF_MAX_MISSES) {
-        micOff = false;
-        unreadable = true;
-      }
-      return micOff ?? true;
+      nextTryAt = now() + Math.min(MIC_OFF_RETRY_MS * 2 ** (misses - 1), MAX_RETRY_MS);
+      return true;
     },
   };
 }

@@ -1248,12 +1248,13 @@ test("start() with an unreadable voice setting: not ignoring, a notice, and the 
   assert.deepEqual(calls, ["open"]);
 });
 
-test("a prefs read that rejects is treated as unreadable, not an unhandled error", async () => {
+test("a prefs read that throws is treated as a glitch: checking, no mic, not ignoring", async () => {
   const prefs: NonNullable<VoiceRunnerPorts["prefs"]> = { read: async () => Promise.reject(new Error("rpc down")), write: async () => {} };
-  const { runner } = earsSetup({ prefs });
+  const { runner, calls } = earsSetup({ prefs, clock: { setTimeout: () => 0, clearTimeout: () => {} } });
   await runner.start();
   assert.equal(runner.getState().ignoring, false);
-  assert.equal(runner.getState().settingsUnreadable, true);
+  assert.equal(runner.getState().settingsChecking, true);
+  assert.deepEqual(calls, []);
 });
 
 test("a readable setting has no notice", async () => {
@@ -1304,4 +1305,96 @@ test("the Jarvis session's agent id comes from setSessions' third argument, and 
   assert.equal(runner.getState().jarvisAgentId, "j1");
   runner.setSessions([alpha], [], []);
   assert.equal(runner.getState().jarvisAgentId, null);
+});
+
+// --- Ignore me never turns itself off on a glitch ---
+
+function timedSetup(prefs: NonNullable<VoiceRunnerPorts["prefs"]>, extra: Partial<VoiceRunnerPorts> = {}) {
+  const timers: Array<{ fn: () => void; ms: number }> = [];
+  const clock = { setTimeout: (fn: () => void, ms: number) => (timers.push({ fn, ms }), timers.length), clearTimeout: () => {} };
+  return { ...earsSetup({ prefs, clock, ...extra }), timers };
+}
+const transient = { micOff: false, unreadable: false, transient: true } as const;
+
+test("a rejected read at start does not open the mic: it says it is checking and retries", async () => {
+  const { runner, calls, timers } = timedSetup({ read: async () => transient, write: async () => {} });
+  await runner.start();
+  assert.deepEqual(calls, []);
+  assert.equal(runner.getState().settingsChecking, true);
+  assert.equal(runner.getState().ignoring, false);
+  assert.equal(runner.getState().micOn, false);
+  assert.ok(timers.length >= 1, "a retry is scheduled");
+});
+
+test("the retry finds a stored ON: ignoring, and the mic never opened", async () => {
+  let answer: { micOff: boolean; unreadable?: boolean; transient?: boolean } = transient;
+  const { runner, calls, timers } = timedSetup({ read: async () => answer, write: async () => {} });
+  await runner.start();
+  answer = { micOff: true, unreadable: false };
+  timers[0].fn();
+  await flush();
+  assert.equal(runner.getState().ignoring, true);
+  assert.equal(runner.getState().settingsChecking, false);
+  assert.deepEqual(calls, []);
+});
+
+test("the retry finds a stored OFF: the mic opens", async () => {
+  let answer: { micOff: boolean; unreadable?: boolean; transient?: boolean } = transient;
+  const { runner, calls, timers } = timedSetup({ read: async () => answer, write: async () => {} });
+  await runner.start();
+  answer = { micOff: false, unreadable: false };
+  timers[0].fn();
+  await flush();
+  assert.equal(runner.getState().micOn, true);
+  assert.equal(runner.getState().settingsChecking, false);
+  assert.deepEqual(calls, ["open"]);
+});
+
+test("a retry that is still transient schedules another, with a longer wait", async () => {
+  const { runner, timers } = timedSetup({ read: async () => transient, write: async () => {} });
+  await runner.start();
+  timers[0].fn();
+  await flush();
+  assert.ok(timers.length >= 2);
+  assert.ok(timers[1].ms > timers[0].ms);
+});
+
+test("repairSettings rewrites the last known value, not a default", async () => {
+  const repairs: Array<boolean | undefined> = [];
+  const prefs: NonNullable<VoiceRunnerPorts["prefs"]> = {
+    read: async () => ({ micOff: true, unreadable: false }),
+    write: async () => {},
+    repair: async (value) => void repairs.push(value),
+  };
+  const { runner } = earsSetup({ prefs });
+  await runner.start();
+  await runner.repairSettings();
+  assert.deepEqual(repairs, [true]);
+  const none: NonNullable<VoiceRunnerPorts["prefs"]> = { read: async () => ({ micOff: false, unreadable: true }), write: async () => {}, repair: async (v?: boolean) => void (repairs as Array<boolean | undefined>).push(v) };
+  const other = earsSetup({ prefs: none });
+  await other.runner.start();
+  await other.runner.repairSettings();
+  assert.deepEqual(repairs, [true, false], "a value that was never read defaults to false");
+});
+
+test("the notice follows the server both ways: a server-side repair clears it", async () => {
+  const { runner, reads } = noMicSetup(() => false);
+  await runner.start();
+  reads[0]({ cursor: 1, events: [], phoneActive: false, settingsUnreadable: true } as Batch);
+  await flush();
+  assert.equal(runner.getState().settingsUnreadable, true);
+  reads[1]({ cursor: 1, events: [], phoneActive: false, settingsUnreadable: false } as Batch);
+  await flush();
+  assert.equal(runner.getState().settingsUnreadable, false);
+});
+
+test("the checking state follows the server: it holds speech, so the panel never says you are heard", async () => {
+  const { runner, reads } = noMicSetup(() => false);
+  await runner.start();
+  reads[0]({ cursor: 1, events: [], phoneActive: false, settingsChecking: true } as Batch);
+  await flush();
+  assert.equal(runner.getState().settingsChecking, true);
+  reads[1]({ cursor: 1, events: [], phoneActive: false, settingsChecking: false } as Batch);
+  await flush();
+  assert.equal(runner.getState().settingsChecking, false);
 });

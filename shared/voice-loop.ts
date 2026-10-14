@@ -354,16 +354,20 @@ export function sessionName(agent: { id: string; title?: string | null }): strin
   return agent.title?.trim() || agent.id.slice(0, 8);
 }
 
-type AgentLike = { id: string; title?: string | null; provider?: string; labels?: Record<string, string> | null };
+type AgentLike = { id: string; title?: string | null; provider?: string; labels?: Record<string, string> | null; lastActivityAt?: string | null };
 
 /** False for Voice's own sessions: a Jarvis session or the Voice helper. */
 export function canTarget(agent: { provider?: string; labels?: Record<string, string> | null }): boolean {
   return agent.provider !== ROUTER_PROVIDER_ID && agent.labels?.kind !== VOICE_HELPER_KIND;
 }
 
-/** Jarvis's own sessions, for opening its Paseo chat. */
+/** Jarvis's own sessions, most recently active first, for opening its Paseo chat. */
 export function jarvisSessions(agents: AgentLike[]): VoiceSession[] {
-  return agents.filter((a) => a.provider === ROUTER_PROVIDER_ID).map((a) => ({ id: a.id, name: sessionName(a) }));
+  const at = (a: AgentLike) => (a.lastActivityAt ? Date.parse(a.lastActivityAt) || 0 : 0);
+  return agents
+    .filter((a) => a.provider === ROUTER_PROVIDER_ID)
+    .sort((a, b) => at(b) - at(a))
+    .map((a) => ({ id: a.id, name: sessionName(a) }));
 }
 
 /** The sessions Voice may send to; Voice's own sessions are left out. */

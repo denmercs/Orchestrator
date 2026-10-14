@@ -77,3 +77,11 @@ test("openChatView is enabled with a Jarvis agent id and navigation, else disabl
 test("the unreadable-settings notice says what happens and how to repair", () => {
   assert.match(SETTINGS_UNREADABLE_NOTICE, /Can't read voice settings, using defaults/);
 });
+
+test("while the saved value is being checked the switch claims neither state", () => {
+  const view = ignoreMeView(false, true);
+  assert.equal(view.on, false);
+  assert.match(view.status ?? "", /checking voice settings/i);
+  assert.doesNotMatch(view.status ?? "", /heard|listening/i);
+  assert.equal(ignoreMeView(true, true).on, true, "a known ON still shows");
+});

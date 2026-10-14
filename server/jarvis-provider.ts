@@ -23,6 +23,8 @@ const VOICE_LINE_KIND = "voice-line";
 const SPEAK_TIMEOUT_MS = 90_000;
 /** Jarvis counts as active for this long after the last prompt or line (the phone is the speaker then). */
 export const JARVIS_ACTIVE_MS = 10 * 60 * 1000;
+/** The voice on/off guess holds this long after a session was last seen (open, prompt, turn end or line): idle is not gone. */
+export const VOICE_GUESS_MS = 2 * 60 * 60 * 1000;
 
 type Fetch = typeof fetch;
 type Session = {
@@ -296,6 +298,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
         return;
       }
       session.lastActiveAt = Date.now();
+      session.seenAt = Date.now();
       if (deps.phoneAudio?.()) {
         const sessionId = [...sessions.entries()].find(([, s]) => s === session)?.[0] as string;
         for (const line of lines) voiceLine(sessionId, line);
@@ -311,8 +314,8 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
       deps.playbackEnded?.(routerId);
     },
     voiceState(now) {
-      // Only sessions seen lately count, so one that dropped without closing decays to unknown.
-      const recent = [...sessions.values()].filter((s) => now - s.seenAt < JARVIS_ACTIVE_MS);
+      // Only sessions seen lately count, so one that dropped without closing decays to unknown (after VOICE_GUESS_MS).
+      const recent = [...sessions.values()].filter((s) => now - s.seenAt < VOICE_GUESS_MS);
       if (recent.length === 0) return "unknown";
       return recent.some((s) => s.mcpServers.paseo) ? "on" : "off";
     },

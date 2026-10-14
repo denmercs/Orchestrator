@@ -99,7 +99,7 @@ function PanelBody({ theme, compact, runner, navigation, boards, intro, draft, n
   const on = state.micOn;
   const awake = state.mode !== "asleep";
   const view = drawerMicView({ hasMicApi: hasMicApi(globalThis.navigator), error: state.error });
-  const ignore = ignoreMeView(state.ignoring);
+  const ignore = ignoreMeView(state.ignoring, state.settingsChecking);
   const micApi = hasMicApi(globalThis.navigator);
   const voice = useSettings(voiceSettings);
   const profiles = useAgentProfiles();
@@ -146,7 +146,9 @@ function PanelBody({ theme, compact, runner, navigation, boards, intro, draft, n
             ? "Listening… tap to send"
             : state.ignoring
               ? "Ignoring you"
-              : micApi
+              : state.settingsChecking
+                ? "Checking voice settings"
+                : micApi
                 ? state.micUnavailable
                   ? "Mic unavailable"
                   : MODE_LABEL[state.mode]
@@ -250,7 +252,7 @@ function PanelBody({ theme, compact, runner, navigation, boards, intro, draft, n
           >
             <Text style={styles.actionText}>{ignore.label}</Text>
           </Pressable>
-          <Text style={styles.hint}>{ignore.on ? "On" : "Off"}</Text>
+          <Text style={styles.hint}>{ignore.on ? "On" : state.settingsChecking ? "Checking…" : "Off"}</Text>
         </View>
         {!micApi ? <Text style={styles.hint}>{PASEO_STOP_HINT}</Text> : null}
         <View style={styles.row}>
@@ -258,7 +260,14 @@ function PanelBody({ theme, compact, runner, navigation, boards, intro, draft, n
             accessibilityRole="button"
             accessibilityLabel={chat.label}
             disabled={chat.disabled}
-            onPress={() => state.jarvisAgentId && navigation?.openAgent({ agentId: state.jarvisAgentId })}
+            onPress={() => {
+              if (!state.jarvisAgentId) return;
+              try {
+                navigation?.openAgent({ agentId: state.jarvisAgentId });
+              } catch {
+                // The session was closed since the list last synced; the link goes away at the next sync.
+              }
+            }}
             style={[styles.action, chat.disabled ? styles.disabled : null]}
           >
             <Text style={styles.actionText}>{chat.label}</Text>
@@ -323,7 +332,7 @@ function SessionsAndSettings({ theme, compact, runner, styles }: { theme: Theme;
   const settings = useSettings(voiceSettings);
   const profiles = useAgentProfiles();
   const on = state.micOn;
-  const ignore = ignoreMeView(state.ignoring);
+  const ignore = ignoreMeView(state.ignoring, state.settingsChecking);
   return (
     <>
       <View style={styles.row}>

@@ -1040,10 +1040,16 @@ test("an invalid voice setting fails open: spoken input reaches the router", asy
   bad.stop();
 });
 
-test("a voice setting read that keeps rejecting is dropped for a short window, then fails open", async () => {
+test("a voice setting read that keeps rejecting never fails open: speech stays dropped", async () => {
   const down = micOffHarness(() => Promise.reject(new Error("rpc down")));
-  assert.deepEqual(await down.turns(SPOKEN_WORDS), []);
-  assert.deepEqual(await down.turns(SPOKEN_WORDS), []);
-  assert.equal((await down.turns(SPOKEN_WORDS)).length, 1, "routed once it keeps failing");
+  for (let i = 0; i < 4; i++) assert.deepEqual(await down.turns(SPOKEN_WORDS), []);
   down.stop();
+});
+
+test("Ignore me ON then an invalid settings state keeps dropping speech", async () => {
+  const on = micOffHarness(async () => ready(true));
+  await new Promise((r) => setTimeout(r, 10));
+  on.subscribers.forEach((fn) => fn({ status: "invalid", revision: "1", error: "corrupt" }));
+  assert.deepEqual(await on.turns(SPOKEN_WORDS), []);
+  on.stop();
 });

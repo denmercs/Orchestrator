@@ -21,16 +21,19 @@ test("read: an invalid setting is unreadable and defaults to the mic on", async 
   assert.deepEqual(await prefs.read(), { micOff: false, unreadable: true });
 });
 
-test("read: a rejecting rpc is unreadable and defaults to the mic on", async () => {
+test("read: a rejecting rpc is transient, not unreadable, so the caller keeps its last value", async () => {
   const { prefs } = prefsWith(() => Promise.reject(new Error("rpc down")));
-  assert.deepEqual(await prefs.read(), { micOff: false, unreadable: true });
+  assert.deepEqual(await prefs.read(), { micOff: false, unreadable: false, transient: true });
 });
 
 test("repair re-saves the defaults over an invalid setting using its revision", async () => {
   const { prefs, calls } = prefsWith(() => ({ status: "invalid", revision: "r7", error: "corrupt" }));
   await prefs.repair();
+  assert.equal((calls.find((c) => c.name.endsWith("write"))?.input as { values: { micOff: boolean } }).values.micOff, false, "no value ever read defaults to false");
+  calls.length = 0;
+  await prefs.repair(true);
   const write = calls.find((c) => c.name.endsWith("write"));
   assert.ok(write, "wrote");
   assert.equal((write.input as { revision: string }).revision, "r7");
-  assert.equal((write.input as { values: { micOff: boolean } }).values.micOff, false);
+  assert.equal((write.input as { values: { micOff: boolean } }).values.micOff, true, "repair rewrites the last known value");
 });

@@ -700,7 +700,7 @@ export default function contribute(
         .catch((error) => console.warn("orchestrator: Jarvis event failed", error));
     }
   };
-  server.handle(voiceEvents, async ({ after }) => ({ ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false, voice: jarvisConnection?.voiceState(Date.now()) ?? "unknown", settingsUnreadable: micOffGate.unreadable() }));
+  server.handle(voiceEvents, async ({ after }) => ({ ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false, voice: jarvisConnection?.voiceState(Date.now()) ?? "unknown", settingsUnreadable: micOffGate.unreadable(), settingsChecking: micOffGate.checking() }));
   // The drawer's "good morning": the same briefing as Jarvis, under its own router id so its open briefing is the drawer's.
   server.handle(voiceBrief, async ({ text }) => {
     const briefed = await jarvis.brief("drawer", text);

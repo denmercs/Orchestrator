@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ProviderEvent, ProviderInput, ProviderPrompt } from "@getpaseo/plugin/server/provider";
-import { createJarvisConnection, createJarvisProvider, JARVIS_ACTIVE_MS, promptText, routerIdOf, speak, spokenText } from "./jarvis-provider";
+import { createJarvisConnection, createJarvisProvider, JARVIS_ACTIVE_MS, VOICE_GUESS_MS, promptText, routerIdOf, speak, spokenText } from "./jarvis-provider";
 import type { RouteResult } from "./jarvis-router";
 
 const PASEO = { type: "http" as const, url: "http://127.0.0.1:1/mcp", headers: { Authorization: "Bearer t" } };
@@ -543,12 +543,23 @@ test("voiceState is a best guess from the sessions Paseo opened: the paseo MCP s
   assert.equal(connection.voiceState(Date.now()), "off");
 });
 
-test("voiceState decays to unknown once a session has been quiet for JARVIS_ACTIVE_MS", async () => {
+test("voiceState stays on through a long idle spell and only decays to unknown after VOICE_GUESS_MS", async () => {
   const { connection, events } = connectWith({});
   await connection.send(open({ version: 1, data: { routerId: "r1" } }));
   await settle(events, (e) => e.type === "session.ready");
   const now = Date.now();
-  assert.equal(connection.voiceState(now), "on");
-  assert.equal(connection.voiceState(now + JARVIS_ACTIVE_MS - 1000), "on");
-  assert.equal(connection.voiceState(now + JARVIS_ACTIVE_MS + 1000), "unknown");
+  assert.ok(VOICE_GUESS_MS > JARVIS_ACTIVE_MS);
+  assert.equal(connection.voiceState(now + JARVIS_ACTIVE_MS + 1000), "on");
+  assert.equal(connection.voiceState(now + VOICE_GUESS_MS - 1000), "on");
+  assert.equal(connection.voiceState(now + VOICE_GUESS_MS + 1000), "unknown");
+});
+
+test("a line said to a session refreshes the voice guess", async () => {
+  const { connection, events } = connectWith({});
+  await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await settle(events, (e) => e.type === "session.ready");
+  const before = Date.now();
+  await new Promise((r) => setTimeout(r, 15));
+  await connection.say("r1", ["hello"]);
+  assert.equal(connection.voiceState(before + VOICE_GUESS_MS + 5), "on");
 });

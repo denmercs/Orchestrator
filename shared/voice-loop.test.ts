@@ -717,3 +717,12 @@ test("jarvisSessions picks only the Jarvis provider's sessions", () => {
   assert.deepEqual(jarvisSessions(agents), [{ id: "j1", name: "Jarvis" }]);
   assert.deepEqual(jarvisSessions([agents[0]]), []);
 });
+
+test("jarvisSessions lists the most recently active Jarvis session first", () => {
+  const agents = [
+    { id: "old", title: "Jarvis", provider: ROUTER_PROVIDER_ID, lastActivityAt: "2026-10-14T10:00:00Z" },
+    { id: "new", title: "Jarvis", provider: ROUTER_PROVIDER_ID, lastActivityAt: "2026-10-14T12:00:00Z" },
+    { id: "none", title: "Jarvis", provider: ROUTER_PROVIDER_ID },
+  ];
+  assert.deepEqual(jarvisSessions(agents).map((s) => s.id), ["new", "old", "none"]);
+});
