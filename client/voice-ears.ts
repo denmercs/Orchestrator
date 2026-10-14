@@ -4,7 +4,9 @@
 // since the client cannot fetch GitHub release assets directly (S0 lesson 4). No unit tests here, like
 // voice-mic.ts's recorder half: it is all browser APIs.
 import type { PluginClientContext } from "@getpaseo/plugin/client";
+import { NO_MIC_MESSAGE } from "../shared/voice-lines";
 import { voiceWakeModel } from "../shared/voice-rpc";
+import { hasMicApi } from "./voice-mic-model";
 import { createEarsModel, SAMPLE_RATE, type EarsEvent } from "./voice-ears-model";
 import { createWakeModel, SAMPLES_PER_FRAME, type WakeModelRunners } from "./voice-wake-model";
 
@@ -147,9 +149,7 @@ export function createVoiceEars(rpc: PluginClientContext["rpc"]) {
   return {
     async open() {
       if (stream?.active) return;
-      if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-        throw new Error("This device can't record from a plugin. Use voice from the laptop.");
-      }
+      if (!hasMicApi(globalThis.navigator)) throw new Error(NO_MIC_MESSAGE);
       await ensureModels();
       stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true } });
       audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });

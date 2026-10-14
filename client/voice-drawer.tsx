@@ -3,6 +3,7 @@ import { Pressable, Text, View } from "react-native";
 import { useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import type { createVoiceRunner } from "./voice-runner";
+import { drawerMicView, hasMicApi } from "./voice-mic-model";
 import { VoiceInterpretPanel } from "./voice-interpret-panel";
 import { ProfileChips, useAgentProfiles } from "./runner-picker";
 import { profileCaption, type AgentProfile } from "../shared/agent-profiles";
@@ -54,7 +55,8 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
   if (!open) return null;
   const on = state.micOn;
   const awake = state.mode !== "asleep";
-  const needsWhisper = state.error ? /whisper|ffmpeg|model/i.test(state.error) : false;
+  const view = drawerMicView({ hasMicApi: hasMicApi(globalThis.navigator), error: state.error });
+  const needsWhisper = view.error ? /whisper|ffmpeg|model/i.test(view.error) : false;
 
   return (
     <View style={styles.overlay}>
@@ -69,18 +71,27 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
           </View>
         </View>
         <ScrollView style={styles.flex1} contentContainerStyle={styles.body}>
-          <View style={styles.row}>
-            <Pressable
-              accessibilityRole="switch"
-              accessibilityState={{ checked: on }}
-              accessibilityLabel={on ? "Turn the mic off" : "Turn the mic on"}
-              onPress={() => void runner.setMic(!on)}
-              style={[styles.action, on ? styles.actionOn : null]}
-            >
-              <Text style={styles.actionText}>{on ? "On" : "Off"}</Text>
-            </Pressable>
-            <Text style={styles.hint}>{on ? MODE_LABEL[state.mode] : "Off"}</Text>
-          </View>
+          {view.kind === "jarvis" ? (
+            <View style={styles.card}>
+              <Text style={styles.sessionText}>{view.title}</Text>
+              <Text style={styles.hint}>{view.notice}</Text>
+            </View>
+          ) : (
+            <>
+            <View style={styles.row}>
+              <Pressable
+                accessibilityRole="switch"
+                accessibilityState={{ checked: on }}
+                accessibilityLabel={on ? "Turn the mic off" : "Turn the mic on"}
+                onPress={() => void runner.setMic(!on)}
+                style={[styles.action, on ? styles.actionOn : null]}
+              >
+                <Text style={styles.actionText}>{on ? "On" : "Off"}</Text>
+              </Pressable>
+              <Text style={styles.hint}>{on ? MODE_LABEL[state.mode] : "Off"}</Text>
+            </View>
+            </>
+          )}
 
           <Text style={styles.section}>Voice sessions</Text>
           {settings.status === "ready" ? (
@@ -136,30 +147,34 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
             );
           })}
 
-          <View style={styles.row}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={state.talking ? "Tap to send" : "Tap to talk"}
-              disabled={!on}
-              onPress={() => void runner.toggleTalk()}
-              style={[styles.talk, state.talking ? styles.actionOn : null, !on ? styles.disabled : null]}
-            >
-              <Text style={styles.actionText}>{state.talking ? "Listening… tap to send" : "Tap to talk"}</Text>
-            </Pressable>
-            {state.talking ? (
-              <Pressable accessibilityRole="button" accessibilityLabel="Cancel recording" onPress={() => void runner.cancelTalk()} style={styles.action}>
-                <Text style={styles.actionText}>Cancel</Text>
+          {view.kind === "mic" ? (
+            <>
+            <View style={styles.row}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={state.talking ? "Tap to send" : "Tap to talk"}
+                disabled={!on}
+                onPress={() => void runner.toggleTalk()}
+                style={[styles.talk, state.talking ? styles.actionOn : null, !on ? styles.disabled : null]}
+              >
+                <Text style={styles.actionText}>{state.talking ? "Listening… tap to send" : "Tap to talk"}</Text>
               </Pressable>
-            ) : null}
-            <Pressable
-              accessibilityRole="button"
-              disabled={!awake || !state.session}
-              onPress={() => runner.interrupt()}
-              style={[styles.action, !awake || !state.session ? styles.disabled : null]}
-            >
-              <Text style={styles.actionText}>Interrupt</Text>
-            </Pressable>
-          </View>
+              {state.talking ? (
+                <Pressable accessibilityRole="button" accessibilityLabel="Cancel recording" onPress={() => void runner.cancelTalk()} style={styles.action}>
+                  <Text style={styles.actionText}>Cancel</Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                accessibilityRole="button"
+                disabled={!awake || !state.session}
+                onPress={() => runner.interrupt()}
+                style={[styles.action, !awake || !state.session ? styles.disabled : null]}
+              >
+                <Text style={styles.actionText}>Interrupt</Text>
+              </Pressable>
+            </View>
+            </>
+          ) : null}
 
           {state.mode === "confirming" && state.confirm ? (
             <View style={styles.card}>
@@ -175,9 +190,9 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
             </View>
           ) : null}
 
-          {state.error ? (
+          {view.error ? (
             <View style={styles.card}>
-              <Text style={[styles.hint, styles.danger]}>{state.error}</Text>
+              <Text style={[styles.hint, styles.danger]}>{view.error}</Text>
               {needsWhisper ? (
                 <Text style={styles.hint}>Voice needs ffmpeg, whisper-cli (whisper-cpp) and the small.en model installed on this machine.</Text>
               ) : null}

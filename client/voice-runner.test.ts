@@ -593,6 +593,38 @@ test("while the phone is speaking the line is shown, the speaker is not called, 
   assert.equal(runner.getState().mode, "listening");
 });
 
+function noMicSetup(hasMic?: () => boolean) {
+  const reads: Array<(b: Batch) => void> = [];
+  const spoken: string[] = [];
+  const base = setup({
+    events: { read: () => new Promise<Batch>((resolve) => reads.push(resolve)) },
+    speaker: { speak: async (text) => (spoken.push(text), "ended"), stop: () => {} },
+    ...(hasMic ? { hasMic } : {}),
+  });
+  base.runner.setSessions([alpha]);
+  base.runner.pick(alpha);
+  return { ...base, reads, spoken };
+}
+
+test("with no mic API a reply to the target is shown and never spoken; one for another session adds nothing", async () => {
+  const { runner, reads, spoken } = noMicSetup(() => false);
+  await runner.start();
+  reads[0]({ cursor: 1, events: [reply("All done."), { type: "reply", sessionId: "zz", text: "Other." }], phoneActive: false });
+  await flush();
+  assert.deepEqual(runner.getState().lines, ["All done."]);
+  assert.deepEqual(spoken, []);
+  assert.equal(runner.getState().mode, "asleep");
+});
+
+test("with a mic (hasMic absent) an asleep reply adds nothing", async () => {
+  const { runner, reads, spoken } = noMicSetup();
+  await runner.start();
+  reads[0]({ cursor: 1, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  assert.deepEqual(runner.getState().lines, []);
+  assert.deepEqual(spoken, []);
+});
+
 test("speechStart while speaking stops the speaker and never touches the link", async () => {
   const { runner, reads, stops, said, interrupted } = eventsSetup("stopped");
   runner.on();

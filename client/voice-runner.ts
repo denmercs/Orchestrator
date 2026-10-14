@@ -1,5 +1,6 @@
 import { HELPER_DEFAULT_ON, namelessPassThrough, type InterpretOutcome } from "../shared/voice-interpreter";
 import { CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEffect, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
+import { phoneReplyLine } from "./voice-mic-model";
 import { encodeWav } from "./voice-ears-model";
 
 export const MAX_LINES = 20;
@@ -52,6 +53,8 @@ export type VoiceRunnerPorts = {
     setPaused(paused: boolean): void;
     onEvent(fn: (event: EarsRunnerEvent) => void): void;
   };
+  /** False on a device with no mic API (the phone): replies to the target are shown in the drawer, not spoken. Defaults to true. */
+  hasMic?: () => boolean;
   /** The persisted `voice.micOff` setting. */
   prefs?: { read(): Promise<{ micOff: boolean }>; write(micOff: boolean): Promise<unknown> };
 };
@@ -387,6 +390,10 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
         if (polling !== run) return;
         cursor = batch.cursor;
         if (batch.phoneActive !== snapshot.phoneActive) publish({ phoneActive: batch.phoneActive });
+        if (ports.hasMic && !ports.hasMic()) {
+          const shown = batch.events.map((e) => phoneReplyLine(e, snapshot.session?.id)).filter((l): l is string => l !== null);
+          if (shown.length) publish({ lines: keepLast(snapshot.lines, shown, MAX_LINES) });
+        }
         batch.events.forEach(dispatch);
       } catch (err) {
         if (polling !== run) return;

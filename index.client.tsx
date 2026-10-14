@@ -8,6 +8,7 @@ import { startMemoryReplay } from "./shared/replay-rpc";
 import { createVoiceEars } from "./client/voice-ears";
 import { createVoiceLink } from "./client/voice-link";
 import { createVoiceMic, createVoiceTranscriber } from "./client/voice-mic";
+import { hasMicApi } from "./client/voice-mic-model";
 import { createVoiceHelperClient } from "./client/voice-helper-client";
 import { createVoicePrefs } from "./client/voice-prefs";
 import { createVoiceRunner } from "./client/voice-runner";
@@ -29,6 +30,7 @@ export default function contribute(client: PluginClientContext) {
     speaker: createVoiceSpeaker(client.rpc, client.playAudio),
     ears: createVoiceEars(client.rpc),
     prefs: createVoicePrefs(client.rpc),
+    hasMic: () => hasMicApi(globalThis.navigator),
   });
   // Launch-time: open the mic (unless muted) and start the events poll; the loop stays asleep until a wake word.
   void voice.start();
