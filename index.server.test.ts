@@ -4,7 +4,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "./index.server";
 import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { startMemoryReplay } from "./shared/replay-rpc";
-import { voiceEvents, voiceHelperStart, voiceHelperStop, voiceHelperSwitch, voiceInterpret, voiceSpeak, voiceTarget } from "./shared/voice-rpc";
+import { voiceEvents, voiceHelperStart, voiceHelperStop, voiceHelperSwitch, voiceInterpret, voiceSpeak, voiceStatus, voiceTarget } from "./shared/voice-rpc";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -350,6 +350,22 @@ test("the voice helper RPCs start and stop one helper agent, and interpret falls
   assert.equal(calls.filter((c) => c === "create").length, 1, "start finds the warmed helper");
   assert.deepEqual(await halt({}, { paseo }), { ok: true });
   assert.ok(calls.includes("archive:helper-1"));
+  stop();
+});
+
+test("the drawer's status RPC says who needs you, hit an error or is running, and leaves out other words", async () => {
+  const { handlers, stop } = wired();
+  const agents = [
+    { id: "a1", title: "api", status: "running", provider: "claude", labels: {} },
+    { id: "a2", title: "docs", status: "running", provider: "claude", labels: {}, pendingPermissions: [{}] },
+    { id: "a3", title: "web", status: "error", provider: "claude", labels: {} },
+    { id: "a4", title: "old", status: "closed", provider: "claude", labels: {} },
+  ];
+  const paseo = { agents: { ref: () => ({ refresh: async () => null }), list: async () => ({ entries: agents.map((agent) => ({ agent })) }) } };
+  await handlers.get(voiceTarget.name)!({ id: "a1", name: "api" }, { paseo });
+  const status = handlers.get(voiceStatus.name)!;
+  assert.deepEqual(await status({ text: "Jarvis, status" }, { paseo }), { spoken: ["docs needs you. web hit an error. api is running."] });
+  assert.equal(await status({ text: "run the tests" }, { paseo }), null);
   stop();
 });
 

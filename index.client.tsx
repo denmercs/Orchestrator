@@ -13,7 +13,7 @@ import { createVoicePrefs } from "./client/voice-prefs";
 import { createVoiceRunner } from "./client/voice-runner";
 import { createVoiceSpeaker } from "./client/voice-speaker";
 import { createVoiceLineRenderer, voiceLineSchema } from "./client/voice-line-renderer";
-import { voiceBrief, voiceEvents, voiceTarget } from "./shared/voice-rpc";
+import { voiceBrief, voiceEvents, voiceStatus, voiceTarget } from "./shared/voice-rpc";
 
 const TITLE = INSTALL_LABEL ? `Orchestration (${INSTALL_LABEL})` : "Orchestration";
 
@@ -25,6 +25,7 @@ export default function contribute(client: PluginClientContext) {
     helper: createVoiceHelperClient(client.rpc),
     events: { read: (after) => client.rpc(voiceEvents, { after }) },
     brief: async (text) => (await client.rpc(voiceBrief, { text }))?.spoken ?? null,
+    status: async (text) => (await client.rpc(voiceStatus, { text }))?.spoken ?? null,
     speaker: createVoiceSpeaker(client.rpc, client.playAudio),
     ears: createVoiceEars(client.rpc),
     prefs: createVoicePrefs(client.rpc),

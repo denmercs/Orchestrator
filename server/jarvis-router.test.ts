@@ -4,6 +4,7 @@ import type { InterpretOutcome } from "../shared/voice-interpreter";
 import { CONFIRM_TIMEOUT_MS, type VoiceSession } from "../shared/voice-loop";
 import { DIDNT_CATCH_NOTE, NOTHING_TO_CONFIRM, notTargetLine, pickFirstLine, SENT_NOTE, SLEEP_LINE, STOPPED_NOTE, WAKE_LINE } from "../shared/voice-lines";
 import type { BriefData } from "../shared/morning-brief";
+import type { StatusAgent } from "../shared/voice-status";
 import { VOICE_ROUTING_PREAMBLE, VOICE_SESSION_ENV } from "../shared/voice-session";
 import { createJarvisRouter, voiceSessionCreator, type JarvisInterpreter } from "./jarvis-router";
 
@@ -418,4 +419,55 @@ test("listening() is true only while a phone router's loop is awake, so a reply 
   assert.equal(router.listening(), true);
   await router.route("r1", "Jarvis, ignore me");
   assert.equal(router.listening(), false);
+});
+
+// "Status".
+const statusAgents: StatusAgent[] = [
+  { id: "s1", title: "api-refactor", status: "running" },
+  { id: "s2", title: "docs", status: "running", pendingPermissions: [{}] },
+];
+
+function statusSetup(opts: { list?: () => Promise<StatusAgent[]> } = {}) {
+  const sent: [string, string][] = [];
+  const router = createJarvisRouter({
+    sessions: async () => ({ list: [api, docs], blocked: [self] }),
+    send: async (id, text) => void sent.push([id, text]),
+    create: async () => "new1",
+    status: opts.list ?? (async () => statusAgents),
+  });
+  return { router, sent };
+}
+
+test("awake, status is answered with the sessions' states and nothing is sent to the target", async () => {
+  const { router, sent } = statusSetup();
+  await router.setTarget(api);
+  const r = await router.route("r1", "Jarvis, status");
+  assert.deepEqual(r.spoken, ["docs needs you. api-refactor is running."]);
+  assert.deepEqual(sent, []);
+});
+
+test("asleep, status needs the name: without it nothing is said, with it Jarvis wakes and answers", async () => {
+  const { router } = statusSetup();
+  await router.route("r1", "Jarvis, silent mode");
+  const quiet = await router.route("r1", "status");
+  assert.deepEqual(quiet.spoken, []);
+  assert.equal(router.stateOf("r1")?.mode, "asleep");
+  const named = await router.route("r1", "Jarvis, status");
+  assert.deepEqual(named.spoken, ["docs needs you. api-refactor is running."]);
+  assert.notEqual(router.stateOf("r1")?.mode, "asleep");
+});
+
+test("a status list that can't be read is said, not thrown", async () => {
+  const { router } = statusSetup({ list: async () => Promise.reject(new Error("offline")) });
+  const r = await router.route("r1", "Jarvis, status");
+  assert.deepEqual(r.spoken, ["I couldn't read the sessions: offline"]);
+});
+
+test("a long request that mentions status still goes to the target", async () => {
+  const { router, sent } = statusSetup();
+  await router.setTarget(api);
+  await router.route("r1", "the status of the build is red, fix it");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0][0], "s1");
+  assert.ok(sent[0][1].endsWith("the status of the build is red, fix it"));
 });

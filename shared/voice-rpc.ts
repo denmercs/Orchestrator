@@ -106,3 +106,11 @@ export const voiceBrief = defineRpc({
   input: z.object({ text: z.string().max(2000) }),
   output: z.object({ spoken: z.array(z.string()) }).nullable(),
 });
+
+// "Status" for the drawer: one spoken line about the sessions' states when the words are a status ask, null when
+// they are not and the drawer carries on as usual.
+export const voiceStatus = defineRpc({
+  name: "orchestration.voice.status",
+  input: z.object({ text: z.string().max(2000) }),
+  output: z.object({ spoken: z.array(z.string()) }).nullable(),
+});
