@@ -15,7 +15,10 @@ export type EarsRunnerEvent = { type: "wake" } | { type: "speechStart" } | { typ
 
 /** Ports the runner carries effects out through. Recorder, transcriber and clock are optional. */
 export type VoiceRunnerPorts = {
-  link: { say(sessionId: string, text: string): Promise<unknown>; interrupt(sessionId: string): Promise<unknown> };
+  link: { say(sessionId: string, text: string): Promise<unknown>; interrupt(sessionId: string): Promise<unknown>;
+    /** Starts a voice session beside `target` and returns its id. */
+    create?(target: VoiceSession): Promise<string>;
+  };
   /** Turns an utterance into a result for the loop. Defaults to sending the text as heard. */
   interpreter?: (text: string) => Promise<InterpretResult>;
   /** The mic: open() when voice turns on, close() when it turns off; start() begins capturing; stop() ends it and returns base64 audio and how long it ran. */
@@ -26,6 +29,8 @@ export type VoiceRunnerPorts = {
   events?: { read(after: number): Promise<{ cursor: number; events: VoiceEvent[]; phoneActive: boolean }> };
   /** Speaks a line aloud: resolves "ended" when it finished, "stopped" when stop() cut it off. */
   speaker?: { speak(text: string, replyId: string): Promise<"ended" | "stopped">; stop(): void };
+  /** The morning briefing: lines to say when the words are "good morning" or an open briefing's answer, null when they are not. */
+  brief?: (text: string) => Promise<string[] | null>;
   /** Timer port; defaults to the global setTimeout. */
   clock?: { setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
   /** The hands-free mic adapter: open/close the mic, told whether the loop is awake or a tap-to-talk is held, and
@@ -94,10 +99,22 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   };
   const outcomeOf = (effects: VoiceEffect[]): string | null => {
     const send = effects.find((e) => e.type === "send");
-    if (send) return `sent to ${send.session.name}`;
+    if (send) return "sent";
     if (effects.some((e) => e.type === "askConfirm")) return "asked to confirm";
     return null;
   };
+
+  // Shows a line and plays it. `endsPlayback`: the loop is `speaking` until it has finished.
+  function showAndSpeak(line: string, endsPlayback = false) {
+    publish({ lines: keepLast(snapshot.lines, [line], MAX_LINES) });
+    if (!ports.speaker) return;
+    // The phone is speaking: the text stays on screen, but nothing plays here and the loop moves on.
+    if (snapshot.phoneActive) return void (endsPlayback && dispatch({ type: "playbackEnded" }));
+    ports.speaker.speak(line, `drawer-${nextReply++}`).then(
+      (result) => result === "ended" && endsPlayback && dispatch({ type: "playbackEnded" }),
+      fail,
+    );
+  }
 
   function perform(effect: VoiceEffect) {
     switch (effect.type) {
@@ -110,6 +127,15 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       case "interrupt":
         ports.link.interrupt(effect.session.id).catch(fail);
         return;
+      case "create": {
+        const create = ports.link.create;
+        if (!create) return fail(new Error("This Paseo can't start a session from here."));
+        create.call(ports.link, effect.session).then(
+          (id) => dispatch({ type: "pick", session: { id, name: `${effect.session.name} (voice)` } }),
+          fail,
+        );
+        return;
+      }
       case "interpret":
         interpreter(effect.text).then(
           (result) => dispatch({ type: "interpreted", seq: effect.seq, result }),
@@ -119,17 +145,9 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
           },
         );
         return;
-      case "receipt":
       case "speak":
       case "askConfirm":
-        publish({ lines: keepLast(snapshot.lines, [effect.line], MAX_LINES) });
-        if (!ports.speaker) return;
-        // The phone is speaking: the text stays on screen, but nothing plays here and the loop moves on.
-        if (snapshot.phoneActive) return void (effect.type === "speak" && dispatch({ type: "playbackEnded" }));
-        ports.speaker.speak(effect.line, `drawer-${nextReply++}`).then(
-          (result) => result === "ended" && effect.type === "speak" && dispatch({ type: "playbackEnded" }),
-          fail,
-        );
+        showAndSpeak(effect.line, effect.type === "speak");
         return;
       case "stopPlayback":
       case "sleep":
@@ -140,7 +158,24 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     }
   }
 
+  // Words go to the briefing first (awake only): its lines are shown and spoken and the session never hears them.
+  // If it has nothing for them, or fails, they go to the loop as usual.
   function dispatch(event: VoiceEvent) {
+    const brief = ports.brief;
+    if (!brief || event.type !== "utterance" || !event.text.trim() || snapshot.mode === "asleep") return run(event);
+    brief(event.text).then(
+      (lines) => {
+        if (!lines) return run(event);
+        entries.push({ id: nextEntry++, text: event.text, outcome: "briefing" });
+        entries.splice(0, Math.max(0, entries.length - MAX_TRANSCRIPTS));
+        showEntries();
+        lines.forEach((line) => showAndSpeak(line));
+      },
+      () => run(event),
+    );
+  }
+
+  function run(event: VoiceEvent) {
     const choicesBefore = snapshot.choices;
     const modeBefore = snapshot.mode;
     const { state, effects } = step(snapshot, event);
@@ -426,5 +461,9 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       if (!same(list, snapshot.sessions) || !same(blocked, snapshot.blocked)) dispatch({ type: "sessions", list, blocked });
     },
     pick: (session: VoiceSession) => dispatch({ type: "pick", session }),
+    /** The drawer's "New voice session" button: the same create the "new session" phrase makes, voice on or off. */
+    newSession() {
+      if (snapshot.session) perform({ type: "create", session: snapshot.session });
+    },
   };
 }

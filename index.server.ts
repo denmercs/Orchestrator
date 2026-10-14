@@ -27,9 +27,11 @@ import { getBranchInitials } from "./shared/naming";
 import { createContextWatch, paseoPort } from "./server/context-watch";
 import { createGateActions, loopGatePort } from "./server/gate-actions";
 import { createVoiceResume } from "./server/voice-resume";
-import { createSpeakReplies } from "./server/speak-replies";
+import { createSpeakReplies, speakRoute } from "./server/speak-replies";
 import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { gateAct } from "./shared/gates";
+import { profilesFromConfigGet } from "./shared/agent-profiles";
+import { applyVoiceSession, VOICE_SESSION_ENV, voiceProfileFor } from "./shared/voice-session";
 import { readTelemetry, summariseTelemetry } from "./server/context-telemetry";
 import { loadStoryContext } from "./server/story-context";
 import { kiroUsageSource } from "./server/kiro-usage";
@@ -52,6 +54,7 @@ import { mkdir } from "node:fs/promises";
 import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./server/voice-helper";
 import {
   transcribeVoice,
+  voiceBrief,
   voiceEvents,
   voiceHelperStart,
   voiceHelperStop,
@@ -60,13 +63,13 @@ import {
   voiceTarget,
   voiceWakeModel,
 } from "./shared/voice-rpc";
-import { voiceSettings } from "./shared/settings";
-import { permissionEvents, turnEvents } from "./shared/voice-turns";
+import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
-import { createJarvisRouter } from "./server/jarvis-router";
+import { createJarvisRouter, voiceSessionCreator } from "./server/jarvis-router";
 import { createMorningBrief, fetchWeather } from "./server/morning-brief";
 import { splitSessions, type VoiceEvent } from "./shared/voice-loop";
+
 import { contextAct, contextSessionsRpc, contextSettings, contextSummaryRpc, DEFAULT_CONTEXT_CONFIG, storyContextRpc } from "./shared/context";
 import {
   DEFAULT_LOOP_CONFIG,
@@ -115,6 +118,7 @@ import { agentRunnerSettings } from "./shared/agent-runner";
 import {
   budgetSettings,
   dashboardSettings,
+  voiceSettings,
   gitSettings,
   harnessSettings,
   jiraBoardSettings,
@@ -158,6 +162,7 @@ export default function contribute(
   server.registerUsageSource?.(kiroUsageSource());
   server.registerSettings(standupSettings);
   server.registerSettings(dashboardSettings);
+  const voiceSetting = server.registerSettings(voiceSettings);
   const budget = server.registerSettings(budgetSettings);
   const runnerSettings = server.registerSettings(agentRunnerSettings);
   const readRunnerProfileId = async () => {
@@ -398,25 +403,40 @@ export default function contribute(
     loop.rememberPaseo(paseo);
     return listMergedPrs();
   });
-  const offBeforeCreate = server.before("agent.create", async ({ request }) => {
+  const offBeforeCreate = server.before("agent.create", async ({ request }, { paseo }) => {
     const hostServers = pickMcpServers(
       await readHostMcpServers(request.config.cwd),
       mcpScopeFor(request.config.cwd),
       await readMcpExclude(),
     );
-    if (Object.keys(hostServers).length === 0) {
-      return;
+    const withServers =
+      Object.keys(hostServers).length === 0
+        ? request
+        : {
+            ...request,
+            config: {
+              ...request.config,
+              mcpServers: {
+                ...request.config.mcpServers,
+                ...hostServers,
+              },
+            },
+          };
+    // Only voice-marked creates need the profile; a failed config read never blocks the create.
+    if (request.env?.[VOICE_SESSION_ENV] !== "1") {
+      return withServers === request ? undefined : withServers;
     }
-    return {
-      ...request,
-      config: {
-        ...request.config,
-        mcpServers: {
-          ...request.config.mcpServers,
-          ...hostServers,
-        },
-      },
-    };
+    let profile = null;
+    try {
+      const state = await voiceSetting.read();
+      profile = voiceProfileFor(
+        profilesFromConfigGet(await paseo.config.get()),
+        state.status === "ready" ? state.values.profile : "",
+      );
+    } catch (error) {
+      console.warn("orchestrator: voice profile lookup failed", error);
+    }
+    return applyVoiceSession(withServers, profile);
   });
   const offWorkspaceCreated = server.on("workspace.created", ({ workspace }) => {
     scopeWorkerWorkspace(workspace);
@@ -459,7 +479,7 @@ export default function contribute(
     return voiceHelper.interpret(input);
   });
   // Whether the phone plays lines in the cloned voice (voice.phoneAudio) is read once and kept current.
-  const voice = server.registerSettings(voiceSettings);
+  const voice = voiceSetting;
   let phoneAudio = false;
   let referenceClip = "";
   const syncVoice = (state: Awaited<ReturnType<typeof voice.read>>) => {
@@ -512,9 +532,18 @@ export default function contribute(
         .catch((error) => console.warn("orchestrator: memory replay failed", error));
       return;
     }
-    speakReplies.onTurnEnded(event);
-    // A session on the Speak pill is spoken by the pill alone: its reply is kept from the drawer and Jarvis so the Mac never says it twice.
-    publishVoice(turnEvents(event).filter((e) => !(e.type === "reply" && speakReplies.has(e.sessionId))));
+    // A session on the Speak pill is heard on one device only. Phone active with voice.phoneAudio on: its reply goes through the
+    // router as a watched reply (a `voice-line`), and the Mac stays quiet. Otherwise the pill speaks it on the Mac and its reply is
+    // kept from the drawer and Jarvis, so it is never said twice.
+    // A reply is never heard nowhere: if every phone loop is asleep it would drop the watched reply, so the Mac plays it instead.
+    const picked = speakRoute({
+      pill: speakReplies.has(event.agent.id),
+      phoneActive: jarvisConnection?.isActive(Date.now()) ?? false,
+      phoneAudio,
+    });
+    const route = picked === "phone" && !jarvis.listening() ? "mac" : picked;
+    if (route !== "phone") speakReplies.onTurnEnded(event);
+    publishVoice(turnEvents(event, { watched: route === "phone" }).filter((e) => !(e.type === "reply" && route === "mac")));
     loop.rememberPaseo(paseo);
     pipelinePaseo = paseo;
     void loop.onTurnEnded(event);
@@ -602,6 +631,7 @@ export default function contribute(
       );
     },
     send: (sessionId, text) => jarvisPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
+    create: voiceSessionCreator(jarvisPaseo),
     // "Good morning, Jarvis": weather, the verse, your Jira stories and the priority initiative, one beat at a time.
     brief: createMorningBrief({
       weather: () => fetchWeather(),
@@ -627,6 +657,11 @@ export default function contribute(
     }
   };
   server.handle(voiceEvents, async ({ after }) => ({ ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false }));
+  // The drawer's "good morning": the same briefing as Jarvis, under its own router id so its open briefing is the drawer's.
+  server.handle(voiceBrief, async ({ text }) => {
+    const briefed = await jarvis.brief("drawer", text);
+    return briefed && { spoken: briefed.spoken };
+  });
   // A Jarvis session or the Voice helper is refused (ok: false), or Jarvis would steer itself.
   server.handle(voiceTarget, async (session, { paseo }) => {
     helperPaseo = paseo;

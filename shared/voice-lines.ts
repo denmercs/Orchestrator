@@ -18,11 +18,16 @@ export const WAKE_LINE = "I'm listening.";
 export const SLEEP_LINE = "Going quiet. Say Jarvis to wake me.";
 export const ASLEEP_NOTE = "Jarvis is asleep. Say Jarvis to wake it.";
 export const NOTHING_SENT = "Nothing sent.";
+/** Shown in the chat only (never said) when a steer went out: Jarvis doesn't announce routing. */
+export const SENT_NOTE = "Sent.";
+export const DIDNT_CATCH_NOTE = "I didn't catch that.";
 export const NOTHING_TO_CONFIRM = "Nothing to confirm.";
 export const STOPPED_NOTE = "Stopped before sending.";
 
-export const sentLine = (name: string) => `Sent to ${name}.`;
 export const switchedLine = (name: string) => `Now on ${name}.`;
+/** Said as a new voice session is created in the target's workspace. */
+export const newSessionLine = (name: string) => `Starting a voice session in ${name}.`;
+export const newSessionFailedLine = (error: string) => `Couldn't start a voice session: ${error}`;
 /** No session by that name; with names, the numbered list follows so a number can answer it. */
 export const noSessionLine = (spoken: string, names: string[] = [], total = names.length) =>
   names.length ? `No session called ${spoken}. ${listLine(names, total)}` : `No session called ${spoken}.`;

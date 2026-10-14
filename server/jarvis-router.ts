@@ -6,13 +6,21 @@
 import { isBriefGreeting, replyBrief, startBrief, type BriefData, type BriefState } from "../shared/morning-brief";
 import { addressed, CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
 import { namelessPassThrough, type Interpreter } from "../shared/voice-interpreter";
-import { ASLEEP_NOTE, NOTHING_SENT, notTargetLine, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
+import { ASLEEP_NOTE, DIDNT_CATCH_NOTE, newSessionFailedLine, NOTHING_SENT, notTargetLine, SENT_NOTE, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
+import { createVoiceSession, VOICE_ROUTING_PREAMBLE, type VoiceCreatePaseo } from "../shared/voice-session";
+
+/** The `create` port: a marked voice session beside the target. See `createVoiceSession`. */
+export function voiceSessionCreator(paseo: () => VoiceCreatePaseo): (target: VoiceSession) => Promise<string> {
+  return (target) => createVoiceSession(paseo(), target.id);
+}
 
 export type JarvisRouterPorts = {
   /** Live sessions: `list` may be targets, `blocked` are Voice's own (Jarvis, the Voice helper). See `splitSessions`. */
   sessions(): Promise<{ list: VoiceSession[]; blocked: VoiceSession[] }>;
   /** Sends text to a session as a steer. */
   send(sessionId: string, text: string): Promise<unknown>;
+  /** Starts a marked voice session beside `target` and returns its id. See `voiceSessionCreator`. */
+  create(target: VoiceSession): Promise<string>;
   /**
    * Turns an utterance into a loop result. Defaults to the words as heard, minus a leading "Jarvis,".
    * The seam for the speech-cleanup helper: pass `withFallback(helper, namelessPassThrough)`, unwrapped to its result.
@@ -42,6 +50,8 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
   const interpreter = ports.interpreter ?? namelessPassThrough;
   const entries = new Map<string, Entry>();
   const chains = new Map<string, Promise<unknown>>();
+  // Sessions that already know the routing rule: ones the router created, and ones it has already told.
+  const told = new Set<string>();
   const briefs = new Map<string, { state: BriefState; at: number }>();
   let drawerTarget: VoiceSession | null = null;
   let lastBlocked: VoiceSession[] = [];
@@ -105,6 +115,8 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
   async function routeNow(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult> {
     const briefed = await routeBrief(routerId, text);
     if (briefed) return briefed;
+    // Empty speech (silence, a whisper the transcriber dropped) is not a routing failure.
+    if (!text.trim()) return { spoken: [], note: DIDNT_CATCH_NOTE };
     const entry = entryFor(routerId);
     let state = entry.state;
     const split = await refresh();
@@ -119,11 +131,11 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     const wasConfirming = state.mode === "confirming";
     // Lines Jarvis couldn't say out of turn come first, once.
     const spoken: string[] = entry.owed.splice(0);
+    let steered = false;
     const events: VoiceEvent[] = [{ type: "utterance", text }];
     for (let event = events.shift(); event; event = events.shift()) {
       const r = step(state, event);
       state = r.state;
-      let failed = false;
       for (const effect of r.effects) {
         switch (effect.type) {
           case "interpret": {
@@ -137,14 +149,23 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
             // Interrupted before the steer went out: nothing is sent and the state is left as it was.
             if (signal?.aborted) return { spoken: [], note: STOPPED_NOTE };
             try {
-              await ports.send(effect.session.id, effect.text);
+              const first = !told.has(effect.session.id);
+              await ports.send(effect.session.id, first ? `${VOICE_ROUTING_PREAMBLE}\n\n${effect.text}` : effect.text);
+              told.add(effect.session.id);
+              steered = true;
             } catch (error) {
-              failed = true;
               spoken.push(sendFailedLine(effect.session.name, errorText(error)));
             }
             break;
-          case "receipt":
-            if (!failed) spoken.push(effect.line);
+          case "create":
+            // The new session's system prompt carries the rule, so it is never briefed. A failure keeps the old target.
+            try {
+              const id = await ports.create(effect.session);
+              told.add(id);
+              events.push({ type: "pick", session: { id, name: `${effect.session.name} (voice)` } });
+            } catch (error) {
+              spoken.push(newSessionFailedLine(errorText(error)));
+            }
             break;
           case "speak":
           case "askConfirm":
@@ -164,13 +185,23 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     if (state.choices && state.choices !== choicesBefore) entry.choicesAt = now();
     entry.state = state;
     if (spoken.length) return { spoken, note: null };
-    return { spoken, note: state.mode === "asleep" ? ASLEEP_NOTE : NOTHING_SENT };
+    // A steer that went out is silent by design (no "Sent to ..."), but it was sent: never report "Nothing sent."
+    return { spoken, note: state.mode === "asleep" ? ASLEEP_NOTE : steered ? SENT_NOTE : NOTHING_SENT };
   }
 
   return {
     /** One utterance (or typed message) at a time per router, so a confirm can't race its answer. */
     route(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult> {
       const run = (chains.get(routerId) ?? Promise.resolve()).then(() => routeNow(routerId, text, signal));
+      chains.set(routerId, run.catch(() => undefined));
+      return run;
+    },
+    /**
+     * The briefing alone, for the Voice drawer: "good morning" and an open briefing's answers, on the same chain as
+     * `route`. Null means the words are not for the briefing and the caller carries on.
+     */
+    brief(routerId: string, text: string): Promise<RouteResult | null> {
+      const run = (chains.get(routerId) ?? Promise.resolve()).then(() => routeBrief(routerId, text));
       chains.set(routerId, run.catch(() => undefined));
       return run;
     },
@@ -195,6 +226,10 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
         }),
       );
       return lines;
+    },
+    /** Whether any phone router's loop is awake: a watched reply is dropped by a sleeping loop, so the Mac must say it. The drawer's own briefing entry doesn't count. */
+    listening(): boolean {
+      return [...entries].some(([routerId, entry]) => routerId !== "drawer" && entry.state.mode !== "asleep");
     },
     /** What Jarvis said has finished playing (or failed to), so the loop is no longer `speaking`. */
     playbackEnded(routerId: string): void {

@@ -40,8 +40,8 @@ test("an utterance after a pick is sent to the session through the link", async 
   runner.dispatch({ type: "utterance", text: "please run the tests" });
   await flush();
   assert.deepEqual(said, [["a1", "please run the tests"]]);
-  assert.deepEqual(runner.getState().lines, ["Sent to Alpha."]);
-  assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent to Alpha" }]);
+  assert.deepEqual(runner.getState().lines, []);
+  assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent" }]);
 });
 
 test("a custom interpreter answers the interpret effect", async () => {
@@ -143,7 +143,7 @@ test("tap to talk: speechStart, record, transcribe with hints, then the transcri
   assert.equal(runner.getState().talking, false);
   assert.deepEqual(said, [["a1", "please run the tests"]]);
   for (const word of ["merge", "Orchestrator", "Paseo", "Jarvis", "Alpha"]) assert.ok(hintsSeen[0].includes(word), word);
-  assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent to Alpha" }]);
+  assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent" }]);
 });
 
 test("a transcribe failure ends the recording with an empty utterance and records the error", async () => {
@@ -324,7 +324,7 @@ test("a confirm from the button or the timeout updates the transcript that asked
   await flush();
   assert.equal(sent.runner.getState().transcripts.at(-1)?.outcome, "asked to confirm");
   sent.runner.confirm("merge");
-  assert.equal(sent.runner.getState().transcripts.at(-1)?.outcome, "sent to Alpha");
+  assert.equal(sent.runner.getState().transcripts.at(-1)?.outcome, "sent");
   const timedOut = talkSetup();
   timedOut.runner.dispatch({ type: "utterance", text: "merge it" });
   await flush();
@@ -475,6 +475,52 @@ test("a numbered list is forgotten after the confirm timeout, like on the phone"
   assert.equal(timers.filter((t) => t.ms === CONFIRM_TIMEOUT_MS).every((t) => t.cleared || t === timer), true, "a picked list's timer is cleared");
 });
 
+test("a create effect makes a new session through the link the target", async () => {
+  const made: Array<{ id: string; name: string }> = [];
+  const { runner, said } = setup({
+    link: {
+      say: async () => {},
+      interrupt: async () => {},
+      create: async (target) => {
+        made.push(target);
+        return "new1";
+      },
+    },
+  });
+  runner.on();
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "new session" });
+  await flush();
+  assert.deepEqual(made, [alpha]);
+  assert.equal(runner.getState().session?.id, "new1");
+  assert.equal(said.length, 0);
+});
+
+test("a failed create lands in error and keeps the target", async () => {
+  const { runner } = setup({
+    link: { say: async () => {}, interrupt: async () => {}, create: async () => Promise.reject(new Error("no create")) },
+  });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "new session" });
+  await flush();
+  assert.equal(runner.getState().error, "no create");
+  assert.equal(runner.getState().session?.id, "a1");
+});
+
+test("newSession() creates from the target even while voice is off", async () => {
+  const made: Array<{ id: string; name: string }> = [];
+  const { runner } = setup({
+    link: { say: async () => {}, interrupt: async () => {}, create: async (target) => (made.push(target), "new2") },
+  });
+  runner.pick(alpha);
+  runner.newSession();
+  await flush();
+  assert.deepEqual(made, [alpha]);
+  assert.equal(runner.getState().session?.id, "new2");
+});
+
 type Batch = { cursor: number; events: VoiceEvent[]; phoneActive: boolean };
 
 // An events port whose reads stay pending until the test answers them.
@@ -527,7 +573,7 @@ test("a spoken reply that ends dispatches playbackEnded; one that is stopped doe
   await flush();
   ended.reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: false });
   await flush();
-  assert.equal(ended.spoken[0][0], "Alpha: All done.");
+  assert.equal(ended.spoken[0][0], "All done.");
   assert.equal(ended.runner.getState().mode, "listening");
   const stopped = eventsSetup("stopped");
   stopped.runner.on();
@@ -545,7 +591,7 @@ test("while the phone is speaking the line is shown, the speaker is not called, 
   reads[0].resolve({ cursor: 1, events: [reply("All done.")], phoneActive: true });
   await flush();
   assert.deepEqual(spoken, []);
-  assert.deepEqual(runner.getState().lines, ["Alpha: All done."]);
+  assert.deepEqual(runner.getState().lines, ["All done."]);
   assert.equal(runner.getState().phoneActive, true);
   assert.equal(runner.getState().mode, "listening");
 });
@@ -858,4 +904,37 @@ test("the auto-sleep timer does not run while waiting, confirming or speaking", 
   // "merge it" asks to confirm: no 60 s auto-sleep timer should be left running while confirming.
   assert.equal(runner.getState().mode, "confirming");
   assert.equal(timers.some((t) => t.ms === 60_000 && !t.cleared), false);
+});
+
+test("a briefing word is answered by the briefer: its lines are spoken and nothing reaches the session", async () => {
+  const asked: string[] = [];
+  const spoken: string[] = [];
+  const { runner, said } = setup({
+    brief: async (text) => {
+      asked.push(text);
+      return text === "good morning" ? ["Good morning, Dennis.", "Shall I go on?"] : null;
+    },
+    speaker: { speak: async (text) => (spoken.push(text), "ended" as const), stop: () => {} },
+  });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "good morning" });
+  await flush();
+  assert.deepEqual(spoken, ["Good morning, Dennis.", "Shall I go on?"]);
+  assert.deepEqual(runner.getState().lines, ["Good morning, Dennis.", "Shall I go on?"]);
+  assert.deepEqual(said, []);
+  // Not a briefing word: the loop has it as usual.
+  runner.dispatch({ type: "utterance", text: "run the tests" });
+  await flush();
+  assert.deepEqual(asked, ["good morning", "run the tests"]);
+  assert.deepEqual(said, [["a1", "run the tests"]]);
+});
+
+test("a briefer that fails lets the words through to the session", async () => {
+  const { runner, said } = setup({ brief: async () => Promise.reject(new Error("down")) });
+  runner.on();
+  runner.pick(alpha);
+  runner.dispatch({ type: "utterance", text: "run the tests" });
+  await flush();
+  assert.deepEqual(said, [["a1", "run the tests"]]);
 });

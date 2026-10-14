@@ -10,6 +10,13 @@ export type SpeakPorts = {
   hush: () => void;
 };
 
+/** Where a session's reply is heard: the phone (through the router, as a `voice-line`) only when it is on the pill, the phone is
+ *  active and `voice.phoneAudio` is on; the Mac otherwise; "none" when it is not on the pill. Never both. */
+export function speakRoute(input: { pill: boolean; phoneActive: boolean; phoneAudio: boolean }): "phone" | "mac" | "none" {
+  if (!input.pill) return "none";
+  return input.phoneActive && input.phoneAudio ? "phone" : "mac";
+}
+
 function lastReply(timeline: TurnEnded["timeline"]): string {
   for (let i = timeline.length - 1; i >= 0; i--) {
     const item = timeline[i];

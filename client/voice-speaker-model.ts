@@ -1,6 +1,8 @@
 // The sentence player: pure, no React or Paseo imports. It plays a reply one sentence at a time and fetches the next
 // sentence while the current one plays. `render` and `play` are ports, bound in client/voice-speaker.ts.
-import { MAX_SPEAK_CHARS } from "../shared/voice-rpc";
+import { splitSentences } from "../shared/voice-sentences";
+
+export { splitSentences };
 
 export type Rendered = { audio: string; engine: "chatterbox" | "kokoro" | "loading" };
 export type SentencePlayerPorts = {
@@ -8,23 +10,6 @@ export type SentencePlayerPorts = {
   play(audio: string): Promise<void>;
 };
 export type SpeakResult = "ended" | "stopped";
-
-// Sentences, each at most MAX_SPEAK_CHARS so it fits the speak RPC. A sentence with no break inside the cap is cut at
-// the last space before it (or at the cap when there is none).
-export function splitSentences(text: string): string[] {
-  const pieces: string[] = [];
-  for (const sentence of text.match(/[^.!?\n]+(?:[.!?]+["')\]]*|$)|\n/g) ?? []) {
-    let rest = sentence.trim();
-    while (rest.length > MAX_SPEAK_CHARS) {
-      const space = rest.lastIndexOf(" ", MAX_SPEAK_CHARS);
-      const cut = space > 0 ? space : MAX_SPEAK_CHARS;
-      pieces.push(rest.slice(0, cut).trim());
-      rest = rest.slice(cut).trim();
-    }
-    if (rest) pieces.push(rest);
-  }
-  return pieces;
-}
 
 export function createSentencePlayer({ render, play }: SentencePlayerPorts) {
   let generation = 0;

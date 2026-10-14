@@ -12,16 +12,17 @@ import { createVoicePrefs } from "./client/voice-prefs";
 import { createVoiceRunner } from "./client/voice-runner";
 import { createVoiceSpeaker } from "./client/voice-speaker";
 import { createVoiceLineRenderer, voiceLineSchema } from "./client/voice-line-renderer";
-import { voiceEvents, voiceTarget } from "./shared/voice-rpc";
+import { voiceBrief, voiceEvents, voiceTarget } from "./shared/voice-rpc";
 
 const TITLE = INSTALL_LABEL ? `Orchestration (${INSTALL_LABEL})` : "Orchestration";
 
 export default function contribute(client: PluginClientContext) {
   const voice = createVoiceRunner({
-    link: createVoiceLink(client.paseo.agents),
+    link: createVoiceLink(client.paseo),
     recorder: createVoiceMic(),
     transcriber: createVoiceTranscriber(client.rpc),
     events: { read: (after) => client.rpc(voiceEvents, { after }) },
+    brief: async (text) => (await client.rpc(voiceBrief, { text }))?.spoken ?? null,
     speaker: createVoiceSpeaker(client.rpc, client.playAudio),
     ears: createVoiceEars(client.rpc),
     prefs: createVoicePrefs(client.rpc),

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
-import { permissionEvents, turnEvents } from "./voice-turns";
+import { permissionEvents, turnEvents } from "./turn-events";
 
 type TurnEnded = PluginLifecycleEvents["agent.turn_ended"];
 type Permission = PluginLifecycleEvents["agent.permission_requested"];
@@ -49,4 +49,12 @@ test("Voice's own sessions (Jarvis, the Voice helper) say nothing", () => {
     assert.deepEqual(turnEvents(turnEnded({ kind: "completed" }, [user("hi"), said("hello")], agent)), []);
     assert.deepEqual(permissionEvents({ agent, request: {} } as unknown as Permission), []);
   }
+});
+
+test("a watched session's completed turn is only a watched reply (no finished notice, so it is said once)", () => {
+  const timeline = [user("do it"), said("All done.")];
+  assert.deepEqual(turnEvents(turnEnded({ kind: "completed" }, timeline), { watched: true }), [{ type: "reply", sessionId: "a1", text: "All done.", watched: true }]);
+  assert.deepEqual(turnEvents(turnEnded({ kind: "completed" }, [user("do it"), tool]), { watched: true }), [{ type: "notice", kind: "finished", sessionId: "a1" }]);
+  assert.deepEqual(turnEvents(turnEnded({ kind: "failed", error: { message: "x" } }, timeline), { watched: true }), [{ type: "notice", kind: "error", sessionId: "a1" }]);
+  assert.deepEqual(turnEvents(turnEnded({ kind: "completed" }, timeline, { ...AGENT, provider: "jarvis" }), { watched: true }), []);
 });

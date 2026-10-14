@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { splitSentences } from "../client/voice-speaker-model";
+import { splitSentences } from "../shared/voice-sentences";
 import type { SpeakResult } from "./voice-speaker";
 
 export type Playing = { done: Promise<void>; kill: () => void };

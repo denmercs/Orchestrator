@@ -111,6 +111,9 @@ export const voiceSettings = defineSettings({
   scope: "host",
   version: 1,
   schema: z.object({
+    // Profile (id or name) that voice sessions the plugin creates run on. Empty is Auto (the first Claude Sonnet
+    // profile); "off" leaves them on the Paseo default.
+    profile: z.string().default(""),
     // Reference clip the Speaker clones its voice from; empty uses Kokoro only.
     referenceClip: z.string().default(""),
     // On: the phone plays the cloned voice through the Speaker. Off: Jarvis speaks in Paseo's voice.

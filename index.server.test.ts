@@ -31,6 +31,12 @@ function registeredSettingIds(): string[] {
   return ids;
 }
 
+test("registers each setting once, since the host refuses a duplicate id", () => {
+  const ids = registeredSettingIds();
+  const duplicates = ids.filter((id, i) => ids.indexOf(id) !== i);
+  assert.deepEqual(duplicates, [], `registered twice: ${duplicates.join(", ")}`);
+});
+
 test("registers the dashboard tab setting on the host", () => {
   const ids = registeredSettingIds();
   assert.ok(ids.includes("dashboard"), `registered: ${ids.join(", ")}`);
@@ -112,6 +118,9 @@ type Fake = {
   replayed: unknown[];
 };
 
+// Set by a test that needs voice.phoneAudio on in `wired`.
+let voicePhoneAudio = false;
+
 function wired(
   pending: string[] = [],
   signedIn = true,
@@ -141,7 +150,10 @@ function wired(
       if (key === "on") return (name: string, h: never) => (listeners.set(name, h), noop);
       if (key === "registerProvider") return (provider: { connect(): Promise<unknown> }) => void providers.push(provider);
       if (key === "registerSettings") {
-        return () => new Proxy({}, { get: (_t, k) => (k === "read" ? async () => ({ status: "loading" }) : () => noop) });
+        return (definition: { id: string }) => {
+          const state = definition.id === "voice" && voicePhoneAudio ? { status: "ready", values: { referenceClip: "", phoneAudio: true } } : { status: "loading" };
+          return new Proxy({}, { get: (_t, k) => (k === "read" ? async () => state : () => noop) });
+        };
       }
       // Anything else hands back an unsubscribe, so the cleanup contribute returns can run.
       return () => noop;
@@ -516,12 +528,73 @@ test("turn_ended / permission_requested reach the hub and the router; orchestrat
       { type: "notice", kind: "needsYou", sessionId: "s1" },
     ]);
     assert.equal(answered.phoneActive, true);
-    assert.match(spoken.join(" "), /api: All done\./);
+    assert.match(spoken.join(" "), /All done\./);
   } finally {
     globalThis.fetch = realFetch;
     stop();
   }
 });
+
+// "asleep": phone audio on and the phone active, but the Voice loop was put to sleep, so the phone would not say it: the Mac must.
+for (const [phoneAudio, asleep] of [[true, false], [false, false], [true, true]]) {
+  test(`speak replies on the phone: voice.phoneAudio ${asleep ? "on but the loop asleep falls back to the Mac, never heard nowhere" : phoneAudio ? "on sends another session's reply to the phone as one voice-line and the Mac stays quiet" : "off keeps it on the Mac and off the hub"}`, async () => {
+    voicePhoneAudio = phoneAudio;
+    const { handlers, listeners, providers, plays, stop } = speakWired();
+    try {
+      await tick();
+      const target = { id: "s1", provider: "claude", title: "api", cwd: "/x", labels: {} };
+      const watched = { id: "s2", provider: "claude", title: "docs", cwd: "/x", labels: {} };
+      const paseo = { agents: { ref: () => ({ refresh: async () => null }), list: async () => ({ entries: [{ agent: target }, { agent: watched }] }) } };
+      const jarvis = (await providers[0].connect()) as { send(input: unknown): Promise<void>; onEvent(listener: (e: { type: string; state?: string; item?: { kind?: string; data?: { text: string } } }) => void): void };
+      const seen: { type: string; state?: string; item?: { kind?: string; data?: { text: string } } }[] = [];
+      jarvis.onEvent((e) => seen.push(e));
+      await jarvis.send({
+        type: "session.open",
+        requestId: "q1",
+        sessionId: "p1",
+        config: { cwd: "/repo", env: {}, mcpServers: { paseo: { type: "http", url: "http://127.0.0.1:1/mcp", headers: {} } }, settings: {}, persist: true },
+        persistence: { version: 1, data: { routerId: "r1" } },
+        history: "skip",
+      });
+      await handlers.get(voiceTarget.name)!({ id: "s1", name: "api" }, { paseo });
+      await jarvis.send({
+        type: "session.prompt",
+        sessionId: "p1",
+        prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "hello" }] } },
+      });
+      await until(() => seen.some((e) => e.type === "session.turn" && e.state === "completed"));
+      if (asleep) {
+        await jarvis.send({
+          type: "session.prompt",
+          sessionId: "p1",
+          prompt: { clientMessageId: "m2", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Jarvis, ignore me" }] } },
+        });
+        await until(() => seen.filter((e) => e.type === "session.turn" && e.state === "completed").length >= 2);
+      }
+      await handlers.get(speakRepliesSet.name)!({ agentId: "s2", mode: "short" }, { paseo });
+      listeners.get("agent.turn_ended")!({ ...spokenTurn("s2"), agent: watched }, { paseo });
+      await tick();
+      const read = (await handlers.get(voiceEvents.name)!({ after: 0 }, { paseo })) as { events: { type: string; sessionId: string; watched?: boolean }[] };
+      const lineItems = seen.filter((e) => e.item?.kind === "voice-line").map((e) => e.item?.data?.text);
+      if (asleep) {
+        assert.deepEqual(lineItems, [], "the phone says nothing");
+        assert.deepEqual(plays, ["audio:All done."], "so the Mac says it");
+        assert.deepEqual(read.events.map((e) => `${e.type}:${e.sessionId}`), ["notice:s2"]);
+      } else if (phoneAudio) {
+        assert.deepEqual(read.events, [{ type: "reply", sessionId: "s2", text: "All done.", watched: true }]);
+        assert.deepEqual(lineItems, ["docs: All done."]);
+        assert.deepEqual(plays, [], "the Mac says nothing");
+      } else {
+        assert.deepEqual(read.events.map((e) => `${e.type}:${e.sessionId}`), ["notice:s2"]);
+        assert.deepEqual(lineItems, []);
+        assert.deepEqual(plays, ["audio:All done."]);
+      }
+    } finally {
+      voicePhoneAudio = false;
+      stop();
+    }
+  });
+}
 
 type SpeakerFake = { started: number; stopped: number; rendered: { text: string; clip?: string }[] };
 
@@ -610,4 +683,87 @@ test("stops the Speaker's workers on cleanup", () => {
   assert.equal(fake.stopped, 0);
   stop();
   assert.equal(fake.stopped, 1);
+});
+
+// Wires contribute with a `before` capture and a voice setting that reads as `voiceProfile`.
+function createHook(voiceProfile: string) {
+  let hook: ((input: unknown, context: unknown) => Promise<unknown>) | undefined;
+  const noop = () => undefined;
+  const server = new Proxy({} as PluginServerContext, {
+    get: (_target, key) => {
+      if (key === "before") {
+        return (name: string, h: never) => {
+          if (name === "agent.create") hook = h;
+          return noop;
+        };
+      }
+      if (key === "registerSettings") {
+        return (definition: { id: string }) =>
+          new Proxy(
+            {},
+            {
+              get: (_t, k) =>
+                k === "read"
+                  ? async () =>
+                      definition.id === "voice"
+                        ? { status: "ready", values: { profile: voiceProfile } }
+                        : { status: "loading" }
+                  : () => noop,
+            },
+          );
+      }
+      return () => noop;
+    },
+  });
+  contribute(server, { speakerPorts: quietSpeaker });
+  assert.ok(hook, "agent.create has a before hook");
+  return hook;
+}
+
+const sonnetProfiles = {
+  config: {
+    daemon: {
+      agentProfiles: [
+        { id: "opus", name: "Claude | Opus", provider: "claude", model: "claude-opus-4" },
+        { id: "sonnet", name: "Claude | Sonnet 5.5 - Coding", provider: "claude", model: "claude-sonnet-5-5", modeId: "auto" },
+      ],
+    },
+  },
+};
+
+test("a voice-marked agent.create runs on the Sonnet profile and carries the rule", async () => {
+  const hook = createHook("");
+  const request = { config: { provider: "claude", cwd: "/nowhere" }, env: { ORCHESTRATOR_VOICE_SESSION: "1" } };
+  const out = (await hook({ request }, { paseo: { config: { get: async () => sonnetProfiles } } })) as typeof request & {
+    config: { model?: string; modeId?: string; systemPrompt?: string };
+  };
+  assert.equal(out.config.model, "claude-sonnet-5-5");
+  assert.equal(out.config.modeId, "auto");
+  assert.match(out.config.systemPrompt ?? "", /Voice routing rule/);
+});
+
+test("an unmarked agent.create is left as it was, apart from host MCP servers", async () => {
+  const hook = createHook("");
+  const request = { config: { provider: "claude", cwd: "/nowhere", systemPrompt: "mine" } };
+  const out = (await hook({ request }, { paseo: { config: { get: async () => sonnetProfiles } } })) as typeof request | undefined;
+  const config = { ...(out ?? request).config, mcpServers: undefined };
+  assert.deepEqual(config, { ...request.config, mcpServers: undefined });
+});
+
+test("a failing config.get still gives the marked create the rule, and warns", async () => {
+  const hook = createHook("");
+  const request = { config: { provider: "claude", cwd: "/nowhere" }, env: { ORCHESTRATOR_VOICE_SESSION: "1" } };
+  const warn = console.warn;
+  const warned: unknown[][] = [];
+  console.warn = (...args: unknown[]) => void warned.push(args);
+  try {
+    const out = (await hook({ request }, { paseo: { config: { get: async () => Promise.reject(new Error("down")) } } })) as {
+      config: { model?: string; systemPrompt?: string };
+    };
+    assert.equal(out.config.model, undefined);
+    assert.match(out.config.systemPrompt ?? "", /Voice routing rule/);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(warned.length, 1);
 });
