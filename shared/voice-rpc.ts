@@ -96,6 +96,12 @@ export const voiceEvents = defineRpc({
     cursor: z.number().int().min(0),
     events: z.array(z.custom<VoiceEvent>((v) => v !== null && typeof v === "object" && typeof (v as { type?: unknown }).type === "string")),
     phoneActive: z.boolean(),
+    // A best guess at whether Paseo voice mode is on, from the Jarvis sessions Paseo opened; absent from an older server.
+    voice: z.enum(["on", "off", "unknown"]).optional(),
+    // The saved voice setting can't be read, so Ignore me is off and speech goes through; the drawer says so.
+    settingsUnreadable: z.boolean().optional(),
+    // The saved Ignore me value hasn't been read yet, so the server is holding speech; the drawer says it is checking.
+    settingsChecking: z.boolean().optional(),
   }),
 });
 

@@ -498,3 +498,17 @@ test("a long request that mentions status still goes to the target", async () =>
   assert.equal(sent[0][0], "s1");
   assert.ok(sent[0][1].endsWith("the status of the build is red, fix it"));
 });
+
+test("a typed one-word message reaches the target, even asleep; spoken one-word is still dropped", async () => {
+  const { router, sent } = setup();
+  await router.setTarget(api);
+  await router.route("r1", "Jarvis");
+  await router.route("r1", "continue");
+  assert.deepEqual(sent, []);
+  await router.route("r1", "continue", undefined, { typed: true });
+  assert.deepEqual(sent, [["s1", "continue"]]);
+  const asleep = setup();
+  await asleep.router.setTarget(api);
+  await asleep.router.route("r2", "continue", undefined, { typed: true });
+  assert.deepEqual(asleep.sent, [["s1", "continue"]]);
+});

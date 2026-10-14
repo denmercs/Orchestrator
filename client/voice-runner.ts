@@ -36,7 +36,7 @@ export type VoiceRunnerPorts = {
   /** Audio plus hint words in, text out. */
   transcriber?: (audio: string, hints: string[]) => Promise<string>;
   /** Turn events from the plugin server: read(after) waits for events past the cursor. `phoneActive` means the phone is speaking. */
-  events?: { read(after: number): Promise<{ cursor: number; events: VoiceEvent[]; phoneActive: boolean }> };
+  events?: { read(after: number): Promise<{ cursor: number; events: VoiceEvent[]; phoneActive: boolean; voice?: VoiceGuess; settingsUnreadable?: boolean; settingsChecking?: boolean }> };
   /** Speaks a line aloud: resolves "ended" when it finished, "stopped" when stop() cut it off. */
   speaker?: { speak(text: string, replyId: string): Promise<"ended" | "stopped">; stop(): void };
   /** The morning briefing: lines to say when the words are "good morning" or an open briefing's answer, null when they are not. */
@@ -57,7 +57,12 @@ export type VoiceRunnerPorts = {
   /** False on a device with no mic API (the phone): replies to the target are shown in the panel, not spoken. Defaults to true. */
   hasMic?: () => boolean;
   /** The persisted `voice.micOff` setting. */
-  prefs?: { read(): Promise<{ micOff: boolean }>; write(micOff: boolean): Promise<unknown> };
+  prefs?: {
+    read(): Promise<{ micOff: boolean; unreadable?: boolean; transient?: boolean }>;
+    write(micOff: boolean): Promise<unknown>;
+    /** Re-saves the defaults over a setting that can't be read. */
+    repair?(lastKnown?: boolean): Promise<unknown>;
+  };
 };
 
 export type TranscriptEntry = { text: string; outcome: string };
@@ -66,7 +71,9 @@ export type InterpretRecord = { heard: string; outcome: InterpretOutcome };
 
 export type ConversationEntry = { from: "you"; text: string; outcome: string } | { from: "jarvis"; text: string };
 
-export type VoiceSnapshot = VoiceState & { lines: string[]; conversation: ConversationEntry[]; transcripts: TranscriptEntry[]; interprets: InterpretRecord[]; helper: boolean; error: string | null; phoneActive: boolean; micOn: boolean };
+/** Best guess at whether Paseo voice mode is on; Paseo gives plugins no way to know for sure. */
+export type VoiceGuess = "on" | "off" | "unknown";
+export type VoiceSnapshot = VoiceState & { lines: string[]; conversation: ConversationEntry[]; transcripts: TranscriptEntry[]; interprets: InterpretRecord[]; helper: boolean; error: string | null; phoneActive: boolean; micOn: boolean; /** voice.micOff is on: what you say is dropped. Follows the saved pref only. */ ignoring: boolean; /** The mic should be on but could not open. */ micUnavailable: boolean; voiceGuess: VoiceGuess; /** The saved voice setting can't be read: Ignore me is off and the mic defaults to on. */ settingsUnreadable: boolean; /** The Jarvis session's agent id, for opening its Paseo chat. */ jarvisAgentId: string | null; /** The saved Ignore me value isn't known yet, so speech is held and the mic stays closed. */ settingsChecking: boolean };
 
 
 export const AUTO_SLEEP_MS = 60_000;
@@ -86,7 +93,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   let lastSent: number | null = null;
   let confirmEntry: number | null = null; // the transcript that asked to confirm
   const listeners = new Set<() => void>();
-  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], conversation: [], transcripts: [], interprets: [], helper: HELPER_DEFAULT_ON, error: null, phoneActive: false, micOn: false };
+  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], conversation: [], transcripts: [], interprets: [], helper: HELPER_DEFAULT_ON, error: null, phoneActive: false, micOn: false, ignoring: false, micUnavailable: false, voiceGuess: "unknown", settingsUnreadable: false, jarvisAgentId: null, settingsChecking: false };
   let autoSleepTimer: unknown = null;
   const clearAutoSleep = () => {
     if (autoSleepTimer === null) return;
@@ -405,15 +412,27 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
         if (polling !== run) return;
         cursor = batch.cursor;
         if (batch.phoneActive !== snapshot.phoneActive) publish({ phoneActive: batch.phoneActive });
-        // Asleep the loop drops replies, so the panel shows them itself; awake, the loop shows them already.
-        if (ports.hasMic && !ports.hasMic() && snapshot.mode === "asleep") {
-          const shown = batch.events.map((e) => phoneReplyLine(e, snapshot.session?.id)).filter((l): l is string => l !== null);
-          if (shown.length) {
-            shown.forEach((text) => convo.push({ from: "jarvis", text }));
-            publish({ lines: keepLast(snapshot.lines, shown, MAX_LINES), ...showConversation() });
-          }
+        if (batch.voice && batch.voice !== snapshot.voiceGuess) publish({ voiceGuess: batch.voice });
+        if (batch.settingsUnreadable !== serverUnreadable || batch.settingsChecking !== serverChecking) {
+          serverUnreadable = batch.settingsUnreadable;
+          serverChecking = batch.settingsChecking;
+          showSettingsState();
         }
-        batch.events.forEach(dispatch);
+        // One event at a time, in order: what Paseo voice mode heard is a "you" line (the loop never sees it). Asleep
+        // the loop drops replies, so with no mic the panel shows them itself; awake, the loop shows them already.
+        for (const e of batch.events) {
+          if (e.type === "heard") {
+            convo.push({ from: "you", text: e.text, outcome: "" });
+            publish(showConversation());
+            continue;
+          }
+          const line = ports.hasMic && !ports.hasMic() && snapshot.mode === "asleep" ? phoneReplyLine(e, snapshot.session?.id) : null;
+          if (line !== null) {
+            convo.push({ from: "jarvis", text: line });
+            publish({ lines: keepLast(snapshot.lines, [line], MAX_LINES), ...showConversation() });
+          }
+          dispatch(e);
+        }
       } catch (err) {
         if (polling !== run) return;
         fail(err);
@@ -431,6 +450,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
 
   function off() {
     polling++;
+    startRetry++;
     ports.helper?.stop().catch(fail);
     publish({ phoneActive: false });
     dispatch({ type: "sleep" });
@@ -446,19 +466,58 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     }
   }
 
+  // The last Ignore me value actually read or saved (null: never). A glitch never changes it.
+  let lastMicOff: boolean | null = null;
+  // What this device read, and what the server reported, for the notice and the checking state; the server's wins once it answers.
+  let localUnreadable = false;
+  let localChecking = false;
+  let serverUnreadable: boolean | undefined;
+  let serverChecking: boolean | undefined;
+  const showSettingsState = () =>
+    publish({
+      settingsUnreadable: serverUnreadable ?? localUnreadable,
+      // A client that has a value is not checking, whatever a stale server flag says.
+      settingsChecking: lastMicOff !== null ? false : (serverChecking ?? localChecking),
+    });
+  const RETRY_MS = 250;
+  const MAX_RETRY_MS = 8_000;
+  let startRetry = 0;
+
+  // Applies a value that was actually read: opens the mic unless Ignore me is on.
+  async function applySaved(saved: { micOff: boolean; unreadable?: boolean }) {
+    if (ports.prefs) lastMicOff = saved.micOff;
+    localUnreadable = saved.unreadable === true;
+    localChecking = false;
+    publish({ micOn: !saved.micOff, ignoring: saved.micOff, micUnavailable: false, error: null });
+    showSettingsState();
+    if (!saved.micOff && ports.ears) {
+      try {
+        await ports.ears.open();
+      } catch {
+        publish({ micOn: false, micUnavailable: true });
+      }
+    }
+  }
+
+  // A rejected read says nothing about the value: stay closed (no mic, speech held by the server) and ask again, longer each time.
+  async function readSaved(run: number, attempt: number): Promise<void> {
+    const saved = ports.prefs ? await ports.prefs.read().catch(() => ({ micOff: false, transient: true })) : { micOff: false, unreadable: false };
+    if (run !== startRetry) return;
+    if ("transient" in saved && saved.transient) {
+      localChecking = true;
+      publish({ micOn: false, ignoring: false, micUnavailable: false, error: null });
+      showSettingsState();
+      clock.setTimeout(() => void readSaved(run, attempt + 1), Math.min(RETRY_MS * 2 ** attempt, MAX_RETRY_MS));
+      return;
+    }
+    await applySaved(saved);
+  }
+
   /** Called once at launch: loads the mic pref, opens the mic and ears if it is on, and starts the events poll.
    * The loop itself stays asleep; a real wake word (or a tap) is what starts listening. A device with no mic (the
    * phone) fails quietly here, since that is expected rather than an error to show. */
   async function start() {
-    const micOff = ports.prefs ? (await ports.prefs.read()).micOff : false;
-    publish({ micOn: !micOff, error: null });
-    if (!micOff && ports.ears) {
-      try {
-        await ports.ears.open();
-      } catch {
-        publish({ micOn: false });
-      }
-    }
+    await readSaved(++startRetry, 0);
     void poll(++polling);
   }
 
@@ -466,21 +525,28 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
    * also returns the loop to asleep, since there is no more audio to listen with. */
   async function setMic(on: boolean) {
     if (ports.prefs) await ports.prefs.write(!on);
+    // A save is a value actually known, and repairs an unreadable setting.
+    lastMicOff = !on;
+    startRetry++;
+    localUnreadable = false;
+    localChecking = false;
+    serverUnreadable = serverChecking = undefined;
+    showSettingsState();
     if (!ports.ears) {
-      publish({ micOn: on });
+      publish({ micOn: on, ignoring: !on, micUnavailable: false });
       return;
     }
     if (on) {
       try {
         await ports.ears.open();
-        publish({ micOn: true, error: null });
+        publish({ micOn: true, ignoring: false, micUnavailable: false, error: null });
       } catch (err) {
-        publish({ micOn: false });
+        publish({ micOn: false, ignoring: false, micUnavailable: true });
         fail(err);
       }
       return;
     }
-    publish({ micOn: false });
+    publish({ micOn: false, ignoring: true, micUnavailable: false });
     dispatch({ type: "sleep" });
     try {
       await ports.ears.close();
@@ -523,7 +589,9 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     confirm: (word: string) => dispatch({ type: "confirm", word }),
     interrupt: () => dispatch({ type: "interrupt" }),
     /** `blocked` are Voice's own sessions (Jarvis, the Voice helper), never a target. */
-    setSessions(list: VoiceSession[], blocked: VoiceSession[] = []) {
+    setSessions(list: VoiceSession[], blocked: VoiceSession[] = [], jarvis: VoiceSession[] = []) {
+      const jarvisAgentId = jarvis[0]?.id ?? null;
+      if (jarvisAgentId !== snapshot.jarvisAgentId) publish({ jarvisAgentId });
       // The pills resync often; only a real change should reach the loop and wake subscribers.
       const same = (a: VoiceSession[], b: VoiceSession[]) => a.length === b.length && a.every((s, i) => s.id === b[i]?.id && s.name === b[i]?.name);
       if (!same(list, snapshot.sessions) || !same(blocked, snapshot.blocked)) dispatch({ type: "sessions", list, blocked });
@@ -533,7 +601,18 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     type(text: string) {
       if (!text.trim()) return;
       if (snapshot.mode === "asleep") dispatch({ type: "wake" });
-      dispatch({ type: "utterance", text });
+      dispatch({ type: "utterance", text, typed: true });
+    },
+    /** The notice's repair button: re-saves the defaults over a voice setting that can't be read. */
+    async repairSettings() {
+      try {
+        await ports.prefs?.repair?.(lastMicOff ?? undefined);
+        localUnreadable = false;
+        serverUnreadable = false;
+        showSettingsState();
+      } catch (err) {
+        fail(err);
+      }
     },
     /** The panel's "New voice session" button: the same create the "new session" phrase makes, voice on or off. */
     newSession() {

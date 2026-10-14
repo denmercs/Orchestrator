@@ -23,6 +23,8 @@ const VOICE_LINE_KIND = "voice-line";
 const SPEAK_TIMEOUT_MS = 90_000;
 /** Jarvis counts as active for this long after the last prompt or line (the phone is the speaker then). */
 export const JARVIS_ACTIVE_MS = 10 * 60 * 1000;
+/** The voice on/off guess holds this long after a session was last seen (open, prompt, turn end or line): idle is not gone. */
+export const VOICE_GUESS_MS = 2 * 60 * 60 * 1000;
 
 type Fetch = typeof fetch;
 type Session = {
@@ -33,6 +35,8 @@ type Session = {
   abort: AbortController | null;
   /** When this session last sent or received a line; 0 until the first prompt. */
   lastActiveAt: number;
+  /** When this session last opened, got a prompt or said a line: what the voice guess goes by. */
+  seenAt: number;
   /** Callers of `say` waiting for the open turn to end. */
   idle: (() => void)[];
 };
@@ -40,12 +44,14 @@ type Session = {
 export type JarvisConnection = ProviderConnection & {
   /** True when a session with a `paseo` MCP server (voice mode on) was active in the last JARVIS_ACTIVE_MS. */
   isActive(now: number): boolean;
+  /** Best guess whether Paseo voice mode is on: a session open with the `paseo` MCP server means on, one without means off, none is unknown. */
+  voiceState(now: number): "on" | "off" | "unknown";
   /** Says a router's event lines out of turn (after any open turn ends); a line that can't be said is owed to its next words. */
   say(routerId: string, lines: string[]): Promise<void>;
 };
 
 export type JarvisProviderDeps = {
-  route(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult>;
+  route(routerId: string, text: string, signal?: AbortSignal, opts?: { typed?: boolean }): Promise<RouteResult>;
   /** Keeps a line Jarvis couldn't say, to say first at the router's next words. */
   owe?(routerId: string, lines: string[]): void;
   /** What was spoken has finished (or failed), so the router's loop leaves `speaking`. */
@@ -54,6 +60,10 @@ export type JarvisProviderDeps = {
   phoneAudio?(): boolean;
   /** Speaks on the Mac through the Speaker; false means it could not, so Paseo's `speak` tool takes the line. */
   localSpeak?(text: string): Promise<boolean>;
+  /** Setting `voice.micOff`: when true, what Paseo voice mode heard is dropped before the router. Typed messages still go through. */
+  muted?(): boolean | Promise<boolean>;
+  /** Spoken input that reached the router (never typed text, never muted input), so the drawer can show it as a "you" line. */
+  heard?(routerId: string, text: string): void;
   fetch?: Fetch;
   /** Starts the Voice helper in the background; called when a session opens. Never awaited, failures ignored. */
   warm?(): unknown;
@@ -140,6 +150,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
     session.turnId = null;
     session.abort = null;
     session.lastActiveAt = Date.now();
+    session.seenAt = Date.now();
     emit({ type: "session.turn", sessionId, turnId, state, ...(error ? { error: { message: error } } : {}) });
     release(session);
   };
@@ -150,7 +161,10 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
     if (live(sessionId, turnId)) emit({ type: "session.turn", sessionId, turnId, state: "started" });
     const text = promptText(prompt);
     const spoken = spokenText(text);
-    const result = await deps.route(session.routerId, spoken ?? text, signal);
+    // Muted: Paseo's recorder can't be stopped from here, so what it heard is dropped (never routed, shown or answered).
+    if (spoken !== null && (await deps.muted?.())) return end(sessionId, turnId, "completed");
+    if (spoken !== null) deps.heard?.(session.routerId, spoken);
+    const result = await deps.route(session.routerId, spoken ?? text, signal, { typed: spoken === null });
     const reply = [result.spoken.join(" "), result.note].filter(Boolean).join(" ");
     if (reply && live(sessionId, turnId)) {
       emit({ type: "timeline.item", sessionId, item: { id: `${turnId}-reply`, type: "assistant_message", text: reply } });
@@ -191,7 +205,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
         } catch {
           // A warm-up that throws must not stop the session opening.
         }
-        sessions.set(input.sessionId, { routerId, mcpServers: input.config.mcpServers, turnId: null, abort: null, lastActiveAt: 0, idle: [] });
+        sessions.set(input.sessionId, { routerId, mcpServers: input.config.mcpServers, turnId: null, abort: null, lastActiveAt: 0, seenAt: Date.now(), idle: [] });
         later({
           type: "session.opened",
           requestId: input.requestId,
@@ -225,6 +239,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
         session.turnId = turnId;
         session.abort = abort;
         session.lastActiveAt = Date.now();
+        session.seenAt = Date.now();
         later({ type: "session.prompt_result", sessionId: input.sessionId, clientMessageId: input.prompt.clientMessageId, result: { type: "turn", turnId } });
         setImmediate(() => {
           runTurn(input.sessionId, input.prompt, turnId, abort.signal).catch((error) =>
@@ -283,6 +298,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
         return;
       }
       session.lastActiveAt = Date.now();
+      session.seenAt = Date.now();
       if (deps.phoneAudio?.()) {
         const sessionId = [...sessions.entries()].find(([, s]) => s === session)?.[0] as string;
         for (const line of lines) voiceLine(sessionId, line);
@@ -296,6 +312,12 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
         deps.owe?.(routerId, lines);
       }
       deps.playbackEnded?.(routerId);
+    },
+    voiceState(now) {
+      // Only sessions seen lately count, so one that dropped without closing decays to unknown (after VOICE_GUESS_MS).
+      const recent = [...sessions.values()].filter((s) => now - s.seenAt < VOICE_GUESS_MS);
+      if (recent.length === 0) return "unknown";
+      return recent.some((s) => s.mcpServers.paseo) ? "on" : "off";
     },
     isActive(now) {
       for (const session of sessions.values()) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ProviderEvent, ProviderInput, ProviderPrompt } from "@getpaseo/plugin/server/provider";
-import { createJarvisConnection, createJarvisProvider, JARVIS_ACTIVE_MS, promptText, routerIdOf, speak, spokenText } from "./jarvis-provider";
+import { createJarvisConnection, createJarvisProvider, JARVIS_ACTIVE_MS, VOICE_GUESS_MS, promptText, routerIdOf, speak, spokenText } from "./jarvis-provider";
 import type { RouteResult } from "./jarvis-router";
 
 const PASEO = { type: "http" as const, url: "http://127.0.0.1:1/mcp", headers: { Authorization: "Bearer t" } };
@@ -441,4 +441,125 @@ test("a multi-line briefing reply is spoken once, in one piece, through the Mac'
   await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
   assert.deepEqual(spoken, [lines.join(" ")]);
   assert.equal(calls.length, 0);
+});
+
+// --- Mute and the drawer's conversation ---
+
+function connectWith(extra: Partial<Parameters<typeof createJarvisConnection>[0]>) {
+  const routed: [string, string][] = [];
+  const heard: [string, string][] = [];
+  const { impl, calls } = fakeFetch({ body: OK_JSON });
+  const connection = createJarvisConnection({
+    route: async (routerId, text) => {
+      routed.push([routerId, text]);
+      return { spoken: ["Sent to docs."], note: null };
+    },
+    heard: (routerId, text) => void heard.push([routerId, text]),
+    fetch: impl,
+    ...extra,
+  });
+  const events: ProviderEvent[] = [];
+  connection.onEvent((event) => events.push(event));
+  return { connection, events, routed, heard, calls };
+}
+
+test("muted drops spoken input before it reaches the router: nothing routed, heard or spoken, the turn still completes", async () => {
+  const { connection, events, routed, heard, calls } = connectWith({ muted: () => true });
+  await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
+  assert.deepEqual(routed, []);
+  assert.deepEqual(heard, []);
+  assert.equal(calls.length, 0);
+  assert.ok(!events.some((e) => e.type === "timeline.item"));
+  assert.ok(events.some((e) => e.type === "session.turn" && e.state === "completed"));
+});
+
+test("muted does not stop typed messages", async () => {
+  const { connection, events, routed, calls } = connectWith({ muted: () => true });
+  await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt("run the tests") });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
+  assert.deepEqual(routed, [["r1", "run the tests"]]);
+  assert.equal(calls.length, 0);
+});
+
+test("unmuted spoken input is reported as heard once; typed input is not, and is never spoken", async () => {
+  const { connection, events, heard, calls } = connectWith({ muted: () => false });
+  await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
+  assert.deepEqual(heard, [["r1", "run the tests"]]);
+  assert.equal(calls.length, 1);
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt("typed words") });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(heard, [["r1", "run the tests"]]);
+  assert.equal(calls.length, 1);
+});
+
+test("mute is read per turn, so unmuting takes effect without reopening; stop/start keeps the same routerId", async () => {
+  let muted = true;
+  const { connection, events, routed } = connectWith({ muted: () => muted });
+  await connection.send(open({ version: 1, data: { routerId: "r9" } }));
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(routed, []);
+  await connection.send({ type: "session.close", requestId: "c1", sessionId: "p1" });
+  await connection.send(open({ version: 1, data: { routerId: "r9" } }));
+  muted = false;
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "completed" && routed.length > 0);
+  assert.deepEqual(routed, [["r9", "run the tests"]]);
+  const opened = events.filter((e) => e.type === "session.opened");
+  assert.deepEqual(opened.map((e) => (e.type === "session.opened" ? e.persistence?.data : null)), [{ routerId: "r9" }, { routerId: "r9" }]);
+});
+
+test("the router is told whether a prompt was typed or spoken", async () => {
+  const flags: unknown[] = [];
+  const { connection, events } = connectWith({
+    route: async (_id, _text, _signal, opts) => {
+      flags.push(opts?.typed);
+      return { spoken: [], note: null };
+    },
+  });
+  await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt("continue") });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(flags, [true, false]);
+});
+
+test("voiceState is a best guess from the sessions Paseo opened: the paseo MCP server means voice mode is on", async () => {
+  const { connection, events } = connectWith({});
+  assert.equal(connection.voiceState(Date.now()), "unknown");
+  const noVoice = { ...open({ version: 1, data: { routerId: "r1" } }) } as Extract<ProviderInput, { type: "session.open" }>;
+  await connection.send({ ...noVoice, config: { ...noVoice.config, mcpServers: {} } });
+  await settle(events, (e) => e.type === "session.ready");
+  assert.equal(connection.voiceState(Date.now()), "off");
+  await connection.send({ ...(open({ version: 1, data: { routerId: "r1" } }) as Extract<ProviderInput, { type: "session.open" }>), sessionId: "p2" });
+  assert.equal(connection.voiceState(Date.now()), "on");
+  await connection.send({ type: "session.close", requestId: "c", sessionId: "p2" });
+  assert.equal(connection.voiceState(Date.now()), "off");
+});
+
+test("voiceState stays on through a long idle spell and only decays to unknown after VOICE_GUESS_MS", async () => {
+  const { connection, events } = connectWith({});
+  await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await settle(events, (e) => e.type === "session.ready");
+  const now = Date.now();
+  assert.ok(VOICE_GUESS_MS > JARVIS_ACTIVE_MS);
+  assert.equal(connection.voiceState(now + JARVIS_ACTIVE_MS + 1000), "on");
+  assert.equal(connection.voiceState(now + VOICE_GUESS_MS - 1000), "on");
+  assert.equal(connection.voiceState(now + VOICE_GUESS_MS + 1000), "unknown");
+});
+
+test("a line said to a session refreshes the voice guess", async () => {
+  const { connection, events } = connectWith({});
+  await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await settle(events, (e) => e.type === "session.ready");
+  const before = Date.now();
+  await new Promise((r) => setTimeout(r, 15));
+  await connection.say("r1", ["hello"]);
+  assert.equal(connection.voiceState(before + VOICE_GUESS_MS + 5), "on");
 });

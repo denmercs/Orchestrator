@@ -136,7 +136,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     }
   }
 
-  async function routeNow(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult> {
+  async function routeNow(routerId: string, text: string, signal?: AbortSignal, typed = false): Promise<RouteResult> {
     const briefed = await routeBrief(routerId, text);
     if (briefed) return briefed;
     const statused = await routeStatus(routerId, text);
@@ -159,7 +159,9 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     const spoken: string[] = entry.owed.splice(0);
     let steered = false;
     let fallbackNote: string | null = null;
-    const events: VoiceEvent[] = [{ type: "utterance", text }];
+    // Typing is deliberate: it wakes a sleeping loop, and skips the short-text and helper filters.
+    if (typed && state.mode === "asleep") state = step(state, { type: "wake" }).state;
+    const events: VoiceEvent[] = [{ type: "utterance", text, ...(typed ? { typed } : {}) }];
     for (let event = events.shift(); event; event = events.shift()) {
       const r = step(state, event);
       state = r.state;
@@ -220,8 +222,8 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
 
   return {
     /** One utterance (or typed message) at a time per router, so a confirm can't race its answer. */
-    route(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult> {
-      const run = (chains.get(routerId) ?? Promise.resolve()).then(() => routeNow(routerId, text, signal));
+    route(routerId: string, text: string, signal?: AbortSignal, opts?: { typed?: boolean }): Promise<RouteResult> {
+      const run = (chains.get(routerId) ?? Promise.resolve()).then(() => routeNow(routerId, text, signal, opts?.typed === true));
       chains.set(routerId, run.catch(() => undefined));
       return run;
     },

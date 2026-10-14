@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { addressed, initialVoiceState, step, withoutName, type VoiceEffect, type VoiceEvent, type VoiceMode, type VoiceSession, type VoiceState } from "./voice-loop";
+import { ROUTER_PROVIDER_ID } from "./voice-loop";
+import { addressed, initialVoiceState, jarvisSessions, step, withoutName, type VoiceEffect, type VoiceEvent, type VoiceMode, type VoiceSession, type VoiceState } from "./voice-loop";
 
 const api: VoiceSession = { id: "s1", name: "api-refactor" };
 const docs: VoiceSession = { id: "s2", name: "docs" };
@@ -693,4 +694,35 @@ test("a summary never sends anything, and a later merge still confirms the held 
   assert.equal(replied.state.mode, "confirming");
   const sent = step(replied.state, { type: "confirm", word });
   assert.deepEqual(types(sent.effects).filter((t) => t === "send"), ["send"]);
+});
+
+test("a typed one-word message is sent to the target; the same word spoken is still dropped", () => {
+  const typed = step(awake(), { type: "utterance", text: "continue", typed: true });
+  assert.deepEqual(typed.effects, [{ type: "send", session: api, text: "continue", behavior: "steer" }]);
+  const spoken = say(awake(), "continue");
+  assert.deepEqual(types(spoken.effects), []);
+});
+
+test("typed text skips the helper: no interpret effect, so a helper drop cannot lose it", () => {
+  const typed = step(awake(), { type: "utterance", text: "please run the tests", typed: true });
+  assert.deepEqual(types(typed.effects), ["send"]);
+  assert.deepEqual(types(say(awake(), "please run the tests").effects), ["interpret"]);
+});
+
+test("jarvisSessions picks only the Jarvis provider's sessions", () => {
+  const agents = [
+    { id: "a1", title: "Alpha", provider: "claude" },
+    { id: "j1", title: "Jarvis", provider: ROUTER_PROVIDER_ID },
+  ];
+  assert.deepEqual(jarvisSessions(agents), [{ id: "j1", name: "Jarvis" }]);
+  assert.deepEqual(jarvisSessions([agents[0]]), []);
+});
+
+test("jarvisSessions lists the most recently active Jarvis session first", () => {
+  const agents = [
+    { id: "old", title: "Jarvis", provider: ROUTER_PROVIDER_ID, lastActivityAt: "2026-10-14T10:00:00Z" },
+    { id: "new", title: "Jarvis", provider: ROUTER_PROVIDER_ID, lastActivityAt: "2026-10-14T12:00:00Z" },
+    { id: "none", title: "Jarvis", provider: ROUTER_PROVIDER_ID },
+  ];
+  assert.deepEqual(jarvisSessions(agents).map((s) => s.id), ["new", "old", "none"]);
 });

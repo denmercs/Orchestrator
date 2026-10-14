@@ -5,6 +5,7 @@ import { createRequestSequence, createToastQueue, pillMenu, pillView, usageChang
 import { RECAP_COMMAND, recapPill } from "./recap-pill-model";
 import { speakRepliesSet, speakRepliesState, type SpeakMode } from "../shared/speak-replies";
 import { nextSpeakMode, speakPill } from "./speak-pill-model";
+import { jarvisSessions } from "../shared/voice-loop";
 import type { createVoiceRunner } from "./voice-runner";
 import { canTarget, sessionName, splitSessions, voicePill } from "./voice-pill-model";
 
@@ -274,7 +275,7 @@ export function contributeSessionRolePills(client: PluginClientContext, voice?: 
   function sync() {
     const live = [...agents.values()].filter(isLive);
     const { list, blocked } = splitSessions(live);
-    voice?.setSessions(list, blocked);
+    voice?.setSessions(list, blocked, jarvisSessions(live));
     const childCounts = new Map<string, number>();
     for (const agent of live) {
       const parentId = parentOf(agent);

@@ -41,7 +41,10 @@ export type VoiceEvent =
   | { type: "wake" }
   /** Every speechStart is followed by an utterance, empty when nothing was heard, so `talking` always ends. */
   | { type: "speechStart" }
-  | { type: "utterance"; text: string }
+  /** `typed`: from the keyboard, so the short-text and helper filters are skipped and it always goes to the target. */
+  | { type: "utterance"; text: string; typed?: boolean }
+  /** Paseo voice mode heard this on the phone or laptop (not typed, not muted). The drawer shows it as a "you" line; the loop ignores it. */
+  | { type: "heard"; text: string }
   | { type: "interpreted"; seq: number; result: InterpretResult }
   /** `watched`: the session is on the Speak pill, so its reply is heard even when it is not the target. */
   | { type: "reply"; sessionId: string; text: string; summary?: string; watched?: boolean }
@@ -182,7 +185,7 @@ function pickNumber(state: VoiceState, choices: VoiceSession[], n: number): Voic
   return sentTo({ ...picked.state, choicesText: undefined }, text);
 }
 
-function onUtterance(state: VoiceState, text: string): VoiceStep {
+function onUtterance(state: VoiceState, text: string, typed = false): VoiceStep {
   const heard = norm(text);
   const cleaned = stripName(heard);
   const ignore = new RegExp(`^(?:(?:hey|ok|okay) )?(?:(${NAMES}) )?(?:ignor(?:e|ing)( me)?|(silent mode))$`).exec(heard);
@@ -220,8 +223,9 @@ function onUtterance(state: VoiceState, text: string): VoiceStep {
     if (named.length === 1) return switched(base, named[0]);
     if (named.length > 1) return askWhich({ ...base, pending: null }, named);
   }
-  if (cleaned.split(" ").filter(Boolean).length < 2) return out(base);
+  if (!typed && cleaned.split(" ").filter(Boolean).length < 2) return out(base);
   if (!state.session) return numberedList({ ...base, pending: null }, PICK_SHOWN, pickFirstLine);
+  if (typed) return sentTo(base, text.trim());
   const seq = state.seq + 1;
   return out({ ...base, seq, pending: { seq, heard: text } }, { type: "interpret", seq, text });
 }
@@ -242,6 +246,8 @@ function onInterpreted(state: VoiceState, seq: number, result: InterpretResult):
 }
 
 function core(state: VoiceState, event: VoiceEvent): VoiceStep {
+  // Display only: the drawer shows it, the loop never acts on it.
+  if (event.type === "heard") return out(state);
   if (event.type === "sessions") {
     const blocked = event.blocked ?? [];
     // A target that turns out to be one of Voice's own sessions is dropped.
@@ -283,7 +289,7 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
       return state.mode === "speaking" ? out({ ...state, mode: "listening", talking: true }, { type: "stopPlayback" }) : out({ ...state, talking: true });
     case "utterance": {
       const speaking = state.mode === "speaking";
-      const r = onUtterance({ ...state, talking: false, mode: speaking ? "listening" : state.mode }, event.text);
+      const r = onUtterance({ ...state, talking: false, mode: speaking ? "listening" : state.mode }, event.text, event.typed);
       return speaking ? { state: r.state, effects: [{ type: "stopPlayback" }, ...r.effects] } : r;
     }
     case "interpreted":
@@ -348,11 +354,20 @@ export function sessionName(agent: { id: string; title?: string | null }): strin
   return agent.title?.trim() || agent.id.slice(0, 8);
 }
 
-type AgentLike = { id: string; title?: string | null; provider?: string; labels?: Record<string, string> | null };
+type AgentLike = { id: string; title?: string | null; provider?: string; labels?: Record<string, string> | null; lastActivityAt?: string | null };
 
 /** False for Voice's own sessions: a Jarvis session or the Voice helper. */
 export function canTarget(agent: { provider?: string; labels?: Record<string, string> | null }): boolean {
   return agent.provider !== ROUTER_PROVIDER_ID && agent.labels?.kind !== VOICE_HELPER_KIND;
+}
+
+/** Jarvis's own sessions, most recently active first, for opening its Paseo chat. */
+export function jarvisSessions(agents: AgentLike[]): VoiceSession[] {
+  const at = (a: AgentLike) => (a.lastActivityAt ? Date.parse(a.lastActivityAt) || 0 : 0);
+  return agents
+    .filter((a) => a.provider === ROUTER_PROVIDER_ID)
+    .sort((a, b) => at(b) - at(a))
+    .map((a) => ({ id: a.id, name: sessionName(a) }));
 }
 
 /** The sessions Voice may send to; Voice's own sessions are left out. */
