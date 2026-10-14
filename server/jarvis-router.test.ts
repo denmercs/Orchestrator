@@ -71,11 +71,19 @@ test("a critical word asks first; one sends it, two cancels, and anything else a
   assert.deepEqual((await router.route("r1", "yes")).spoken, ["Say one to send, or two to cancel."]);
   assert.deepEqual((await router.route("r1", "one")).spoken, []);
   assert.deepEqual(sent, [["s1", "merge it"]]);
-  await router.route("r1", "stop the build");
+  await router.route("r1", "delete the files");
   assert.deepEqual((await router.route("r1", "two")).spoken, ["Cancelled."]);
   await router.route("r1", "delete the branch");
   assert.deepEqual((await router.route("r1", "never mind")).spoken, ["Cancelled."]);
   assert.equal(sent.length, 1);
+});
+
+test("stop and interrupt in ordinary speech send without a confirm", async () => {
+  const { router, sent } = setup();
+  await router.setTarget(api);
+  assert.deepEqual((await router.route("r1", "let's stop the build here")).spoken, []);
+  assert.deepEqual((await router.route("r1", "don't interrupt the run")).spoken, []);
+  assert.equal(sent.length, 2);
 });
 
 test("a confirm left too long is dropped by the next utterance", async () => {

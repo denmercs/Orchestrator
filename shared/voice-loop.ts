@@ -81,7 +81,7 @@ export function initialVoiceState(): VoiceState {
 
 const NAMES = "jarvis|jervis|javis|travis|jarvus|service";
 const NEVER_MIND = new Set(["never mind", "nevermind", "cancel that", "forget it", "belay that"]);
-const CRITICAL = /\b(merge|interrupt|stop|delete)\b/;
+const CRITICAL = /\b(merge|delete)\b/;
 // A confirm is answered only by these exact words (or the critical word said back); anything else asks again.
 // "to"/"too" are how "two" is often heard: cancelling on a mishearing is safe, sending on one is not.
 const CONFIRM_YES = new Set(["one", "1", "number one", "number 1"]);
