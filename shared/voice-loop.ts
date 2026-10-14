@@ -42,6 +42,8 @@ export type VoiceEvent =
   /** Every speechStart is followed by an utterance, empty when nothing was heard, so `talking` always ends. */
   | { type: "speechStart" }
   | { type: "utterance"; text: string }
+  /** Paseo voice mode heard this on the phone or laptop (not typed, not muted). The drawer shows it as a "you" line; the loop ignores it. */
+  | { type: "heard"; text: string }
   | { type: "interpreted"; seq: number; result: InterpretResult }
   /** `watched`: the session is on the Speak pill, so its reply is heard even when it is not the target. */
   | { type: "reply"; sessionId: string; text: string; summary?: string; watched?: boolean }
@@ -242,6 +244,8 @@ function onInterpreted(state: VoiceState, seq: number, result: InterpretResult):
 }
 
 function core(state: VoiceState, event: VoiceEvent): VoiceStep {
+  // Display only: the drawer shows it, the loop never acts on it.
+  if (event.type === "heard") return out(state);
   if (event.type === "sessions") {
     const blocked = event.blocked ?? [];
     // A target that turns out to be one of Voice's own sessions is dropped.

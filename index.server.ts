@@ -510,9 +510,11 @@ export default function contribute(
   const voice = voiceSetting;
   let phoneAudio = false;
   let referenceClip = "";
+  let micOff = false;
   const syncVoice = (state: Awaited<ReturnType<typeof voice.read>>) => {
     phoneAudio = state.status === "ready" && state.values.phoneAudio;
     referenceClip = state.status === "ready" ? state.values.referenceClip : "";
+    micOff = state.status === "ready" && state.values.micOff;
   };
   const offVoiceSettings = voice.subscribe(syncVoice);
   void voice.read().then(syncVoice);
@@ -719,6 +721,9 @@ export default function contribute(
     owe: jarvis.owe,
     playbackEnded: jarvis.playbackEnded,
     phoneAudio: () => phoneAudio,
+    // voice.micOff: what Paseo voice mode heard is dropped before the router; the drawer shows what got through.
+    muted: () => micOff,
+    heard: (_routerId, text) => voiceHub.publish({ type: "heard", text }),
     // On the Mac Jarvis speaks through the same Speaker; false (an empty line) lets Paseo's `speak` take it.
     localSpeak: async (text) => (text.trim() ? (await localVoice.speak(text)) !== undefined : false),
   });

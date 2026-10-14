@@ -54,6 +54,10 @@ export type JarvisProviderDeps = {
   phoneAudio?(): boolean;
   /** Speaks on the Mac through the Speaker; false means it could not, so Paseo's `speak` tool takes the line. */
   localSpeak?(text: string): Promise<boolean>;
+  /** Setting `voice.micOff`: when true, what Paseo voice mode heard is dropped before the router. Typed messages still go through. */
+  muted?(): boolean;
+  /** Spoken input that reached the router (never typed text, never muted input), so the drawer can show it as a "you" line. */
+  heard?(routerId: string, text: string): void;
   fetch?: Fetch;
   /** Starts the Voice helper in the background; called when a session opens. Never awaited, failures ignored. */
   warm?(): unknown;
@@ -150,6 +154,9 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
     if (live(sessionId, turnId)) emit({ type: "session.turn", sessionId, turnId, state: "started" });
     const text = promptText(prompt);
     const spoken = spokenText(text);
+    // Muted: Paseo's recorder can't be stopped from here, so what it heard is dropped (never routed, shown or answered).
+    if (spoken !== null && deps.muted?.()) return end(sessionId, turnId, "completed");
+    if (spoken !== null) deps.heard?.(session.routerId, spoken);
     const result = await deps.route(session.routerId, spoken ?? text, signal);
     const reply = [result.spoken.join(" "), result.note].filter(Boolean).join(" ");
     if (reply && live(sessionId, turnId)) {

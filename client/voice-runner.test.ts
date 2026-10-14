@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { InterpretOutcome } from "../shared/voice-interpreter";
 import type { VoiceEvent } from "../shared/voice-loop";
-import { CONFIRM_TIMEOUT_MS, POLL_BACKOFF_MS, createVoiceRunner, type EarsRunnerEvent, type VoiceRunnerPorts } from "./voice-runner";
+import { CONFIRM_TIMEOUT_MS, MAX_CONVERSATION, POLL_BACKOFF_MS, createVoiceRunner, type EarsRunnerEvent, type VoiceRunnerPorts } from "./voice-runner";
 
 type HelperPort = NonNullable<VoiceRunnerPorts["helper"]>;
 const fakeHelper = (over: Partial<HelperPort> = {}) => {
@@ -1088,4 +1088,79 @@ test("a conversation outcome updates in place when the helper answers", async ()
   assert.deepEqual(runner.getState().conversation, [{ from: "you", text: "please run the tests", outcome: "working" }]);
   await flush();
   assert.deepEqual(runner.getState().conversation, [{ from: "you", text: "please run the tests", outcome: "sent" }]);
+});
+
+// --- Paseo voice mode in the drawer (phone and laptop): heard speech, ordered lines, mute that persists ---
+
+const heard = (text: string): VoiceEvent => ({ type: "heard", text });
+const convoText = (runner: ReturnType<typeof setup>["runner"]) => runner.getState().conversation.map((c) => `${c.from}:${c.text}`);
+
+test("heard speech is a you line, then the reply a jarvis line, in order, with no mic API", async () => {
+  const { runner, reads, spoken } = noMicSetup(() => false);
+  await runner.start();
+  reads[0]({ cursor: 2, events: [heard("run the tests"), reply("All done.")], phoneActive: false });
+  await flush();
+  assert.deepEqual(convoText(runner), ["you:run the tests", "jarvis:All done."]);
+  assert.deepEqual(spoken, []);
+});
+
+test("heard speech never reaches the loop: no send, no mode change, no second line", async () => {
+  const { runner, reads, said } = noMicSetup(() => false);
+  runner.on();
+  reads[0]({ cursor: 1, events: [heard("run the tests")], phoneActive: false });
+  await flush();
+  assert.deepEqual(said, []);
+  assert.deepEqual(convoText(runner), ["you:run the tests"]);
+  assert.equal(runner.getState().mode, "listening");
+});
+
+test("a reply is one jarvis line whether the loop is asleep or awake (no double count)", async () => {
+  for (const awake of [false, true]) {
+    const { runner, reads } = noMicSetup(() => false);
+    if (awake) runner.on();
+    else await runner.start();
+    reads[0]({ cursor: 1, events: [reply("All done.")], phoneActive: false });
+    await flush();
+    assert.equal(runner.getState().conversation.filter((c) => c.from === "jarvis").length, 1, `awake=${awake}`);
+  }
+});
+
+test("the conversation keeps the last MAX_CONVERSATION lines across heard and replies", async () => {
+  const { runner, reads } = noMicSetup(() => false);
+  await runner.start();
+  const events: VoiceEvent[] = [];
+  for (let i = 0; i < MAX_CONVERSATION; i++) events.push(heard(`q${i}`), reply(`a${i}`));
+  reads[0]({ cursor: 1, events, phoneActive: false });
+  await flush();
+  const lines = convoText(runner);
+  assert.equal(lines.length, MAX_CONVERSATION);
+  assert.equal(lines.at(-1), `jarvis:a${MAX_CONVERSATION - 1}`);
+  assert.equal(lines[0], `you:q${MAX_CONVERSATION / 2}`);
+});
+
+test("with a mic API heard speech shows too, and an asleep reply still adds nothing extra", async () => {
+  const { runner, reads } = noMicSetup();
+  await runner.start();
+  reads[0]({ cursor: 1, events: [heard("hello there")], phoneActive: false });
+  await flush();
+  assert.deepEqual(convoText(runner), ["you:hello there"]);
+});
+
+test("no mic API: the mute persists, and a new runner after reload starts muted", async () => {
+  const stored = { micOff: false };
+  const prefs: NonNullable<VoiceRunnerPorts["prefs"]> = {
+    read: async () => ({ ...stored }),
+    write: async (micOff) => void (stored.micOff = micOff),
+  };
+  const first = setup({ prefs, hasMic: () => false });
+  await first.runner.start();
+  assert.equal(first.runner.getState().micOn, true);
+  await first.runner.setMic(false);
+  assert.equal(first.runner.getState().micOn, false);
+  assert.equal(stored.micOff, true);
+  const reloaded = setup({ prefs, hasMic: () => false });
+  await reloaded.runner.start();
+  assert.equal(reloaded.runner.getState().micOn, false);
+  await reloaded.runner.setMic(true);
+  assert.equal(stored.micOff, false);
 });

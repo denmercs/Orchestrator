@@ -13,9 +13,9 @@ const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "sev
 
 export const NO_MIC_MESSAGE = "This device can't record from a plugin. Use voice from the laptop.";
 export const MIC_DENIED_MESSAGE = "Microphone permission was denied. Allow the microphone for Paseo, then turn voice on again.";
-export const JARVIS_VOICE_TITLE = "Talk through Jarvis";
-export const JARVIS_VOICE_LINE =
-  "This device can't record from a plugin. Start a Jarvis session and turn on Paseo voice mode to talk. Replies show here.";
+export const PASEO_VOICE_TITLE = "Talk with Paseo voice mode";
+export const PASEO_VOICE_LINE =
+  "To talk to Jarvis, turn on Paseo voice mode in a Jarvis session. What you say and Jarvis's replies show here.";
 
 /** A choice number as said: "one" … "ten", then digits. */
 export const numberWord = (n: number): string => NUMBER_WORDS[n] ?? String(n);

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { JARVIS_VOICE_LINE, JARVIS_VOICE_TITLE, MIC_DENIED_MESSAGE, NO_MIC_MESSAGE } from "../shared/voice-lines";
-import { drawerMicView, hasMicApi, phoneReplyLine } from "./voice-mic-model";
+import { voiceSettings } from "../shared/settings";
+import { MIC_DENIED_MESSAGE, NO_MIC_MESSAGE, PASEO_VOICE_LINE, PASEO_VOICE_TITLE } from "../shared/voice-lines";
+import { drawerMicView, hasMicApi, ignoreMeView, phoneReplyLine, voiceOffNotice } from "./voice-mic-model";
 
 test("hasMicApi is true only when mediaDevices.getUserMedia is a function", () => {
   assert.equal(hasMicApi(undefined), false);
@@ -10,18 +11,19 @@ test("hasMicApi is true only when mediaDevices.getUserMedia is a function", () =
   assert.equal(hasMicApi({ mediaDevices: { getUserMedia() {} } }), true);
 });
 
-test("drawerMicView shows the Jarvis card when there is no mic API and drops the no-mic error", () => {
-  assert.deepEqual(drawerMicView({ hasMicApi: false, error: NO_MIC_MESSAGE }), {
-    kind: "jarvis",
-    title: JARVIS_VOICE_TITLE,
-    notice: JARVIS_VOICE_LINE,
-    error: null,
-  });
-  assert.equal(JARVIS_VOICE_TITLE, "Talk through Jarvis");
-  assert.equal(
-    JARVIS_VOICE_LINE,
-    "This device can't record from a plugin. Start a Jarvis session and turn on Paseo voice mode to talk. Replies show here.",
-  );
+test("with no mic API the drawer shows the Paseo voice view, not a dead-end card, and drops the no-mic error", () => {
+  const view = drawerMicView({ hasMicApi: false, error: NO_MIC_MESSAGE });
+  assert.deepEqual(view, { kind: "paseo-voice", title: PASEO_VOICE_TITLE, notice: PASEO_VOICE_LINE, error: null });
+  assert.match(PASEO_VOICE_LINE, /turn on Paseo voice mode/i);
+  assert.doesNotMatch(PASEO_VOICE_LINE, /can't record|can.t/i);
+  assert.doesNotMatch(PASEO_VOICE_TITLE, /can't/i);
+});
+
+test("voiceOffNotice explains a profile of off, and is null otherwise", () => {
+  assert.match(voiceOffNotice("off") ?? "", /off/i);
+  assert.match(voiceOffNotice(" OFF ") ?? "", /Paseo default/);
+  assert.equal(voiceOffNotice(""), null);
+  assert.equal(voiceOffNotice("p_sonnet"), null);
 });
 
 test("drawerMicView keeps other errors with no mic API", () => {
@@ -40,4 +42,17 @@ test("phoneReplyLine is the spoken line of a reply for the target, else null", (
   assert.equal(phoneReplyLine({ type: "reply", sessionId: "a1", text: "All done." }, undefined), null);
   assert.equal(phoneReplyLine({ type: "wake" }, "a1"), null);
   assert.equal(phoneReplyLine({ type: "reply", sessionId: "a1", text: "" }, "a1"), null);
+});
+
+test("a fresh install starts with the mic on: voice.micOff defaults to false", () => {
+  assert.equal(voiceSettings.schema.parse({}).micOff, false);
+  assert.deepEqual(ignoreMeView(true), { label: "Ignore me", on: false, status: null, action: "Turn Ignore me on" });
+});
+
+test("Ignore me is on when the mic is off, with a visible status saying you are being ignored", () => {
+  const view = ignoreMeView(false);
+  assert.equal(view.label, "Ignore me");
+  assert.equal(view.on, true);
+  assert.match(view.status ?? "", /ignoring you/i);
+  assert.equal(view.action, "Turn Ignore me off");
 });

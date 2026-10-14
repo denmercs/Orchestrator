@@ -5,7 +5,7 @@ import { ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
 import type { EpicBoard } from "../shared/orchestration";
 import type { createVoiceRunner } from "./voice-runner";
 import { VoiceInterpretPanel } from "./voice-interpret-panel";
-import { drawerMicView, hasMicApi } from "./voice-mic-model";
+import { drawerMicView, hasMicApi, ignoreMeView, voiceOffNotice } from "./voice-mic-model";
 import { ProfileChips, useAgentProfiles } from "./runner-picker";
 import { PANEL_WIDTH, replyActions, storyChips, type PanelPlacement, type StoryChip } from "./jarvis-panel-model";
 import { profileCaption, type AgentProfile } from "../shared/agent-profiles";
@@ -97,6 +97,11 @@ function PanelBody({ theme, compact, runner, boards, intro, draft, note, onDraft
   const on = state.micOn;
   const awake = state.mode !== "asleep";
   const view = drawerMicView({ hasMicApi: hasMicApi(globalThis.navigator), error: state.error });
+  const ignore = ignoreMeView(on);
+  const voice = useSettings(voiceSettings);
+  const profiles = useAgentProfiles();
+  const profileSetting = voice.status === "ready" ? voice.values.profile : "";
+  const offNotice = voiceOffNotice(profileSetting);
   const needsWhisper = view.error ? /whisper|ffmpeg|model/i.test(view.error) : false;
   const actions = replyActions(state);
   const chipsFor = (text: string) => storyChips(text, boards ?? [], state.sessions);
@@ -133,7 +138,7 @@ function PanelBody({ theme, compact, runner, boards, intro, draft, note, onDraft
         <View style={[styles.dot, on ? styles.dotOn : null]} />
         <Text style={styles.title}>Jarvis</Text>
         <Text style={[styles.hint, styles.flex1]} numberOfLines={1}>
-          {state.talking ? "Listening… tap to send" : on ? MODE_LABEL[state.mode] : "Mic off"}
+          {state.talking ? "Listening… tap to send" : on ? MODE_LABEL[state.mode] : "Ignoring you"}
         </Text>
         <Pressable accessibilityRole="button" accessibilityLabel={placement === "overlay" ? "Close Jarvis" : "Collapse Jarvis"} onPress={onClose}>
           <Text style={styles.headerButtonText}>{placement === "overlay" ? "×" : "›"}</Text>
@@ -141,6 +146,7 @@ function PanelBody({ theme, compact, runner, boards, intro, draft, note, onDraft
       </View>
 
       {state.phoneActive ? <Text style={[styles.hint, styles.pad]}>Phone is speaking</Text> : null}
+      {ignore.status ? <Text style={[styles.hint, styles.pad, styles.danger]}>{ignore.status}</Text> : null}
 
       <ScrollView
         ref={scroll as never}
@@ -213,7 +219,21 @@ function PanelBody({ theme, compact, runner, boards, intro, draft, note, onDraft
             <Text style={styles.actionText}>Send</Text>
           </Pressable>
         </View>
-        {view.kind === "jarvis" ? (
+        <View style={styles.row}>
+          <Pressable
+            accessibilityRole="switch"
+            accessibilityState={{ checked: ignore.on }}
+            accessibilityLabel={ignore.action}
+            onPress={() => void runner.setMic(!on)}
+            style={[styles.action, ignore.on ? styles.actionOn : null]}
+          >
+            <Text style={styles.actionText}>{ignore.label}</Text>
+          </Pressable>
+          <Text style={styles.hint}>{ignore.on ? "On" : "Off"}</Text>
+        </View>
+        {voice.status === "ready" ? <Text style={styles.hint}>{voiceModelLine(voiceProfileFor(profiles, profileSetting), profileSetting)}</Text> : null}
+        {offNotice ? <Text style={[styles.hint, styles.danger]}>{offNotice}</Text> : null}
+        {view.kind === "paseo-voice" ? (
           <View style={styles.card}>
             <Text style={styles.sessionText}>{view.title}</Text>
             <Text style={styles.hint}>{view.notice}</Text>
@@ -268,22 +288,21 @@ function SessionsAndSettings({ theme, compact, runner, styles }: { theme: Theme;
   const settings = useSettings(voiceSettings);
   const profiles = useAgentProfiles();
   const on = state.micOn;
+  const ignore = ignoreMeView(on);
   return (
     <>
-      {hasMicApi(globalThis.navigator) ? (
-        <View style={styles.row}>
-          <Pressable
-            accessibilityRole="switch"
-            accessibilityState={{ checked: on }}
-            accessibilityLabel={on ? "Turn the mic off" : "Turn the mic on"}
-            onPress={() => void runner.setMic(!on)}
-            style={[styles.action, on ? styles.actionOn : null]}
-          >
-            <Text style={styles.actionText}>{on ? "On" : "Off"}</Text>
-          </Pressable>
-          <Text style={styles.hint}>{on ? MODE_LABEL[state.mode] : "Off"}</Text>
-        </View>
-      ) : null}
+      <View style={styles.row}>
+        <Pressable
+          accessibilityRole="switch"
+          accessibilityState={{ checked: !on }}
+          accessibilityLabel={ignore.action}
+          onPress={() => void runner.setMic(!on)}
+          style={[styles.action, !on ? styles.actionOn : null]}
+        >
+          <Text style={styles.actionText}>{ignore.label}</Text>
+        </Pressable>
+        <Text style={styles.hint}>{ignore.status ?? "Off"}</Text>
+      </View>
 
       <Text style={styles.section}>Voice sessions</Text>
       {settings.status === "ready" ? (

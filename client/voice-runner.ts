@@ -405,15 +405,25 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
         if (polling !== run) return;
         cursor = batch.cursor;
         if (batch.phoneActive !== snapshot.phoneActive) publish({ phoneActive: batch.phoneActive });
-        // Asleep the loop drops replies, so the panel shows them itself; awake, the loop shows them already.
-        if (ports.hasMic && !ports.hasMic() && snapshot.mode === "asleep") {
-          const shown = batch.events.map((e) => phoneReplyLine(e, snapshot.session?.id)).filter((l): l is string => l !== null);
-          if (shown.length) {
-            shown.forEach((text) => convo.push({ from: "jarvis", text }));
-            publish({ lines: keepLast(snapshot.lines, shown, MAX_LINES), ...showConversation() });
+        // In order: what Paseo voice mode heard is a "you" line (the loop never sees it). Asleep the loop drops
+        // replies, so with no mic the panel shows them itself; awake, the loop shows them already.
+        const noMic = ports.hasMic && !ports.hasMic() && snapshot.mode === "asleep";
+        const shown: string[] = [];
+        let changed = false;
+        for (const e of batch.events) {
+          if (e.type === "heard") {
+            convo.push({ from: "you", text: e.text, outcome: "" });
+            changed = true;
+            continue;
           }
+          const line = noMic ? phoneReplyLine(e, snapshot.session?.id) : null;
+          if (line === null) continue;
+          convo.push({ from: "jarvis", text: line });
+          shown.push(line);
+          changed = true;
         }
-        batch.events.forEach(dispatch);
+        if (changed) publish({ ...(shown.length ? { lines: keepLast(snapshot.lines, shown, MAX_LINES) } : {}), ...showConversation() });
+        batch.events.filter((e) => e.type !== "heard").forEach(dispatch);
       } catch (err) {
         if (polling !== run) return;
         fail(err);

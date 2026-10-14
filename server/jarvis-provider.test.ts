@@ -442,3 +442,74 @@ test("a multi-line briefing reply is spoken once, in one piece, through the Mac'
   assert.deepEqual(spoken, [lines.join(" ")]);
   assert.equal(calls.length, 0);
 });
+
+// --- Mute and the drawer's conversation ---
+
+function connectWith(extra: Partial<Parameters<typeof createJarvisConnection>[0]>) {
+  const routed: [string, string][] = [];
+  const heard: [string, string][] = [];
+  const { impl, calls } = fakeFetch({ body: OK_JSON });
+  const connection = createJarvisConnection({
+    route: async (routerId, text) => {
+      routed.push([routerId, text]);
+      return { spoken: ["Sent to docs."], note: null };
+    },
+    heard: (routerId, text) => void heard.push([routerId, text]),
+    fetch: impl,
+    ...extra,
+  });
+  const events: ProviderEvent[] = [];
+  connection.onEvent((event) => events.push(event));
+  return { connection, events, routed, heard, calls };
+}
+
+test("muted drops spoken input before it reaches the router: nothing routed, heard or spoken, the turn still completes", async () => {
+  const { connection, events, routed, heard, calls } = connectWith({ muted: () => true });
+  await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
+  assert.deepEqual(routed, []);
+  assert.deepEqual(heard, []);
+  assert.equal(calls.length, 0);
+  assert.ok(!events.some((e) => e.type === "timeline.item"));
+  assert.ok(events.some((e) => e.type === "session.turn" && e.state === "completed"));
+});
+
+test("muted does not stop typed messages", async () => {
+  const { connection, events, routed, calls } = connectWith({ muted: () => true });
+  await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt("run the tests") });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
+  assert.deepEqual(routed, [["r1", "run the tests"]]);
+  assert.equal(calls.length, 0);
+});
+
+test("unmuted spoken input is reported as heard once; typed input is not, and is never spoken", async () => {
+  const { connection, events, heard, calls } = connectWith({ muted: () => false });
+  await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
+  assert.deepEqual(heard, [["r1", "run the tests"]]);
+  assert.equal(calls.length, 1);
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt("typed words") });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(heard, [["r1", "run the tests"]]);
+  assert.equal(calls.length, 1);
+});
+
+test("mute is read per turn, so unmuting takes effect without reopening; stop/start keeps the same routerId", async () => {
+  let muted = true;
+  const { connection, events, routed } = connectWith({ muted: () => muted });
+  await connection.send(open({ version: 1, data: { routerId: "r9" } }));
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(routed, []);
+  await connection.send({ type: "session.close", requestId: "c1", sessionId: "p1" });
+  await connection.send(open({ version: 1, data: { routerId: "r9" } }));
+  muted = false;
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "completed" && routed.length > 0);
+  assert.deepEqual(routed, [["r9", "run the tests"]]);
+  const opened = events.filter((e) => e.type === "session.opened");
+  assert.deepEqual(opened.map((e) => (e.type === "session.opened" ? e.persistence?.data : null)), [{ routerId: "r9" }, { routerId: "r9" }]);
+});
