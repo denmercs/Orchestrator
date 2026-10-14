@@ -45,6 +45,14 @@ export const voiceInterpret = defineRpc({
   ]),
 });
 
+// Downloads one of the three openWakeWord ONNX models (cached under ~/.orchestrator/voice/models/wake/) as base64;
+// the client cannot fetch GitHub directly (S0 lesson 4).
+export const voiceWakeModel = defineRpc({
+  name: "orchestration.voice.wake-model",
+  input: z.object({ model: z.enum(["melspectrogram", "embedding", "hey_jarvis"]) }),
+  output: z.object({ bytes: z.string() }),
+});
+
 // The Voice drawer's target, told to the server so the Jarvis router sends to the same session.
 export const voiceTarget = defineRpc({
   name: "orchestration.voice.target",

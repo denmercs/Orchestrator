@@ -5,22 +5,27 @@ import { canTarget, sessionName, splitSessions, voicePill, voiceSessions } from 
 const target = { id: "abcdef123456", title: "Build" };
 const other = { id: "zzzzzzzz9999", title: "Docs" };
 
-test("voicePill is hidden while voice is off", () => {
-  assert.equal(voicePill(target, { mode: "asleep", session: { id: target.id, name: "Build" } }), null);
+test("voicePill shows on every session, in every state: off with the mic off, the mode with it on", () => {
+  const session = { id: target.id, name: "Build" };
+  assert.equal(voicePill(target, { mode: "asleep", session, micOn: false }).label, "Voice · off");
+  assert.equal(voicePill(target, { mode: "asleep", session, micOn: true }).label, "Voice · asleep");
+  assert.equal(voicePill(target, { mode: "listening", session, micOn: true }).label, "Voice · listening");
+  assert.equal(voicePill(target, { mode: "speaking", session, micOn: true }).label, "Voice · speaking");
 });
 
-test("voicePill on the target shows the mode", () => {
-  const pill = voicePill(target, { mode: "listening", session: { id: target.id, name: "Build" } });
-  assert.equal(pill?.label, "Voice · listening");
-  assert.ok(pill?.title);
+test("voicePill on the target shows the mode in its title too", () => {
+  const pill = voicePill(target, { mode: "listening", session: { id: target.id, name: "Build" }, micOn: true });
+  assert.equal(pill.label, "Voice · listening");
+  assert.ok(pill.title);
 });
 
-test("voicePill on other sessions invites a tap", () => {
-  assert.deepEqual(voicePill(other, { mode: "listening", session: { id: target.id, name: "Build" } }), {
-    label: "Voice",
+test("voicePill on other sessions always invites a tap, in every mode and mic state", () => {
+  assert.deepEqual(voicePill(other, { mode: "listening", session: { id: target.id, name: "Build" }, micOn: true }), {
+    label: "Voice · listening",
     title: "Tap to talk to this session",
   });
-  assert.equal(voicePill(other, { mode: "waiting", session: null })?.label, "Voice");
+  assert.equal(voicePill(other, { mode: "waiting", session: null, micOn: true }).title, "Tap to talk to this session");
+  assert.equal(voicePill(other, { mode: "asleep", session: null, micOn: false }).title, "Tap to talk to this session");
 });
 
 test("sessionName falls back to the first 8 characters of the id", () => {

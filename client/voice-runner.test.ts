@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { VoiceEvent } from "../shared/voice-loop";
-import { CONFIRM_TIMEOUT_MS, POLL_BACKOFF_MS, createVoiceRunner, type VoiceRunnerPorts } from "./voice-runner";
+import { CONFIRM_TIMEOUT_MS, POLL_BACKOFF_MS, createVoiceRunner, type EarsRunnerEvent, type VoiceRunnerPorts } from "./voice-runner";
 
 const alpha = { id: "a1", name: "Alpha" };
 
@@ -623,6 +623,287 @@ test("a poll error is shown and retried after a backoff on the clock port", asyn
   await flush();
   assert.equal(reads.length, 2);
   assert.equal(reads[1].after, 0);
+});
+
+// --- Launch and mute (S5): start() at launch, setMic() as the drawer's mic toggle ---
+
+function earsSetup(overrides: Partial<VoiceRunnerPorts> = {}) {
+  const calls: string[] = [];
+  let handler: ((event: EarsRunnerEvent) => void) | null = null;
+  const awakeCalls: boolean[] = [];
+  const pausedCalls: boolean[] = [];
+  const ears: NonNullable<VoiceRunnerPorts["ears"]> = {
+    open: async () => void calls.push("open"),
+    close: async () => void calls.push("close"),
+    setAwake: (awake) => awakeCalls.push(awake),
+    setPaused: (paused) => pausedCalls.push(paused),
+    onEvent: (fn) => {
+      handler = fn;
+    },
+  };
+  const base = setup({ ears, ...overrides });
+  return { ...base, calls, awakeCalls, pausedCalls, emit: (e: EarsRunnerEvent) => handler?.(e) };
+}
+
+function prefsSetup(micOff: boolean) {
+  const writes: boolean[] = [];
+  const prefs: NonNullable<VoiceRunnerPorts["prefs"]> = {
+    read: async () => ({ micOff }),
+    write: async (value) => void writes.push(value),
+  };
+  return { prefs, writes };
+}
+
+test("start() opens the mic and ears, stays asleep, and does not transcribe", async () => {
+  const { prefs } = prefsSetup(false);
+  const calls: string[] = [];
+  const { runner } = earsSetup({ prefs, transcriber: async () => (calls.push("transcribe"), "x") });
+  await runner.start();
+  assert.equal(runner.getState().mode, "asleep");
+  assert.equal(runner.getState().micOn, true);
+  assert.deepEqual(calls, []);
+});
+
+test("start() with micOff opens nothing", async () => {
+  const { prefs } = prefsSetup(true);
+  const { runner, calls } = earsSetup({ prefs });
+  await runner.start();
+  assert.deepEqual(calls, []);
+  assert.equal(runner.getState().micOn, false);
+});
+
+test("a no-mic device: start() sets no error", async () => {
+  const { prefs } = prefsSetup(false);
+  const { runner } = earsSetup({
+    prefs,
+    ears: {
+      open: async () => Promise.reject(new Error("no plugin mic")),
+      close: async () => {},
+      setAwake: () => {},
+      setPaused: () => {},
+      onEvent: () => {},
+    },
+  });
+  await runner.start();
+  assert.equal(runner.getState().error, null);
+  assert.equal(runner.getState().micOn, false);
+});
+
+test("setMic(false) closes the mic and ears and saves micOff: true; setMic(true) saves false and reopens asleep", async () => {
+  const { prefs, writes } = prefsSetup(false);
+  const { runner, calls } = earsSetup({ prefs });
+  await runner.start();
+  await runner.setMic(false);
+  assert.deepEqual(writes, [true]);
+  assert.deepEqual(calls, ["open", "close"]);
+  assert.equal(runner.getState().micOn, false);
+  assert.equal(runner.getState().mode, "asleep");
+  await runner.setMic(true);
+  assert.deepEqual(writes, [true, false]);
+  assert.deepEqual(calls, ["open", "close", "open"]);
+  assert.equal(runner.getState().micOn, true);
+  assert.equal(runner.getState().mode, "asleep");
+});
+
+test("setMic(false) while listening returns the loop to asleep", async () => {
+  const { prefs } = prefsSetup(false);
+  const { runner } = earsSetup({ prefs });
+  await runner.start();
+  runner.dispatch({ type: "wake" });
+  assert.equal(runner.getState().mode, "listening");
+  await runner.setMic(false);
+  assert.equal(runner.getState().mode, "asleep");
+});
+
+// --- Hands-free (S5): ears events drive the loop the same way tap-to-talk does ---
+
+test("ears wake moves to listening and tells the ears it is awake", async () => {
+  const { prefs } = prefsSetup(false);
+  const { runner, awakeCalls, emit } = earsSetup({ prefs });
+  await runner.start();
+  emit({ type: "wake" });
+  assert.equal(runner.getState().mode, "listening");
+  assert.deepEqual(awakeCalls.slice(-1), [true]);
+});
+
+test('an ears utterance is transcribed and sent, "Hey Jarvis," dropped by the default interpreter', async () => {
+  const { prefs } = prefsSetup(false);
+  const transcriptCalls: Array<[string, string[]]> = [];
+  const { runner, emit, said } = earsSetup({
+    prefs,
+    transcriber: async (audio, hints) => {
+      transcriptCalls.push([audio, hints]);
+      return "Hey Jarvis, run the tests";
+    },
+  });
+  await runner.start();
+  emit({ type: "wake" });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  emit({ type: "speechStart" });
+  assert.equal(runner.getState().talking, true);
+  emit({ type: "utterance", pcm: new Int16Array([1, 2, 3]) });
+  await flush();
+  assert.equal(transcriptCalls.length, 1);
+  assert.deepEqual(said, [["a1", "run the tests"]]);
+});
+
+test('"Jarvis, ignore me" goes back to asleep, sends nothing, and tells the ears it is asleep', async () => {
+  const { prefs } = prefsSetup(false);
+  const { runner, emit, awakeCalls, said } = earsSetup({ prefs, transcriber: async () => "Jarvis, ignore me" });
+  await runner.start();
+  emit({ type: "wake" });
+  emit({ type: "speechStart" });
+  emit({ type: "utterance", pcm: new Int16Array([1]) });
+  await flush();
+  assert.equal(runner.getState().mode, "asleep");
+  assert.deepEqual(said, []);
+  assert.deepEqual(awakeCalls.slice(-1), [false]);
+});
+
+test("a one-word noise transcript sends nothing", async () => {
+  const { prefs } = prefsSetup(false);
+  const { runner, emit, said } = earsSetup({ prefs, transcriber: async () => "hello" });
+  await runner.start();
+  emit({ type: "wake" });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  emit({ type: "speechStart" });
+  emit({ type: "utterance", pcm: new Int16Array([1]) });
+  await flush();
+  assert.deepEqual(said, []);
+});
+
+test("an empty-pcm utterance (cancel) is not transcribed", async () => {
+  const { prefs } = prefsSetup(false);
+  const transcribed: string[] = [];
+  const { runner, emit } = earsSetup({ prefs, transcriber: async () => (transcribed.push("called"), "x") });
+  await runner.start();
+  emit({ type: "wake" });
+  emit({ type: "utterance", pcm: new Int16Array([]) });
+  await flush();
+  assert.deepEqual(transcribed, []);
+});
+
+test("wake while speaking stops the speaker and captures instead of just listening", async () => {
+  const { prefs } = prefsSetup(false);
+  const reads: Array<{ after: number; resolve(b: Batch): void; reject(e: Error): void }> = [];
+  const stops: string[] = [];
+  const { runner, emit } = earsSetup({
+    prefs,
+    events: { read: (after) => new Promise<Batch>((resolve, reject) => reads.push({ after, resolve, reject })) },
+    speaker: { speak: async () => "stopped", stop: () => void stops.push("stop") },
+  });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  await runner.start();
+  emit({ type: "wake" });
+  await flush();
+  reads[0]!.resolve({ cursor: 1, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  assert.equal(runner.getState().mode, "speaking");
+  emit({ type: "wake" });
+  assert.equal(runner.getState().talking, true);
+  assert.equal(stops.length, 1);
+});
+
+test("the ears are paused while the loop is speaking, and unpaused once it stops", async () => {
+  const { prefs } = prefsSetup(false);
+  const reads: Array<{ after: number; resolve(b: Batch): void; reject(e: Error): void }> = [];
+  const { runner, pausedCalls, emit } = earsSetup({
+    prefs,
+    events: { read: (after) => new Promise<Batch>((resolve, reject) => reads.push({ after, resolve, reject })) },
+    speaker: { speak: async () => "ended", stop: () => {} },
+  });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  await runner.start();
+  emit({ type: "wake" });
+  await flush();
+  reads[0]!.resolve({ cursor: 1, events: [reply("All done.")], phoneActive: false });
+  await flush();
+  // the mock speaker resolves "ended" at once, so the loop is paused for speaking and unpaused again by here
+  assert.deepEqual(pausedCalls.slice(-3), [false, true, false]);
+  assert.equal(runner.getState().mode, "listening");
+});
+
+// --- Tap while asleep, and auto-sleep (S5 cycle 7) ---
+
+test("tap to talk while asleep (mic on) wakes the loop and records; Cancel still sends nothing", async () => {
+  const { prefs } = prefsSetup(false);
+  const { runner, said } = earsSetup({
+    prefs,
+    recorder: { start: async () => {}, stop: async () => ({ audio: "QUJD", ms: 2000 }) },
+    transcriber: async () => "please run the tests",
+  });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  await runner.start();
+  assert.equal(runner.getState().mode, "asleep");
+  runner.toggleTalk();
+  assert.equal(runner.getState().mode, "listening");
+  assert.equal(runner.getState().talking, true);
+  await runner.cancelTalk();
+  await flush();
+  assert.equal(runner.getState().talking, false);
+  assert.deepEqual(said, []);
+});
+
+test("tap to talk while asleep with the mic off does nothing", async () => {
+  const { prefs } = prefsSetup(true);
+  const { runner } = earsSetup({ prefs, recorder: { start: async () => {}, stop: async () => ({ audio: "", ms: 0 }) } });
+  await runner.start();
+  runner.toggleTalk();
+  assert.equal(runner.getState().mode, "asleep");
+  assert.equal(runner.getState().talking, false);
+});
+
+test("60 s of listening with no speech dispatches sleep via the clock port", async () => {
+  const { prefs } = prefsSetup(false);
+  const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = [];
+  const clock = {
+    setTimeout: (fn: () => void, ms: number) => {
+      const t = { fn, ms, cleared: false };
+      timers.push(t);
+      return t;
+    },
+    clearTimeout: (h: unknown) => {
+      (h as { cleared: boolean }).cleared = true;
+    },
+  };
+  const { runner, emit } = earsSetup({ prefs, clock });
+  await runner.start();
+  emit({ type: "wake" });
+  const autoSleep = timers.find((t) => t.ms === 60_000 && !t.cleared);
+  assert.ok(autoSleep, "a 60 s timer is armed on entering listening");
+  autoSleep.fn();
+  assert.equal(runner.getState().mode, "asleep");
+});
+
+test("the auto-sleep timer does not run while waiting, confirming or speaking", async () => {
+  const { prefs } = prefsSetup(false);
+  const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = [];
+  const clock = {
+    setTimeout: (fn: () => void, ms: number) => {
+      const t = { fn, ms, cleared: false };
+      timers.push(t);
+      return t;
+    },
+    clearTimeout: (h: unknown) => {
+      (h as { cleared: boolean }).cleared = true;
+    },
+  };
+  const { runner, emit } = earsSetup({ prefs, clock, transcriber: async () => "merge it" });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  await runner.start();
+  emit({ type: "wake" });
+  emit({ type: "speechStart" });
+  emit({ type: "utterance", pcm: new Int16Array([1]) });
+  await flush();
+  // "merge it" asks to confirm: no 60 s auto-sleep timer should be left running while confirming.
+  assert.equal(runner.getState().mode, "confirming");
+  assert.equal(timers.some((t) => t.ms === 60_000 && !t.cleared), false);
 });
 
 test("a briefing word is answered by the briefer: its lines are spoken and nothing reaches the session", async () => {

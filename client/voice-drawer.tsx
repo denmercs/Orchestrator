@@ -14,7 +14,13 @@ type VoiceRunner = ReturnType<typeof createVoiceRunner>;
 
 const OFF_CHIP: AgentProfile = { id: "off", name: "Off", provider: "" };
 
-const MODE_LABEL = { asleep: "Off", listening: "Listening", confirming: "Waiting for your word", waiting: "Sent, waiting", speaking: "Speaking" } as const;
+const MODE_LABEL = {
+  asleep: 'Asleep — say "Hey Jarvis"',
+  listening: "Listening",
+  confirming: "Waiting for your word",
+  waiting: "Sent, waiting",
+  speaking: "Speaking",
+} as const;
 
 function useRunner(runner: VoiceRunner) {
   return useSyncExternalStore(runner.subscribe, runner.getState, runner.getState);
@@ -24,7 +30,7 @@ function useRunner(runner: VoiceRunner) {
 export function VoiceButton({ theme, runner, open, onPress }: { theme: Theme; runner: VoiceRunner; open: boolean; onPress(): void }) {
   const styles = useMemo(() => createStyles(theme, false), [theme]);
   const state = useRunner(runner);
-  const on = state.mode !== "asleep";
+  const on = state.micOn;
   return (
     <Pressable
       accessibilityRole="button"
@@ -45,7 +51,8 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
   const settings = useSettings(voiceSettings);
   const profiles = useAgentProfiles();
   if (!open) return null;
-  const on = state.mode !== "asleep";
+  const on = state.micOn;
+  const awake = state.mode !== "asleep";
   const needsWhisper = state.error ? /whisper|ffmpeg|model/i.test(state.error) : false;
 
   return (
@@ -65,13 +72,13 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
             <Pressable
               accessibilityRole="switch"
               accessibilityState={{ checked: on }}
-              accessibilityLabel={on ? "Turn voice off" : "Turn voice on"}
-              onPress={() => (on ? runner.off() : runner.on())}
+              accessibilityLabel={on ? "Turn the mic off" : "Turn the mic on"}
+              onPress={() => void runner.setMic(!on)}
               style={[styles.action, on ? styles.actionOn : null]}
             >
               <Text style={styles.actionText}>{on ? "On" : "Off"}</Text>
             </Pressable>
-            <Text style={styles.hint}>{MODE_LABEL[state.mode]}</Text>
+            <Text style={styles.hint}>{on ? MODE_LABEL[state.mode] : "Off"}</Text>
           </View>
 
           <Text style={styles.section}>Voice sessions</Text>
@@ -145,9 +152,9 @@ export function VoiceDrawer({ theme, compact, runner, open, onClose }: { theme: 
             ) : null}
             <Pressable
               accessibilityRole="button"
-              disabled={!on || !state.session}
+              disabled={!awake || !state.session}
               onPress={() => runner.interrupt()}
-              style={[styles.action, !on || !state.session ? styles.disabled : null]}
+              style={[styles.action, !awake || !state.session ? styles.disabled : null]}
             >
               <Text style={styles.actionText}>Interrupt</Text>
             </Pressable>
