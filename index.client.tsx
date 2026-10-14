@@ -5,8 +5,10 @@ import { contributeSessionRolePills } from "./client/session-role-pills";
 import { attachSkill } from "./shared/pipeline";
 import { INSTALL_LABEL } from "./shared/install";
 import { startMemoryReplay } from "./shared/replay-rpc";
+import { createVoiceEars } from "./client/voice-ears";
 import { createVoiceLink } from "./client/voice-link";
 import { createVoiceMic, createVoiceTranscriber } from "./client/voice-mic";
+import { createVoicePrefs } from "./client/voice-prefs";
 import { createVoiceRunner } from "./client/voice-runner";
 import { createVoiceSpeaker } from "./client/voice-speaker";
 import { createVoiceLineRenderer, voiceLineSchema } from "./client/voice-line-renderer";
@@ -21,7 +23,11 @@ export default function contribute(client: PluginClientContext) {
     transcriber: createVoiceTranscriber(client.rpc),
     events: { read: (after) => client.rpc(voiceEvents, { after }) },
     speaker: createVoiceSpeaker(client.rpc, client.playAudio),
+    ears: createVoiceEars(client.rpc),
+    prefs: createVoicePrefs(client.rpc),
   });
+  // Launch-time: open the mic (unless muted) and start the events poll; the loop stays asleep until a wake word.
+  void voice.start();
   // Jarvis lines for the phone (behind voice.phoneAudio) arrive as timeline items; the renderer speaks each once.
   const offVoiceLines = client.addTimelineRenderer({
     kind: "voice-line",

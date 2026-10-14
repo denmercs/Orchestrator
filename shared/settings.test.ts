@@ -49,6 +49,10 @@ test("budget settings keep given values", () => {
 test("voice settings are host-scoped; referenceClip defaults to empty; phoneAudio defaults to false", () => {
   assert.equal(voiceSettings.id, "voice");
   assert.equal(voiceSettings.scope, "host");
-  assert.deepEqual(voiceSettings.schema.parse({}), { referenceClip: "", phoneAudio: false });
-  assert.deepEqual(voiceSettings.schema.parse({ referenceClip: "/a.wav", phoneAudio: true }), { referenceClip: "/a.wav", phoneAudio: true });
+  assert.deepEqual(voiceSettings.schema.parse({}), { referenceClip: "", phoneAudio: false, micOff: false });
+  assert.deepEqual(voiceSettings.schema.parse({ referenceClip: "/a.wav", phoneAudio: true, micOff: true }), {
+    referenceClip: "/a.wav",
+    phoneAudio: true,
+    micOff: true,
+  });
 });
