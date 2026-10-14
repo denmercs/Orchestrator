@@ -42,6 +42,7 @@ import { readArms, readCorpus, readCostCap, readRunName, realReplayPorts } from 
 import { claudeSignedIn } from "./server/claude-cli";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { createTranscriber, realTranscribePorts } from "./server/voice-transcribe";
+import { createWakeModelLoader, realWakeModelPorts } from "./server/voice-wake-models";
 import { createLocalVoice, realLocalPorts, type LocalPorts } from "./server/voice-local";
 import { createSpeaker, DEFAULT_REFERENCE_CLIP, resolveReferenceClip, type SpeakerPorts } from "./server/voice-speaker";
 import { realSpeakerPorts } from "./server/voice-speaker-workers";
@@ -51,7 +52,17 @@ import { join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { createVoiceHelper, paseoVoiceHelperPorts, VOICE_HELPER_CWD } from "./server/voice-helper";
-import { transcribeVoice, voiceEvents, voiceHelperStart, voiceHelperStop, voiceBrief, voiceInterpret, voiceSpeak, voiceTarget } from "./shared/voice-rpc";
+import {
+  transcribeVoice,
+  voiceBrief,
+  voiceEvents,
+  voiceHelperStart,
+  voiceHelperStop,
+  voiceInterpret,
+  voiceSpeak,
+  voiceTarget,
+  voiceWakeModel,
+} from "./shared/voice-rpc";
 import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
@@ -290,6 +301,8 @@ export default function contribute(
   server.handle(startMemoryReplay, (input, { paseo }) => startReplay(input, paseo));
   const transcribe = createTranscriber(realTranscribePorts());
   server.handle(transcribeVoice, (input) => transcribe(input));
+  const loadWakeModel = createWakeModelLoader(realWakeModelPorts());
+  server.handle(voiceWakeModel, ({ model }) => loadWakeModel(model));
   const readPolicy = async () => {
     const state = await context.read();
     return state.status === "ready" ? state.values : DEFAULT_CONTEXT_CONFIG;

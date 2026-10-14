@@ -126,12 +126,14 @@ export function contributeSessionRolePills(client: PluginClientContext, voice?: 
   let stopped = false;
   let lastVoiceMode = voice?.getState().mode;
   let lastVoiceSession = voice?.getState().session?.id;
-  // Pills only need a redraw when the mode or target moves, not on every transcript line.
+  let lastVoiceMicOn = voice?.getState().micOn;
+  // Pills only need a redraw when the mode, target or mic moves, not on every transcript line.
   const unsubscribeVoice = voice?.subscribe(() => {
-    const { mode, session } = voice.getState();
-    if (mode === lastVoiceMode && session?.id === lastVoiceSession) return;
+    const { mode, session, micOn } = voice.getState();
+    if (mode === lastVoiceMode && session?.id === lastVoiceSession && micOn === lastVoiceMicOn) return;
     lastVoiceMode = mode;
     lastVoiceSession = session?.id;
+    lastVoiceMicOn = micOn;
     sync();
   });
 
@@ -230,7 +232,6 @@ export function contributeSessionRolePills(client: PluginClientContext, voice?: 
     // Voice's own sessions (Jarvis, the Voice helper) can't be a target, so they get no pill.
     if (!voice || !canTarget(agent)) return null;
     const view = voicePill(agent, voice.getState());
-    if (!view) return null;
     return {
       ...view,
       icon: "Mic",

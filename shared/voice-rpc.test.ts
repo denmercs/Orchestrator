@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MAX_AUDIO_CHARS, MAX_HINTS, MAX_SPEAK_CHARS, transcribeVoice, voiceEvents, voiceSpeak } from "./voice-rpc";
+import { MAX_AUDIO_CHARS, MAX_HINTS, MAX_SPEAK_CHARS, transcribeVoice, voiceEvents, voiceSpeak, voiceWakeModel } from "./voice-rpc";
 
 test("the transcribe RPC rejects oversized audio and too many hints", () => {
   const ok = { audio: "QUJD", hints: ["merge"] };
@@ -21,6 +21,14 @@ test("speak caps text at 400 and takes replyId", () => {
   assert.equal(voiceSpeak.output.safeParse({ audio: "UklGRg==", engine: "kokoro" }).success, true);
   assert.equal(voiceSpeak.output.safeParse({ audio: "", engine: "loading" }).success, true);
   assert.equal(voiceSpeak.output.safeParse({ audio: "", engine: "other" }).success, false);
+});
+
+test("the wake model RPC is named orchestration.voice.wake-model and only accepts the three known models", () => {
+  assert.equal(voiceWakeModel.name, "orchestration.voice.wake-model");
+  assert.equal(voiceWakeModel.input.safeParse({ model: "melspectrogram" }).success, true);
+  assert.equal(voiceWakeModel.input.safeParse({ model: "embedding" }).success, true);
+  assert.equal(voiceWakeModel.input.safeParse({ model: "hey_jarvis" }).success, true);
+  assert.equal(voiceWakeModel.input.safeParse({ model: "other" }).success, false);
 });
 
 test("voiceEvents takes { after } and returns { cursor, events, phoneActive }", () => {
