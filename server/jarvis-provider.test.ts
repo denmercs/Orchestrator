@@ -513,3 +513,32 @@ test("mute is read per turn, so unmuting takes effect without reopening; stop/st
   const opened = events.filter((e) => e.type === "session.opened");
   assert.deepEqual(opened.map((e) => (e.type === "session.opened" ? e.persistence?.data : null)), [{ routerId: "r9" }, { routerId: "r9" }]);
 });
+
+test("the router is told whether a prompt was typed or spoken", async () => {
+  const flags: unknown[] = [];
+  const { connection, events } = connectWith({
+    route: async (_id, _text, _signal, opts) => {
+      flags.push(opts?.typed);
+      return { spoken: [], note: null };
+    },
+  });
+  await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt("continue") });
+  await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
+  await connection.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(flags, [true, false]);
+});
+
+test("voiceState is a best guess from the sessions Paseo opened: the paseo MCP server means voice mode is on", async () => {
+  const { connection, events } = connectWith({});
+  assert.equal(connection.voiceState(), "unknown");
+  const noVoice = { ...open({ version: 1, data: { routerId: "r1" } }) } as Extract<ProviderInput, { type: "session.open" }>;
+  await connection.send({ ...noVoice, config: { ...noVoice.config, mcpServers: {} } });
+  await settle(events, (e) => e.type === "session.ready");
+  assert.equal(connection.voiceState(), "off");
+  await connection.send({ ...(open({ version: 1, data: { routerId: "r1" } }) as Extract<ProviderInput, { type: "session.open" }>), sessionId: "p2" });
+  assert.equal(connection.voiceState(), "on");
+  await connection.send({ type: "session.close", requestId: "c", sessionId: "p2" });
+  assert.equal(connection.voiceState(), "off");
+});

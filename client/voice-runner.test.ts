@@ -1164,3 +1164,74 @@ test("no mic API: the mute persists, and a new runner after reload starts muted"
   await reloaded.runner.setMic(true);
   assert.equal(stored.micOff, false);
 });
+
+test("typed one-word text reaches the session through the link, helper dropping or not", async () => {
+  const { helper } = fakeHelper({ interpret: async () => ({ via: "helper", result: { type: "drop" } }) });
+  const { runner, said } = setup({ helper });
+  runner.setSessions([alpha]);
+  runner.pick(alpha);
+  runner.type("continue");
+  await flush();
+  assert.deepEqual(said, [["a1", "continue"]]);
+  assert.equal(runner.getState().transcripts.at(-1)?.outcome, "sent");
+});
+
+// --- Ignore me agrees with the saved pref, not with whether the mic opened ---
+
+const deniedEars: NonNullable<VoiceRunnerPorts["ears"]> = {
+  open: async () => Promise.reject(new Error("Permission denied")),
+  close: async () => {},
+  setAwake: () => {},
+  setPaused: () => {},
+  onEvent: () => {},
+};
+
+test("start() with the mic denied is not Ignore me: the pref is off, the mic is unavailable", async () => {
+  const { prefs } = prefsSetup(false);
+  const { runner } = earsSetup({ prefs, ears: deniedEars });
+  await runner.start();
+  assert.equal(runner.getState().micOn, false);
+  assert.equal(runner.getState().ignoring, false);
+  assert.equal(runner.getState().micUnavailable, true);
+});
+
+test("start() with micOff saved is Ignore me, and the mic is not reported unavailable", async () => {
+  const { prefs } = prefsSetup(true);
+  const { runner } = earsSetup({ prefs, ears: deniedEars });
+  await runner.start();
+  assert.equal(runner.getState().ignoring, true);
+  assert.equal(runner.getState().micUnavailable, false);
+});
+
+test("setMic(true) with the mic denied saves micOff false, shows the error, and is not ignoring", async () => {
+  const { prefs, writes } = prefsSetup(true);
+  const { runner } = earsSetup({ prefs, ears: deniedEars });
+  await runner.start();
+  await runner.setMic(true);
+  assert.deepEqual(writes, [false]);
+  assert.equal(runner.getState().ignoring, false);
+  assert.equal(runner.getState().micUnavailable, true);
+  assert.match(runner.getState().error ?? "", /denied/);
+  await runner.setMic(false);
+  assert.equal(runner.getState().ignoring, true);
+  assert.equal(runner.getState().micUnavailable, false);
+});
+
+test("the poll's voice guess reaches the snapshot, unknown until it says", async () => {
+  const { runner, reads } = noMicSetup(() => false);
+  assert.equal(runner.getState().voiceGuess, "unknown");
+  await runner.start();
+  reads[0]({ cursor: 1, events: [], phoneActive: false, voice: "on" } as Batch);
+  await flush();
+  assert.equal(runner.getState().voiceGuess, "on");
+});
+
+test("awake, [heard A, reply A, heard B] renders in true order", async () => {
+  const { runner, reads } = noMicSetup(() => false);
+  runner.on();
+  reads[0]({ cursor: 1, events: [heard("A"), reply("rA"), heard("B")], phoneActive: false });
+  await flush();
+  assert.equal(convoText(runner)[0], "you:A");
+  assert.match(convoText(runner)[1], /^jarvis:.*rA/);
+  assert.equal(convoText(runner)[2], "you:B");
+});

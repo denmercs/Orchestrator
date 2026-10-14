@@ -694,3 +694,16 @@ test("a summary never sends anything, and a later merge still confirms the held 
   const sent = step(replied.state, { type: "confirm", word });
   assert.deepEqual(types(sent.effects).filter((t) => t === "send"), ["send"]);
 });
+
+test("a typed one-word message is sent to the target; the same word spoken is still dropped", () => {
+  const typed = step(awake(), { type: "utterance", text: "continue", typed: true });
+  assert.deepEqual(typed.effects, [{ type: "send", session: api, text: "continue", behavior: "steer" }]);
+  const spoken = say(awake(), "continue");
+  assert.deepEqual(types(spoken.effects), []);
+});
+
+test("typed text skips the helper: no interpret effect, so a helper drop cannot lose it", () => {
+  const typed = step(awake(), { type: "utterance", text: "please run the tests", typed: true });
+  assert.deepEqual(types(typed.effects), ["send"]);
+  assert.deepEqual(types(say(awake(), "please run the tests").effects), ["interpret"]);
+});

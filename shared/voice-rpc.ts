@@ -96,6 +96,8 @@ export const voiceEvents = defineRpc({
     cursor: z.number().int().min(0),
     events: z.array(z.custom<VoiceEvent>((v) => v !== null && typeof v === "object" && typeof (v as { type?: unknown }).type === "string")),
     phoneActive: z.boolean(),
+    // A best guess at whether Paseo voice mode is on, from the Jarvis sessions Paseo opened; absent from an older server.
+    voice: z.enum(["on", "off", "unknown"]).optional(),
   }),
 });
 

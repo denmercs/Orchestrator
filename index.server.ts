@@ -510,11 +510,12 @@ export default function contribute(
   const voice = voiceSetting;
   let phoneAudio = false;
   let referenceClip = "";
-  let micOff = false;
+  // null until the saved value is known; Ignore me fails closed until then, and a state that is not ready keeps the last one.
+  let micOff: boolean | null = null;
   const syncVoice = (state: Awaited<ReturnType<typeof voice.read>>) => {
     phoneAudio = state.status === "ready" && state.values.phoneAudio;
     referenceClip = state.status === "ready" ? state.values.referenceClip : "";
-    micOff = state.status === "ready" && state.values.micOff;
+    if (state.status === "ready") micOff = state.values.micOff;
   };
   const offVoiceSettings = voice.subscribe(syncVoice);
   void voice.read().then(syncVoice);
@@ -698,7 +699,7 @@ export default function contribute(
         .catch((error) => console.warn("orchestrator: Jarvis event failed", error));
     }
   };
-  server.handle(voiceEvents, async ({ after }) => ({ ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false }));
+  server.handle(voiceEvents, async ({ after }) => ({ ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false, voice: jarvisConnection?.voiceState() ?? "unknown" }));
   // The drawer's "good morning": the same briefing as Jarvis, under its own router id so its open briefing is the drawer's.
   server.handle(voiceBrief, async ({ text }) => {
     const briefed = await jarvis.brief("drawer", text);
@@ -722,7 +723,7 @@ export default function contribute(
     playbackEnded: jarvis.playbackEnded,
     phoneAudio: () => phoneAudio,
     // voice.micOff: what Paseo voice mode heard is dropped before the router; the drawer shows what got through.
-    muted: () => micOff,
+    muted: async () => micOff ?? (await voice.read().then(syncVoice, () => undefined), micOff ?? true),
     heard: (_routerId, text) => voiceHub.publish({ type: "heard", text }),
     // On the Mac Jarvis speaks through the same Speaker; false (an empty line) lets Paseo's `speak` take it.
     localSpeak: async (text) => (text.trim() ? (await localVoice.speak(text)) !== undefined : false),

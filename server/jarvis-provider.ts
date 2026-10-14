@@ -40,12 +40,14 @@ type Session = {
 export type JarvisConnection = ProviderConnection & {
   /** True when a session with a `paseo` MCP server (voice mode on) was active in the last JARVIS_ACTIVE_MS. */
   isActive(now: number): boolean;
+  /** Best guess whether Paseo voice mode is on: a session open with the `paseo` MCP server means on, one without means off, none is unknown. */
+  voiceState(): "on" | "off" | "unknown";
   /** Says a router's event lines out of turn (after any open turn ends); a line that can't be said is owed to its next words. */
   say(routerId: string, lines: string[]): Promise<void>;
 };
 
 export type JarvisProviderDeps = {
-  route(routerId: string, text: string, signal?: AbortSignal): Promise<RouteResult>;
+  route(routerId: string, text: string, signal?: AbortSignal, opts?: { typed?: boolean }): Promise<RouteResult>;
   /** Keeps a line Jarvis couldn't say, to say first at the router's next words. */
   owe?(routerId: string, lines: string[]): void;
   /** What was spoken has finished (or failed), so the router's loop leaves `speaking`. */
@@ -55,7 +57,7 @@ export type JarvisProviderDeps = {
   /** Speaks on the Mac through the Speaker; false means it could not, so Paseo's `speak` tool takes the line. */
   localSpeak?(text: string): Promise<boolean>;
   /** Setting `voice.micOff`: when true, what Paseo voice mode heard is dropped before the router. Typed messages still go through. */
-  muted?(): boolean;
+  muted?(): boolean | Promise<boolean>;
   /** Spoken input that reached the router (never typed text, never muted input), so the drawer can show it as a "you" line. */
   heard?(routerId: string, text: string): void;
   fetch?: Fetch;
@@ -155,9 +157,9 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
     const text = promptText(prompt);
     const spoken = spokenText(text);
     // Muted: Paseo's recorder can't be stopped from here, so what it heard is dropped (never routed, shown or answered).
-    if (spoken !== null && deps.muted?.()) return end(sessionId, turnId, "completed");
+    if (spoken !== null && (await deps.muted?.())) return end(sessionId, turnId, "completed");
     if (spoken !== null) deps.heard?.(session.routerId, spoken);
-    const result = await deps.route(session.routerId, spoken ?? text, signal);
+    const result = await deps.route(session.routerId, spoken ?? text, signal, { typed: spoken === null });
     const reply = [result.spoken.join(" "), result.note].filter(Boolean).join(" ");
     if (reply && live(sessionId, turnId)) {
       emit({ type: "timeline.item", sessionId, item: { id: `${turnId}-reply`, type: "assistant_message", text: reply } });
@@ -303,6 +305,10 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
         deps.owe?.(routerId, lines);
       }
       deps.playbackEnded?.(routerId);
+    },
+    voiceState() {
+      if (sessions.size === 0) return "unknown";
+      return [...sessions.values()].some((s) => s.mcpServers.paseo) ? "on" : "off";
     },
     isActive(now) {
       for (const session of sessions.values()) {

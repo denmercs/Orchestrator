@@ -36,7 +36,7 @@ export type VoiceRunnerPorts = {
   /** Audio plus hint words in, text out. */
   transcriber?: (audio: string, hints: string[]) => Promise<string>;
   /** Turn events from the plugin server: read(after) waits for events past the cursor. `phoneActive` means the phone is speaking. */
-  events?: { read(after: number): Promise<{ cursor: number; events: VoiceEvent[]; phoneActive: boolean }> };
+  events?: { read(after: number): Promise<{ cursor: number; events: VoiceEvent[]; phoneActive: boolean; voice?: VoiceGuess }> };
   /** Speaks a line aloud: resolves "ended" when it finished, "stopped" when stop() cut it off. */
   speaker?: { speak(text: string, replyId: string): Promise<"ended" | "stopped">; stop(): void };
   /** The morning briefing: lines to say when the words are "good morning" or an open briefing's answer, null when they are not. */
@@ -66,7 +66,9 @@ export type InterpretRecord = { heard: string; outcome: InterpretOutcome };
 
 export type ConversationEntry = { from: "you"; text: string; outcome: string } | { from: "jarvis"; text: string };
 
-export type VoiceSnapshot = VoiceState & { lines: string[]; conversation: ConversationEntry[]; transcripts: TranscriptEntry[]; interprets: InterpretRecord[]; helper: boolean; error: string | null; phoneActive: boolean; micOn: boolean };
+/** Best guess at whether Paseo voice mode is on; Paseo gives plugins no way to know for sure. */
+export type VoiceGuess = "on" | "off" | "unknown";
+export type VoiceSnapshot = VoiceState & { lines: string[]; conversation: ConversationEntry[]; transcripts: TranscriptEntry[]; interprets: InterpretRecord[]; helper: boolean; error: string | null; phoneActive: boolean; micOn: boolean; /** voice.micOff is on: what you say is dropped. Follows the saved pref only. */ ignoring: boolean; /** The mic should be on but could not open. */ micUnavailable: boolean; voiceGuess: VoiceGuess };
 
 
 export const AUTO_SLEEP_MS = 60_000;
@@ -86,7 +88,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   let lastSent: number | null = null;
   let confirmEntry: number | null = null; // the transcript that asked to confirm
   const listeners = new Set<() => void>();
-  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], conversation: [], transcripts: [], interprets: [], helper: HELPER_DEFAULT_ON, error: null, phoneActive: false, micOn: false };
+  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], conversation: [], transcripts: [], interprets: [], helper: HELPER_DEFAULT_ON, error: null, phoneActive: false, micOn: false, ignoring: false, micUnavailable: false, voiceGuess: "unknown" };
   let autoSleepTimer: unknown = null;
   const clearAutoSleep = () => {
     if (autoSleepTimer === null) return;
@@ -405,25 +407,22 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
         if (polling !== run) return;
         cursor = batch.cursor;
         if (batch.phoneActive !== snapshot.phoneActive) publish({ phoneActive: batch.phoneActive });
-        // In order: what Paseo voice mode heard is a "you" line (the loop never sees it). Asleep the loop drops
-        // replies, so with no mic the panel shows them itself; awake, the loop shows them already.
-        const noMic = ports.hasMic && !ports.hasMic() && snapshot.mode === "asleep";
-        const shown: string[] = [];
-        let changed = false;
+        if (batch.voice && batch.voice !== snapshot.voiceGuess) publish({ voiceGuess: batch.voice });
+        // One event at a time, in order: what Paseo voice mode heard is a "you" line (the loop never sees it). Asleep
+        // the loop drops replies, so with no mic the panel shows them itself; awake, the loop shows them already.
         for (const e of batch.events) {
           if (e.type === "heard") {
             convo.push({ from: "you", text: e.text, outcome: "" });
-            changed = true;
+            publish(showConversation());
             continue;
           }
-          const line = noMic ? phoneReplyLine(e, snapshot.session?.id) : null;
-          if (line === null) continue;
-          convo.push({ from: "jarvis", text: line });
-          shown.push(line);
-          changed = true;
+          const line = ports.hasMic && !ports.hasMic() && snapshot.mode === "asleep" ? phoneReplyLine(e, snapshot.session?.id) : null;
+          if (line !== null) {
+            convo.push({ from: "jarvis", text: line });
+            publish({ lines: keepLast(snapshot.lines, [line], MAX_LINES), ...showConversation() });
+          }
+          dispatch(e);
         }
-        if (changed) publish({ ...(shown.length ? { lines: keepLast(snapshot.lines, shown, MAX_LINES) } : {}), ...showConversation() });
-        batch.events.filter((e) => e.type !== "heard").forEach(dispatch);
       } catch (err) {
         if (polling !== run) return;
         fail(err);
@@ -461,12 +460,12 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
    * phone) fails quietly here, since that is expected rather than an error to show. */
   async function start() {
     const micOff = ports.prefs ? (await ports.prefs.read()).micOff : false;
-    publish({ micOn: !micOff, error: null });
+    publish({ micOn: !micOff, ignoring: micOff, micUnavailable: false, error: null });
     if (!micOff && ports.ears) {
       try {
         await ports.ears.open();
       } catch {
-        publish({ micOn: false });
+        publish({ micOn: false, micUnavailable: true });
       }
     }
     void poll(++polling);
@@ -477,20 +476,20 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   async function setMic(on: boolean) {
     if (ports.prefs) await ports.prefs.write(!on);
     if (!ports.ears) {
-      publish({ micOn: on });
+      publish({ micOn: on, ignoring: !on, micUnavailable: false });
       return;
     }
     if (on) {
       try {
         await ports.ears.open();
-        publish({ micOn: true, error: null });
+        publish({ micOn: true, ignoring: false, micUnavailable: false, error: null });
       } catch (err) {
-        publish({ micOn: false });
+        publish({ micOn: false, ignoring: false, micUnavailable: true });
         fail(err);
       }
       return;
     }
-    publish({ micOn: false });
+    publish({ micOn: false, ignoring: true, micUnavailable: false });
     dispatch({ type: "sleep" });
     try {
       await ports.ears.close();
@@ -543,7 +542,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     type(text: string) {
       if (!text.trim()) return;
       if (snapshot.mode === "asleep") dispatch({ type: "wake" });
-      dispatch({ type: "utterance", text });
+      dispatch({ type: "utterance", text, typed: true });
     },
     /** The panel's "New voice session" button: the same create the "new session" phrase makes, voice on or off. */
     newSession() {

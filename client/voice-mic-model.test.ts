@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { voiceSettings } from "../shared/settings";
 import { MIC_DENIED_MESSAGE, NO_MIC_MESSAGE, PASEO_VOICE_LINE, PASEO_VOICE_TITLE } from "../shared/voice-lines";
-import { drawerMicView, hasMicApi, ignoreMeView, phoneReplyLine, voiceOffNotice } from "./voice-mic-model";
+import { drawerMicView, hasMicApi, ignoreMeView, PASEO_STOP_HINT, phoneReplyLine, voiceOffNotice, voiceStatusLine } from "./voice-mic-model";
 
 test("hasMicApi is true only when mediaDevices.getUserMedia is a function", () => {
   assert.equal(hasMicApi(undefined), false);
@@ -46,13 +46,22 @@ test("phoneReplyLine is the spoken line of a reply for the target, else null", (
 
 test("a fresh install starts with the mic on: voice.micOff defaults to false", () => {
   assert.equal(voiceSettings.schema.parse({}).micOff, false);
-  assert.deepEqual(ignoreMeView(true), { label: "Ignore me", on: false, status: null, action: "Turn Ignore me on" });
+  assert.deepEqual(ignoreMeView(false), { label: "Ignore me", on: false, status: null, action: "Turn Ignore me on" });
 });
 
 test("Ignore me is on when the mic is off, with a visible status saying you are being ignored", () => {
-  const view = ignoreMeView(false);
+  const view = ignoreMeView(true);
   assert.equal(view.label, "Ignore me");
   assert.equal(view.on, true);
   assert.match(view.status ?? "", /ignoring you/i);
   assert.equal(view.action, "Turn Ignore me off");
+});
+
+test("voiceStatusLine labels the indirect voice signal as a best guess and never claims certainty", () => {
+  assert.match(voiceStatusLine("on"), /Voice on/);
+  assert.match(voiceStatusLine("off"), /Voice off/);
+  for (const guess of ["on", "off"] as const) assert.match(voiceStatusLine(guess), /best guess/i);
+  assert.doesNotMatch(voiceStatusLine("unknown"), /Voice (on|off)/);
+  assert.match(voiceStatusLine("unknown"), /unknown/i);
+  assert.match(PASEO_STOP_HINT, /Paseo's own (Stop|Mute)/i);
 });

@@ -33,13 +33,23 @@ export function voiceOffNotice(profile: string): string | null {
   return "Voice sessions are set to off, so they stay on the Paseo default model. Pick a model under Sessions & settings to change that.";
 }
 
-// Pure: the drawer's "Ignore me" switch. It is the mic setting seen from the other side (voice.micOff): on means the mic is
-// off and what you say is dropped. Default is off (the mic is on and you are heard).
-export function ignoreMeView(micOn: boolean): { label: string; on: boolean; status: string | null; action: string } {
+// Pure: the drawer's "Ignore me" switch. It shows the saved voice.micOff pref (`ignoring`), never whether the mic opened: on
+// means what you say is dropped. Default is off (you are heard), also after a reload.
+export function ignoreMeView(ignoring: boolean): { label: string; on: boolean; status: string | null; action: string } {
   return {
     label: "Ignore me",
-    on: !micOn,
-    status: micOn ? null : "Ignoring you. Jarvis won't act on what you say.",
-    action: micOn ? "Turn Ignore me on" : "Turn Ignore me off",
+    on: ignoring,
+    status: ignoring ? "Ignoring you. Jarvis won't act on what you say." : null,
+    action: ignoring ? "Turn Ignore me off" : "Turn Ignore me on",
   };
 }
+
+// Pure: the drawer's voice status. Paseo gives plugins no voice state, so this is only a guess from the sessions it opened.
+export function voiceStatusLine(guess: "on" | "off" | "unknown"): string {
+  if (guess === "on") return "Voice on (best guess)";
+  if (guess === "off") return "Voice off (best guess)";
+  return "Voice status unknown";
+}
+
+// Paseo's recorder is Paseo's: a plugin can't stop or mute it, so the drawer says where the real control is.
+export const PASEO_STOP_HINT = "Ignore me only drops what Jarvis acts on. To stop the recording itself, use Paseo's own Stop or Mute button.";

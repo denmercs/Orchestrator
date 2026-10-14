@@ -973,3 +973,63 @@ test("a reply from a session no loop speaks (not a target, not watched) makes no
     run.stop();
   }
 });
+
+// Ignore me (voice.micOff) fails closed: spoken input is dropped until the saved value says otherwise, and a
+// settings state that is not ready keeps the last known value. A spoken turn that is not dropped reaches the router,
+// which answers in the chat here (a timeline item), so a turn with no timeline item was dropped.
+function micOffHarness(read: () => Promise<unknown>) {
+  const providers: { connect(): Promise<{ send(input: unknown): Promise<void>; onEvent(fn: (e: { type: string }) => void): unknown }> }[] = [];
+  const subscribers: Array<(state: unknown) => void> = [];
+  const noop = () => undefined;
+  const server = new Proxy({} as PluginServerContext, {
+    get: (_target, key) => {
+      if (key === "registerProvider") return (p: never) => void providers.push(p);
+      if (key === "registerSettings") {
+        return () =>
+          new Proxy({}, { get: (_t, k) => (k === "read" ? read : k === "subscribe" ? (fn: (s: unknown) => void) => (subscribers.push(fn), noop) : noop) });
+      }
+      return () => noop;
+    },
+  });
+  const stop = contribute(server, { speakerPorts: quietSpeaker });
+  const turns = async (text: string) => {
+    const connection = await providers[0].connect();
+    const items: string[] = [];
+    connection.onEvent((e) => e.type === "timeline.item" && items.push(e.type));
+    await connection.send({
+      type: "session.open",
+      requestId: "q",
+      sessionId: "p1",
+      config: { cwd: "/repo", env: {}, mcpServers: {}, settings: {}, persist: true },
+      history: "skip",
+    });
+    await connection.send({
+      type: "session.prompt",
+      sessionId: "p1",
+      prompt: { clientMessageId: "m", delivery: "auto", input: { type: "message", content: [{ type: "text", text }] } },
+    });
+    await new Promise((r) => setTimeout(r, 60));
+    return items;
+  };
+  return { turns, subscribers, stop };
+}
+const SPOKEN_WORDS = "<spoken-input>run the tests</spoken-input>";
+const ready = (micOff: boolean) => ({ status: "ready", revision: 1, values: { micOff, phoneAudio: false, referenceClip: "", profile: "" } });
+
+test("Ignore me fails closed: spoken input before the saved value is known is dropped", async () => {
+  const { turns, stop } = micOffHarness(() => new Promise((r) => setTimeout(() => r(ready(true)), 30)));
+  assert.deepEqual(await turns(SPOKEN_WORDS), []);
+  assert.deepEqual(await turns(SPOKEN_WORDS), []);
+  stop();
+});
+
+test("with Ignore me off, spoken input reaches the router; a not-ready settings state keeps the last known value", async () => {
+  const off = micOffHarness(async () => ready(false));
+  assert.equal((await off.turns(SPOKEN_WORDS)).length, 1, "routed");
+  off.stop();
+  const on = micOffHarness(async () => ready(true));
+  await new Promise((r) => setTimeout(r, 10));
+  on.subscribers.forEach((fn) => fn({ status: "loading" }));
+  assert.deepEqual(await on.turns(SPOKEN_WORDS), [], "still dropped after a not-ready state");
+  on.stop();
+});
