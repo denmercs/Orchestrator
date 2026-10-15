@@ -21,8 +21,11 @@ for (let i = 0; i < argv.length; i++) {
     console.log(USAGE);
     process.exit(0);
   } else if (a === "--json") asJson = true;
-  else if (a === "--repo" && argv[i + 1]) repos.push(argv[++i]);
-  else if (a === "--limit" && argv[i + 1]) limit = argv[++i];
+  else if ((a === "--repo" || a === "--limit") && !argv[i + 1]) {
+    console.error(`${a} needs a value\n${USAGE}`);
+    process.exit(2);
+  } else if (a === "--repo") repos.push(argv[++i]);
+  else if (a === "--limit") limit = argv[++i];
   else {
     console.error(`Unknown argument: ${a}\n${USAGE}`);
     process.exit(2);
@@ -52,4 +55,5 @@ try {
 }
 
 if (asJson) console.log(JSON.stringify(prs, null, 2));
+else if (prs.length === 0) console.log("No open PRs are waiting on your review.");
 else for (const p of prs) console.log(`${p.repository?.nameWithOwner}#${p.number} · ${p.author?.login} · ${p.title}\n${p.url}`);

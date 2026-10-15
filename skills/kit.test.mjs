@@ -659,3 +659,19 @@ test("peer-review ships a generic profile file and a rubric without mined team p
   assert.ok(!readFileSync(join(dir, "PROFILES.md"), "utf8").includes(["Life", "way"].join("")));
   assert.ok(!readFileSync(join(dir, "REVIEW-RUBRIC.md"), "utf8").includes("## Team review patterns"));
 });
+
+test("list-prs says so when no PR is waiting", () => {
+  withStubGh({ json: "[]" }, ({ run }) => {
+    const r = run();
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /No open PRs are waiting on your review/);
+  });
+});
+
+test("list-prs names the flag that is missing its value", () => {
+  withStubGh({ json: "[]" }, ({ run }) => {
+    const r = run("--repo");
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /--repo needs a value/);
+  });
+});
