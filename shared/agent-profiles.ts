@@ -70,7 +70,8 @@ const STEP_TIER: Partial<Record<LoopStep, string>> = {
   fix: "sonnet",
 };
 
-// The profile a loop step's agent runs on: the step's own setting (id or name), else the d1 tier
+// The loop step's default profile: the legacy `profiles` setting (id or name; nothing in the dashboard sets it
+// now), else the d1 tier
 // among profiles of the runner's provider, else the runner profile, else FALLBACK_AGENT_CONFIG.
 export function profileForStep(
   loop: Pick<LoopConfig, "profiles">,

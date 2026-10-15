@@ -277,7 +277,7 @@ export default function contribute(
       realReplayPorts(
         () => replayPaseo,
         async (paseo) =>
-          // The replayed Review runs on the loop's Review profile.
+          // The replayed Review runs on the Review step's default model.
           loadStepConfig(
             paseo,
             await loopSettings.read().then((state) => (state.status === "ready" ? state.values : DEFAULT_LOOP_CONFIG)),

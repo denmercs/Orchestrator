@@ -58,7 +58,7 @@ export type ReplayPorts = {
   brief?: (memoryRoot: string, arm: Arm, paths: string[]) => Promise<string[]>;
   judge: Judge;
   telemetry: { lastTurn(agentId: string): Promise<TelemetryRow | null> };
-  // The loop's Review profile (`loadStepConfig(…, "review", …)`).
+  // The Review step's default model (`loadStepConfig(…, "review", …)`); the repo's Story pipeline profile does not apply.
   agentConfig: () => Promise<AgentCreateConfig>;
   installBrief: (worktree: string, tag: string) => Promise<void>;
   // Injectable timers so tests need no real waiting. Defaults to the global ones.

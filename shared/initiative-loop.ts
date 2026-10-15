@@ -19,7 +19,7 @@ export const STEP_LABELS: Record<LoopStep, string> = {
   fix: "Fix CI",
 };
 
-// The steps that run an agent and so get a profile of their own (Open PR runs none).
+// The steps that run an agent (Open PR runs none); the keys of the legacy `profiles` setting.
 export const PROFILE_STEPS = ["plan", "implement", "review", "fix"] as const;
 export type ProfileStep = (typeof PROFILE_STEPS)[number];
 
@@ -42,7 +42,9 @@ const loopValues = z.object({
   // (6 and 22 hold all day and leave the night to the loop). Steps already running carry on. Null is off.
   holdFrom: z.number().int().min(0).max(23).nullable().default(null),
   holdUntil: z.number().int().min(0).max(23).nullable().default(null),
-  // Agent profile id per step; empty means Auto (an Opus or Sonnet profile, else the runner's).
+  // Legacy per-step agent profile id, no longer set from the dashboard (models are now chosen per phase in
+  // the repo's Story pipeline, which wins). Empty means the default tier (an Opus or Sonnet profile, else
+  // the runner's). Kept so a saved file that has it still parses.
   profiles: z
     .object({
       plan: z.string().default(""),
