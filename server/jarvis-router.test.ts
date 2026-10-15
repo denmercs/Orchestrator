@@ -37,13 +37,19 @@ function setup(opts: { sessions?: VoiceSession[]; fail?: boolean; interpreter?: 
   return { router, sent, raw, created, tick: (ms: number) => void (clock += ms) };
 }
 
-test("with no target it says how to pick one and names a few sessions", async () => {
+test("with no target it shows how to pick one (note only, nothing said) and names a few sessions", async () => {
   const { router, sent } = setup();
   const r = await router.route("r1", "run the tests please");
-  assert.deepEqual(r.spoken, [pickFirstLine(["api-refactor", "docs"])]);
+  assert.deepEqual(r, { spoken: [], note: pickFirstLine(["api-refactor", "docs"]) });
   assert.deepEqual(sent, []);
   const none = setup({ sessions: [] });
-  assert.deepEqual((await none.router.route("r1", "run the tests please")).spoken, [pickFirstLine([])]);
+  assert.deepEqual(await none.router.route("r1", "run the tests please"), { spoken: [], note: pickFirstLine([]) });
+});
+
+test("with no target and a line owed, the owed line is said and the pick text still lands in note", async () => {
+  const { router } = setup();
+  router.owe("r1", ["Docs finished."]);
+  assert.deepEqual(await router.route("r1", "run the tests please"), { spoken: ["Docs finished."], note: pickFirstLine(["api-refactor", "docs"]) });
 });
 
 test("switch to <name> picks the target, then speech goes there as heard, without the name", async () => {
@@ -176,7 +182,7 @@ test("a fallback reason adds a note to the chat text only, never to what is spok
 test("Voice's own sessions are never a target: the drawer's pick and switch by name are refused", async () => {
   const { router, sent } = setup();
   assert.deepEqual(await router.setTarget(self), { ok: false, line: notTargetLine("Jarvis") });
-  assert.deepEqual((await router.route("r1", "run the tests")).spoken, [pickFirstLine(["api-refactor", "docs"])]);
+  assert.deepEqual(await router.route("r1", "run the tests"), { spoken: [], note: pickFirstLine(["api-refactor", "docs"]) });
   assert.deepEqual((await router.route("r1", "Jarvis, switch to Jarvis")).spoken, [notTargetLine("Jarvis")]);
   assert.equal(router.stateOf("r1")?.session, null);
   assert.deepEqual(sent, []);

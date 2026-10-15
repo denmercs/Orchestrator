@@ -100,7 +100,7 @@ test("the sleep event while asleep does nothing", () => {
 });
 
 test("an utterance with no target asks for a session; otherwise it goes to the interpreter", () => {
-  assert.deepEqual(say(awake({ session: null }), "fix the login bug").effects, [{ type: "speak", line: "Pick a session first. One, api-refactor. Two, docs. Say a number, or switch to and a name." }]);
+  assert.deepEqual(say(awake({ session: null }), "fix the login bug").effects, [{ type: "show", line: "Pick a session first. One, api-refactor. Two, docs. Say a number, or switch to and a name." }]);
   const r = say(awake(), "fix the login bug");
   assert.deepEqual(r.effects, [{ type: "interpret", seq: 1, text: "fix the login bug" }]);
   assert.deepEqual(r.state.pending, { seq: 1, heard: "fix the login bug" });
@@ -227,6 +227,13 @@ test("notices queue while talking, speaking or confirming, merge, and flush afte
   assert.deepEqual(flushed.state.queue, []);
   const afterSpeech = step(awake({ mode: "speaking", queue: queued.queue }), { type: "playbackEnded" });
   assert.deepEqual(types(afterSpeech.effects), ["speak"]);
+});
+
+test("a no-target utterance shows its line and holds queued notices back, like a spoken line would", () => {
+  const queued = { ...awake({ session: null }), queue: [{ kind: "finished" as const, sessionId: "s2", name: "docs" }] };
+  const r = say(queued, "fix the login bug");
+  assert.deepEqual(types(r.effects), ["show"]);
+  assert.equal(r.state.queue.length, 1);
 });
 
 test("asleep drops notices", () => {
@@ -423,7 +430,7 @@ test("the phone transcripts: noise gets a short numbered list, 'Phase One archit
   let state = phone();
   for (const heard of ["Let's do this for.", "Which to ask for"]) {
     const r = say(state, heard);
-    assert.deepEqual(r.effects, [{ type: "speak", line: PICK_FIRST }], heard);
+    assert.deepEqual(r.effects, [{ type: "show", line: PICK_FIRST }], heard);
     state = r.state;
   }
   const sport = say(state, "Switch to Sport Plan");
@@ -616,8 +623,8 @@ test("'new session' with a target creates a voice session in its workspace; with
     assert.deepEqual(r.effects, [{ type: "create", session: api }, { type: "speak", line: "Starting a voice session in api-refactor." }], heard);
   }
   const none = say(awake({ session: null }), "new session");
-  assert.deepEqual(types(none.effects), ["speak"]);
-  assert.ok(none.effects[0].type === "speak" && none.effects[0].line.startsWith("Pick a session first."));
+  assert.deepEqual(types(none.effects), ["show"]);
+  assert.ok(none.effects[0].type === "show" && none.effects[0].line.startsWith("Pick a session first."));
 });
 
 // S19: a session on the Speak pill is heard on the phone, whoever the target is.

@@ -157,6 +157,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     const wasConfirming = state.mode === "confirming";
     // Lines Jarvis couldn't say out of turn come first, once.
     const spoken: string[] = entry.owed.splice(0);
+    const shown: string[] = [];
     let steered = false;
     let fallbackNote: string | null = null;
     // Typing is deliberate: it wakes a sleeping loop, and skips the short-text and helper filters.
@@ -202,6 +203,9 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
           case "askConfirm":
             spoken.push(effect.line);
             break;
+          case "show":
+            shown.push(effect.line);
+            break;
           case "sleep":
             spoken.push(SLEEP_LINE);
             break;
@@ -215,9 +219,10 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     if (state.mode === "confirming" && !wasConfirming) entry.confirmAt = now();
     if (state.choices && state.choices !== choicesBefore) entry.choicesAt = now();
     entry.state = state;
-    if (spoken.length) return { spoken, note: fallbackNote };
-    // A steer that went out is silent by design (no "Sent to ..."), but it was sent: never report "Nothing sent."
-    return { spoken, note: fallbackNote ?? (state.mode === "asleep" ? ASLEEP_NOTE : steered ? SENT_NOTE : NOTHING_SENT) };
+    const shownNote = shown.length ? shown.join(" ") : null;
+    if (spoken.length) return { spoken, note: fallbackNote ?? shownNote };
+    // A shown line (no target picked) is text only, never said. A steer that went out is silent by design (no "Sent to ..."), but it was sent: never report "Nothing sent."
+    return { spoken, note: fallbackNote ?? shownNote ?? (state.mode === "asleep" ? ASLEEP_NOTE : steered ? SENT_NOTE : NOTHING_SENT) };
   }
 
   return {

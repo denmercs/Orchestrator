@@ -62,6 +62,8 @@ export type VoiceEvent =
 export type VoiceEffect =
   | { type: "send"; session: VoiceSession; text: string; behavior: "steer" }
   | { type: "speak"; line: string }
+  /** Shown, never said: the no-target "Pick a session first" list, so a request with nothing to go to stays quiet. */
+  | { type: "show"; line: string }
   | { type: "stopPlayback" }
   | { type: "askConfirm"; word: string; line: string }
   | { type: "listen" }
@@ -158,9 +160,9 @@ function askWhich(state: VoiceState, matches: VoiceSession[], text?: string): Vo
 }
 
 /** Reads a numbered list of sessions through `line`, and remembers it for a bare number. */
-function numberedList(state: VoiceState, shown: number, line: (names: string[], total: number) => string, text?: string): VoiceStep {
+function numberedList(state: VoiceState, shown: number, line: (names: string[], total: number) => string, text?: string, effect: "speak" | "show" = "speak"): VoiceStep {
   const choices = state.sessions.slice(0, shown);
-  return out({ ...state, choices: choices.length ? choices : null, choicesText: text }, { type: "speak", line: line(short(choices), state.sessions.length) });
+  return out({ ...state, choices: choices.length ? choices : null, choicesText: text }, { type: effect, line: line(short(choices), state.sessions.length) });
 }
 
 function switchTo(state: VoiceState, spoken: string, text?: string): VoiceStep {
@@ -206,7 +208,7 @@ function onUtterance(state: VoiceState, text: string, typed = false): VoiceStep 
   if (LIST_SESSIONS.test(cleaned)) return numberedList({ ...base, pending: null }, LIST_SHOWN, listLine);
   if (NEW_SESSION.test(cleaned)) {
     const target = state.session;
-    if (!target) return numberedList({ ...base, pending: null }, PICK_SHOWN, pickFirstLine);
+    if (!target) return numberedList({ ...base, pending: null }, PICK_SHOWN, pickFirstLine, undefined, "show");
     return out({ ...base, pending: null }, { type: "create", session: target }, { type: "speak", line: newSessionLine(shortName(target.name)) });
   }
   // Without the name and with a target, "switch to X" is only a switch when X is a session (and "use X", "open X"
@@ -224,7 +226,7 @@ function onUtterance(state: VoiceState, text: string, typed = false): VoiceStep 
     if (named.length > 1) return askWhich({ ...base, pending: null }, named);
   }
   if (!typed && cleaned.split(" ").filter(Boolean).length < 2) return out(base);
-  if (!state.session) return numberedList({ ...base, pending: null }, PICK_SHOWN, pickFirstLine);
+  if (!state.session) return numberedList({ ...base, pending: null }, PICK_SHOWN, pickFirstLine, undefined, "show");
   if (typed) return sentTo(base, text.trim());
   const seq = state.seq + 1;
   return out({ ...base, seq, pending: { seq, heard: text } }, { type: "interpret", seq, text });
@@ -332,7 +334,7 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
 function flush(r: VoiceStep): VoiceStep {
   const { state, effects } = r;
   const idle = state.mode === "listening" || state.mode === "waiting";
-  if (!idle || state.talking || effects.some((e) => e.type === "speak")) return r;
+  if (!idle || state.talking || effects.some((e) => e.type === "speak" || e.type === "show")) return r;
   if (state.held) return { state: { ...state, mode: "speaking", held: null }, effects: [...effects, { type: "speak", line: state.held }] };
   if (!state.queue.length && !state.heard.length) return r;
   const line = [...state.heard.map((h) => h.line), ...(state.queue.length ? [mergeNotices(state.queue)] : [])].join(" ");

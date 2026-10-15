@@ -187,6 +187,10 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       case "askConfirm":
         showAndSpeak(effect.line, effect.type === "speak");
         return;
+      case "show":
+        convo.push({ from: "jarvis", text: effect.line });
+        publish({ lines: keepLast(snapshot.lines, [effect.line], MAX_LINES), ...showConversation() });
+        return;
       case "stopPlayback":
       case "sleep":
         ports.speaker?.stop();
