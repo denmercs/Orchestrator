@@ -233,20 +233,17 @@ const REVIEW_CHECKS = `${REVIEW_LOOK}
 - The full test suite, lint and build pass (run them; keep only the summary and any failures).`;
 
 // The plugin reads the checklist, not the marker, to decide between a fix round and the PR (afterReview).
-const REVIEW_END = `After fixing, run the full test suite, lint and build again.
-Write \`## Preview\`: one line per app route or screen the story changes, "- <route> — what to look at", or
+const REVIEW_END = `Write \`## Preview\`: one line per app route or screen the story changes, "- <route> — what to look at", or
 \`none — <why>\` when nothing is visible.
 Write .harness/pr-body.md: a short Purpose, the Changes Made as bullets, and how it was tested.
-When the review is written, set \`## Status\` to \`${MARKERS.reviewDone}\`. If you changed code, put a commit subject
-for your fixes on the next line: plain words, imperative mood, under 72 characters, no story id. The plugin reads
+When the review is written, set \`## Status\` to \`${MARKERS.reviewDone}\` with nothing after it. The plugin reads
 the checklist: any unticked line goes to a fresh agent to fix, and when none is left the plugin commits and opens
 the PR.`;
 
-// Review fixes what it finds (blocking and non-blocking alike) and ticks it; it leaves unticked only what needs a
-// human decision or work outside the story.
-const REVIEW_FIX = `Then fix every finding you can, blocking and non-blocking alike, inside the story's scope. A behaviour fix gets a
-test that fails before it; add one line per fix to \`## Evidence\`. Tick each line you fixed (\`- [x]\`). Leave a
-finding unticked when fixing it needs a human decision or work outside the story.`;
+// The live Review only lists; a fresh agent fixes every unticked line.
+const REVIEW_LIST = `Do not fix anything: do not edit source or tests. The only files you may edit are ${STATE} and
+.harness/pr-body.md. A fresh agent fixes every unticked line, blocking and non-blocking, and the next review checks
+those fixes.`;
 
 // Replaces the fix and end parts when the Review only lists findings (the memory replay).
 const FINDINGS_END = `Do not fix anything, and do not edit any file except ${STATE}. Do not run the full test suite, lint or build;
@@ -263,11 +260,11 @@ const REVIEW_FORMAT = `Replace what is under \`## Review findings\` with one che
 - \`- [ ] non-blocking: file:line — what could be better — how\` when it works but should improve: naming,
   readability, a missing edge-case test, a repo convention.`;
 
-const REVIEW = `## This step: review the change as a fresh critic, then fix what you find
-${REVIEW_DIFF} Finish the whole review before you fix anything.
+const REVIEW = `## This step: review the change as a fresh critic and list what you find
+${REVIEW_DIFF}
 ${REVIEW_CHECKS}
 ${REVIEW_FORMAT}
-${REVIEW_FIX}
+${REVIEW_LIST}
 ${REVIEW_END}`;
 
 const REVIEW_FINDINGS = `## This step: review the change as a fresh critic and list what you find
@@ -282,12 +279,11 @@ const REREVIEW_STEPS = `1. For each ticked line, check the fix in the diff again
 2. Review the whole diff again. Add only new \`blocking:\` lines (\`- [ ] blocking: file:line — what is wrong — what
    would fix it\`): something the fixes broke, or a real defect missed before. Do not add new non-blocking lines.`;
 
-const REREVIEW = `## This step: re-review the change after the fixes, then fix what you find
-\`## Review findings\` holds the last review's checklist; the fix agent ticked each line it fixed. Finish the whole
-re-review before you fix anything.
+const REREVIEW = `## This step: re-review the change after the fixes and list what you find
+\`## Review findings\` holds the last review's checklist; the fix agent ticked each line it fixed.
 ${REREVIEW_STEPS}
 ${REVIEW_CHECKS}
-${REVIEW_FIX}
+${REVIEW_LIST}
 ${REVIEW_END}`;
 
 const REREVIEW_FINDINGS = `## This step: re-review the change after the fixes and list what you find

@@ -364,15 +364,22 @@ test("review points at the base under Where it sits; pr carries the exact comman
   assert.ok(jira.includes('--title "KEY-1 | Add search"'), "Jira PR title");
 });
 
-test("review fixes its findings, non-blocking ones too, and leaves unticked only what it could not fix", () => {
+test("the live Review lists findings and never fixes", () => {
   for (const round of [1, 2]) {
     const review = stepPrompt("review", story, { round });
-    assert.doesNotMatch(review, /Do not fix anything/);
-    assert.match(review, /fix every finding you can, blocking and non-blocking alike/);
-    assert.match(review, /Tick each line you fixed/);
-    assert.match(review, /Leave a\s+finding unticked when fixing it needs a human decision/);
-    assert.match(review, /commit subject/);
+    assert.match(review, /Do not fix anything/);
+    assert.match(review, /do not edit source or tests\. The only files you may edit are \.harness\/state\.md and\s+\.harness\/pr-body\.md/);
+    assert.match(review, /run them; keep only the summary/);
+    assert.match(review, /Write `## Preview`/);
+    assert.match(review, /Write \.harness\/pr-body\.md/);
+    assert.match(review, /set `## Status` to `review-done` with nothing after it\./);
+    assert.doesNotMatch(review, /fix every finding you can/);
+    assert.doesNotMatch(review, /commit subject/);
+    assert.doesNotMatch(review, /After fixing/);
   }
+  const fix = stepPrompt("implement", story, { round: 2 });
+  assert.match(fix, /blocking and non-blocking/);
+  assert.match(fix, /skip\s+"follow-up:" lines/);
 });
 
 test("missing Plan paths go in the story section, after the head and before Where it sits", () => {
@@ -490,11 +497,11 @@ test("a memory brief adds a Memory brief block to the review step data and nothi
   assert.ok(withBrief.indexOf("## Memory brief") > withBrief.indexOf("Review for story S1"), "after the head");
 });
 
-// sha256 of the live Review prompts before findings-only existed; they must not move.
+// sha256 of the live Review prompts. They moved in S26 (the live Review lists findings and no longer fixes).
 test("the live Review prompts are unchanged", () => {
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-  assert.equal(sha(stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] })), "795dcd37c9a5bda28f3b68c48b2c515572bdc68d074fe14a88a1c4b1692f7e42");
-  assert.equal(sha(stepPrompt("review", story, { round: 2 })), "aefc6688dbf38ca7569e1b30d6ba3817f436a00acb33f6b638aede4706ec5afe");
+  assert.equal(sha(stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] })), "e00491b5b817fc194b554f5ee68b49d27e2dc587cd1e3fc9eef2e360136bcd59");
+  assert.equal(sha(stepPrompt("review", story, { round: 2 })), "7e45e54463364cf49d435671d25d456b0edbe50bca4a658cfb1f3c3994610e97");
   assert.equal(stepPrompt("review", story, { round: 1, findingsOnly: false }), stepPrompt("review", story, { round: 1 }));
 });
 
