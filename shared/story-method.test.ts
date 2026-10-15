@@ -156,6 +156,21 @@ test("afterReview: review-failed with no checklist (an older reviewer) still get
   assert.deepEqual(afterReview(legacy, "review-done", 1, 3), { kind: "pr", unfixed: [] });
 });
 
+test("every review prompt reviews with peer-review in own-branch mode plus review-patterns", () => {
+  for (const round of [1, 2]) {
+    for (const findingsOnly of [false, true]) {
+      const prompt = stepPrompt("review", story, { round, findingsOnly });
+      const label = `round ${round}, findingsOnly ${findingsOnly}`;
+      assert.match(prompt, /peer-review/, label);
+      assert.match(prompt, /Own branch/, label);
+      assert.match(prompt, /review-patterns/, label);
+      assert.doesNotMatch(prompt, /Correctness: edge cases/, label);
+      assert.match(prompt, /- \[ \] blocking: file:line/, label);
+      assert.match(prompt, /review-done/, label);
+    }
+  }
+});
+
 test("review prompts: round 1 asks for a tagged checklist; later rounds re-check ticked lines and add only blocking ones", () => {
   const first = stepPrompt("review", story, { round: 1 });
   assert.match(first, /- \[ \] blocking: file:line/);
@@ -490,11 +505,11 @@ test("a memory brief adds a Memory brief block to the review step data and nothi
   assert.ok(withBrief.indexOf("## Memory brief") > withBrief.indexOf("Review for story S1"), "after the head");
 });
 
-// sha256 of the live Review prompts before findings-only existed; they must not move.
+// sha256 of the live Review prompts (REVIEW_LOOK now points at peer-review); they must not move.
 test("the live Review prompts are unchanged", () => {
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-  assert.equal(sha(stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] })), "795dcd37c9a5bda28f3b68c48b2c515572bdc68d074fe14a88a1c4b1692f7e42");
-  assert.equal(sha(stepPrompt("review", story, { round: 2 })), "aefc6688dbf38ca7569e1b30d6ba3817f436a00acb33f6b638aede4706ec5afe");
+  assert.equal(sha(stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] })), "6c6862ae0db76c7cbe583dbee64c70ed5c7ab126305aaf7112a4dab0ae5f70ea");
+  assert.equal(sha(stepPrompt("review", story, { round: 2 })), "f49aba29f622258e9b66c9d0119a50ad4e133bfe40515838f93d3aaa52de0484");
   assert.equal(stepPrompt("review", story, { round: 1, findingsOnly: false }), stepPrompt("review", story, { round: 1 }));
 });
 
@@ -511,8 +526,8 @@ test("a findings-only Review lists findings and does not fix, run the full suite
     assert.match(only, /set `## Status` to `review-done` with nothing after it/);
     // Same checklist of what to look at, and the same findings format.
     for (const line of [
-      "- Correctness: edge cases, error paths, concurrency, data loss.",
-      "- The repo's own conventions, and nothing changed outside the story's scope.",
+      "Review the diff with the `peer-review` skill in its Own branch mode.",
+      "- Nothing changed outside the story's scope.",
       "the base branch named under `## Where it sits`",
     ]) {
       assert.ok(live.includes(line) && only.includes(line), line);
