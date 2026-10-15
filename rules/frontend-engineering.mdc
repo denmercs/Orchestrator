@@ -1,0 +1,99 @@
+---
+description: >-
+  Frontend engineering rule: boundaries, state, effects, test contracts, and
+  delivery gates. Complements typescript-ai-rules / react-patterns /
+  frontend-testing, which cover micro-style.
+globs:
+  - "**/*.ts"
+  - "**/*.tsx"
+  - "**/*.js"
+  - "**/*.jsx"
+alwaysApply: false
+---
+
+# Frontend engineering (shared)
+
+## Scope
+
+`typescript-ai-rules`, `react-patterns`, and `frontend-testing` cover the
+**line** — how to write the code in front of you. This rule covers the
+**change** — boundaries, what ships alongside it, and when it is done.
+
+The test: would a reviewer cite this while reading a single line, or while
+reading the whole diff? Line → those rules. Diff → this one. Nothing is stated
+in both places; where they connect, this rule points and does not repeat.
+
+## 1. Match the repo before you match this rule
+
+Before the first edit, read two or three files **adjacent to the one you are
+changing** and mirror them: export style, file naming, test extension
+(`.spec.` vs `.test.`), co-located vs `__tests__/`, barrel or no barrel.
+A correct change in the wrong dialect is still a defect. Where the repo has no
+opinion, this rule is the tiebreaker.
+
+## 2. Boundaries
+
+- Code belongs to the **feature** that uses it. Promote to shared only on the
+  **second** consumer, never in anticipation of one.
+- A shared package consumed from a build output (`dist/`, `lib/`) does not pick
+  up `src/` edits until it is rebuilt. Rebuild it or your change is invisible.
+- Never hand-edit generated files (codegen'd types, schema artifacts, lockfiles).
+  Change the source and regenerate.
+- Cross-boundary data gets a **type at the boundary**. Inside the boundary,
+  prefer inference.
+
+## 3. State and effects
+
+`react-patterns` covers effects and state ownership. Beyond it:
+
+- Satisfy the exhaustive-deps lint **honestly**. Trimming a dep array to silence
+  it converts a lint warning into a runtime bug — this is the most common way a
+  passing build ships a stale closure.
+- **Expected failure is a value, not an exception.** Use the repo's
+  `Result`/`Either`/discriminated-union convention if one exists. Throw only for
+  programmer error. This is a boundary decision, not a style preference: it
+  determines whether callers can forget to handle the failure.
+- State that crosses a feature boundary needs a named owner. Two features
+  writing the same store is the bug, not the symptom you were sent to fix.
+
+## 4. Test contracts
+
+- **Every bug fix ships a test that fails without the fix.** Write it, watch it
+  fail, then fix. No exceptions — this is the single rule that most determines
+  whether quality holds across sessions.
+- Mock at **a boundary you own**, never the third-party library itself. A test
+  that mocks the library tests the mock.
+- Reset mocks between tests. Shared mutable state between cases is a flake.
+
+## 5. E2E and integration determinism
+
+A flaky test is worse than no test — it trains everyone to ignore red.
+
+- **Start from a known state.** Seed or reset in setup. Never depend on residue
+  from a previous run.
+- **Fail loudly.** API helpers throw on non-2xx. Event waiters reject on
+  timeout. A helper that resolves silently on failure turns a red test green and
+  is a bug in the harness.
+- **Await every assertion.** A floating assertion passes by accident.
+- Wait for a **condition**, never a duration (`frontend-testing`). In E2E this
+  is load-bearing: a sleep tuned on your laptop is a race CI loses on a bad day,
+  and the retry that "fixes" it hides a real bug.
+
+## 6. Scope
+
+Do exactly the change asked for. No drive-by renames, no reformatting of lines
+you did not otherwise touch (it destroys blame), no dependency bumps inside a
+feature change. Upgrades and refactors are their own commit with their own
+justification.
+
+## 7. Definition of done
+
+Find the repo's gate — usually `lint`, `type-check`, `test`, `build` in
+`package.json`, or the workspace equivalent — and **run it**.
+
+Report the command you ran and its actual result. "I could not run it" is an
+acceptable report. **"It should pass" is not**, and neither is silence.
+
+If a type error blocks you, fix the type. The escapes `typescript-ai-rules`
+tells you to avoid are exactly the ones that look reasonable at 5pm with a red
+gate — that is the moment the rule is for.

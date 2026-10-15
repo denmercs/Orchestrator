@@ -286,3 +286,47 @@ test("a target folder that is itself a symlink is skipped and nothing is written
     assert.match(result.stdout, new RegExp(`skipped linked folder ${join(home, ".claude/skills")}`));
   });
 });
+
+const REPO = process.cwd();
+const REPO_RULES = ["backend-engineering", "frontend-engineering", "frontend-testing", "opus-review-before-ship", "react-patterns", "typescript-ai-rules"];
+
+test("the repo rules/ holds the index and six rules, and every @ line resolves", () => {
+  const dir = join(REPO, "rules");
+  assert.deepEqual(readdirSync(dir).sort(), ["index.md", ...REPO_RULES.map((name) => `${name}.mdc`)].sort());
+
+  const index = readFileSync(join(dir, "index.md"), "utf8");
+  assert.ok(!/skillsync|yarn rules:link/i.test(index));
+  assert.ok(index.includes("scripts/link-kit.mjs"));
+
+  const refs = index.split("\n").filter((line) => /^-?\s*@/.test(line));
+  const names = refs.map((line) => {
+    const match = line.match(/^- @~\/\.claude\/rules\/([\w.-]+\.mdc)\s*$/);
+    assert.ok(match, `@ line link-kit cannot parse: ${line}`);
+    return match[1];
+  });
+  assert.deepEqual(names.sort(), REPO_RULES.map((name) => `${name}.mdc`));
+
+  for (const name of readdirSync(dir)) {
+    assert.ok(!/wordpress|wp-|wpcs/i.test(readFileSync(join(dir, name), "utf8")), `${name} mentions WordPress`);
+  }
+});
+
+test("link-kit links the repo's real rules into a temp home", () => {
+  withRoot((root) => {
+    const home = join(root, "home");
+    mkdirSync(home);
+
+    const result = runLinkKit(home, REPO);
+    assert.equal(result.status, 0, result.stderr);
+
+    const claude = join(home, ".claude/rules");
+    const kiro = join(home, ".kiro/steering");
+    assert.deepEqual(readdirSync(claude).sort(), ["index.md", ...REPO_RULES.map((name) => `${name}.mdc`)].sort());
+    assert.deepEqual(readdirSync(kiro).sort(), REPO_RULES.map((name) => `${name}.md`));
+    for (const name of REPO_RULES) {
+      assert.equal(readlinkSync(join(claude, `${name}.mdc`)), join(REPO, "rules", `${name}.mdc`));
+      assert.equal(readlinkSync(join(kiro, `${name}.md`)), join(REPO, "rules", `${name}.mdc`));
+    }
+    assert.equal(readlinkSync(join(claude, "index.md")), join(REPO, "rules/index.md"));
+  });
+});

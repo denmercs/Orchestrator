@@ -1,0 +1,21 @@
+---
+description: >-
+  Shared React guidance: functional components, sensible state/effects, forms,
+  accessibility, and performance hygiene.
+globs:
+  - "**/*.tsx"
+  - "**/*.jsx"
+alwaysApply: false
+---
+
+# React (shared)
+
+When editing React UI:
+
+- Prefer **functional components** and hooks; keep components focused and composable.
+- Avoid **`useEffect`** for work that belongs in **event handlers**, **render-time derivation**, or **framework loaders** unless syncing with external systems.
+- Prefer **controlled inputs** with clear state ownership; avoid double sources of truth.
+- Follow **Rules of Hooks**; no conditional hook calls.
+- Prefer **accessible semantics** first: correct roles/labels, keyboard paths, focus management for dialogs.
+- Use **stable keys** for lists; avoid `key={index}` for dynamic/reorderable lists.
+- Reach for **`useMemo` / `useCallback`** only when profiling or a stable reference is required (subscriptions, memoized children).

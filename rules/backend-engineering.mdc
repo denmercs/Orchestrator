@@ -1,0 +1,129 @@
+---
+description: >-
+  Backend engineering rule: contract-first changes, domain modelling, thin
+  adapters, security-by-default, and delivery gates. Language-agnostic — the
+  same standard applies to Scala, PHP, Go, Python, and SQL.
+globs:
+  - "**/*.scala"
+  - "**/*.sbt"
+  - "**/*.php"
+  - "**/*.go"
+  - "**/*.py"
+  - "**/*.rb"
+  - "**/*.sql"
+  - "**/app/api/**/*.ts"
+  - "**/pages/api/**/*.ts"
+  - "**/server/**/*.ts"
+  - "**/*.server.ts"
+  - "**/*.graphql"
+  - "**/*.gql"
+  - "**/*.tf"
+alwaysApply: false
+---
+
+# Backend engineering (shared)
+
+## Scope
+
+This is the **change-level** rule: boundaries, what ships alongside a change,
+and when it is done. It is deliberately language-neutral — one standard, many
+idioms — so a plugin and an event-sourced service are held to the same bar.
+
+The **how** for a given stack comes from the matching stack skill.
+That covers the line;
+this covers the diff. Where they connect, this rule points and does not repeat.
+
+Formatting and language style come from the repo's formatter and linter —
+scalafmt, PHPCS, gofmt, ruff. Run them. Do not relitigate them by hand.
+
+Backend code usually has **fewer regular committers than frontend code**, so
+there is less local precedent to imitate. Where the repo has a clear pattern,
+follow it; where it does not, this rule is the tiebreaker.
+
+## 1. Contract first
+
+- The schema, API definition, or hook signature is the **source of truth**.
+  Change it first, regenerate or update every consumer, then implement. Never
+  write a handler against a field that is not in the contract.
+- Before adding an endpoint, table, option, or aggregate: **check whether the
+  capability already exists** — upstream service, core API, an existing plugin
+  hook. Duplicating a capability to avoid a conversation is the most expensive
+  mistake available here. If upstream work is needed, say so and **ask first**.
+- Additive changes are safe. Renames, removals, and type changes need a
+  migration story written down before the code is written. This applies equally
+  to an event schema, a REST response, and the shape of a stored option or
+  post meta.
+- Do not extend anything marked deprecated. Say so and propose the live path.
+
+## 2. Domain modelling
+
+- Model closed sets as an **enumerated type** — sealed trait, enum, or a single
+  declared constant list — not bare strings scattered through the code.
+- **Write wire-facing serialization explicitly.** Derived or reflective
+  encoding hides the contract: the serialized name is a promise to consumers and
+  it should be readable in the source. Internal-only shapes may derive. The same
+  applies to anything persisted — a stored key is a contract with future you.
+- Absent means absent. Use the language's optional/null convention honestly —
+  never `""`, `0`, or `-1` as a sentinel, and never a falsy check standing in
+  for "was it provided".
+- Parse and decode failures return a **typed error whose message names the
+  offending value**. Never throw out of a parser, and never swallow into a
+  default that hides bad input.
+- Document the **why** on domain types. Skip comments that restate the signature.
+
+## 3. Handlers, resolvers, adapters, hooks
+
+- Keep them **thin**: read input, call the domain, shape the output. Business
+  logic belongs where it can be tested without a network, a database, or a
+  bootstrapped framework.
+- Read inputs through typed or sanitizing helpers, never raw index access into
+  a request bag.
+- Return types come from the generated or declared contract, not hand-written
+  duplicates that will drift.
+- Respect the runtime's constraints. Constrained runtimes — edge functions,
+  AppSync JS resolvers, a hook firing before `init` — may forbid built-ins,
+  `async`, or module-level state. Check before assuming a normal server.
+- A handler that is not registered, routed, or wired into infrastructure
+  **does not exist**. Wire it in the same change.
+
+## 4. Tests
+
+- Test the **domain**, not the framework or the cloud SDK. If a test needs a
+  live database, queue, or gateway, it belongs in the integration suite.
+- Every parser, serializer, or stored-shape migration gets three cases: encode,
+  decode, and **invalid input** — asserting on both the failure and its message.
+- Mirror the source path in the test path and use the repo's established style.
+- **Confirm your tests actually ran.** Some frameworks silently execute zero
+  tests on a structural mistake and still exit 0. A green run with no test count
+  is a failure, not a pass. Read the count.
+- Bug fix ⇒ a test that fails without the fix. Same rule as the frontend, and
+  the one that most determines whether quality holds across sessions.
+
+## 5. Security and infrastructure
+
+Every one of these is its own change with its own review — **never a side
+effect of a feature**:
+
+- Widening an IAM policy, a role, a scope, or a capability check.
+- Widening CORS origins, or relaxing an auth, nonce, or permission callback.
+- Lowering log retention, disabling an alarm, or loosening a rate limit.
+- Adding a new public ingress or egress path, including a new REST route
+  registered without a permission callback.
+
+Standing rules, in every stack:
+
+- Secrets come from the secret store — never source, never a committed env file.
+- **Untrusted input is sanitized at entry and escaped at output.** Every query
+  touching user-scoped data filters by that scope **at the data layer**, not in
+  application code afterwards. (Parameterized queries everywhere.)
+- Every new alarm needs a threshold you can justify and a destination someone
+  actually reads.
+
+## 6. Definition of done
+
+Find the repo's gate — format check, static analysis, compile, test, and
+infrastructure plan/synth — and **run it**. For infrastructure changes, read the
+diff and say what it changes.
+
+Report the command you ran and its actual result. "I could not run it" is an
+acceptable report. **"It should pass" is not**, and neither is silence.
