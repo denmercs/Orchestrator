@@ -22,6 +22,8 @@ export type VoiceRunnerPorts = {
   link: { say(sessionId: string, text: string): Promise<unknown>; interrupt(sessionId: string): Promise<unknown>;
     /** Starts a voice session beside `target` and returns its id. */
     create?(target: VoiceSession): Promise<string>;
+    /** Starts the Jarvis router session (the phone's voice path) beside `target` and returns its id. */
+    createJarvis?(target: VoiceSession): Promise<string>;
   };
   /** The Voice helper (the server owns it): start/stop with voice, its switch, and interpret. Defaults to sending the text as heard. */
   helper?: {
@@ -536,6 +538,8 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     localChecking = false;
     serverUnreadable = serverChecking = undefined;
     showSettingsState();
+    // The mic being on means Jarvis should be reachable from the phone too, so a router session is there before it is needed.
+    if (on) void ensureJarvis();
     if (!ports.ears) {
       publish({ micOn: on, ignoring: !on, micUnavailable: false });
       return;
@@ -558,6 +562,29 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
       fail(err);
     }
     ports.helper?.stop().catch(fail);
+  }
+
+  let ensuring: Promise<string | null> | null = null;
+  /** Makes sure a Jarvis router session exists: the newest one, else a new one beside the target (or the first session).
+   * Resolves to its id, or null with nothing to build it beside. Concurrent calls share one create. */
+  function ensureJarvis(): Promise<string | null> {
+    if (snapshot.jarvisAgentId) return Promise.resolve(snapshot.jarvisAgentId);
+    if (ensuring) return ensuring;
+    const beside = snapshot.session ?? snapshot.sessions[0];
+    if (!beside || !ports.link.createJarvis) return Promise.resolve(null);
+    ensuring = ports.link.createJarvis(beside).then(
+      (id) => {
+        publish({ jarvisAgentId: id });
+        return id;
+      },
+      (err) => {
+        fail(err);
+        return null;
+      },
+    ).finally(() => {
+      ensuring = null;
+    });
+    return ensuring;
   }
 
   /** Voice woke: read the server's switch and start the helper, so the first answer doesn't wait on a cold start. */
@@ -590,6 +617,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     off,
     start,
     setMic,
+    ensureJarvis,
     confirm: (word: string) => dispatch({ type: "confirm", word }),
     interrupt: () => dispatch({ type: "interrupt" }),
     /** `blocked` are Voice's own sessions (Jarvis, the Voice helper), never a target. */
