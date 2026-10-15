@@ -112,7 +112,7 @@ test("prunes stale links, repoints skillsync links, and skips real and foreign t
     const out = result.stdout;
     assert.match(out, new RegExp(`removed stale ${join(skills, "old")}`));
     assert.match(out, new RegExp(`removed stale ${join(skills, "gone")}`));
-    assert.match(out, new RegExp(`skipped real file ${join(skills, "b")}`));
+    assert.match(out, new RegExp(`skipped real folder ${join(skills, "b")}`));
     assert.match(out, new RegExp(`skipped real file ${join(skills, "d")}`));
     assert.match(out, new RegExp(`skipped foreign link ${join(skills, "c")}`));
     assert.match(out, new RegExp(`skipped foreign link ${join(skills, "foreign")}`));
@@ -251,5 +251,38 @@ test("--dry-run changes nothing in the home folder and prints the would-be actio
     assert.match(result.stdout, new RegExp(`linked ${join(skills, "a")} -> ${join(kit, "skills/plan/a")}`));
     assert.match(result.stdout, new RegExp(`linked ${join(home, ".claude/rules/x.mdc")}`));
     assert.match(result.stdout, new RegExp(`linked ${join(home, ".kiro/steering/x.md")}`));
+  });
+});
+
+test("an unknown flag exits 1 and writes nothing, so a typo never runs against the real home", () => {
+  withRoot((root) => {
+    const kit = join(root, "kit");
+    const home = join(root, "home");
+    mkdirSync(home);
+    write(join(kit, "skills/plan/a/SKILL.md"), "a");
+
+    for (const flag of ["--dryrun", `--home=${home}`]) {
+      const result = runLinkKit(home, kit, flag);
+      assert.equal(result.status, 1, flag);
+      assert.ok(result.stderr.includes(flag.split("=")[0]), result.stderr);
+    }
+    assert.deepEqual(readdirSync(home), []);
+  });
+});
+
+test("a target folder that is itself a symlink is skipped and nothing is written through it", () => {
+  withRoot((root) => {
+    const kit = join(root, "kit");
+    const home = join(root, "home");
+    const elsewhere = join(root, "elsewhere/skillsync/skills");
+    mkdirSync(elsewhere, { recursive: true });
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    symlinkSync(elsewhere, join(home, ".claude/skills"));
+    write(join(kit, "skills/plan/a/SKILL.md"), "a");
+
+    const result = runLinkKit(home, kit);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(readdirSync(elsewhere), []);
+    assert.match(result.stdout, new RegExp(`skipped linked folder ${join(home, ".claude/skills")}`));
   });
 });

@@ -1,10 +1,10 @@
-// Links the kit's skills into a home folder:
+// Links the kit's skills and rules into a home folder (Claude Code, and Kiro for rules):
 //   node scripts/link-kit.mjs [--home D] [--kit D] [--dry-run]
 //
 // This file names `skillsync` on purpose (later passes use it to recognise stale links left by the old
 // repo). It sits in scripts/, outside the guard test's scan: skills/kit.test.mjs scans only skills/ and rules/.
 //
-// Three passes: gather (args, skills), validate (before any write), apply (link and report).
+// Three passes: gather (args, skills, rules), validate (before any write), apply (link and report).
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -18,7 +18,7 @@ export function parseArgs(argv) {
       opts.dryRun = true;
       continue;
     }
-    if (argv[i] !== "--home" && argv[i] !== "--kit") continue;
+    if (argv[i] !== "--home" && argv[i] !== "--kit") throw new Error(`unknown argument ${argv[i]}`);
     if (!value || value.startsWith("--")) throw new Error(`${argv[i]} needs a folder`);
     opts[argv[i].slice(2)] = value;
     i++;
@@ -59,7 +59,7 @@ function gather(argv) {
   return { ...opts, skills: findSkills(opts.kit), rules: findRules(opts.kit) };
 }
 
-// Checks run before any write. Later cycles add more (missing rules).
+// Checks run before any write: duplicate skill names, rules listed but missing.
 function validate(plan) {
   const seen = new Map();
   for (const { name, dir } of plan.skills) {
@@ -80,11 +80,18 @@ function isOurs(link, kit) {
 }
 
 function skipReason(link) {
-  return lstatSync(link).isSymbolicLink() ? "skipped foreign link" : "skipped real file";
+  const stat = lstatSync(link);
+  if (stat.isSymbolicLink()) return "skipped foreign link";
+  return stat.isDirectory() ? "skipped real folder" : "skipped real file";
 }
 
 // Makes `dir` hold exactly the wanted links (name -> target) among ours; real files and foreign links are skipped.
+// A `dir` that is itself a symlink is skipped whole, so nothing is written through it into another checkout.
 function syncDir(dir, wanted, plan, log) {
+  if (lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    log(`skipped linked folder ${dir}`);
+    return;
+  }
   if (wanted.size && !plan.dryRun) mkdirSync(dir, { recursive: true });
   for (const [name, target] of wanted) {
     const link = join(dir, name);
