@@ -1,0 +1,21 @@
+---
+description: >-
+  Shared TypeScript guidance for AI-assisted edits: prefer inference and guards,
+  avoid unsafe escapes from the type system.
+globs:
+  - "**/*.ts"
+  - "**/*.tsx"
+alwaysApply: false
+---
+
+# TypeScript (shared)
+
+When editing TypeScript:
+
+- Prefer **narrowing** (`typeof`, `in`, discriminated unions, type guards) over assertions.
+- Do **not** use `any`. Prefer `unknown` at boundaries and narrow before use.
+- Avoid **non-null assertion** (`!`). Prove value exists or branch early.
+- Avoid **`as` type assertions** unless there is no safer alternative; prefer typed APIs and generics.
+- Prefer **`satisfies`** where it clarifies literal types without widening.
+- Keep **public exports** explicitly typed; avoid leaking implicit `any` from callbacks.
+- Use **`readonly`** for immutable props/data where it helps intent.

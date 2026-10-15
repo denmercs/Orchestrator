@@ -1,0 +1,69 @@
+# WordPress plugin rules for whole-plugin security assess.
+# Keep high-signal; avoid Semgrep join-mode (may require login).
+rules:
+  - id: wp-rest-permission-return-true
+    languages: [php]
+    severity: ERROR
+    message: REST route uses permission_callback __return_true — confirm intentional public route
+    patterns:
+      - pattern-either:
+          - pattern: |
+              register_rest_route($NS, $ROUTE, [..., 'permission_callback' => '__return_true', ...])
+          - pattern: |
+              register_rest_route($NS, $ROUTE, array(..., 'permission_callback' => '__return_true', ...))
+
+  - id: wp-ajax-nopriv
+    languages: [php]
+    severity: WARNING
+    message: Unauthenticated AJAX hook (wp_ajax_nopriv_*) — confirm capability/nonce and public intent
+    patterns:
+      - pattern-either:
+          - pattern: add_action('wp_ajax_nopriv_$ACTION', ...)
+          - pattern: add_action("wp_ajax_nopriv_$ACTION", ...)
+
+  - id: wp-echo-superglobal
+    languages: [php]
+    severity: ERROR
+    message: Echoing a superglobal without an obvious escaping helper nearby — XSS risk
+    patterns:
+      - pattern-either:
+          - pattern: echo $_GET[...]
+          - pattern: echo $_POST[...]
+          - pattern: echo $_REQUEST[...]
+          - pattern: print $_GET[...]
+          - pattern: print $_POST[...]
+          - pattern: print $_REQUEST[...]
+
+  - id: wp-wpdb-query-superglobal
+    languages: [php]
+    severity: ERROR
+    message: $wpdb query/get_* built with a superglobal — SQL injection risk; use $wpdb->prepare
+    patterns:
+      - pattern-either:
+          - pattern: $wpdb->query(... $_GET ... )
+          - pattern: $wpdb->query(... $_POST ... )
+          - pattern: $wpdb->query(... $_REQUEST ... )
+          - pattern: $wpdb->get_results(... $_GET ... )
+          - pattern: $wpdb->get_results(... $_POST ... )
+          - pattern: $wpdb->get_var(... $_GET ... )
+          - pattern: $wpdb->get_row(... $_GET ... )
+
+  - id: wp-unserialize-superglobal
+    languages: [php]
+    severity: ERROR
+    message: unserialize() on user-controlled input — object injection risk
+    patterns:
+      - pattern-either:
+          - pattern: unserialize($_GET...)
+          - pattern: unserialize($_POST...)
+          - pattern: unserialize($_REQUEST...)
+          - pattern: unserialize($_COOKIE...)
+
+  - id: wp-eval-assert
+    languages: [php]
+    severity: ERROR
+    message: Dangerous eval/assert usage in plugin code
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: assert(...)

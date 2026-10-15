@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -264,6 +264,7 @@ export const LIVING_PLAN_SKILLS = [
   ["plan", "arch-plan"],
   ["plan", "ui-ux-planner"],
   ["review", "code-handoff"],
+  ["review", "security-plan"],
 ];
 
 test("living plan skills name plan-html and its render script", () => {
@@ -330,7 +331,7 @@ test("visual-parity-check holds no private values", () => {
   assert.match(skill, /private file outside the repo/);
 });
 
-export const REVIEW_SKILLS = ["code-handoff", "peer-review", "review-patterns"];
+export const REVIEW_SKILLS = ["code-handoff", "peer-review", "review-patterns", "security-plan"];
 
 test("review skills exist and are named after their folder", () => {
   checkNamedAfterFolder("review", REVIEW_SKILLS);
@@ -360,6 +361,8 @@ export const SCRIPT_HELP = [
   ["implement", "feature-video-evidence", "collect-video.cjs"],
   ["review", "peer-review", "list-prs.cjs"],
   ["review", "review-patterns", "mine-review-patterns.cjs"],
+  ["review", "security-plan", "security-audit.cjs"],
+  ["review", "security-plan", "security-assess.cjs"],
 ];
 
 for (const [phase, name, file] of SCRIPT_HELP) {
@@ -529,6 +532,165 @@ test("plan-html renders and validates from a temp copy under .claude/skills", ()
   }
 });
 
+test("security-audit writes its report to --out and creates no .harness", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "security-audit-"));
+  try {
+    const dest = join(tmp, ".claude", "skills", "security-plan");
+    cpSync(join(REPO_ROOT, "skills", "review", "security-plan"), dest, { recursive: true });
+    const repo = join(tmp, "repo");
+    mkdirSync(repo);
+    writeFileSync(
+      join(repo, "plugin.php"),
+      "<?php\nregister_rest_route('x/v1', '/y', ['methods' => 'GET', 'callback' => 'f']);\n",
+    );
+    const run = spawnSync(
+      process.execPath,
+      [join(dest, "scripts", "security-audit.cjs"), repo, "--out", join(tmp, "report.md")],
+      { cwd: tmp, encoding: "utf8" },
+    );
+    assert.ok(!run.stderr.includes("Cannot find module"), run.stderr);
+    assert.equal(run.status, 1, run.stderr);
+    assert.ok(readFileSync(join(tmp, "report.md"), "utf8").includes("rest-missing-permission-callback"));
+    assert.ok(!existsSync(join(repo, ".harness")));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("security-assess writes JSON to --out and creates no .harness", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "security-assess-"));
+  try {
+    const dest = join(tmp, ".claude", "skills", "security-plan");
+    cpSync(join(REPO_ROOT, "skills", "review", "security-plan"), dest, { recursive: true });
+    const repo = join(tmp, "repo");
+    mkdirSync(repo);
+    writeFileSync(
+      join(repo, "plugin.php"),
+      "<?php\nregister_rest_route('x/v1', '/y', ['methods' => 'GET', 'callback' => 'f']);\n",
+    );
+    const run = spawnSync(
+      process.execPath,
+      [
+        join(dest, "scripts", "security-assess.cjs"),
+        repo,
+        "--skip-semgrep",
+        "--skip-deps",
+        "--wordfence",
+        "off",
+        "--out",
+        join(tmp, "out.json"),
+      ],
+      { cwd: tmp, encoding: "utf8" },
+    );
+    assert.ok(!run.stderr.includes("Cannot find module"), run.stderr);
+    assert.equal(run.status, 0, run.stderr);
+    const report = JSON.parse(readFileSync(join(tmp, "out.json"), "utf8"));
+    assert.equal(report.kind, "security-assess");
+    assert.ok(report.probes.some((probe) => probe.id === "surfaces"));
+    assert.ok(!existsSync(join(repo, ".harness")));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("security-assess passes the copied rules folder to semgrep", () => {
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), "security-assess-rules-")));
+  try {
+    const dest = join(tmp, ".claude", "skills", "security-plan");
+    cpSync(join(REPO_ROOT, "skills", "review", "security-plan"), dest, { recursive: true });
+    const repo = join(tmp, "repo");
+    mkdirSync(repo);
+    writeFileSync(join(repo, "plugin.php"), "<?php\necho 'hi';\n");
+    const bin = join(tmp, "bin");
+    mkdirSync(bin);
+    const argvFile = join(tmp, "semgrep-argv.txt");
+    writeFileSync(
+      join(bin, "semgrep"),
+      `#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done >> "${argvFile}"\nprintf '{"results":[]}'\n`,
+      { mode: 0o755 },
+    );
+    spawnSync(
+      process.execPath,
+      [
+        join(dest, "scripts", "security-assess.cjs"),
+        repo,
+        "--skip-deps",
+        "--wordfence",
+        "off",
+        "--semgrep-config",
+        "p/extra",
+        "--out",
+        join(tmp, "out.json"),
+      ],
+      { cwd: tmp, encoding: "utf8", timeout: 10000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } },
+    );
+    assert.ok(existsSync(argvFile), "stub semgrep was never invoked");
+    const argv = readFileSync(argvFile, "utf8").trim().split("\n");
+    const rules = join(dest, "scripts", "semgrep-rules", "wordpress-plugin");
+    assert.ok(argv.includes(`--config=${rules}`), `no rules folder config: ${argv.join(" ")}`);
+    assert.ok(argv.includes("--config=p/php"), argv.join(" "));
+    assert.ok(argv.includes("--config=p/extra"), argv.join(" "));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("security-audit passes --base to git as one argument", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "security-audit-base-"));
+  try {
+    const dest = join(tmp, ".claude", "skills", "security-plan");
+    cpSync(join(REPO_ROOT, "skills", "review", "security-plan"), dest, { recursive: true });
+    const repo = join(tmp, "repo");
+    mkdirSync(repo);
+    writeFileSync(join(repo, "plugin.php"), "<?php\necho 'hi';\n");
+    const bin = join(tmp, "bin");
+    mkdirSync(bin);
+    const argvFile = join(tmp, "git-argv.txt");
+    writeFileSync(
+      join(bin, "git"),
+      `#!/bin/sh\nfor a in "$@"; do printf '[%s]' "$a"; done >> "${argvFile}"\nprintf '\\n' >> "${argvFile}"\nexit 1\n`,
+      { mode: 0o755 },
+    );
+    const base = "main; touch pwned";
+    spawnSync(
+      process.execPath,
+      [join(dest, "scripts", "security-audit.cjs"), repo, "--base", base, "--out", join(tmp, "report.md")],
+      { cwd: repo, encoding: "utf8", timeout: 10000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } },
+    );
+    assert.ok(existsSync(argvFile), "stub git was never invoked");
+    const calls = readFileSync(argvFile, "utf8").trim().split("\n");
+    assert.ok(
+      calls.some((c) => c.includes(`[${base}]`) || c.includes(`[origin/${base}]`)),
+      `no git call carried the base as one argument: ${calls.join(" | ")}`,
+    );
+    assert.ok(!existsSync(join(repo, "pwned")));
+    assert.ok(!existsSync(join(tmp, "pwned")));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("security scripts exit 2 on a bad flag value", () => {
+  const scripts = join(REPO_ROOT, "skills", "review", "security-plan", "scripts");
+  const tmp = mkdtempSync(join(tmpdir(), "security-flags-"));
+  try {
+    const cases = [
+      ["security-audit.cjs", tmp, "--out"],
+      ["security-audit.cjs", tmp, "--base=--all"],
+      ["security-assess.cjs", tmp, "--skip-semgrep", "--skip-deps", "--out"],
+      ["security-assess.cjs", tmp, "--skip-semgrep", "--skip-deps", "--wordfence", "of"],
+    ];
+    for (const [file, ...args] of cases) {
+      const run = spawnSync(process.execPath, [join(scripts, file), ...args], { cwd: tmp, encoding: "utf8" });
+      assert.equal(run.status, 2, `${file} ${args.join(" ")}: ${run.stdout}${run.stderr}`);
+      assert.match(run.stderr, /Usage/, `${file} ${args.join(" ")}`);
+    }
+    assert.ok(!existsSync(join(tmp, ".harness")));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("plan-html init scaffolds the Markdown and HTML from a temp copy", () => {
   const tmp = mkdtempSync(join(tmpdir(), "plan-html-init-"));
   try {
@@ -603,6 +765,23 @@ test("grill-tdd follows grill-me and hands off to tdd", () => {
 
 test("tdd says contract grilling is grill-tdd", () => {
   assert.match(readOwnSkill(["implement", "tdd"]), /grill-tdd/);
+});
+
+test("peer-review has an own-branch mode that skips Phases 1 and 5 and maps severities to the loop checklist", () => {
+  const text = readOwnSkill(["review", "peer-review"]);
+  const section = text.match(/^## Own branch\r?\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1];
+  assert.ok(section, "peer-review has no ## Own branch section");
+  assert.match(section, /Phases? 2[–-]4/);
+  assert.match(section, /skip the `gh pr` commands/i);
+  assert.match(section, /skip Phases? 1 and 5/i);
+  assert.match(section, /rules 1[–-]4[^\n]*do not apply/i);
+  assert.match(section, /no-write/i);
+  assert.match(section, /no-post/i);
+  assert.match(section, /blocking[^\n]*`blocking:`/);
+  assert.match(section, /should-fix[^\n]*`non-blocking:`/);
+  assert.match(section, /question[^\n]*`non-blocking:`/);
+  assert.match(section, /nit[^\n]*`non-blocking:`[^\n]*at most 3/);
+  assert.match(section, /step prompt wins/i);
 });
 
 // list-prs.cjs runs against a stub gh first on PATH; no network.

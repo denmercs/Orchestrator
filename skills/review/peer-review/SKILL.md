@@ -5,16 +5,16 @@ description: >
   author's intent, read the code around the diff, and produce severity-ranked
   line-anchored comments that get posted only after you approve them. Use when
   asked to review a teammate's PR, critique another person's PR, "review PR #N",
-  or "peer review". Not for your own branch (that is self-review) and it never
-  approves, never pushes to the author's branch.
+  or "peer review". On someone else's PR it never approves and never pushes to
+  the author's branch. On your own branch, use the Own branch mode below.
 ---
 
-# Peer review (someone else's pull request)
+# Peer review (someone else's pull request, or your own branch)
 
-**Phase: inbound review** — you are a reviewer on a change **you did not write**.
+**Phase: inbound review** — you are a reviewer on a change **you did not write**, or on your own branch in [Own branch](#own-branch) mode.
 
 **Does:** reconstruct intent, read the real code, rank findings by severity, draft line-anchored comments, and post them **only on the human's explicit go**.
-**Does not:** review your own branch (that is self-review), approve a PR, push commits to the author's branch, resolve their threads, or merge.
+**Does not:** approve a PR, push commits to the author's branch, resolve their threads, or merge. Reviewing your own branch is the [Own branch](#own-branch) mode.
 
 ## Why this differs from self-review
 
@@ -39,6 +39,22 @@ The two failure modes in that table drive most of the rules below. A reviewer wh
 5. **Every blocking finding names a concrete failure:** inputs or state → wrong output, crash, or regression. If you cannot state how it breaks, it is not blocking — downgrade it to a question.
 6. **Do not claim a check failed unless you ran it or read the CI log.** "This probably breaks the build" is not review, it is noise.
 7. **Review the change as submitted.** "Rewrite this a different way" is only blocking if the current way is actually broken; otherwise it is a question about intent.
+
+## Own branch
+
+Use this mode when the step prompt or the human asks you to review the branch you are on, for example the Review step of a story loop. The rubric is the same; the setup differs.
+
+- **Intent** comes from the story, its acceptance checks and its plan, not from a PR body.
+- **Skip Phases 1 and 5.** You are already on the branch, so there is no PR to pick up, and nothing is posted.
+- **Run Phases 2–4** and the rubric against `git diff <base>...HEAD`, with `<base>` the branch the story was cut from.
+- **Skip the `gh pr` commands** in Phases 2 and 4 (`gh pr checkout`, `gh pr checks`): there may be no PR yet. Read the local diff and run the checks yourself.
+- **Hard rules 1–4 do not apply** (the no-write, no-approve, no-post and no-resolve rules): the branch is yours, so you may fix what you find. Rules 5–7 still apply.
+- **Severities map to the loop's checklist:**
+  - blocking → `blocking:`
+  - should-fix → `non-blocking:`
+  - question → `non-blocking:`, left unticked when only a human can answer it; if you can settle it from the story or code, fix it and tick it
+  - nit → `non-blocking:`, at most 3
+- **The step prompt wins.** Where it sets what to run (full suite, findings-only) or which lines to add (re-review adds only `blocking:`), follow it over Phase 4 and the mapping above.
 
 ## Phase 1 — Pick up the PR and its intent
 

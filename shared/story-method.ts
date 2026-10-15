@@ -222,12 +222,10 @@ Do not touch \`## Status\` or tick \`## Cycles\`; the parent does both. Report f
 cannot go on.`;
 
 // What to look at. The live Review also runs the full suite; a findings-only one does not.
-const REVIEW_LOOK = `Check:
+const REVIEW_LOOK = `Review the diff with the \`peer-review\` skill in its Own branch mode. If the repo has
+docs/review-patterns.md (from \`review-patterns\`), use it. Also check:
 - Every acceptance check is met, and each cycle has a test that would fail without its change.
-- Correctness: edge cases, error paths, concurrency, data loss.
-- Security: input validation, injection, auth and permission checks, secrets in code or logs, unsafe shell or
-  file paths, new dependencies.
-- The repo's own conventions, and nothing changed outside the story's scope.`;
+- Nothing changed outside the story's scope.`;
 
 const REVIEW_CHECKS = `${REVIEW_LOOK}
 - The full test suite, lint and build pass (run them; keep only the summary and any failures).`;

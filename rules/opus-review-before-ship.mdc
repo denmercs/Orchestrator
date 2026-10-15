@@ -1,0 +1,41 @@
+---
+description: >-
+  Every story and bug fix gets an independent Opus review before it is pushed
+  or a PR is opened. Change-level delivery gate.
+alwaysApply: true
+---
+
+# Opus review before ship
+
+## Scope
+
+Applies to every **story and bug fix**, in any repo and any stack. It is a
+change-level gate: it sits after the tests, lint and type check pass and
+before the push or the PR. It does not replace them.
+
+## The rule
+
+1. Before a story or bug fix is pushed or a PR is opened, an **Opus** reviewer
+   that did not write the change reads the diff.
+2. Give the reviewer the diff and the ticket text. Do **not** hand it your
+   conclusion or your hypothesis; a reviewer told what you found tends to agree.
+3. The reviewer reports findings only. It does not edit files.
+4. Check each finding yourself. Fix the confirmed ones, and say plainly which
+   you rejected and why.
+5. **One** Opus reviewer at a time. Never fan out several.
+6. The hand-over states that the review ran, which model ran it, and what it
+   found. If an Opus reviewer is unavailable, say so and stop for a decision.
+   Do not quietly skip the gate or substitute the model that wrote the code.
+
+## Why
+
+The model that wrote a change shares its blind spots with its own review.
+Tests, lint and a self-check catch what the author thought to test. A second,
+stronger reader catches the rest, and an author's confident summary makes that
+harder, which is why the reviewer sees the diff and not the summary.
+
+## Does not change
+
+Staging, committing, pushing and opening PRs still follow the user's own
+instructions. This rule says a review must happen first; it does not say you
+may push.
