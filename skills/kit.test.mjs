@@ -605,6 +605,22 @@ test("tdd says contract grilling is grill-tdd", () => {
   assert.match(readOwnSkill(["implement", "tdd"]), /grill-tdd/);
 });
 
+test("peer-review has an own-branch mode that skips Phases 1 and 5 and maps severities to the loop checklist", () => {
+  const text = readOwnSkill(["review", "peer-review"]);
+  const section = text.match(/^## Own branch\r?\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1];
+  assert.ok(section, "peer-review has no ## Own branch section");
+  assert.match(section, /Phases? 2[–-]4/);
+  assert.match(section, /skip Phases? 1 and 5/i);
+  assert.match(section, /rules 1[–-]4[^\n]*do not apply/i);
+  assert.match(section, /no-write/i);
+  assert.match(section, /no-post/i);
+  assert.match(section, /blocking[^\n]*`blocking:`/);
+  assert.match(section, /should-fix[^\n]*`non-blocking:`/);
+  assert.match(section, /question[^\n]*`non-blocking:`/);
+  assert.match(section, /nit[^\n]*`non-blocking:`[^\n]*at most 3/);
+  assert.match(section, /step prompt wins/i);
+});
+
 // list-prs.cjs runs against a stub gh first on PATH; no network.
 function withStubGh({ exitCode = 0, json = "[]" }, fn) {
   const dir = mkdtempSync(join(tmpdir(), "stub-gh-"));
