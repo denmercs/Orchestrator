@@ -68,7 +68,7 @@ Every session also gets a **context pill** with its size (for example `82k / 200
 
 ## Choices that keep it cheap and predictable
 
-- **Model split.** Plan and Review run on Opus, while Implement and Fix CI run on Sonnet.
+- **Model split.** Plan and Review run on Opus, while Implement and Fix CI run on Sonnet. A repo can pick another model per phase in its Story pipeline (`.orchestrator/pipeline.json`, `profile`).
 - **Tools on a diet.** Loop steps get no MCP servers, and board sessions get Atlassian only. Each tool list costs tokens on every turn.
 - **Any provider.** Step prompts name no skills or slash commands, and the context meter never branches on a provider's name.
 - **Jira is optional.** A `local` initiative keeps everything in `.harness`. A `jira` initiative lets the architect publish the epic and stories.

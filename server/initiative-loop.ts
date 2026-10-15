@@ -416,7 +416,7 @@ export function createInitiativeLoop(
       });
       const { sources } = piped;
       const phases = repoPhases(piped.phases, worktree);
-      // A repo can give each story phase its own model; the loop's own profile applies when it doesn't.
+      // A repo can give each story phase its own model; the default tier (Opus for Plan and Review, Sonnet for Implement and Fix CI) applies when it doesn't.
       const phaseId = STEP_PHASES[step];
       const agentConfig = await loadPhaseConfig(
         api,
