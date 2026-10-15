@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { test } from "node:test";
@@ -23,7 +23,9 @@ function listFiles(root) {
     const dir = join(root, top);
     if (!existsSync(dir)) continue;
     for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
-      if (entry.isFile()) files.push(join(entry.parentPath, entry.name));
+      const full = join(entry.parentPath, entry.name);
+      // Follow symlinked files too, so a linked file cannot slip past the scan.
+      if (entry.isFile() || (entry.isSymbolicLink() && existsSync(full) && statSync(full).isFile())) files.push(full);
     }
   }
   return files;
@@ -36,7 +38,7 @@ function checkFrontmatter(file, text) {
   for (const key of ["name", "description"]) {
     const idx = lines.findIndex((l) => l.startsWith(`${key}:`));
     const value = idx === -1 ? "" : lines[idx].slice(key.length + 1).trim();
-    const hasBody = /^[>|][+-]?$/.test(value) ? /\S/.test(lines[idx + 1] ?? "") : value !== "";
+    const hasBody = /^[>|][+-]?$/.test(value) ? /^\s+\S/.test(lines[idx + 1] ?? "") : value !== "";
     if (!hasBody) findings.push({ file, line: 1, rule: "frontmatter", message: `SKILL.md frontmatter needs ${key}` });
   }
   return findings;
@@ -46,8 +48,9 @@ function checkScripts(full, file, text) {
   const skillDir = dirname(full);
   const findings = [];
   text.split("\n").forEach((lineText, i) => {
-    for (const [path] of lineText.matchAll(/scripts\/[\w./-]+/g)) {
-      const target = resolve(skillDir, path.replace(/[.,]+$/, ""));
+    for (const [match] of lineText.matchAll(/(?<![\w-])scripts\/[\w./-]+/g)) {
+      const path = match.replace(/[.,]+$/, "");
+      const target = resolve(skillDir, path);
       const inside = target.startsWith(skillDir + sep);
       if (!inside || !existsSync(target)) {
         findings.push({ file, line: i + 1, rule: "script-path", message: `${path} is not a file inside this skill` });
@@ -158,6 +161,14 @@ test("SKILL.md with no frontmatter fails; block-scalar description passes", () =
   });
 });
 
+test("a block-scalar key with no indented text fails", () => {
+  withRoot({ "skills/a/SKILL.md": "---\ndescription: >\nname: a\n---\n" }, (root) => {
+    const found = scanKit(root);
+    assert.equal(found.length, 1);
+    assert.match(found[0].message, /description/);
+  });
+});
+
 test("SKILL.md naming a missing script fails", () => {
   withRoot({ "skills/demo/SKILL.md": `${FULL}Run scripts/missing.mjs now.\n` }, (root) => {
     const found = scanKit(root);
@@ -171,6 +182,25 @@ test("SKILL.md naming a missing script fails", () => {
 test("SKILL.md naming an existing script passes", () => {
   withRoot({ "skills/demo/SKILL.md": `${FULL}Run \`scripts/run.mjs\`.\n`, "skills/demo/scripts/run.mjs": "" }, (root) => {
     assert.deepEqual(scanKit(root), []);
+  });
+});
+
+test("scripts/ inside a longer word is not a script path", () => {
+  withRoot({ "skills/demo/SKILL.md": `${FULL}See myscripts/missing.mjs and pre-scripts/x.mjs\n` }, (root) => {
+    assert.deepEqual(scanKit(root), []);
+  });
+});
+
+test("a missing script is reported without trailing punctuation", () => {
+  withRoot({ "skills/demo/SKILL.md": `${FULL}Run scripts/missing.mjs.\n` }, (root) => {
+    assert.equal(scanKit(root)[0].message, "scripts/missing.mjs is not a file inside this skill");
+  });
+});
+
+test("a symlinked file under skills/ is scanned", () => {
+  withRoot({ "outside.md": `${NEEDLES[0].text}\n`, "skills/demo/SKILL.md": FULL }, (root) => {
+    symlinkSync(join(root, "outside.md"), join(root, "skills/demo/linked.md"));
+    assert.deepEqual(scanKit(root).map((f) => f.file), ["skills/demo/linked.md"]);
   });
 });
 
