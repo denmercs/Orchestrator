@@ -10,7 +10,9 @@ import { branchName } from "../shared/naming";
 import { phaseLabel } from "../shared/orchestration";
 import { budgetMoney } from "../shared/stats-strip";
 import { storyCost, type TelemetryRow } from "./context-telemetry";
-import { DEFAULT_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
+import { DEFAULT_PHASES, STEP_PHASES, pipelineSettings, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
+import { loadPhaseConfig } from "./agent-runner";
+import { repoPipelineConfig } from "./repo-pipeline";
 import type { ToolItem } from "../shared/exploration";
 import { midTurnCheck, stuckCheck, toolRunningSince, type StuckCounters, type TimelineEntry } from "../shared/stuck";
 import { appendOutcome, type OutcomeEvent } from "../shared/story-outcome";
@@ -348,10 +350,17 @@ export function createInitiativeLoop(
   // before that field existed looks the paths up again, without copying.
   async function resumeSkills(step: LoopStep, meta: StoryFile["meta"]) {
     if (meta.step_skills) return parseSkills(meta.step_skills);
-    const { phases, sources } = await readPipeline().catch(() => ({ phases: DEFAULT_PHASES, sources: [] }));
+    const piped = await readPipeline().catch(() => ({ phases: DEFAULT_PHASES, sources: [] }));
+    const { sources } = piped;
+    const phases = repoPhases(piped.phases, meta.worktree || null);
     const extras = stepSkills(step, phases);
     if (!meta.worktree) return extras.map((skill) => ({ name: skill.name }));
     return skillPaths(meta.worktree, extras, sources);
+  }
+
+  // The drawer's phases with the repo's `.orchestrator/pipeline.json` applied, as its stories run them.
+  function repoPhases(phases: Phase[], worktree: string | null) {
+    return repoPipelineConfig(pipelineSettings.schema.parse({ phases }), worktree).phases;
   }
 
   async function startStep(
@@ -394,7 +403,6 @@ export function createInitiativeLoop(
       const ctx = storyContext(init, phaseDir, story);
       const base = extra.cycle ? `${STEP_LABELS[step]} ${extra.cycle.number}` : STEP_LABELS[step];
       const label = round > 1 ? `${base} r${round}` : base;
-      const agentConfig = await readAgentConfig(api, step, config);
       // A missing wrapper costs the agent its short test output, not the step.
       await installBrief(worktree, briefTag(step, round, extra.cycle?.number)).catch((error) =>
         console.warn("orchestrator: install brief", story.id, error),
@@ -402,10 +410,19 @@ export function createInitiativeLoop(
       // Skills help a step but never gate it: a failed read or copy becomes a warning on the story.
       const reason = (error: unknown) => (error instanceof Error ? error.message : String(error));
       const warnings: string[] = [];
-      const { phases, sources } = await readPipeline().catch((error) => {
+      const piped = await readPipeline().catch((error) => {
         warnings.push(`pipeline: ${reason(error)}`);
         return { phases: DEFAULT_PHASES, sources: [] };
       });
+      const { sources } = piped;
+      const phases = repoPhases(piped.phases, worktree);
+      // A repo can give each story phase its own model; the loop's own profile applies when it doesn't.
+      const phaseId = STEP_PHASES[step];
+      const agentConfig = await loadPhaseConfig(
+        api,
+        phases.find((p) => p.id === phaseId)?.profile,
+        await readAgentConfig(api, step, config),
+      );
       const extras = stepSkills(step, phases);
       warnings.push(...(await installSkills(worktree, extras, sources).catch((error) => [`skills: ${reason(error)}`])));
       for (const warning of warnings) console.warn("orchestrator: skills", story.id, warning);

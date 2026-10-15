@@ -1,5 +1,7 @@
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import {
+  materializeProfile,
+  pickProfile,
   profileForStep,
   profilesFromConfigGet,
   resolveRunnerConfig,
@@ -17,6 +19,23 @@ export async function loadRunnerConfig(paseo: PaseoApi, profileId: string): Prom
     console.warn("orchestrator: unable to read agent profiles", error);
     return resolveRunnerConfig([], profileId).config;
   }
+}
+
+// A pipeline phase's own profile, or `fallback` (the runner's config) when it names none or none is found.
+export async function loadPhaseConfig(
+  paseo: PaseoApi,
+  profileId: string | undefined,
+  fallback: AgentCreateConfig,
+): Promise<AgentCreateConfig> {
+  if (!profileId) return fallback;
+  try {
+    const profile = pickProfile(profilesFromConfigGet(await paseo.config.get()), profileId);
+    if (profile) return materializeProfile(profile);
+    console.warn("orchestrator: no agent profile named", profileId);
+  } catch (error) {
+    console.warn("orchestrator: unable to read agent profiles", error);
+  }
+  return fallback;
 }
 
 export async function loadStepConfig(
