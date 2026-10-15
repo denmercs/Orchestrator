@@ -9,9 +9,9 @@ description: >
   the author's branch. On your own branch, use the Own branch mode below.
 ---
 
-# Peer review (someone else's pull request)
+# Peer review (someone else's pull request, or your own branch)
 
-**Phase: inbound review** — you are a reviewer on a change **you did not write**.
+**Phase: inbound review** — you are a reviewer on a change **you did not write**, or on your own branch in [Own branch](#own-branch) mode.
 
 **Does:** reconstruct intent, read the real code, rank findings by severity, draft line-anchored comments, and post them **only on the human's explicit go**.
 **Does not:** approve a PR, push commits to the author's branch, resolve their threads, or merge. Reviewing your own branch is the [Own branch](#own-branch) mode.
@@ -47,6 +47,7 @@ Use this mode when the step prompt or the human asks you to review the branch yo
 - **Intent** comes from the story, its acceptance checks and its plan, not from a PR body.
 - **Skip Phases 1 and 5.** You are already on the branch, so there is no PR to pick up, and nothing is posted.
 - **Run Phases 2–4** and the rubric against `git diff <base>...HEAD`, with `<base>` the branch the story was cut from.
+- **Skip the `gh pr` commands** in Phases 2 and 4 (`gh pr checkout`, `gh pr checks`): there may be no PR yet. Read the local diff and run the checks yourself.
 - **Hard rules 1–4 do not apply** (the no-write, no-approve, no-post and no-resolve rules): the branch is yours, so you may fix what you find. Rules 5–7 still apply.
 - **Severities map to the loop's checklist:**
   - blocking → `blocking:`

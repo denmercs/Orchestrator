@@ -610,6 +610,7 @@ test("peer-review has an own-branch mode that skips Phases 1 and 5 and maps seve
   const section = text.match(/^## Own branch\r?\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1];
   assert.ok(section, "peer-review has no ## Own branch section");
   assert.match(section, /Phases? 2[–-]4/);
+  assert.match(section, /skip the `gh pr` commands/i);
   assert.match(section, /skip Phases? 1 and 5/i);
   assert.match(section, /rules 1[–-]4[^\n]*do not apply/i);
   assert.match(section, /no-write/i);
