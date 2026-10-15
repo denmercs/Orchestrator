@@ -56,7 +56,7 @@ Read the repo's docs before planning:
 2. Existing convention in repo (e.g. `.harness/initiatives/<slug>/initiative.md`)
 3. Default: **`.harness/initiatives/<slug>/initiative.md`**. The Orchestrator Paseo plugin owns this layout (`initiative.md` + `epics/E<n>-<name>/`). Create the folder with its **New initiative** button rather than by hand, then write the spec into the `initiative.md` it made.
 
-Plan Markdown for the same train (architecture, UX, security) lives **beside** that file. Do not leave plan files at the `.harness/` root when an initiative pack exists.
+Plan Markdown for the same train (architecture, UX, security) lives **beside** that file, not in a separate folder.
 
 Use the project's **domain glossary** throughout. Respect ADRs in the affected area.
 
@@ -181,7 +181,7 @@ Write the approved plan using [template.md](template.md). The file is the **sour
 
 ### 4. Create Jira epics (MCP)
 
-**MCP first:** With **Atlassian MCP** (`user-mcp-atlassian`), read each tool schema before calling. If MCP is unavailable, output paste-ready epic bodies from [jira-descriptions.md](jira-descriptions.md).
+**MCP first:** With the **Atlassian MCP**, read each tool schema before calling. If MCP is unavailable, output paste-ready epic bodies from [jira-descriptions.md](jira-descriptions.md).
 
 1. Resolve **`project_key`** from `docs/agents/issue-tracker.md` or ask the user — never assume.
 2. Optionally create a **parent initiative Epic** when the team uses a roadmap epic per initiative.

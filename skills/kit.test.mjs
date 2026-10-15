@@ -238,7 +238,8 @@ test("plan skills exist and are named after their folder", () => {
   for (const name of PLAN_SKILLS) {
     const file = join(repoRoot, "skills", "plan", name, "SKILL.md");
     assert.ok(existsSync(file), `skills/plan/${name}/SKILL.md is missing`);
-    const declared = readFileSync(file, "utf8").match(/^---\r?\n[\s\S]*?^name:\s*(\S+)\s*$/m)?.[1];
+    const frontmatter = readFileSync(file, "utf8").match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? "";
+    const declared = frontmatter.match(/^name:\s*(\S+)\s*$/m)?.[1];
     assert.equal(declared, name);
   }
 });
