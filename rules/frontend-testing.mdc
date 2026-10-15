@@ -1,0 +1,24 @@
+---
+description: >-
+  Shared frontend test guidance: Jest + Testing Library, user-centric queries,
+  async correctness, and avoiding brittle tests.
+globs:
+  - "**/*.spec.ts"
+  - "**/*.spec.tsx"
+  - "**/*.test.ts"
+  - "**/*.test.tsx"
+alwaysApply: false
+---
+
+# Frontend testing (shared)
+
+When editing Jest / React Testing Library tests:
+
+- Prefer **`userEvent`** over `fireEvent` for realistic interaction.
+- Prefer **`screen` queries** over destructuring from `render`.
+- Prefer **accessible queries** (`getByRole`, `getByLabelText`, …) over brittle selectors.
+- Do **not** add `data-testid` unless there is no reasonable accessible hook.
+- Use **`waitFor` / `findBy*`** for async UI; avoid arbitrary timeouts.
+- Test **behavior** users can observe; avoid asserting implementation details.
+- Avoid **false positives** (tests that pass when the feature is broken).
+- Use **ES module `import`** consistently in tests (avoid `require()`).
