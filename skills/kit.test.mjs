@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -233,13 +234,124 @@ test("the real repo kit passes the guard", () => {
 
 export const PLAN_SKILLS = ["anti-slop", "jira-write-ticket", "major-feature-roadmap"];
 
-test("plan skills exist and are named after their folder", () => {
-  const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-  for (const name of PLAN_SKILLS) {
-    const file = join(repoRoot, "skills", "plan", name, "SKILL.md");
-    assert.ok(existsSync(file), `skills/plan/${name}/SKILL.md is missing`);
+export const IMPLEMENT_SKILLS = ["bugfix", "feature-video-evidence"];
+
+const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+
+function checkNamedAfterFolder(phase, names) {
+  for (const name of names) {
+    const file = join(REPO_ROOT, "skills", phase, name, "SKILL.md");
+    assert.ok(existsSync(file), `skills/${phase}/${name}/SKILL.md is missing`);
     const frontmatter = readFileSync(file, "utf8").match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? "";
     const declared = frontmatter.match(/^name:\s*(\S+)\s*$/m)?.[1];
     assert.equal(declared, name);
   }
+}
+
+test("plan skills exist and are named after their folder", () => {
+  checkNamedAfterFolder("plan", PLAN_SKILLS);
+});
+
+test("implement skills exist and are named after their folder", () => {
+  checkNamedAfterFolder("implement", IMPLEMENT_SKILLS);
+});
+
+export const DONE_SKILLS = ["submit-github-pr", "jira-close-story"];
+
+test("done skills exist and are named after their folder", () => {
+  checkNamedAfterFolder("done", DONE_SKILLS);
+});
+
+test("done skills do not depend on harness files", () => {
+  const needles = [".harness/", ["harness", "reset"].join("-")];
+  const hits = [];
+  for (const full of listFiles(REPO_ROOT)) {
+    const rel = relative(REPO_ROOT, full).split("\\").join("/");
+    if (!rel.startsWith("skills/done/")) continue;
+    const text = readFileSync(full, "utf8");
+    for (const needle of needles) if (text.includes(needle)) hits.push(`${rel} contains ${needle}`);
+  }
+  assert.deepEqual(hits, []);
+});
+
+// Each copied script, run with --help, must exit 0 and not fail on a missing module.
+export const SCRIPT_HELP = [
+  ["implement", "bugfix", "bugfix-debug-log.cjs"],
+  ["implement", "feature-video-evidence", "collect-video.cjs"],
+];
+
+for (const [phase, name, file] of SCRIPT_HELP) {
+  test(`${name}/scripts/${file} --help exits 0 with no missing module`, () => {
+    const script = join(REPO_ROOT, "skills", phase, name, "scripts", file);
+    const result = spawnSync(process.execPath, [script, "--help"], { encoding: "utf8", timeout: 10000 });
+    assert.doesNotMatch(result.stderr, /Cannot find module/);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /[Uu]sage/);
+  });
+}
+
+test("bugfix --self-test prints self-test OK", () => {
+  const script = join(REPO_ROOT, "skills", "implement", "bugfix", "scripts", "bugfix-debug-log.cjs");
+  const result = spawnSync(process.execPath, [script, "--self-test"], { encoding: "utf8", timeout: 20000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /self-test OK/);
+});
+
+// Every scripts/<file> in a SKILL.md must be written .claude/skills/<folder>/scripts/<file>,
+// and the file must also name the ~/.claude/skills/<folder>/scripts/<file> fallback.
+export function checkScriptForm(root) {
+  const findings = [];
+  for (const full of listFiles(root)) {
+    if (basename(full) !== "SKILL.md") continue;
+    const file = relative(root, full).split("\\").join("/");
+    const folder = basename(dirname(full));
+    const text = readFileSync(full, "utf8");
+    const used = new Set();
+    text.split("\n").forEach((lineText, i) => {
+      for (const m of lineText.matchAll(/(?<![\w-])scripts\/([\w./-]+)/g)) {
+        const scriptFile = m[1].replace(/[.,]+$/, "");
+        used.add(scriptFile);
+        const before = lineText.slice(0, m.index);
+        if (!before.endsWith(`.claude/skills/${folder}/`)) {
+          findings.push({ file, line: i + 1, message: `scripts/${scriptFile} must be written .claude/skills/${folder}/scripts/${scriptFile}` });
+        }
+      }
+    });
+    for (const scriptFile of used) {
+      if (!text.includes(`~/.claude/skills/${folder}/scripts/${scriptFile}`)) {
+        findings.push({ file, line: 1, message: `missing fallback ~/.claude/skills/${folder}/scripts/${scriptFile}` });
+      }
+    }
+  }
+  return findings;
+}
+
+test("a bare scripts/ path fails the script-form check", () => {
+  withRoot({ "skills/demo/SKILL.md": `${FULL}Run scripts/run.mjs.\n`, "skills/demo/scripts/run.mjs": "" }, (root) => {
+    const found = checkScriptForm(root);
+    assert.equal(found.length, 2);
+    assert.equal(found[0].line, 7);
+  });
+});
+
+test("a project path without the home fallback fails the script-form check", () => {
+  withRoot({ "skills/demo/SKILL.md": `${FULL}Run .claude/skills/demo/scripts/run.mjs.\n`, "skills/demo/scripts/run.mjs": "" }, (root) => {
+    const found = checkScriptForm(root);
+    assert.equal(found.length, 1);
+    assert.match(found[0].message, /fallback/);
+  });
+});
+
+test("both script path forms pass the script-form check", () => {
+  const body = `${FULL}Run .claude/skills/demo/scripts/run.mjs (fallback ~/.claude/skills/demo/scripts/run.mjs).\n`;
+  withRoot({ "skills/demo/SKILL.md": body, "skills/demo/scripts/run.mjs": "" }, (root) => {
+    assert.deepEqual(checkScriptForm(root), []);
+  });
+});
+
+test("the real repo kit writes script paths in both forms", () => {
+  assert.deepEqual(
+    checkScriptForm(REPO_ROOT).map((f) => `${f.file}:${f.line} ${f.message}`),
+    [],
+  );
 });
