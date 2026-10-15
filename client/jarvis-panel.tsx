@@ -6,7 +6,7 @@ import type { EpicBoard } from "../shared/orchestration";
 import type { createVoiceRunner } from "./voice-runner";
 import { VoiceInterpretPanel } from "./voice-interpret-panel";
 import { drawerMicView, hasMicApi, ignoreMeView, openChatView, PASEO_STOP_HINT, SETTINGS_UNREADABLE_NOTICE, voiceOffNotice, voiceStatusLine } from "./voice-mic-model";
-import { ProfileChips, useAgentProfiles } from "./runner-picker";
+import { ProfileChips, useAgentProfiles } from "./profile-chips";
 import { PANEL_WIDTH, replyActions, storyChips, type PanelPlacement, type StoryChip } from "./jarvis-panel-model";
 import { profileCaption, type AgentProfile } from "../shared/agent-profiles";
 import { voiceSettings } from "../shared/settings";

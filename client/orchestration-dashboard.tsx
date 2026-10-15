@@ -44,9 +44,7 @@ import { LoadingState } from "./loading-state";
 import { Skeleton, SkeletonBar, SkeletonCards } from "./skeleton";
 import { ProdPulsePanel, ProdPulseSkeleton, useProdPulse } from "./prod-pulse-panel";
 import { pulseTabState } from "./prod-pulse-model";
-import { LoopProfilesToggle, LoopStepProfiles } from "./loop-step-profiles";
 import { NeedsYouQueue, StatsStrip } from "./needs-you";
-import { RunnerPicker } from "./runner-picker";
 import type { DrawerTab } from "./pipeline-drawer-model";
 import { SkillsDrawer, StoryPipelineButton } from "./skills-drawer";
 import { JarvisPanel } from "./jarvis-panel";
@@ -108,7 +106,6 @@ export function OrchestrationDashboard({ theme, layout, navigation, voice }: Plu
   const epic = useEpicBoards();
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState<DrawerTab>("phases");
-  const [loopProfilesOpen, setLoopProfilesOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const gates = useMemo(() => gatesOf(epic.boards ?? []), [epic.boards]);
   const dashboard = useSettings(dashboardSettings);
@@ -482,13 +479,6 @@ export function OrchestrationDashboard({ theme, layout, navigation, voice }: Plu
 
   const header = (
     <DashboardHeader theme={theme} compact={layout.compact}>
-      <RunnerPicker theme={theme} compact={layout.compact} />
-      <LoopProfilesToggle
-        theme={theme}
-        compact={layout.compact}
-        open={loopProfilesOpen}
-        onPress={() => setLoopProfilesOpen((open) => !open)}
-      />
       <AlertsBell
         theme={theme}
         compact={layout.compact}
@@ -646,7 +636,6 @@ export function OrchestrationDashboard({ theme, layout, navigation, voice }: Plu
       {/* Keyed by tab so each body starts at the top. */}
       <ScrollView key={tab} style={styles.screen} contentContainerStyle={styles.content}>
         {tabSaveError ? <Text style={styles.danger}>{tabSaveError}</Text> : null}
-        {loopProfilesOpen ? <LoopStepProfiles theme={theme} compact={layout.compact} /> : null}
         {body}
       </ScrollView>
       <StoryDrawer epic={epic} theme={theme} compact={layout.compact} navigation={navigation} />

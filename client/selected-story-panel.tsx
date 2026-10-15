@@ -10,7 +10,7 @@ import { DEFAULT_LOOP_CONFIG, initiativeLoopSettings, startInitiativeLoop } from
 import type { EpicBoardState, EpicStory } from "../shared/orchestration";
 import { budgetSettings } from "../shared/settings";
 import { stepBar, type Segment } from "../shared/story-steps";
-import { useAgentProfiles } from "./runner-picker";
+import { useAgentProfiles } from "./profile-chips";
 import { contextBlock, ctaAction, stepModels, type ContextBar } from "./selected-story-model";
 
 // The selected story, inline under its initiative's graph on wide layouts (design lines 190–240):
