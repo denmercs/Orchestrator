@@ -542,3 +542,42 @@ test("plan-html init rejects a slug that leaves the initiatives folder", () => {
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// Skills written in this repo. Each pair is [phase, name].
+export const OWN_SKILLS = [
+  ["plan", "grill-me"],
+  ["plan", "grill-tdd"],
+  ["implement", "tdd"],
+  ["plan", "prototype"],
+];
+
+const OWN_SKILL_BANNED = ["pocock", "mattpocock", "github.com/", ".harness/", "harness-reset", "tdd-audit", "re-break"];
+
+function readOwnSkill([phase, name]) {
+  const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const file = join(repoRoot, "skills", phase, name, "SKILL.md");
+  assert.ok(existsSync(file), `skills/${phase}/${name}/SKILL.md is missing`);
+  return readFileSync(file, "utf8");
+}
+
+test("own skills are named after their folder and carry no upstream or tool references", () => {
+  for (const pair of OWN_SKILLS) {
+    const text = readOwnSkill(pair);
+    const frontmatter = text.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? "";
+    assert.equal(frontmatter.match(/^name:\s*(\S+)\s*$/m)?.[1], pair[1]);
+    const lower = text.toLowerCase();
+    for (const banned of OWN_SKILL_BANNED) {
+      assert.ok(!lower.includes(banned), `skills/${pair[0]}/${pair[1]} mentions ${banned}`);
+    }
+  }
+});
+
+test("grill-tdd follows grill-me and hands off to tdd", () => {
+  const text = readOwnSkill(["plan", "grill-tdd"]);
+  assert.match(text, /grill-me/);
+  assert.match(text, /(?<![\w-])tdd\b/);
+});
+
+test("tdd says contract grilling is grill-tdd", () => {
+  assert.match(readOwnSkill(["implement", "tdd"]), /grill-tdd/);
+});
