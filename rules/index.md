@@ -52,4 +52,5 @@ Repo facts beat these rules on style. These rules beat the repo on discipline.
 When something belongs in both, it lives in the line-level rule and the
 change-level rule points at it. Nothing is stated twice.
 
-Stack-specific *how* lives in skills, one layer below these rules. Same relationship: skills cover the line, rules cover the diff.
+Stack-specific *how* lives in skills, one layer below these rules. Same
+relationship: skills cover the line, rules cover the diff.

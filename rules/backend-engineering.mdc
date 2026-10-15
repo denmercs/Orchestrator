@@ -29,9 +29,8 @@ This is the **change-level** rule: boundaries, what ships alongside a change,
 and when it is done. It is deliberately language-neutral — one standard, many
 idioms — so a plugin and an event-sourced service are held to the same bar.
 
-The **how** for a given stack comes from the matching stack skill.
-That covers the line;
-this covers the diff. Where they connect, this rule points and does not repeat.
+The **how** for a given stack comes from the matching stack skill. That covers
+the line; this covers the diff. Where they connect, this rule points and does not repeat.
 
 Formatting and language style come from the repo's formatter and linter —
 scalafmt, PHPCS, gofmt, ruff. Run them. Do not relitigate them by hand.
