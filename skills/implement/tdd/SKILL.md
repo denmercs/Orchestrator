@@ -5,7 +5,7 @@ description: Test-driven development, one behavior per cycle - failing test, sma
 
 # Test-driven development
 
-Work one behavior at a time. Each cycle is complete before the next starts. If the story plan has no contract cards yet, stop and run `grill-tdd` first; deciding what to test is not done here.
+Work one behavior at a time. Each cycle is complete before the next starts. Deciding what to test is not done here. When working from a story plan that has no contract cards yet, stop and run `grill-tdd` first. For ad-hoc work, name the one behavior in a sentence before writing the test.
 
 ## A cycle
 

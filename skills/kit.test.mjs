@@ -276,7 +276,7 @@ test("own skills are named after their folder and carry no upstream or tool refe
 test("grill-tdd follows grill-me and hands off to tdd", () => {
   const text = readOwnSkill(["plan", "grill-tdd"]);
   assert.match(text, /grill-me/);
-  assert.match(text, /\btdd\b/);
+  assert.match(text, /(?<![\w-])tdd\b/);
 });
 
 test("tdd says contract grilling is grill-tdd", () => {

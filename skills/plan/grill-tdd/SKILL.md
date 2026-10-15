@@ -28,7 +28,7 @@ Treat these like major decisions: one at a time, with a recommendation, wait for
 
 ## 3. False-positive check
 
-For every card ask: could this test pass without the behavior existing? Look for assertions that hold for any input, mocks that return what the test expects, tests that exercise the fake instead of the code, and expectations too loose to fail. Fix the card's expectation or guard until the answer is no. Note the check as the `tdd` skill will repeat it with real code: revert the change, the test must fail again.
+For every card ask: could this test pass without the behavior existing? Look for assertions that hold for any input, mocks that return what the test expects, tests that exercise the fake instead of the code, and expectations too loose to fail. Fix the card's expectation or guard until the answer is no. The `tdd` skill repeats this check against real code: with the change reverted, the test must fail again.
 
 ## 4. Order the cycles
 

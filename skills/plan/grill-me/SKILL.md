@@ -33,7 +33,7 @@ Once the major decisions are settled, list the rest as `assumption → answer`, 
 
 ## Finish
 
-Write the outcomes into the story plan: each decision with its answer, and each accepted assumption. Remove anything that stayed open or say plainly that it is still open and who owns it. Then hand off to `grill-tdd` to turn the agreed scope into test contracts.
+Write the outcomes into the story plan: each decision with its answer, and each accepted assumption. If anything is still open, leave it in the plan marked open, with who owns it. Then hand off to `grill-tdd` to turn the agreed scope into test contracts.
 
 ## Do not
 
