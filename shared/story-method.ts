@@ -239,7 +239,7 @@ the checklist: any unticked line goes to a fresh agent to fix, and when none is 
 the PR.`;
 
 // The live Review only lists; a fresh agent fixes every unticked line.
-const REVIEW_LIST = `Do not fix anything: do not edit source or tests. The only files you may edit are ${STATE} and
+const REVIEW_LIST = `Do not fix anything, even where a skill says you may: do not edit source or tests. The only files you may edit are ${STATE} and
 .harness/pr-body.md, plus a follow-up story file when the rules above say to file one. A fresh agent fixes every
 unticked line, blocking and non-blocking, and the next review checks those fixes.`;
 

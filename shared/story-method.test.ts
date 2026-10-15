@@ -383,6 +383,7 @@ test("the live Review lists findings and never fixes", () => {
   for (const round of [1, 2]) {
     const review = stepPrompt("review", story, { round });
     assert.match(review, /Do not fix anything/);
+    assert.match(review, /even where a skill says you may/);
     assert.match(review, /do not edit source or tests\. The only files you may edit are \.harness\/state\.md and\s+\.harness\/pr-body\.md/);
     assert.match(review, /plus a follow-up story file when the rules above say to file one/);
     assert.match(review, /run them; keep only the summary/);
@@ -517,8 +518,8 @@ test("a memory brief adds a Memory brief block to the review step data and nothi
 // live Review lists findings and no longer fixes).
 test("the live Review prompts match their pinned digests", () => {
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-  assert.equal(sha(stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] })), "7e5b8f87fa4bdb58d10c203f15fa09e3716a93e0c210640ef55a8298235b7f89");
-  assert.equal(sha(stepPrompt("review", story, { round: 2 })), "c9a4ceb2648cfe7e4ce23ec9fa8a9f4002de583f27f210137350c7b82476f2ac");
+  assert.equal(sha(stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] })), "803b931c61f209227d3f3b9205f611df145f18cae4c773c57d5bd25789204fee");
+  assert.equal(sha(stepPrompt("review", story, { round: 2 })), "c878ba826ef0611fe719a9b239b075c4454244db7af2f75f174b9e6e2cc58017");
   assert.equal(stepPrompt("review", story, { round: 1, findingsOnly: false }), stepPrompt("review", story, { round: 1 }));
 });
 
