@@ -2,8 +2,8 @@
 /**
  * Resolve living plan paths for a consumer repo.
  *
- * Canonical layout (initiative pack). The Orchestrator Paseo plugin owns and creates
- * initiative.md and epics/ (the harness layout); this folder only adds lens files:
+ * Canonical layout (initiative pack). The harness owns initiative.md and epics/;
+ * these scripts only add lens files:
  *   .harness/initiatives/<slug>/
  *     initiative.md
  *     epics/E<n>-<name>/{epic.md,stories/,state/}   ← plugin-created
@@ -12,7 +12,7 @@
  *     ux-plan.md / ux-plan.html
  *     security-posture.md / security-posture.html
  *     assets/                 (optional)
- *     index.html              (optional lens hub from init-feature-pack)
+ *     index.html              (optional lens hub)
  *
  * Legacy / simple repos may still keep a single plan at `.harness/<file>`.
  * Prefer Markdown SoT; HTML-only packs remain readable until migrated.
@@ -62,6 +62,9 @@ function listInitiativeSlugs(consumerRoot) {
  * @returns {string}
  */
 function initiativePackDir(consumerRoot, slug) {
+	if (!slug || slug === '.' || slug === '..' || /[\\/]/.test(slug)) {
+		throw new Error(`Invalid --slug "${slug}": use a single folder name under .harness/initiatives/`);
+	}
 	return path.join(harnessDir(consumerRoot), 'initiatives', slug);
 }
 
@@ -138,7 +141,7 @@ function resolvePlanPath(consumerRoot, kind, fileMap, opts = {}) {
 /**
  * @param {string} consumerRoot
  * @param {string} kind
- * @param {{ file?: string; slug?: string; preferPack?: boolean }} [opts]
+ * @param {{ file?: string; slug?: string }} [opts]
  * @returns {string}
  */
 function resolvePlanHtmlPath(consumerRoot, kind, opts = {}) {

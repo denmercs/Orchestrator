@@ -14,9 +14,11 @@ Kinds: `arch`, `ux`, `security`, `handoff`.
 Default output, under `.harness/initiatives/<slug>/`:
 
 - arch: `architecture-plan.md` and `architecture-plan.html`
-- ux, security, handoff: the same pattern, with their own file names (see `lib/plan-paths.cjs`)
+- ux: `ux-plan.md` and `ux-plan.html`
+- security: `security-posture.md` and `security-posture.html`
+- handoff: `code-handoff.md` and `code-handoff.html`, always at the `.harness/` root
 
-Without `--slug`, the scripts use the one existing initiative that holds the file, or fall back to the `.harness/` root.
+`--slug` must be a single folder name. Without it, the scripts use the only initiative folder, else the one initiative that already holds the file, else the `.harness/` root.
 
 ## init-plan-html.cjs
 

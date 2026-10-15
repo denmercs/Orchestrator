@@ -487,11 +487,10 @@ test("a cross-skill script path fails script-path when the file is missing", () 
 });
 
 test("plan-html renders and validates from a temp copy under .claude/skills", () => {
-  const kitRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const tmp = mkdtempSync(join(tmpdir(), "plan-html-"));
   try {
     const dest = join(tmp, ".claude", "skills", "plan-html");
-    cpSync(join(kitRoot, "skills", "plan", "plan-html"), dest, { recursive: true });
+    cpSync(join(REPO_ROOT, "skills", "plan", "plan-html"), dest, { recursive: true });
     cpSync(join(dest, "scripts", "fixtures", "plan-arch-valid.md"), join(tmp, "plan.md"));
     const run = spawnSync(
       process.execPath,
@@ -508,11 +507,10 @@ test("plan-html renders and validates from a temp copy under .claude/skills", ()
 });
 
 test("plan-html init scaffolds the Markdown and HTML from a temp copy", () => {
-  const kitRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const tmp = mkdtempSync(join(tmpdir(), "plan-html-init-"));
   try {
     const dest = join(tmp, ".claude", "skills", "plan-html");
-    cpSync(join(kitRoot, "skills", "plan", "plan-html"), dest, { recursive: true });
+    cpSync(join(REPO_ROOT, "skills", "plan", "plan-html"), dest, { recursive: true });
     const run = spawnSync(
       process.execPath,
       [join(dest, "scripts", "init-plan-html.cjs"), tmp, "--kind", "arch", "--slug", "demo"],
@@ -522,6 +520,24 @@ test("plan-html init scaffolds the Markdown and HTML from a temp copy", () => {
     const pack = join(tmp, ".harness", "initiatives", "demo");
     assert.ok(existsSync(join(pack, "architecture-plan.md")));
     assert.ok(existsSync(join(pack, "architecture-plan.html")));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("plan-html init rejects a slug that leaves the initiatives folder", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "plan-html-slug-"));
+  try {
+    const dest = join(tmp, ".claude", "skills", "plan-html");
+    cpSync(join(REPO_ROOT, "skills", "plan", "plan-html"), dest, { recursive: true });
+    const run = spawnSync(
+      process.execPath,
+      [join(dest, "scripts", "init-plan-html.cjs"), tmp, "--kind", "ux", "--slug", "../../escape"],
+      { cwd: tmp, encoding: "utf8" },
+    );
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, /Invalid --slug/);
+    assert.ok(!existsSync(join(tmp, "escape")));
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

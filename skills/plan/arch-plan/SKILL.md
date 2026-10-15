@@ -48,7 +48,7 @@ Follow-up answers **update that same Markdown**, then re-render the HTML before 
 | Use this | Use something else |
 |----------|-------------------|
 | Plugin or project target shape, seams, phased migration | One story's behaviors: the story Plan step |
-| Living plan source of truth (HTML) with epic-keyed stages | Multi-epic product scope: `major-feature-roadmap` |
+| Living Markdown plan with epic-keyed stages | Multi-epic product scope: `major-feature-roadmap` |
 | Open decisions and stages toward a target | Deepening friction only: `improve-codebase-architecture` (reuse its exploring mindset inside this flow) |
 | Structural direction before delivery | UI flows: `ui-ux-planner` |
 | Module shape and seams | Security posture or the per-PR security gate: their own steps |
