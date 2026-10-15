@@ -1,13 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { usePaseo, useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
-import {
-  agentRunnerSettings,
-  pickProfile,
-  profileCaption,
-  profilesFromConfigGet,
-  type AgentProfile,
-} from "../shared/agent-runner";
+import { usePaseo, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { profilesFromConfigGet, type AgentProfile } from "../shared/agent-runner";
 
 type Theme = PluginSurfaceProps["theme"];
 
@@ -29,44 +23,6 @@ export function useAgentProfiles(): AgentProfile[] {
   }, [reload]);
 
   return profiles;
-}
-
-export function RunnerPicker({ theme, compact }: { theme: Theme; compact: boolean }) {
-  const settings = useSettings(agentRunnerSettings);
-  const profiles = useAgentProfiles();
-  const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
-
-  if (settings.status === "loading") {
-    return <Text style={styles.muted}>Runner…</Text>;
-  }
-  if (settings.status !== "ready") {
-    return <Text style={styles.muted}>{settings.error}</Text>;
-  }
-  if (profiles.length === 0) {
-    return <Text style={styles.muted}>No agent profiles. Add Claude, Kiro, or Cursor in Settings → Agents.</Text>;
-  }
-
-  const selected = pickProfile(profiles, settings.values.profileId) ?? profiles[0];
-
-  async function choose(id: string) {
-    if (settings.status !== "ready" || id === settings.values.profileId) {
-      return;
-    }
-    await settings.save({ profileId: id }, settings.revision);
-  }
-
-  return (
-    <ProfileChips
-      theme={theme}
-      compact={compact}
-      label="Runner"
-      accessibilityLabel="Agent runner"
-      profiles={profiles}
-      selectedId={selected?.id ?? ""}
-      describe={(profile) => `Use ${profileCaption(profile)} for new sessions`}
-      onPick={(id) => void choose(id)}
-    />
-  );
 }
 
 // A labelled row of profile chips, one selected. With `autoLabel`, a first chip stands for the
