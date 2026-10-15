@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -46,12 +46,36 @@ function checkFrontmatter(file, text) {
   return findings;
 }
 
-function checkScripts(full, file, text) {
+// A scripts/<file> hit written .claude/skills/<name>/scripts/<file> (or the ~/ form) names
+// another skill; it resolves against any kit folder skills/*/<name>/ under the scanned root.
+function prefixedSkill(before) {
+  return before.match(/\.claude\/skills\/([\w-]+)\/$/)?.[1];
+}
+
+function kitHolds(root, name, path) {
+  const skills = join(root, "skills");
+  if (!existsSync(skills)) return false;
+  return readdirSync(skills, { withFileTypes: true }).some((phase) => {
+    if (!phase.isDirectory()) return false;
+    const skillDir = join(skills, phase.name, name);
+    const target = resolve(skillDir, path);
+    return target.startsWith(skillDir + sep) && existsSync(target);
+  });
+}
+
+function checkScripts(full, file, text, root) {
   const skillDir = dirname(full);
   const findings = [];
   text.split("\n").forEach((lineText, i) => {
-    for (const [match] of lineText.matchAll(/(?<![\w-])scripts\/[\w./-]+/g)) {
-      const path = match.replace(/[.,]+$/, "");
+    for (const m of lineText.matchAll(/(?<![\w-])scripts\/[\w./-]+/g)) {
+      const path = m[0].replace(/[.,]+$/, "");
+      const other = prefixedSkill(lineText.slice(0, m.index));
+      if (other && other !== basename(skillDir)) {
+        if (!kitHolds(root, other, path)) {
+          findings.push({ file, line: i + 1, rule: "script-path", message: `${path} is not a file in kit skill ${other}` });
+        }
+        continue;
+      }
       const target = resolve(skillDir, path);
       const inside = target.startsWith(skillDir + sep);
       if (!inside || !existsSync(target)) {
@@ -69,7 +93,7 @@ export function scanKit(root, { allow = [] } = {}) {
     const text = readFileSync(full, "utf8");
     if (text.includes("\0")) continue;
     if (basename(full) === "SKILL.md") {
-      findings.push(...checkFrontmatter(file, text), ...checkScripts(full, file, text));
+      findings.push(...checkFrontmatter(file, text), ...checkScripts(full, file, text, root));
     }
     text.split("\n").forEach((lineText, i) => {
       for (const { text: needle, ignoreCase } of NEEDLES) {
@@ -233,7 +257,35 @@ test("the real repo kit passes the guard", () => {
   );
 });
 
-export const PLAN_SKILLS = ["anti-slop", "jira-write-ticket", "major-feature-roadmap"];
+export const PLAN_SKILLS = ["anti-slop", "arch-plan", "jira-write-ticket", "major-feature-roadmap", "plan-html", "ui-ux-planner"];
+
+// [phase, name] of each skill that renders a living plan through plan-html.
+export const LIVING_PLAN_SKILLS = [
+  ["plan", "arch-plan"],
+  ["plan", "ui-ux-planner"],
+  ["review", "code-handoff"],
+];
+
+test("living plan skills name plan-html and its render script", () => {
+  for (const [phase, name] of LIVING_PLAN_SKILLS) {
+    const text = readFileSync(join(REPO_ROOT, "skills", phase, name, "SKILL.md"), "utf8");
+    const section = text.match(/^## Companion extra\s*$([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? "";
+    assert.ok(section.includes("plan-html"), `${name} needs a Companion extra section naming plan-html`);
+    assert.ok(text.includes(".claude/skills/plan-html/scripts/render-plan-html.cjs"), `${name} must name render-plan-html.cjs`);
+    assert.ok(!text.includes(".cursor/vendor"), `${name} must not mention .cursor/vendor`);
+    assert.ok(!text.includes("refresh-plan-status"), `${name} must not mention refresh-plan-status`);
+  }
+});
+
+test("no app-map or wayfinder skill folder exists", () => {
+  const skillsDir = join(REPO_ROOT, "skills");
+  for (const phase of readdirSync(skillsDir)) {
+    if (!statSync(join(skillsDir, phase)).isDirectory()) continue;
+    for (const name of ["app-map", "wayfinder"]) {
+      assert.ok(!existsSync(join(skillsDir, phase, name)), `skills/${phase}/${name} must not exist`);
+    }
+  }
+});
 
 export const IMPLEMENT_SKILLS = ["bugfix", "feature-video-evidence"];
 
@@ -255,6 +307,12 @@ test("plan skills exist and are named after their folder", () => {
 
 test("implement skills exist and are named after their folder", () => {
   checkNamedAfterFolder("implement", IMPLEMENT_SKILLS);
+});
+
+export const REVIEW_SKILLS = ["code-handoff"];
+
+test("review skills exist and are named after their folder", () => {
+  checkNamedAfterFolder("review", REVIEW_SKILLS);
 });
 
 export const DONE_SKILLS = ["submit-github-pr", "jira-close-story"];
@@ -351,16 +409,27 @@ export function checkScriptForm(root) {
     const folder = basename(dirname(full));
     const text = readFileSync(full, "utf8");
     const used = new Set();
+    const usedOther = new Set();
     text.split("\n").forEach((lineText, i) => {
       for (const m of lineText.matchAll(/(?<![\w-])scripts\/([\w./-]+)/g)) {
         const scriptFile = m[1].replace(/[.,]+$/, "");
-        used.add(scriptFile);
         const before = lineText.slice(0, m.index);
+        const other = prefixedSkill(before);
+        if (other && other !== folder) {
+          usedOther.add(`${other}/scripts/${scriptFile}`);
+          continue;
+        }
+        used.add(scriptFile);
         if (!before.endsWith(`.claude/skills/${folder}/`)) {
           findings.push({ file, line: i + 1, message: `scripts/${scriptFile} must be written .claude/skills/${folder}/scripts/${scriptFile}` });
         }
       }
     });
+    for (const path of usedOther) {
+      if (!text.includes(`~/.claude/skills/${path}`)) {
+        findings.push({ file, line: 1, message: `missing fallback ~/.claude/skills/${path}` });
+      }
+    }
     for (const scriptFile of used) {
       if (!text.includes(`~/.claude/skills/${folder}/scripts/${scriptFile}`)) {
         findings.push({ file, line: 1, message: `missing fallback ~/.claude/skills/${folder}/scripts/${scriptFile}` });
@@ -398,6 +467,80 @@ test("the real repo kit writes script paths in both forms", () => {
     checkScriptForm(REPO_ROOT).map((f) => `${f.file}:${f.line} ${f.message}`),
     [],
   );
+});
+
+const CROSS_BODY = `${FULL}Run .claude/skills/y/scripts/run.cjs (fallback ~/.claude/skills/y/scripts/run.cjs).\n`;
+
+test("a cross-skill script path passes when another kit skill holds the file", () => {
+  withRoot({ "skills/a/x/SKILL.md": CROSS_BODY, "skills/b/y/scripts/run.cjs": "" }, (root) => {
+    assert.deepEqual(scanKit(root).filter((f) => f.rule === "script-path"), []);
+    assert.deepEqual(checkScriptForm(root), []);
+  });
+});
+
+test("a cross-skill script path fails script-path when the file is missing", () => {
+  withRoot({ "skills/a/x/SKILL.md": CROSS_BODY, "skills/b/y/SKILL.md": FULL.replace("demo", "y") }, (root) => {
+    const found = scanKit(root).filter((f) => f.rule === "script-path");
+    assert.equal(found.length, 2);
+    assert.deepEqual(found.map((f) => f.line), [7, 7]);
+  });
+});
+
+test("plan-html renders and validates from a temp copy under .claude/skills", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "plan-html-"));
+  try {
+    const dest = join(tmp, ".claude", "skills", "plan-html");
+    cpSync(join(REPO_ROOT, "skills", "plan", "plan-html"), dest, { recursive: true });
+    cpSync(join(dest, "scripts", "fixtures", "plan-arch-valid.md"), join(tmp, "plan.md"));
+    const run = spawnSync(
+      process.execPath,
+      [join(dest, "scripts", "render-plan-html.cjs"), tmp, "--kind", "arch", "--file", "plan.md", "--out", "plan.html", "--validate"],
+      { cwd: tmp, encoding: "utf8" },
+    );
+    assert.equal(run.status, 0, run.stderr);
+    assert.ok(!run.stderr.includes("Cannot find module"), run.stderr);
+    assert.ok(existsSync(join(tmp, "plan.html")));
+    assert.ok(readFileSync(join(tmp, "plan.html"), "utf8").includes('id="current"'));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("plan-html init scaffolds the Markdown and HTML from a temp copy", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "plan-html-init-"));
+  try {
+    const dest = join(tmp, ".claude", "skills", "plan-html");
+    cpSync(join(REPO_ROOT, "skills", "plan", "plan-html"), dest, { recursive: true });
+    const run = spawnSync(
+      process.execPath,
+      [join(dest, "scripts", "init-plan-html.cjs"), tmp, "--kind", "arch", "--slug", "demo"],
+      { cwd: tmp, encoding: "utf8" },
+    );
+    assert.equal(run.status, 0, run.stderr);
+    const pack = join(tmp, ".harness", "initiatives", "demo");
+    assert.ok(existsSync(join(pack, "architecture-plan.md")));
+    assert.ok(existsSync(join(pack, "architecture-plan.html")));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("plan-html init rejects a slug that leaves the initiatives folder", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "plan-html-slug-"));
+  try {
+    const dest = join(tmp, ".claude", "skills", "plan-html");
+    cpSync(join(REPO_ROOT, "skills", "plan", "plan-html"), dest, { recursive: true });
+    const run = spawnSync(
+      process.execPath,
+      [join(dest, "scripts", "init-plan-html.cjs"), tmp, "--kind", "ux", "--slug", "../../escape"],
+      { cwd: tmp, encoding: "utf8" },
+    );
+    assert.notEqual(run.status, 0);
+    assert.match(run.stderr, /Invalid --slug/);
+    assert.ok(!existsSync(join(tmp, "escape")));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 // Skills written in this repo. Each pair is [phase, name].
