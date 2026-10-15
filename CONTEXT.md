@@ -4,7 +4,13 @@ This file defines the words the plugin code uses: the Skills drawer, the Story p
 
 ## Phase 1 rule
 
-Skills are used through pinned sources, worktree copies and attachments. They are **never installed** into `~/.claude/skills` or `~/.agents/skills`, and the plugin never runs `npx skills add`. The `installed` source only *reads* those folders. Nothing in the plugin writes to them.
+Skills are used through pinned sources, worktree copies and attachments. They are **never installed** into `~/.claude/skills` or `~/.agents/skills`, and the plugin never runs `npx skills add`. The `installed` source only *reads* those folders. Nothing in the plugin writes to them. The repo's own kit is no exception: see **Kit**.
+
+## Kit
+
+The skills and rules this repo ships. `skills/` is grouped by Story pipeline phase (`plan`, `implement`, `review`, `done`), one `skills/<phase>/<name>/SKILL.md` per skill, with any scripts inside that skill's own `scripts/` folder. `rules/` holds the engineering rules; `rules/index.md` lists them.
+
+Skills reach agents the usual way: connect this repo as a pinned git Skill source, then Worktree copy and Skill attachment work as for any other source. The plugin never links or writes to `~/.claude/skills`. Only the hand-run `scripts/link-kit.mjs` does: it links the kit's skills and rules into the global agent folders. The guard test `skills/kit.test.mjs` keeps kit content public-safe.
 
 ## Skill source
 
