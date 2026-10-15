@@ -379,15 +379,24 @@ test("review points at the base under Where it sits; pr carries the exact comman
   assert.ok(jira.includes('--title "KEY-1 | Add search"'), "Jira PR title");
 });
 
-test("review fixes its findings, non-blocking ones too, and leaves unticked only what it could not fix", () => {
+test("the live Review lists findings and never fixes", () => {
   for (const round of [1, 2]) {
     const review = stepPrompt("review", story, { round });
-    assert.doesNotMatch(review, /Do not fix anything/);
-    assert.match(review, /fix every finding you can, blocking and non-blocking alike/);
-    assert.match(review, /Tick each line you fixed/);
-    assert.match(review, /Leave a\s+finding unticked when fixing it needs a human decision/);
-    assert.match(review, /commit subject/);
+    assert.match(review, /Do not fix anything/);
+    assert.match(review, /even where a skill says you may/);
+    assert.match(review, /do not edit source or tests\. The only files you may edit are \.harness\/state\.md and\s+\.harness\/pr-body\.md/);
+    assert.match(review, /plus a follow-up story file when the rules above say to file one/);
+    assert.match(review, /run them; keep only the summary/);
+    assert.match(review, /Write `## Preview`/);
+    assert.match(review, /Write \.harness\/pr-body\.md/);
+    assert.match(review, /set `## Status` to `review-done` with nothing after it\./);
+    assert.doesNotMatch(review, /fix every finding you can/);
+    assert.doesNotMatch(review, /commit subject/);
+    assert.doesNotMatch(review, /After fixing/);
   }
+  const fix = stepPrompt("implement", story, { round: 2 });
+  assert.match(fix, /blocking and non-blocking/);
+  assert.match(fix, /skip\s+"follow-up:" lines/);
 });
 
 test("missing Plan paths go in the story section, after the head and before Where it sits", () => {
@@ -505,11 +514,12 @@ test("a memory brief adds a Memory brief block to the review step data and nothi
   assert.ok(withBrief.indexOf("## Memory brief") > withBrief.indexOf("Review for story S1"), "after the head");
 });
 
-// sha256 of the live Review prompts (REVIEW_LOOK now points at peer-review); they must not move.
-test("the live Review prompts are unchanged", () => {
+// sha256 of the live Review prompts. They moved when REVIEW_LOOK began pointing at peer-review, and in S26 (the
+// live Review lists findings and no longer fixes).
+test("the live Review prompts match their pinned digests", () => {
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-  assert.equal(sha(stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] })), "6c6862ae0db76c7cbe583dbee64c70ed5c7ab126305aaf7112a4dab0ae5f70ea");
-  assert.equal(sha(stepPrompt("review", story, { round: 2 })), "f49aba29f622258e9b66c9d0119a50ad4e133bfe40515838f93d3aaa52de0484");
+  assert.equal(sha(stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] })), "803b931c61f209227d3f3b9205f611df145f18cae4c773c57d5bd25789204fee");
+  assert.equal(sha(stepPrompt("review", story, { round: 2 })), "c878ba826ef0611fe719a9b239b075c4454244db7af2f75f174b9e6e2cc58017");
   assert.equal(stepPrompt("review", story, { round: 1, findingsOnly: false }), stepPrompt("review", story, { round: 1 }));
 });
 
