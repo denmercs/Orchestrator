@@ -309,7 +309,7 @@ test("implement skills exist and are named after their folder", () => {
   checkNamedAfterFolder("implement", IMPLEMENT_SKILLS);
 });
 
-export const REVIEW_SKILLS = ["code-handoff"];
+export const REVIEW_SKILLS = ["code-handoff", "peer-review", "review-patterns"];
 
 test("review skills exist and are named after their folder", () => {
   checkNamedAfterFolder("review", REVIEW_SKILLS);
@@ -337,6 +337,8 @@ test("done skills do not depend on harness files", () => {
 export const SCRIPT_HELP = [
   ["implement", "bugfix", "bugfix-debug-log.cjs"],
   ["implement", "feature-video-evidence", "collect-video.cjs"],
+  ["review", "peer-review", "list-prs.cjs"],
+  ["review", "review-patterns", "mine-review-patterns.cjs"],
 ];
 
 for (const [phase, name, file] of SCRIPT_HELP) {
@@ -580,4 +582,96 @@ test("grill-tdd follows grill-me and hands off to tdd", () => {
 
 test("tdd says contract grilling is grill-tdd", () => {
   assert.match(readOwnSkill(["implement", "tdd"]), /grill-tdd/);
+});
+
+// list-prs.cjs runs against a stub gh first on PATH; no network.
+function withStubGh({ exitCode = 0, json = "[]" }, fn) {
+  const dir = mkdtempSync(join(tmpdir(), "stub-gh-"));
+  try {
+    writeFileSync(join(dir, "fixture.json"), json);
+    writeFileSync(
+      join(dir, "gh"),
+      `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(dir, "argv.txt")}"\nif [ ${exitCode} -ne 0 ]; then echo "gh: boom" >&2; exit ${exitCode}; fi\ncat "${join(dir, "fixture.json")}"\n`,
+      { mode: 0o755 },
+    );
+    const script = join(REPO_ROOT, "skills", "review", "peer-review", "scripts", "list-prs.cjs");
+    const run = (...args) =>
+      spawnSync(process.execPath, [script, ...args], {
+        encoding: "utf8",
+        timeout: 10000,
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+      });
+    const argv = () => readFileSync(join(dir, "argv.txt"), "utf8").trim().split("\n");
+    return fn({ run, argv });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const PR_FIXTURE = JSON.stringify([
+  {
+    number: 12,
+    title: "Fix login",
+    url: "https://github.com/acme/web/pull/12",
+    repository: { nameWithOwner: "acme/web" },
+    author: { login: "alice" },
+    updatedAt: "2026-10-01T00:00:00Z",
+    isDraft: false,
+  },
+]);
+
+test("list-prs prints one PR as a line plus its URL", () => {
+  withStubGh({ json: PR_FIXTURE }, ({ run }) => {
+    const r = run();
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, "acme/web#12 · alice · Fix login\nhttps://github.com/acme/web/pull/12\n");
+  });
+});
+
+test("list-prs --json prints the parsed array", () => {
+  withStubGh({ json: PR_FIXTURE }, ({ run }) => {
+    const r = run("--json");
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(JSON.parse(r.stdout).map((p) => p.number), [12]);
+  });
+});
+
+test("list-prs asks gh for search prs and passes --repo through", () => {
+  withStubGh({ json: PR_FIXTURE }, ({ run, argv }) => {
+    run("--repo", "acme/web");
+    const args = argv();
+    assert.deepEqual(args.slice(0, 2), ["search", "prs"]);
+    assert.ok(args.includes("--review-requested=@me"));
+    assert.equal(args[args.indexOf("--repo") + 1], "acme/web");
+  });
+});
+
+test("list-prs exits 1 with a message on stderr when gh fails", () => {
+  withStubGh({ exitCode: 1 }, ({ run }) => {
+    const r = run();
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /gh/);
+  });
+});
+
+test("peer-review ships a generic profile file and a rubric without mined team patterns", () => {
+  const dir = join(REPO_ROOT, "skills", "review", "peer-review");
+  assert.ok(!readFileSync(join(dir, "PROFILES.md"), "utf8").includes(["Life", "way"].join("")));
+  assert.ok(!readFileSync(join(dir, "REVIEW-RUBRIC.md"), "utf8").includes("## Team review patterns"));
+});
+
+test("list-prs says so when no PR is waiting", () => {
+  withStubGh({ json: "[]" }, ({ run }) => {
+    const r = run();
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /No open PRs are waiting on your review/);
+  });
+});
+
+test("list-prs names the flag that is missing its value", () => {
+  withStubGh({ json: "[]" }, ({ run }) => {
+    const r = run("--repo");
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /--repo needs a value/);
+  });
 });
