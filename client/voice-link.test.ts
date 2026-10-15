@@ -103,3 +103,10 @@ test("a first steer that fails keeps the preamble for the next try", async () =>
   await link.say("a1", "run the tests");
   assert.deepEqual(sent, [`${VOICE_ROUTING_PREAMBLE}\n\nrun the tests`]);
 });
+
+test("createJarvis starts an unmarked session on the jarvis provider in the target's workspace", async () => {
+  const { paseo, created } = fakeAgents();
+  const id = await createVoiceLink(paseo).createJarvis({ id: "a1" });
+  assert.equal(id, "new1");
+  assert.deepEqual(created, [{ via: "workspace:ws1", config: { provider: "jarvis" }, env: {} }]);
+});

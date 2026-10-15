@@ -281,6 +281,24 @@ function PanelBody({ theme, compact, runner, navigation, boards, intro, draft, n
             <Text style={styles.sessionText}>{view.title}</Text>
             <Text style={styles.hint}>{view.notice}</Text>
             <Text style={styles.hint}>{voiceStatusLine(state.voiceGuess)}</Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Start Jarvis"
+              disabled={!navigation}
+              onPress={() => {
+                void runner.ensureJarvis().then((agentId) => {
+                  if (!agentId) return;
+                  try {
+                    navigation?.openAgent({ agentId });
+                  } catch {
+                    // The session was closed since it was made; the next tap makes a new one.
+                  }
+                });
+              }}
+              style={[styles.action, !navigation ? styles.disabled : null]}
+            >
+              <Text style={styles.actionText}>{state.jarvisAgentId ? "Open Jarvis" : "Start Jarvis"}</Text>
+            </Pressable>
           </View>
         ) : (
           <View style={styles.row}>

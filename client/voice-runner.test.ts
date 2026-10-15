@@ -1466,3 +1466,54 @@ test("Repair while the server says checking still rewrites the client's last kno
   await runner.repairSettings();
   assert.deepEqual(repairs, [true]);
 });
+
+// --- Jarvis on by default: the mic makes sure a router session exists ---
+
+function jarvisSetup(over: { create?: (t: { id: string; name: string }) => Promise<string> } = {}) {
+  const made: string[] = [];
+  const createJarvis = over.create ?? (async (t: { id: string; name: string }) => {
+    made.push(t.id);
+    return "jarvis1";
+  });
+  const base = setup({
+    link: { say: async () => {}, interrupt: async () => {}, createJarvis },
+  });
+  base.runner.setSessions([{ id: "a1", name: "api" }]);
+  return { ...base, made };
+}
+
+test("ensureJarvis creates a router beside the target once, and reuses it", async () => {
+  const { runner, made } = jarvisSetup();
+  runner.pick({ id: "a1", name: "api" });
+  const [first, second] = await Promise.all([runner.ensureJarvis(), runner.ensureJarvis()]);
+  assert.equal(first, "jarvis1");
+  assert.equal(second, "jarvis1");
+  assert.equal(await runner.ensureJarvis(), "jarvis1");
+  assert.deepEqual(made, ["a1"]);
+  assert.equal(runner.getState().jarvisAgentId, "jarvis1");
+});
+
+test("ensureJarvis falls back to the first session when none is picked, and does nothing with no sessions", async () => {
+  const { runner, made } = jarvisSetup();
+  assert.equal(await runner.ensureJarvis(), "jarvis1");
+  assert.deepEqual(made, ["a1"]);
+  const empty = setup({ link: { say: async () => {}, interrupt: async () => {}, createJarvis: async () => "x" } });
+  assert.equal(await empty.runner.ensureJarvis(), null);
+});
+
+test("ensureJarvis keeps an existing Jarvis session and shows a failed create", async () => {
+  const { runner, made } = jarvisSetup();
+  runner.setSessions([{ id: "a1", name: "api" }], [], [{ id: "old", name: "Jarvis" }]);
+  assert.equal(await runner.ensureJarvis(), "old");
+  assert.deepEqual(made, []);
+  const failing = jarvisSetup({ create: async () => { throw new Error("nope"); } });
+  assert.equal(await failing.runner.ensureJarvis(), null);
+  assert.equal(failing.runner.getState().error, "nope");
+});
+
+test("turning the mic on makes sure Jarvis exists, with or without a mic adapter", async () => {
+  const { runner, made } = jarvisSetup();
+  await runner.setMic(true);
+  await flush();
+  assert.deepEqual(made, ["a1"]);
+});

@@ -1,4 +1,4 @@
-import { createVoiceSession, VOICE_ROUTING_PREAMBLE, type VoiceCreatePaseo } from "../shared/voice-session";
+import { createJarvisSession, createVoiceSession, VOICE_ROUTING_PREAMBLE, type VoiceCreatePaseo } from "../shared/voice-session";
 
 export const INTERRUPT_MESSAGE = "Stopped from the Voice drawer. Wait for my next message.";
 
@@ -37,5 +37,7 @@ export function createVoiceLink(paseo: VoicePaseo) {
       briefed.add(id);
       return id;
     },
+    // The Jarvis router session beside the target, for the phone's Paseo voice mode. It takes no steers, so it is never briefed.
+    createJarvis: (target: { id: string }): Promise<string> => createJarvisSession(paseo, target.id),
   };
 }
