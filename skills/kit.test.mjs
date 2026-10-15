@@ -314,11 +314,13 @@ test("visual-parity-check holds no private values", () => {
   const patterns = [
     [/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i, "a UUID-shaped id"],
     [/[0-9a-f]{8}-[0-9a-f]{16}/i, "a UDID-shaped id"],
-    [/lifeway/i, "lifeway"],
+    [new RegExp(["life", "way"].join(""), "i"), "the org name"],
     [new RegExp(["DCD", ""].join("-")), "a ticket key"],
   ];
+  const files = listFiles(REPO_ROOT).filter((full) => full.startsWith(root + sep));
+  assert.ok(files.length > 0, "the scan found no files");
   const hits = [];
-  for (const full of listFiles(root)) {
+  for (const full of files) {
     const text = readFileSync(full, "utf8");
     for (const [re, label] of patterns) if (re.test(text)) hits.push(`${relative(REPO_ROOT, full)} contains ${label}`);
   }
@@ -328,7 +330,7 @@ test("visual-parity-check holds no private values", () => {
   assert.match(skill, /private file outside the repo/);
 });
 
-export const REVIEW_SKILLS =["code-handoff", "peer-review", "review-patterns"];
+export const REVIEW_SKILLS = ["code-handoff", "peer-review", "review-patterns"];
 
 test("review skills exist and are named after their folder", () => {
   checkNamedAfterFolder("review", REVIEW_SKILLS);
