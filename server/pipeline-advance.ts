@@ -35,6 +35,8 @@ import type { McpScope } from "./host-mcp";
 import { closeIssue } from "./jira";
 import { withMcpScope } from "./mcp-scope";
 import { failureReport, prStatus } from "./pr-checks";
+import { loadPhaseConfig } from "./agent-runner";
+import { repoPipelineConfig } from "./repo-pipeline";
 import { installSkills } from "./skill-sources";
 import { commitStory, currentBranch, failureText, openStoryPr, pushStoryFix } from "./story-git";
 
@@ -85,16 +87,17 @@ function ticketOf(labels: Labels): Ticket {
 
 export async function startStory(
   paseo: PaseoApi,
-  config: PipelineConfig,
+  hostConfig: PipelineConfig,
   input: { workspaceId: string; key: string; title: string; url: string | null },
   agentConfig: AgentCreateConfig,
 ) {
+  const workspace = paseo.workspaces.ref(input.workspaceId);
+  const cwd = workspace.directory ?? (await workspace.refresh())?.workspaceDirectory ?? null;
+  const config = repoPipelineConfig(hostConfig, cwd);
   const plan = config.phases.find((p) => p.id === "plan");
   if (!plan) {
     throw new Error("The pipeline has no Plan phase.");
   }
-  const workspace = paseo.workspaces.ref(input.workspaceId);
-  const cwd = workspace.directory ?? (await workspace.refresh())?.workspaceDirectory ?? null;
   const ticket: Ticket = { key: input.key, title: input.title, url: input.url };
   if (cwd && !existsSync(stateFile(cwd))) {
     mkdirSync(join(cwd, ".harness"), { recursive: true });
@@ -133,8 +136,9 @@ export async function advancePipeline(
   if (labels.pipeline !== PIPELINE_LABEL || !labels.jira || !(PHASE_IDS.includes(phaseId as Phase["id"]) || phaseId === FIX_CI.id)) {
     return;
   }
-  const config = await readConfig();
+  const hostConfig = await readConfig();
   const cwd = event.agent.cwd;
+  const config = hostConfig && cwd ? repoPipelineConfig(hostConfig, cwd) : hostConfig;
   if (!config || !cwd || (latest.has(cwd) && latest.get(cwd) !== event.agent.id)) {
     return;
   }
@@ -201,8 +205,8 @@ async function finishFix(cwd: string, state: string) {
 // The 2-minute tick: the CI watcher checks each PR the pipeline opened. A failing head starts a Fix CI
 // agent in the story's worktree; past maxFixes the story stops with `ci-failed` and the reason.
 export async function watchPipelinePrs(paseo: PaseoApi, readConfig: ReadConfig, readAgentConfig: ReadAgentConfig) {
-  const config = await readConfig();
-  if (!config) return;
+  const hostConfig = await readConfig();
+  if (!hostConfig) return;
   const checked = new Set<string>();
   for (const agent of await listPipelineAgents(paseo)) {
     const cwd = agent.cwd;
@@ -212,6 +216,7 @@ export async function watchPipelinePrs(paseo: PaseoApi, readConfig: ReadConfig, 
     if (!record || record.done) continue;
     const pr = await prStatus(cwd, record.pr);
     if (!pr) continue;
+    const config = repoPipelineConfig(hostConfig, cwd);
     const action = ciAction(pr, record, config.maxFixes);
     if (action.kind === "wait") continue;
     if (action.kind === "fix") {
@@ -324,7 +329,7 @@ async function startPhase(
       : phasePrompt(phase, ticket, { round: Number(round), cycle: step.cycle, plan: step.plan, branch, base: BASE });
     const options = {
       title: phaseTitle(ticket.key, ticket.title, label),
-      config: target.agentConfig,
+      config: await loadPhaseConfig(paseo, phase.profile, target.agentConfig),
       prompt,
       labels,
     };

@@ -28,6 +28,8 @@ const phase = z.object({
   runs: skillRef.nullable(),
   extras: z.array(extra),
   then: z.enum(THEN_VALUES),
+  // An agent profile (id or name) the phase's agent runs on, which sets its model. Unset uses the runner's.
+  profile: z.string().optional(),
 });
 const source = z.object({
   id: z.string(),

@@ -49,6 +49,18 @@ The initiative loop uses the same extras: each loop step loads the extras of the
 
 _Avoid_: add-ons, plugins, secondary skills.
 
+## Repo pipeline
+
+A repo's own Story pipeline: `.orchestrator/pipeline.json` at the repo root, committed with the code. Code: `RepoPipeline` in `shared/repo-pipeline.ts`; `repoPipelineConfig` (`server/repo-pipeline.ts`) applies it over the host's pipeline settings, reading it from the story's worktree. It only tunes the four existing phases (plan, implement, review, done); it does not add phases.
+
+- `phases.<id>` may set `label`, `runs`, `extras`, `then` and `profile`. `profile` is a Paseo agent profile (id or name), which sets the phase's model. Fix CI runs on Implement's.
+- Top level may set `reviewRounds`, `maxFixes` and `closeOnMerge`.
+- Anything left out keeps the host value. A `then` the phase doesn't allow keeps the host's. A missing or broken file is ignored (broken ones log a warning).
+- Skill sources stay host-wide, so a skill ref names a source connected on the host.
+- The initiative loop reads the same file for its steps' extras and model (through `STEP_PHASES`). The host's on/off switch still gates the Story pipeline.
+
+_Avoid_: repo settings, local config.
+
 ## Loop step skills
 
 The skills an initiative loop step loads: the extras of the Skills drawer phase that the step maps to. plan and diagnose → Plan, implement and fix → Implement, review → Review, pr → Done. Code: `LoopStep` in `shared/initiative-loop.ts` names the steps; the extras come from `Phase.extras`, with `required` ones added back through `phaseSkills`, as for the pipeline. They reach the loop agent by the Worktree copy into the story worktree, and the step prompt names them with "Also use these skills: …", left out when there are none. A ref that can't be found is a warning on the story, never a failed step.
