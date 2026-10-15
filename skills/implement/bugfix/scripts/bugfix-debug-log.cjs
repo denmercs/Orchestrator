@@ -161,7 +161,7 @@ function startServer(consumerRoot, tag, port) {
 			const lines = fs.existsSync(files.log)
 				? fs.readFileSync(files.log, 'utf8').split('\n').filter(Boolean).length
 				: 0;
-			send(res, 200, JSON.stringify({ ok: true, log: files.log, lines }), {
+			send(res, 200, JSON.stringify({ ok: true, lines }), {
 				'Content-Type': 'application/json',
 			});
 			return;
@@ -283,19 +283,20 @@ function selfTest() {
 	const { spawn, execFileSync } = require('node:child_process');
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bugfix-debug-self-test-'));
 	const tag = 'a4f2';
-	const port = 17432;
 	const child = spawn(
 		process.execPath,
-		[__filename, 'start', '--tag', tag, '--port', String(port), root],
+		[__filename, 'start', '--tag', tag, '--port', '0', root],
 		{ stdio: ['ignore', 'pipe', 'pipe'] },
 	);
 
+	/** @type {Promise<number>} */
 	const ready = new Promise((resolve, reject) => {
 		const timer = setTimeout(() => reject(new Error('start timeout')), 8000);
 		child.stdout.on('data', (buf) => {
-			if (String(buf).includes('url=')) {
+			const m = String(buf).match(/url=http:\/\/127\.0\.0\.1:(\d+)\//);
+			if (m) {
 				clearTimeout(timer);
-				resolve(undefined);
+				resolve(Number(m[1]));
 			}
 		});
 		child.stderr.on('data', (buf) => {
@@ -310,7 +311,7 @@ function selfTest() {
 
 	return ready
 		.then(
-			() =>
+			(port) =>
 				new Promise((resolve, reject) => {
 					const req = http.request(
 						{
@@ -365,7 +366,7 @@ function main() {
 		console.log(USAGE);
 		return;
 	}
-	if (flags['self-test'] === true || positional[0] === '--self-test') {
+	if (flags['self-test'] === true) {
 		return selfTest();
 	}
 

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:net";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -295,6 +296,49 @@ test("bugfix --self-test prints self-test OK", () => {
   const result = spawnSync(process.execPath, [script, "--self-test"], { encoding: "utf8", timeout: 20000 });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /self-test OK/);
+});
+
+const BUGFIX_SCRIPT = join(REPO_ROOT, "skills", "implement", "bugfix", "scripts", "bugfix-debug-log.cjs");
+
+test("bugfix --self-test passes while its old fixed port is taken", async () => {
+  const blocker = createServer();
+  await new Promise((done) => blocker.listen(17432, "127.0.0.1", done));
+  try {
+    const result = await new Promise((done) => {
+      const child = spawn(process.execPath, [BUGFIX_SCRIPT, "--self-test"], { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (b) => (stdout += b));
+      child.stderr.on("data", (b) => (stderr += b));
+      child.on("exit", (status) => done({ status, stdout, stderr }));
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /self-test OK/);
+  } finally {
+    blocker.close();
+  }
+});
+
+test("bugfix ingest health check does not reveal the log path", async () => {
+  const root = mkdtempSync(join(tmpdir(), "bugfix-health-"));
+  const child = spawn(process.execPath, [BUGFIX_SCRIPT, "start", "--tag", "b5e3", "--port", "0", root], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  try {
+    const url = await new Promise((done, fail) => {
+      child.stdout.on("data", (b) => {
+        const m = String(b).match(/url=(\S+)/);
+        if (m) done(m[1]);
+      });
+      child.on("exit", (code) => fail(new Error(`ingest exited ${code}`)));
+    });
+    const body = await (await fetch(url)).json();
+    assert.equal(body.ok, true);
+    assert.ok(!JSON.stringify(body).includes(root), JSON.stringify(body));
+  } finally {
+    child.kill("SIGTERM");
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // Every scripts/<file> in a SKILL.md must be written .claude/skills/<folder>/scripts/<file>,

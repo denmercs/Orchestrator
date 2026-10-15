@@ -63,6 +63,6 @@ Empty log after a good repro → probes are on the wrong path, not “hypothesis
 After apply + verified repro (or skip):
 
 1. `stop --tag <tag>`
-2. `rg 'BUGFIX-<tag>|127.0.0.1:7399|debug-a4f2'` — remove every probe
+2. `rg 'BUGFIX-<tag>|127.0.0.1:7399|debug-<tag>'` — remove every probe
 3. Delete `.harness/debug-<tag>.log` / `.pid` / `.url` and any throwaway harness
 4. Re-run the repro once **without** probes
