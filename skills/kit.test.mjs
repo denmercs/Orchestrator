@@ -230,3 +230,16 @@ test("the real repo kit passes the guard", () => {
     [],
   );
 });
+
+export const PLAN_SKILLS = ["anti-slop", "jira-write-ticket", "major-feature-roadmap"];
+
+test("plan skills exist and are named after their folder", () => {
+  const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  for (const name of PLAN_SKILLS) {
+    const file = join(repoRoot, "skills", "plan", name, "SKILL.md");
+    assert.ok(existsSync(file), `skills/plan/${name}/SKILL.md is missing`);
+    const frontmatter = readFileSync(file, "utf8").match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? "";
+    const declared = frontmatter.match(/^name:\s*(\S+)\s*$/m)?.[1];
+    assert.equal(declared, name);
+  }
+});
