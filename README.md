@@ -55,6 +55,25 @@ A Claude session can press **Start** for you: write `{"repo": "/abs/repo", "init
 
 Inside a story's worktree, each step finishes by writing a marker (`plan-done`, `review-failed`, …) to `.harness/state.md`. That's how the plugin knows what to start next.
 
+## The kit
+
+The repo also ships the skills and rules the agents use.
+
+```
+skills/<phase>/<name>/SKILL.md   skills by Story pipeline phase (plan, implement, review, done)
+skills/<phase>/<name>/scripts/   a skill's own scripts
+rules/                           engineering rules; index.md lists them
+scripts/link-kit.mjs             links the kit into your global agent folders
+```
+
+Linking is a manual step. Run `node scripts/link-kit.mjs` (add `--dry-run` to preview). It links skills into `~/.claude/skills` and rules into `~/.claude/rules` and `~/.kiro/steering`, skips real files and links it doesn't own, and removes its own stale links.
+
+Convention: keep a dedicated main clone at `~/.orchestrator/kit` and point the global links at it. Run the script from that clone, and `git pull` there to update.
+
+There is no `commands/` folder: the old slash commands are retired.
+
+Detail is in [`CONTEXT.md`](CONTEXT.md) under **Kit**.
+
 ## The dashboard
 
 | Tab | What it shows |
@@ -98,6 +117,7 @@ Also planned: Kiro and Cursor as first-class providers.
 | CI watch (both loops) | `server/ci-watch.ts`, `server/pr-checks.ts` |
 | Gates and step bar | `shared/gates.ts`, `shared/story-steps.ts` |
 | Skills drawer and sources | `server/skill-sources.ts`, `shared/pipeline.ts` |
+| The kit (skills, rules, linking) | `skills/`, `rules/`, `scripts/link-kit.mjs`, `skills/kit.test.mjs` |
 
 The vocabulary, and the detail behind each concept, is in [`CONTEXT.md`](CONTEXT.md).
 
