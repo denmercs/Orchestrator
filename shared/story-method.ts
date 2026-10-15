@@ -242,8 +242,8 @@ the PR.`;
 
 // The live Review only lists; a fresh agent fixes every unticked line.
 const REVIEW_LIST = `Do not fix anything: do not edit source or tests. The only files you may edit are ${STATE} and
-.harness/pr-body.md. A fresh agent fixes every unticked line, blocking and non-blocking, and the next review checks
-those fixes.`;
+.harness/pr-body.md, plus a follow-up story file when the rules above say to file one. A fresh agent fixes every
+unticked line, blocking and non-blocking, and the next review checks those fixes.`;
 
 // Replaces the fix and end parts when the Review only lists findings (the memory replay).
 const FINDINGS_END = `Do not fix anything, and do not edit any file except ${STATE}. Do not run the full test suite, lint or build;

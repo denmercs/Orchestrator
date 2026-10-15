@@ -369,6 +369,7 @@ test("the live Review lists findings and never fixes", () => {
     const review = stepPrompt("review", story, { round });
     assert.match(review, /Do not fix anything/);
     assert.match(review, /do not edit source or tests\. The only files you may edit are \.harness\/state\.md and\s+\.harness\/pr-body\.md/);
+    assert.match(review, /plus a follow-up story file when the rules above say to file one/);
     assert.match(review, /run them; keep only the summary/);
     assert.match(review, /Write `## Preview`/);
     assert.match(review, /Write \.harness\/pr-body\.md/);
@@ -498,10 +499,10 @@ test("a memory brief adds a Memory brief block to the review step data and nothi
 });
 
 // sha256 of the live Review prompts. They moved in S26 (the live Review lists findings and no longer fixes).
-test("the live Review prompts are unchanged", () => {
+test("the live Review prompts match their pinned digests", () => {
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-  assert.equal(sha(stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] })), "e00491b5b817fc194b554f5ee68b49d27e2dc587cd1e3fc9eef2e360136bcd59");
-  assert.equal(sha(stepPrompt("review", story, { round: 2 })), "7e45e54463364cf49d435671d25d456b0edbe50bca4a658cfb1f3c3994610e97");
+  assert.equal(sha(stepPrompt("review", story, { round: 1, brief: ["area a: x/**", "A fact."] })), "d6094cdc10e5599378a5861cf06f2d4b8030f50cb62902a7c2860ebf4e3cdb60");
+  assert.equal(sha(stepPrompt("review", story, { round: 2 })), "72db66dde14d7e40081ad90736c5de61300d2e06a0542c340c1d933b6f2d9600");
   assert.equal(stepPrompt("review", story, { round: 1, findingsOnly: false }), stepPrompt("review", story, { round: 1 }));
 });
 
