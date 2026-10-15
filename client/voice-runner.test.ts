@@ -606,6 +606,17 @@ function noMicSetup(hasMic?: () => boolean) {
   return { ...base, reads, spoken };
 }
 
+test("with no target the pick-a-session line is shown in lines and never spoken", async () => {
+  const spoken: string[] = [];
+  const { runner } = setup({ speaker: { speak: async (text) => (spoken.push(text), "ended"), stop: () => {} } });
+  runner.setSessions([alpha]);
+  runner.on();
+  runner.dispatch({ type: "utterance", text: "fix the login bug please", typed: true });
+  await flush();
+  assert.deepEqual(spoken, []);
+  assert.ok(runner.getState().lines.some((l) => l.startsWith("Pick a session first.")));
+});
+
 test("with no mic API a reply to the target is shown and never spoken; one for another session adds nothing", async () => {
   const { runner, reads, spoken } = noMicSetup(() => false);
   await runner.start();
