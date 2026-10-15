@@ -12,11 +12,18 @@
  * Exit codes:
  *   0 - report produced (findings may still exist; completeness may be incomplete)
  *   1 - --strict and (ERROR findings or incomplete)
+ *   2 - a flag is missing its value or has a bad one
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { parseArgs, resolveConsumerRoot, run } = require('./lib/cli.cjs');
+const {
+	parseArgs,
+	usageError,
+	requireValues,
+	resolveConsumerRoot,
+	run,
+} = require('./lib/cli.cjs');
 const {
 	listPhpFiles,
 	scanPhpSecurity,
@@ -505,59 +512,6 @@ function computeCompleteness(probes, opts) {
 }
 
 /**
- * @param {object} report
- * @returns {string}
- */
-function formatAssessSection(report) {
-	const { completeness, reasons, ranAt, probes, errors, warnings } = report;
-	/** @type {string[]} */
-	const lines = [];
-	lines.push(`**Completeness:** ${completeness}`);
-	lines.push(`**Ran at:** ${ranAt}`);
-	lines.push(`**ERROR findings:** ${errors.length}`);
-	lines.push(`**WARNING findings:** ${warnings.length}`);
-	lines.push('');
-	lines.push('### Probes');
-	lines.push('');
-	for (const p of probes) {
-		lines.push(`- **${p.id}:** ${p.status} — ${p.detail}`);
-	}
-	if (reasons.length > 0) {
-		lines.push('');
-		lines.push('### Incomplete because');
-		lines.push('');
-		for (const r of reasons) {
-			lines.push(`- ${r}`);
-		}
-	}
-	if (errors.length > 0) {
-		lines.push('');
-		lines.push('### ERROR findings');
-		lines.push('');
-		for (const e of errors.slice(0, 60)) {
-			const loc = e.file ? `${e.file}${e.line ? `:${e.line}` : ''}` : '';
-			lines.push(`- **${e.id}**${loc ? ` (\`${loc}\`)` : ''}: ${e.message}`);
-		}
-	}
-	if (warnings.length > 0) {
-		lines.push('');
-		lines.push('### WARNING findings');
-		lines.push('');
-		for (const w of warnings.slice(0, 40)) {
-			const loc = w.file ? `${w.file}${w.line ? `:${w.line}` : ''}` : '';
-			lines.push(`- **${w.id}**${loc ? ` (\`${loc}\`)` : ''}: ${w.message}`);
-		}
-	}
-	lines.push('');
-	lines.push('### Next');
-	lines.push('');
-	lines.push(
-		'Fold into the security plan\'s assess section. This is a health snapshot, not a per-PR gate.',
-	);
-	return lines.join('\n');
-}
-
-/**
  * @param {string} consumerRoot
  * @param {object} opts
  */
@@ -668,6 +622,10 @@ function main() {
 		console.log(USAGE);
 		return;
 	}
+	requireValues(flags, ['out', 'wordpress-root', 'wordfence', 'semgrep-config'], USAGE);
+	if (typeof flags.wordfence === 'string' && flags.wordfence !== 'required' && flags.wordfence !== 'off') {
+		usageError(`--wordfence must be required or off, not ${flags.wordfence}`, USAGE);
+	}
 
 	runAssess(resolveConsumerRoot(positional[0]), {
 		out: flags.out,
@@ -686,7 +644,6 @@ if (require.main === module) {
 module.exports = {
 	runAssess,
 	computeCompleteness,
-	formatAssessSection,
 	resolveAssessConfig,
 	findOnPath,
 };

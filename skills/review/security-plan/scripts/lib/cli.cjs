@@ -50,6 +50,33 @@ function parseArgs(argv) {
 }
 
 /**
+ * Print a usage error and exit 2.
+ *
+ * @param {string} message
+ * @param {string} usage
+ * @returns {never}
+ */
+function usageError(message, usage) {
+	console.error(`${message}\n${usage}`);
+	process.exit(2);
+}
+
+/**
+ * Exit 2 when a flag that takes a value was given without one.
+ *
+ * @param {Record<string, string | boolean>} flags
+ * @param {string[]} names
+ * @param {string} usage
+ */
+function requireValues(flags, names, usage) {
+	for (const name of names) {
+		if (flags[name] === true || flags[name] === '') {
+			usageError(`--${name} needs a value`, usage);
+		}
+	}
+}
+
+/**
  * @param {string | undefined} arg
  * @returns {string}
  */
@@ -97,4 +124,4 @@ function gitMergeBase(consumerRoot, base = 'main') {
 	return 'HEAD';
 }
 
-module.exports = { parseArgs, resolveConsumerRoot, run, gitMergeBase };
+module.exports = { parseArgs, usageError, requireValues, resolveConsumerRoot, run, gitMergeBase };

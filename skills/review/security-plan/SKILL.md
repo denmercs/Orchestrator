@@ -67,7 +67,7 @@ Always run assess with `--out .harness/security-assess.json`. The plan-html vali
 | **1. Every PR** | May this change ship? | The Orchestrator Review step, which may run `security-audit.cjs` |
 | **2. Whole plugin** | Is the product healthy? | This skill and `security-assess.cjs` |
 
-Stage 2 probes: surface census, **Semgrep**, npm and composer **dependencies**, and **Wordfence CLI** `vuln-scan` (required for complete WordPress health when `--wordpress-root` is set). Do **not** run Stage 2 on every PR.
+Stage 2 probes: surface census, **Semgrep**, npm and composer **dependencies**, and **Wordfence CLI** `vuln-scan`. Wordfence is required by default: without `--wordpress-root` it is blocked and the assess is incomplete, so pass the root or `--wordfence off`. Do **not** run Stage 2 on every PR.
 
 ## Source of truth
 

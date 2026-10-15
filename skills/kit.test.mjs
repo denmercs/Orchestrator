@@ -649,6 +649,27 @@ test("security-audit passes --base to git as one argument", () => {
   }
 });
 
+test("security scripts exit 2 on a bad flag value", () => {
+  const scripts = join(REPO_ROOT, "skills", "review", "security-plan", "scripts");
+  const tmp = mkdtempSync(join(tmpdir(), "security-flags-"));
+  try {
+    const cases = [
+      ["security-audit.cjs", tmp, "--out"],
+      ["security-audit.cjs", tmp, "--base=--all"],
+      ["security-assess.cjs", tmp, "--skip-semgrep", "--skip-deps", "--out"],
+      ["security-assess.cjs", tmp, "--skip-semgrep", "--skip-deps", "--wordfence", "of"],
+    ];
+    for (const [file, ...args] of cases) {
+      const run = spawnSync(process.execPath, [join(scripts, file), ...args], { cwd: tmp, encoding: "utf8" });
+      assert.equal(run.status, 2, `${file} ${args.join(" ")}: ${run.stdout}${run.stderr}`);
+      assert.match(run.stderr, /Usage/, `${file} ${args.join(" ")}`);
+    }
+    assert.ok(!existsSync(join(tmp, ".harness")));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("plan-html init scaffolds the Markdown and HTML from a temp copy", () => {
   const tmp = mkdtempSync(join(tmpdir(), "plan-html-init-"));
   try {

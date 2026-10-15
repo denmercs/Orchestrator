@@ -14,11 +14,19 @@
  * Exit codes:
  *   0 - no error findings
  *   1 - at least one error finding
+ *   2 - a flag is missing its value or has a bad one
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { parseArgs, resolveConsumerRoot, run, gitMergeBase } = require('./lib/cli.cjs');
+const {
+	parseArgs,
+	usageError,
+	requireValues,
+	resolveConsumerRoot,
+	run,
+	gitMergeBase,
+} = require('./lib/cli.cjs');
 
 const USAGE =
 	'Usage: node security-audit.cjs [/path/to/repo] [--base main] [--deps] [--json] [--out <file>]';
@@ -571,6 +579,10 @@ function main() {
 	if (flags.help) {
 		console.log(USAGE);
 		return;
+	}
+	requireValues(flags, ['base', 'out'], USAGE);
+	if (typeof flags.base === 'string' && flags.base.startsWith('-')) {
+		usageError(`--base must be a branch name, not an option: ${flags.base}`, USAGE);
 	}
 	runAudit(resolveConsumerRoot(positional[0]), {
 		base: flags.base,
