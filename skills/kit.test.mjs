@@ -287,7 +287,7 @@ test("no app-map or wayfinder skill folder exists", () => {
   }
 });
 
-export const IMPLEMENT_SKILLS = ["bugfix", "feature-video-evidence"];
+export const IMPLEMENT_SKILLS = ["bugfix", "feature-video-evidence", "visual-parity-check"];
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -309,7 +309,26 @@ test("implement skills exist and are named after their folder", () => {
   checkNamedAfterFolder("implement", IMPLEMENT_SKILLS);
 });
 
-export const REVIEW_SKILLS = ["code-handoff", "peer-review", "review-patterns"];
+test("visual-parity-check holds no private values", () => {
+  const root = join(REPO_ROOT, "skills", "implement", "visual-parity-check");
+  const patterns = [
+    [/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i, "a UUID-shaped id"],
+    [/[0-9a-f]{8}-[0-9a-f]{16}/i, "a UDID-shaped id"],
+    [/lifeway/i, "lifeway"],
+    [new RegExp(["DCD", ""].join("-")), "a ticket key"],
+  ];
+  const hits = [];
+  for (const full of listFiles(root)) {
+    const text = readFileSync(full, "utf8");
+    for (const [re, label] of patterns) if (re.test(text)) hits.push(`${relative(REPO_ROOT, full)} contains ${label}`);
+  }
+  assert.deepEqual(hits, []);
+  const skill = readFileSync(join(root, "SKILL.md"), "utf8");
+  assert.match(skill, /## Private values/);
+  assert.match(skill, /private file outside the repo/);
+});
+
+export const REVIEW_SKILLS =["code-handoff", "peer-review", "review-patterns"];
 
 test("review skills exist and are named after their folder", () => {
   checkNamedAfterFolder("review", REVIEW_SKILLS);
