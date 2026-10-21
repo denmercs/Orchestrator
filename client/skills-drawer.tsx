@@ -5,6 +5,7 @@ import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
 import {
   DEFAULT_PHASES,
+  KIT_SOURCE,
   MACHINE_SOURCE,
   THEN_CHOICES,
   addSkillSource,
@@ -994,6 +995,9 @@ function ConnectSource({ connector, styles }: { connector: Connector; styles: St
 function sourceLabel(values: PipelineConfig, id: string) {
   if (id === MACHINE_SOURCE) {
     return "This machine";
+  }
+  if (id === KIT_SOURCE) {
+    return "Kit";
   }
   return values.sources.find((s) => s.id === id)?.label ?? `${id} (removed)`;
 }

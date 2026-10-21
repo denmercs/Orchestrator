@@ -10,7 +10,9 @@ import {
   phaseSkills,
   STEP_PHASES,
   stepSkills,
+  withKitPlanDefault,
   withoutSkillsync,
+  pipelineSettings,
   type CatalogSkill,
 } from "./pipeline";
 import { LOOP_STEPS } from "./initiative-loop";
@@ -68,10 +70,42 @@ test("saved phases drop retired skillsync skills but keep skills from connected 
   assert.deepEqual(withoutSkillsync(kept), kept);
 });
 
-test("the default pipeline runs built-in steps and never names a skillsync command", () => {
+test("migrating from v3 bumps a saved Plan phase with runs: null to the kit's story-plan", () => {
+  const migrate = pipelineSettings.migrate as (values: unknown, from: number) => { phases: unknown[] };
+  const saved = {
+    enabled: true,
+    phases: [
+      { id: "plan", label: "Plan", runs: null, extras: [], then: "you" },
+      { id: "implement", label: "Implement", runs: null, extras: [], then: "auto" },
+      { id: "review", label: "Review", runs: null, extras: [], then: "pass" },
+      { id: "done", label: "Done", runs: null, extras: [], then: "merge" },
+    ],
+    reviewRounds: 5,
+    maxFixes: 2,
+    closeOnMerge: true,
+    sources: [],
+  };
+  const result = migrate(saved, 3) as { phases: Array<{ id: string; runs: unknown }>; reviewRounds: number };
+  assert.deepEqual(result.phases.find((p) => p.id === "plan")?.runs, { name: "story-plan", source: "kit" });
+  assert.equal(result.phases.find((p) => p.id === "implement")?.runs, null);
+  assert.equal(result.reviewRounds, 5);
+});
+
+test("withKitPlanDefault leaves a Plan phase alone when runs is already set", () => {
+  const plan = { id: "plan", label: "Plan", runs: { name: "my-planner", source: "team-skills" }, extras: [], then: "you" };
+  assert.deepEqual(withKitPlanDefault(plan), plan);
+  const review = { id: "review", label: "Review", runs: null, extras: [], then: "pass" };
+  assert.deepEqual(withKitPlanDefault(review), review);
+});
+
+test("the default pipeline uses the kit's story-plan planner and built-in steps elsewhere, never a skillsync command", () => {
   const ticket = { key: "KEY-1", title: "Example", url: null };
   for (const phase of DEFAULT_PHASES) {
-    assert.equal(phase.runs, null);
+    if (phase.id === "plan") {
+      assert.deepEqual(phase.runs, { name: "story-plan", source: "kit" });
+    } else {
+      assert.equal(phase.runs, null);
+    }
     assert.doesNotMatch(phasePrompt(phase, ticket), /\/ss-|skillsync/);
   }
   const done = DEFAULT_PHASES.find((p) => p.id === "done");
