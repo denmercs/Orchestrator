@@ -43,5 +43,15 @@ test("ciAction gives up once a new failure arrives after maxFixes attempts", () 
     ci: "failing",
     reason: "CI still failing after 3 fix attempts: CI / test",
   });
-  assert.equal(ciAction(pr("failing"), fresh, 0).kind, "give-up");
+});
+
+test("ciAction with maxFixes 0 skips Fix CI once per failing head and then waits", () => {
+  assert.deepEqual(ciAction(pr("failing", "abc"), fresh, 0), {
+    kind: "skip",
+    ci: "failing",
+    headSha: "abc",
+    reason: "Fix CI is off (maxFixes 0); failing: CI / test",
+  });
+  assert.deepEqual(ciAction(pr("failing", "abc"), { fixedSha: "abc", attempts: 0 }, 0), { kind: "wait", ci: "failing" });
+  assert.deepEqual(ciAction(pr("merged"), { fixedSha: "abc", attempts: 0 }, 0), { kind: "merged" });
 });

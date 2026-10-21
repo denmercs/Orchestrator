@@ -18,7 +18,8 @@ const phaseOverride = z.object({
 export const repoPipelineFile = z.object({
   phases: z.partialRecord(z.enum(PHASE_IDS), phaseOverride).optional(),
   reviewRounds: z.number().int().min(1).max(20).optional(),
-  maxFixes: z.number().int().min(1).max(20).optional(),
+  // Fix CI attempts per story PR. 0 turns Fix CI off for this repo; the CI watch then only waits for the merge.
+  maxFixes: z.number().int().min(0).max(20).optional(),
   closeOnMerge: z.boolean().optional(),
 });
 export type RepoPipeline = z.infer<typeof repoPipelineFile>;

@@ -5,6 +5,8 @@ import type { PrStatus } from "./pr-checks";
 // commit gets one Fix CI agent; its push makes a new head, which CI checks again, until the checks
 // pass or `maxFixes` attempts have been spent. Each caller stores the CiWatch where it keeps its
 // story's state (story frontmatter, or the worktree's .harness/ci.json).
+// A `maxFixes` of 0 turns Fix CI off: a new failing head is noted once (`skip`) and the story keeps
+// waiting for you to merge or close the PR.
 
 export type CiWatch = {
   // The head commit a Fix CI agent was last started for, so the same failure isn't fixed twice.
@@ -19,6 +21,7 @@ export type CiAction =
   | { kind: "closed" }
   | { kind: "wait"; ci: CiState }
   | { kind: "fix"; ci: "failing"; attempt: number; headSha: string }
+  | { kind: "skip"; ci: "failing"; headSha: string; reason: string }
   | { kind: "give-up"; ci: "failing"; reason: string };
 
 export function ciAction(pr: PrStatus, watch: CiWatch, maxFixes: number): CiAction {
@@ -26,6 +29,10 @@ export function ciAction(pr: PrStatus, watch: CiWatch, maxFixes: number): CiActi
   if (pr.state === "closed") return { kind: "closed" };
   if (pr.state !== "failing") return { kind: "wait", ci: pr.state === "no-checks" ? "none" : pr.state };
   if (watch.fixedSha === pr.headSha) return { kind: "wait", ci: "failing" };
+  if (maxFixes === 0) {
+    const names = pr.failing.map((check) => check.name).join(", ");
+    return { kind: "skip", ci: "failing", headSha: pr.headSha, reason: `Fix CI is off (maxFixes 0); failing: ${names}` };
+  }
   if (watch.attempts >= maxFixes) {
     const names = pr.failing.map((check) => check.name).join(", ");
     return { kind: "give-up", ci: "failing", reason: `CI still failing after ${watch.attempts} fix attempts: ${names}` };

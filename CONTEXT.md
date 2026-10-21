@@ -60,7 +60,7 @@ _Avoid_: add-ons, plugins, secondary skills.
 A repo's own Story pipeline: `.orchestrator/pipeline.json` at the repo root, committed with the code. Code: `RepoPipeline` in `shared/repo-pipeline.ts`; `repoPipelineConfig` (`server/repo-pipeline.ts`) applies it over the host's pipeline settings, reading it from the story's worktree. It only tunes the four existing phases (plan, implement, review, done); it does not add phases.
 
 - `phases.<id>` may set `label`, `runs`, `extras`, `then` and `profile`. `profile` is a Paseo agent profile (id or name), which sets the phase's model. Fix CI runs on Implement's.
-- Top level may set `reviewRounds`, `maxFixes` and `closeOnMerge`.
+- Top level may set `reviewRounds`, `maxFixes` and `closeOnMerge`. `maxFixes` is the Fix CI limit (0 to 20; 0 turns Fix CI off for the repo). Both CI watches use it before the host value (`repoMaxFixes` in `server/repo-pipeline.ts` for the initiative loop).
 - Anything left out keeps the host value. A `then` the phase doesn't allow keeps the host's. A missing or broken file is ignored (broken ones log a warning).
 - Skill sources stay host-wide, so a skill ref names a source connected on the host.
 - The initiative loop reads the same file for its steps' extras and model (through `STEP_PHASES`). The host's on/off switch still gates the Story pipeline.
@@ -226,9 +226,10 @@ How a story PR's checks are followed until they pass, with no agent watching. Co
 - **merged** or **closed**: the watch ends.
 - **wait**: CI is pending, green or has no checks, or the head that failed already has a Fix CI agent (`fixedSha` is the head).
 - **fix**: a failing head not tried yet starts a fresh **Fix CI** agent with the failure report (`failureReport`: the failed checks and their trimmed logs). Its `fix-done` makes the plugin commit and push, which gives CI a new head to check.
+- **skip**: `maxFixes` is 0, so a failing head starts no agent. The head is stored as `fixedSha` (the loop also writes `ci_fix: skipped`) so it is noted once, the skip is logged, and the story stays open waiting for the merge.
 - **give-up**: a new failing head after `maxFixes` attempts. The initiative loop blocks the story; the pipeline writes `ci-failed` and the reason to `## Status`.
 
-The initiative loop keeps the record in the story's frontmatter (`fixed_sha`, `fix_attempts`) and its `maxFixes` in the loop settings (default 3). The pipeline keeps it in the worktree's `.harness/ci.json` (`pr`, `url`, `fixedSha`, `attempts`, and `done` once the watch ends), written when the plugin opens the PR, and its `maxFixes` in the pipeline settings (default 3, on the drawer's Done row). Fix CI is not a drawer phase: its agent is labelled `phase: fix` and loads the Implement phase's extras.
+The initiative loop keeps the record in the story's frontmatter (`fixed_sha`, `fix_attempts`) and its `maxFixes` in the repo pipeline file, else the loop settings (default 3). The pipeline keeps it in the worktree's `.harness/ci.json` (`pr`, `url`, `fixedSha`, `attempts`, and `done` once the watch ends), written when the plugin opens the PR, and its `maxFixes` in the repo pipeline file, else the pipeline settings (default 3, on the drawer's Done row). Fix CI is not a drawer phase: its agent is labelled `phase: fix` and loads the Implement phase's extras.
 
 _Avoid_: CI babysitter, CI subscriber, retry (that is Loop supervision).
 

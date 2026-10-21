@@ -31,7 +31,8 @@ const loopValues = z.object({
   parallel: z.number().int().min(1).max(4).default(1),
   // Review → Implement rounds before the story blocks for you.
   reviewRounds: z.number().int().min(1).max(10).default(3),
-  // Fix CI attempts per story before it blocks for you.
+  // Fix CI attempts per story before it blocks for you. 0 starts none (the story waits for your merge).
+  // A repo's `.orchestrator/pipeline.json` maxFixes overrides this for that repo.
   maxFixes: z.number().int().min(0).max(10).default(3),
   // Times the loop restarts or nudges a step whose session failed, died or stopped without its
   // marker, before the story blocks for you.

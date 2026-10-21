@@ -12,7 +12,7 @@ import { budgetMoney } from "../shared/stats-strip";
 import { storyCost, type TelemetryRow } from "./context-telemetry";
 import { DEFAULT_PHASES, STEP_PHASES, pipelineSettings, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import { loadPhaseConfig } from "./agent-runner";
-import { repoPipelineConfig } from "./repo-pipeline";
+import { repoMaxFixes, repoPipelineConfig } from "./repo-pipeline";
 import type { ToolItem } from "../shared/exploration";
 import { midTurnCheck, stuckCheck, toolRunningSince, type StuckCounters, type TimelineEntry } from "../shared/stuck";
 import { appendOutcome, type OutcomeEvent } from "../shared/story-outcome";
@@ -651,7 +651,9 @@ export function createInitiativeLoop(
     const cwd = meta.worktree && existsSync(meta.worktree) ? meta.worktree : init.root;
     const pr = await prStatus(cwd, meta.pr || meta.branch || "");
     if (!pr) return;
-    const action = ciAction(pr, { fixedSha: meta.fixed_sha ?? null, attempts: Number(meta.fix_attempts) || 0 }, config.maxFixes);
+    // The repo's `.orchestrator/pipeline.json` maxFixes wins over the host loop setting.
+    const maxFixes = repoMaxFixes(cwd) ?? config.maxFixes;
+    const action = ciAction(pr, { fixedSha: meta.fixed_sha ?? null, attempts: Number(meta.fix_attempts) || 0 }, maxFixes);
     if (action.kind === "merged") {
       recordOutcome(story, { kind: "merged" });
       writeFrontmatter(story.path, { status: "merged", merged_at: pr.mergedAt || new Date().toISOString(), ci: null, agent: null });
@@ -667,6 +669,12 @@ export function createInitiativeLoop(
     if (action.kind === "wait" || initiativeLoopState(init.dir) !== "on") return;
     if (action.kind === "give-up") {
       block(story, action.reason, "ci");
+      return;
+    }
+    if (action.kind === "skip") {
+      // Fix CI is off: note this head once and keep waiting for the merge.
+      writeFrontmatter(story.path, { fixed_sha: action.headSha, ci_fix: "skipped" });
+      console.warn("orchestrator: Fix CI skipped", story.id, action.reason);
       return;
     }
     // The outcome entry counts the attempt (fix_attempts); the head is kept so it isn't fixed twice.

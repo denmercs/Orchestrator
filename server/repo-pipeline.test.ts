@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DEFAULT_PHASES, type PipelineConfig } from "../shared/pipeline";
-import { repoPipelineConfig } from "./repo-pipeline";
+import { repoMaxFixes, repoPipelineConfig } from "./repo-pipeline";
 
 const host: PipelineConfig = { enabled: true, phases: DEFAULT_PHASES, reviewRounds: 3, maxFixes: 3, closeOnMerge: true, sources: [] };
 
@@ -17,6 +17,20 @@ test("reads the repo's pipeline file from the worktree", () => {
   assert.equal(repoPipelineConfig(host, cwd).maxFixes, 1);
   writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), "{broken");
   assert.equal(repoPipelineConfig(host, cwd).maxFixes, 3);
+});
+
+test("repoMaxFixes reads the repo's CI fix limit, 0 included, else null", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "repo-pipeline-"));
+  assert.equal(repoMaxFixes(null), null);
+  assert.equal(repoMaxFixes(cwd), null);
+  mkdirSync(join(cwd, ".orchestrator"));
+  writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), JSON.stringify({ maxFixes: 0 }));
+  assert.equal(repoMaxFixes(cwd), 0);
+  assert.equal(repoPipelineConfig(host, cwd).maxFixes, 0);
+  writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), JSON.stringify({ reviewRounds: 2 }));
+  assert.equal(repoMaxFixes(cwd), null);
+  writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), "{broken");
+  assert.equal(repoMaxFixes(cwd), null);
 });
 
 test("loadPhaseConfig uses the phase's profile, else the fallback", async () => {

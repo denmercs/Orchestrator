@@ -1565,6 +1565,47 @@ test("an open PR's failing head gets one Fix CI agent; a new failing head gets t
   assert.equal(storyMeta(story).blocked_reason, `CI still failing after ${DEFAULT_LOOP_CONFIG.maxFixes} fix attempts: CI / test`);
 });
 
+test("a repo pipeline maxFixes of 0 overrides the host's 3: a failing PR starts no Fix CI agent and waits for the merge", async (t) => {
+  t.after(() => ghPr(null));
+  const { story, worktree, labels } = fixture("a1");
+  mkdirSync(join(worktree, ".orchestrator"), { recursive: true });
+  writeFileSync(join(worktree, ".orchestrator", "pipeline.json"), JSON.stringify({ maxFixes: 0 }));
+  writeFrontmatter(story, { status: "pr-open", step: "pr", agent: null, pr: 45, ci: "pending" });
+  const { api, created } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+  assert.equal(DEFAULT_LOOP_CONFIG.maxFixes, 3);
+
+  ghPr("OPEN", [failedCheck], undefined, "abc");
+  await initiative.tick();
+  await initiative.tick();
+  ghPr("OPEN", [failedCheck], undefined, "def");
+  await initiative.tick();
+  assert.equal(created.length, 0);
+  const meta = storyMeta(story);
+  assert.deepEqual([meta.status, meta.ci, meta.fixed_sha, meta.ci_fix, meta.fix_attempts], ["pr-open", "failing", "def", "skipped", undefined]);
+
+  ghPr("MERGED");
+  await initiative.tick();
+  assert.equal(storyMeta(story).status, "merged");
+});
+
+test("a repo pipeline without maxFixes keeps the host limit: a failing PR gets a Fix CI agent", async (t) => {
+  t.after(() => ghPr(null));
+  const { story, worktree, labels } = fixture("a1");
+  mkdirSync(join(worktree, ".orchestrator"), { recursive: true });
+  writeFileSync(join(worktree, ".orchestrator", "pipeline.json"), JSON.stringify({ reviewRounds: 2 }));
+  writeFrontmatter(story, { status: "pr-open", step: "pr", agent: null, pr: 45, ci: "pending" });
+  const { api, created } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+
+  ghPr("OPEN", [failedCheck], undefined, "abc");
+  await initiative.tick();
+  assert.deepEqual(created.map((agent) => agent.labels["loop-step"]), ["fix"]);
+  assert.equal(storyMeta(story).ci_fix, undefined);
+});
+
 test("a step whose worktree is gone and whose PR merged is recorded merged and its workspace archived", async (t) => {
   t.after(() => ghPr(null));
   const { story, worktree, labels } = fixture("a1");

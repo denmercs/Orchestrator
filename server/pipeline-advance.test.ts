@@ -150,6 +150,23 @@ test("a new failing head after maxFixes attempts stops the watch with ci-failed 
   assert.equal(status(cwd), "ci-failed\nCI still failing after 3 fix attempts: CI / test");
 });
 
+test("a repo pipeline maxFixes of 0 starts no Fix CI agent and keeps watching for the merge", async () => {
+  const { cwd, labels } = fixture();
+  mkdirSync(join(cwd, ".orchestrator"), { recursive: true });
+  writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), JSON.stringify({ maxFixes: 0 }));
+  const { api, created } = fakePaseo([{ id: "a1", cwd, workspaceId: "ws1", labels }]);
+  ghPr("OPEN", "abc", [failedCheck]);
+
+  await watchPipelinePrs(api, readConfig, readAgentConfig);
+  await watchPipelinePrs(api, readConfig, readAgentConfig);
+
+  assert.deepEqual(created, []);
+  assert.deepEqual([readCi(cwd).fixedSha, readCi(cwd).attempts, readCi(cwd).done], ["abc", 0, undefined]);
+  ghPr("MERGED");
+  await watchPipelinePrs(api, readConfig, readAgentConfig);
+  assert.equal(readCi(cwd).done, "merged");
+});
+
 test("a merged PR ends the watch; green and pending CI leave it running without an agent", async () => {
   const { cwd, labels } = fixture();
   const { api, created } = fakePaseo([{ id: "a1", cwd, workspaceId: "ws1", labels }]);
