@@ -7,6 +7,13 @@ import { PHASE_IDS, THEN_CHOICES, THEN_VALUES, type Phase, type PipelineConfig }
 export const REPO_PIPELINE_FILE = ".orchestrator/pipeline.json";
 
 const skillRef = z.object({ name: z.string(), source: z.string() });
+
+const REPO_PATH_MESSAGE = "must be a path inside the repo (relative, no ..)";
+// A relative path that stays inside the repo: no leading /, ~ or drive letter, no .. segment.
+function isRepoPath(path: string) {
+  return !/^([/\\~]|[A-Za-z]:)/.test(path) && !path.split(/[/\\]/).includes("..");
+}
+
 const phaseOverride = z.object({
   label: z.string().optional(),
   runs: skillRef.nullable().optional(),
@@ -21,6 +28,9 @@ export const repoPipelineFile = z.object({
   // Fix CI attempts per story PR. 0 turns Fix CI off for this repo; the CI watch then only waits for the merge.
   maxFixes: z.number().int().min(0).max(20).optional(),
   closeOnMerge: z.boolean().optional(),
+  // The testing-guidelines skill Implement and Review load (shared/testing-skill.ts). Absent or true uses the
+  // plugin's built-in one, a repo-relative path to a Markdown file uses the repo's own, false loads none.
+  testingSkill: z.union([z.boolean(), z.string().trim().min(1).refine(isRepoPath, REPO_PATH_MESSAGE)]).optional(),
 });
 export type RepoPipeline = z.infer<typeof repoPipelineFile>;
 

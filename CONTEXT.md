@@ -61,11 +61,21 @@ A repo's own Story pipeline: `.orchestrator/pipeline.json` at the repo root, com
 
 - `phases.<id>` may set `label`, `runs`, `extras`, `then` and `profile`. `profile` is a Paseo agent profile (id or name), which sets the phase's model. Fix CI runs on Implement's.
 - Top level may set `reviewRounds`, `maxFixes` and `closeOnMerge`. `maxFixes` is the Fix CI limit (0 to 20; 0 turns Fix CI off for the repo). Both CI watches use it before the host value (`repoMaxFixes` in `server/repo-pipeline.ts` for the initiative loop).
+- Top level may set `testingSkill`: which testing guidelines Implement and Review load (see **Testing skill**). Absent or `true` is the built-in one, a repo-relative path is the repo's own Markdown file, `false` loads none. Absolute paths and `..` are rejected.
 - Anything left out keeps the host value. A `then` the phase doesn't allow keeps the host's. A missing or broken file is ignored (broken ones log a warning).
 - Skill sources stay host-wide, so a skill ref names a source connected on the host.
 - The initiative loop reads the same file for its steps' extras and model (through `STEP_PHASES`). The host's on/off switch still gates the Story pipeline.
 
 _Avoid_: repo settings, local config.
+
+
+## Testing skill
+
+The testing guidelines (behavior over implementation, no false positives, accessible queries, `userEvent`, async waits, typed ES-module mocks, cleanup, WordPress stores and REST). Code: `TESTING_SKILL` in `shared/testing-skill.ts`; `prepareTestingSkill` (`server/testing-skill.ts`) writes it to `.harness/skills/testing-guidelines/SKILL.md` in the story worktree and the step prompt points at it (`testingLine`).
+
+- Only `TESTING_STEPS` (Implement and Review) get it: per-cycle agents, the subagent parent (inside its `## Cycle brief`, so every subagent gets it), review-fix rounds, Review and re-review, in both the initiative loop and the Story pipeline. Plan, Diagnose, the PR step and Fix CI never do.
+- The text lives in `shared/`, not `skills/`, so `link-kit` never makes it a global skill loaded in every repo.
+- A repo overrides it with `testingSkill` in `.orchestrator/pipeline.json`. A named file that is missing falls back to the built-in one with a skill warning on the story.
 
 ## Loop step skills
 

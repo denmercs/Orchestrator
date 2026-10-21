@@ -54,6 +54,7 @@ import {
 } from "../shared/story-method";
 import { withMcpScope } from "./mcp-scope";
 import { installSkills, skillPaths } from "./skill-sources";
+import { prepareTestingSkill } from "./testing-skill";
 import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
 import { activeBriefRuns, briefRuns, worktreeFingerprint } from "./turn-progress";
 import { clockTime, providerName } from "../shared/plan-usage";
@@ -427,6 +428,15 @@ export function createInitiativeLoop(
       warnings.push(...(await installSkills(worktree, extras, sources).catch((error) => [`skills: ${reason(error)}`])));
       for (const warning of warnings) console.warn("orchestrator: skills", story.id, warning);
       const skills = await skillPaths(worktree, extras, sources);
+      // Implement and Review only: the testing guidelines (the repo's own, the built-in, or none).
+      const testing = await prepareTestingSkill(worktree, step).catch((error) => ({
+        path: undefined,
+        warning: `testing skill: ${reason(error)}`,
+      }));
+      if (testing.warning) {
+        warnings.push(testing.warning);
+        console.warn("orchestrator: skills", story.id, testing.warning);
+      }
       const prompt = stepPrompt(step, ctx, {
         round,
         failing: extra.failing,
@@ -435,6 +445,7 @@ export function createInitiativeLoop(
         plan: readSection(state, "Plan"),
         missing: planMissing(step, state, worktree),
         skills,
+        testingSkill: testing.path,
       });
       // Story steps work from the story file and the worktree; none of them needs an MCP server.
       const agent = await withMcpScope(worktree, "none", () =>
@@ -1048,6 +1059,9 @@ export function createInitiativeLoop(
         plan: readSection(state, "Plan"),
         missing: found.story.meta.worktree ? planMissing(step, state, found.story.meta.worktree) : [],
         skills: await resumeSkills(step, found.story.meta),
+        testingSkill: found.story.meta.worktree
+          ? (await prepareTestingSkill(found.story.meta.worktree, step).catch(() => ({ path: undefined }))).path
+          : undefined,
       });
       return `${prompt}\n\n${RESUME_LINE}`;
     },

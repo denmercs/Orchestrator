@@ -283,6 +283,8 @@ export type PhasePromptOptions = {
   base?: string;
   // Fix CI: the failed checks and their log summaries.
   failing?: string;
+  // Implement and Review: the worktree path of the testing-guidelines skill. Fix CI never gets it.
+  testingSkill?: string;
 };
 
 export const DONE_DESCRIPTION =
@@ -304,6 +306,7 @@ export function phasePrompt(phase: Phase, ticket: Ticket, options: PhasePromptOp
       cycle: options.cycle,
       plan: options.plan,
       skills: skillNames(phase),
+      testingSkill: options.testingSkill,
     }),
   ];
   if (phase.id === "plan" && phase.then === "auto") {

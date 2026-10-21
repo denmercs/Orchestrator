@@ -11,6 +11,7 @@
 
 import { LOOP_STEPS, STEP_LABELS, type LoopStep } from "./initiative-loop";
 import { cleanSubject, prTitle } from "./naming";
+import { testingLine } from "./testing-skill";
 
 export { LOOP_STEPS, STEP_LABELS, type LoopStep };
 
@@ -66,6 +67,9 @@ export type StepExtra = {
   brief?: string[];
   // Review: list findings only, no fixing or full suite. The memory replay uses it; the live loop never does.
   findingsOnly?: boolean;
+  // Implement and Review: the worktree path of the testing-guidelines skill (shared/testing-skill.ts).
+  // Ignored by every other step, so Plan, the PR step and Fix CI never name it.
+  testingSkill?: string;
 };
 
 export type StepSkill = { name: string; path?: string };
@@ -183,10 +187,17 @@ export function stepPrompt(step: LoopStep, story: StoryContext, extra: StepExtra
   // Text shared by every story at this step comes first, so the provider can cache it across agents.
   // STEPS get no story; story values go after the head, in STEP_DATA and context().
   const data = STEP_DATA[step]?.(story, extra) ?? "";
-  return [FRESH, "", RULES(story), "", STEPS[step](extra, jira), "", head, skills, "", data, "", context(story, extra.missing)]
+  // The testing pointer is the same for every story in a repo, so it sits with the shared step text. The
+  // subagent parent carries it inside its cycle brief instead, so each subagent gets it.
+  const testing = isParent(step, extra) ? "" : testingLine(step, extra.testingSkill);
+  return [FRESH, "", RULES(story), "", STEPS[step](extra, jira), testing, "", head, skills, "", data, "", context(story, extra.missing)]
     .filter((line, i, all) => line !== "" || all[i - 1] !== "")
     .join("\n");
 }
+
+// Implement's first round with unticked cycles and no single cycle: one parent runs them in subagents.
+const isParent = (step: LoopStep, { round, cycle, cycles }: StepExtra) =>
+  step === "implement" && !cycle && Boolean(cycles?.length) && round === 1;
 
 const IMPLEMENT_CYCLE = `## This step: one implement cycle
 Work the one cycle under \`## Cycle N only\` below the story head, from the plan pasted there.
@@ -199,7 +210,7 @@ Work only this cycle; a fresh agent takes the next one. Then set \`## Status\` t
 If you cannot go on (a missing decision, broken tooling, a dependency that isn't there), set it to
 \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
 
-const IMPLEMENT_PARENT = `## This step: run the cycles in subagents
+const implementParent = (testingSkill: string | undefined) => `## This step: run the cycles in subagents
 The cycles to run are under \`## Cycles to run\` below the story head, in order, with the plan pasted there.
 1. Work the cycles one at a time, in order, never in parallel. For each, start a subagent and give it the
    \`## Cycle brief\` below plus that cycle's line. Run it in the foreground (\`run_in_background: false\`) and
@@ -219,7 +230,7 @@ from an earlier agent; check what is already there before you start.
 3. Revert the production change, confirm the test fails again, restore it, confirm it passes.
 4. Add one line to \`## Evidence\`: the command and the fail → pass result.
 Do not touch \`## Status\` or tick \`## Cycles\`; the parent does both. Report fail → pass, or why you
-cannot go on.`;
+cannot go on.${testingSkill ? `\n${testingLine("implement", testingSkill)}` : ""}`;
 
 // What to look at. The live Review also runs the full suite; a findings-only one does not.
 const REVIEW_LOOK = `Review the diff with the \`peer-review\` skill in its Own branch mode. If the repo has
@@ -348,12 +359,12 @@ The bug's Jira ticket is under \`## Bug\` below the story head.
 If you cannot reproduce the bug or find its cause, set it to \`${MARKERS.diagnoseBlocked}\` and put the reason on
 the next line.`,
 
-  implement: ({ round, cycle, cycles }) => {
+  implement: ({ round, cycle, cycles, testingSkill }) => {
     if (cycle) {
       return IMPLEMENT_CYCLE;
     }
     if (cycles?.length && round === 1) {
-      return IMPLEMENT_PARENT;
+      return implementParent(testingSkill);
     }
     if (round > 1) {
       return `## This step: fix the review findings

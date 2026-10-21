@@ -32,6 +32,7 @@ Plan ──you approve──► Implement ──► Review ──pass──► P
 
 - **Plan** waits for you. Question it, push back, or approve it.
 - **Implement** runs one fresh agent per checklist item, test-first. The plugin commits each one.
+- **Testing guidelines** load only where tests are written or judged: every Implement agent (cycle agents, their subagents and review-fix rounds) and Review. Plan, the PR step and Fix CI never see them. The plugin writes its built-in skill to `.harness/skills/testing-guidelines/SKILL.md` and the prompt points at it. A repo can set `"testingSkill"` in `.orchestrator/pipeline.json` to its own file (`".orchestrator/testing.md"`) or to `false` to load none.
 - **Review** is a fresh critic that checks correctness, security, conventions and the full test gate. It writes each finding as a checklist line tagged blocking or non-blocking, and never fixes anything. The plugin sends every unticked finding, of either kind, to a fresh fix agent, and the next review checks those fixes. At the round limit, a blocking finding stops the story. Non-blocking ones that are left go into the PR body.
 - **PR and CI** need no agent. The plugin pushes, opens the PR and polls checks every 2 minutes. A red check starts a fresh Fix CI agent, and the plugin pushes its fix. A repo can set `"maxFixes"` in `.orchestrator/pipeline.json` (0 turns Fix CI off there: red CI is noted and the PR waits for you). The Board's Story pipeline watches its PRs the same way.
 - After a merge the next ready story starts. When a phase is done, the loop moves on to the next phase.
@@ -88,6 +89,7 @@ Every session also gets a **context pill** with its size (for example `82k / 200
 ## Choices that keep it cheap and predictable
 
 - **Model split.** Plan and Review run on Opus, while Implement and Fix CI run on Sonnet. A repo can pick another model per phase in its Story pipeline (`.orchestrator/pipeline.json`, `profile`).
+- **Guidance on a diet.** The testing guidelines are a step skill for Implement and Review, not an always-on rule, so planning, PR and CI agents don't pay for them on every call.
 - **Tools on a diet.** Loop steps get no MCP servers, and board sessions get Atlassian only. Each tool list costs tokens on every turn.
 - **Any provider.** Step prompts name no skills or slash commands, and the context meter never branches on a provider's name.
 - **Jira is optional.** A `local` initiative keeps everything in `.harness`. A `jira` initiative lets the architect publish the epic and stories.
@@ -117,6 +119,7 @@ Also planned: Kiro and Cursor as first-class providers.
 | CI watch (both loops) | `server/ci-watch.ts`, `server/pr-checks.ts` |
 | Gates and step bar | `shared/gates.ts`, `shared/story-steps.ts` |
 | Skills drawer and sources | `server/skill-sources.ts`, `shared/pipeline.ts` |
+| Testing skill (Implement and Review only) | `shared/testing-skill.ts`, `server/testing-skill.ts` |
 | The kit (skills, rules, linking) | `skills/`, `rules/`, `scripts/link-kit.mjs`, `skills/kit.test.mjs` |
 
 The vocabulary, and the detail behind each concept, is in [`CONTEXT.md`](CONTEXT.md).
