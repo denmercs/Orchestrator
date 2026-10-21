@@ -49,7 +49,7 @@ _Avoid_: skill id, skill key.
 
 The extra skills a Story pipeline phase loads on top of the skill it runs. Code: `Phase.extras`, an array of `Extra` (a Skill ref plus optional `required` and `optional` flags). The skill the phase runs is `Phase.runs`, a single Skill ref or `null` for the built-in step, and is not an extra. The phase prompt names the extras with "Also use these skills: …".
 
-An extra marked `required` in `DEFAULT_PHASES` is always loaded, even if saved settings removed it. `phaseSkills` adds it back. The defaults have none today: every phase runs its built-in step from `shared/story-method.ts`, and `Phase.runs` is `null` unless you pick a skill.
+An extra marked `required` in `DEFAULT_PHASES` is always loaded, even if saved settings removed it. `phaseSkills` adds it back. The defaults have none today. Plan, Implement and Review run the kit's `story-plan`, `story-impl` and `story-review` (`Phase.runs` is a `kit` Skill ref); Done runs its built-in step from `shared/story-method.ts`, and its `Phase.runs` is `null` unless you pick a skill.
 
 The initiative loop uses the same extras: each loop step loads the extras of the phase it maps to (see Loop step skills).
 
