@@ -2626,3 +2626,223 @@ test("a timeline that can't be read falls back to the brief marker and never blo
   assert.deepEqual(sent[0].options, { activeTurnBehavior: "steer" });
   assert.equal(storyMeta(fx.story).status, "implementing");
 });
+
+// Characterization of reconcile's transitions, pinned before the loop becomes a tree (story S1).
+
+test("a Plan turn that ends without plan-done is awaiting approval, not stalled", async () => {
+  const fx = planDone();
+  writeFileSync(join(fx.worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nplan-running\n", "utf8");
+
+  await loop().onTurnEnded(fx.api, fx.turnEnded("a1"));
+
+  assert.equal(fx.created.length, 0);
+  assert.equal(storyMeta(fx.story).status, "awaiting-approval");
+  assert.equal(storyMeta(fx.story).stalled, undefined);
+});
+
+// A finished Implement step in a worktree repo with a file to commit; `state` is the whole state.md.
+function implementEnded(state: string, frontmatter: Record<string, string | number | null>, labels: Record<string, string>) {
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, frontmatter);
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: fx.worktree, encoding: "utf8" }).trim();
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  writeFileSync(join(fx.worktree, "meter.ts"), "export const meter = 1;\n", "utf8");
+  writeFileSync(join(fx.worktree, ".harness", "state.md"), state, "utf8");
+  const { api, created } = fakePaseo([{ id: "a1", labels: { ...fx.labels, ...labels } }]);
+  return { ...fx, api, created, git, end: (initiative = loop()) => initiative.onTurnEnded(api, completed) };
+}
+
+test("with subagentCycles off, a cycle agent's implement-done starts the next cycle's own agent at round 1", async () => {
+  const fx = implementEnded(
+    "# S1 — Demo story\n\n## Status\nimplement-done\n\n## Cycles\n- [x] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once\n- [ ] Cycle 3 — Resets: reset test → reset\n",
+    { cycle: 1 },
+    { "loop-cycle": "1" },
+  );
+
+  await fx.end(
+    createInitiativeLoop(async () => ({ ...DEFAULT_LOOP_CONFIG, subagentCycles: false }), async () => FALLBACK_AGENT_CONFIG, noExtras),
+  );
+
+  assert.equal(fx.git("log", "--format=%s"), "Reads");
+  assert.deepEqual(
+    fx.created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"], agent.labels["loop-cycle"], agent.labels["loop-cycles"]]),
+    [["implement", "1", "2", undefined]],
+  );
+  assert.match(fx.created[0].prompt ?? "", /## Cycle 2 only/);
+  assert.equal(storyMeta(fx.story).cycle, "2");
+});
+
+test("a fix round's implement-done starts Review at that round and commits 'Fix review findings' without a subject", async () => {
+  const fx = implementEnded("# S1 — Demo story\n\n## Status\nimplement-done\n", { round: 2 }, { "loop-round": "2" });
+
+  await fx.end();
+
+  assert.equal(fx.git("log", "--format=%s"), "Fix review findings");
+  assert.deepEqual(fx.created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"]]), [["review", "2"]]);
+  assert.equal(storyMeta(fx.story).status, "reviewing");
+  assert.equal(storyMeta(fx.story).round, "2");
+});
+
+test("implement-blocked puts its detail in blocked_reason, or a default pointing at the session", async () => {
+  const detailed = implementEnded("# S1 — Demo story\n\n## Status\nimplement-blocked\nNeeds a key.\n", {}, {});
+  await detailed.end();
+  assert.equal(storyMeta(detailed.story).status, "blocked");
+  assert.equal(storyMeta(detailed.story).blocked_reason, "Needs a key.");
+  assert.equal(detailed.created.length, 0);
+
+  const bare = implementEnded("# S1 — Demo story\n\n## Status\nimplement-blocked\n", {}, {});
+  await bare.end();
+  assert.equal(storyMeta(bare.story).blocked_reason, "Implement is blocked; open its session.");
+});
+
+test("a marker written mid-turn is ignored by the tick until the turn ends, then acted on once", async () => {
+  const fx = implementEnded("# S1 — Demo story\n\n## Status\nimplement-done\n", {}, {});
+  const running = fakePaseo([{ id: "a1", labels: fx.labels, status: "running" }]);
+  const initiative = loop();
+  initiative.rememberPaseo(running.api);
+
+  await initiative.tick();
+
+  assert.equal(running.created.length, 0);
+  assert.equal(storyMeta(fx.story).step, "implement");
+  assert.equal(fx.git("rev-list", "--all", "--count"), "0");
+  assert.match(fx.git("status", "--porcelain"), /meter\.ts/);
+
+  await initiative.onTurnEnded(fx.api, completed);
+
+  assert.equal(fx.git("log", "--format=%s"), "Demo story");
+  assert.deepEqual(fx.created.map((agent) => agent.labels["loop-step"]), ["review"]);
+});
+
+// A story at review-done whose feature branch has one unpushed change over origin/main.
+function reviewPassed() {
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { status: "reviewing", step: "review" });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: fx.worktree, encoding: "utf8" }).trim();
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  const origin = join(fx.root, "origin.git");
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  git("remote", "add", "origin", origin);
+  git("checkout", "-q", "-b", "main");
+  git("commit", "-q", "--allow-empty", "-m", "start");
+  git("push", "-q", "-u", "origin", "main");
+  git("checkout", "-q", "-b", "feature/s1");
+  writeFileSync(join(fx.worktree, "meter.ts"), "export const meter = 1;\n", "utf8");
+  writeFileSync(join(fx.worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nreview-done\n", "utf8");
+  const { api } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "review" } }]);
+  return { ...fx, api, git };
+}
+
+test("a clean review-done pushes the branch and records the open PR as pr-open with ci pending", async (t) => {
+  t.after(() => ghPr(null));
+  ghPr("OPEN");
+  const fx = reviewPassed();
+
+  await loop().onTurnEnded(fx.api, completed);
+
+  const meta = storyMeta(fx.story);
+  assert.deepEqual([meta.status, meta.step, meta.pr, meta.ci], ["pr-open", "pr", "45", "pending"]);
+  assert.equal(meta.agent, undefined);
+  assert.equal(fx.git("log", "-1", "--format=%s"), "Commit remaining changes");
+  assert.match(fx.git("ls-remote", "--heads", "origin", "feature/s1"), /refs\/heads\/feature\/s1/);
+  assert.match(readFileSync(join(fx.worktree, ".harness", "state.md"), "utf8"), /pr-done\nhttps:\/\/pr\/45/);
+});
+
+test("a PR that can't be opened blocks the story with kind pr and the reason", async (t) => {
+  t.after(() => ghPr(null));
+  ghPr(null);
+  const fx = reviewPassed();
+
+  await loop().onTurnEnded(fx.api, completed);
+
+  const meta = storyMeta(fx.story);
+  assert.deepEqual([meta.status, meta.block_kind], ["blocked", "pr"]);
+  assert.match(meta.blocked_reason ?? "", /^Could not open the PR: /);
+});
+
+test("a pr step that wrote pr-done records the open PR; at turn end with no PR the story blocks", async (t) => {
+  t.after(() => ghPr(null));
+  const prStep = () => {
+    const fx = fixture("a1");
+    writeFrontmatter(fx.story, { status: "reviewing", step: "pr" });
+    writeFileSync(join(fx.worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\npr-done\nhttps://pr/45\n", "utf8");
+    const { api } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "pr" } }]);
+    return { ...fx, api };
+  };
+
+  ghPr("OPEN");
+  const open = prStep();
+  await loop().onTurnEnded(open.api, completed);
+  const meta = storyMeta(open.story);
+  assert.deepEqual([meta.status, meta.pr, meta.ci], ["pr-open", "45", "pending"]);
+
+  ghPr(null);
+  const none = prStep();
+  await loop().onTurnEnded(none.api, completed);
+  assert.deepEqual([storyMeta(none.story).status, storyMeta(none.story).block_kind], ["blocked", "pr"]);
+  assert.equal(storyMeta(none.story).blocked_reason, "Open PR finished but there is no open PR for feature/s1.");
+});
+
+test("a Fix CI agent's fix-done pushes its commit to origin", async () => {
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { status: "pr-open", step: "pr" });
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: fx.worktree, encoding: "utf8" }).trim();
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  const origin = join(fx.root, "origin.git");
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  git("remote", "add", "origin", origin);
+  git("commit", "-q", "--allow-empty", "-m", "start");
+  git("push", "-q", "-u", "origin", "HEAD");
+  const branch = git("rev-parse", "--abbrev-ref", "HEAD");
+  const pushed = () => git("ls-remote", "origin", `refs/heads/${branch}`).split("\t")[0];
+  const before = pushed();
+  writeFileSync(join(fx.worktree, "meter.ts"), "export const meter = 1;\n", "utf8");
+  writeFileSync(join(fx.worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nfix-done\nS1: Wait for the meter\n", "utf8");
+  const { api } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "fix" } }]);
+
+  await loop().onTurnEnded(api, completed);
+
+  assert.equal(git("log", "-1", "--format=%s"), "Wait for the meter");
+  assert.notEqual(pushed(), before);
+  assert.equal(pushed(), git("rev-parse", "HEAD"));
+});
+
+// The first prompt the engine creates for each step, from the default pipeline.
+async function stepPrompts() {
+  const impl = planDone();
+  await loop().onTurnEnded(impl.api, impl.turnEnded("a1"));
+  const review = implementEnded("# S1 — Demo story\n\n## Status\nimplement-done\n", {}, {});
+  await review.end();
+  const plan = await startNewStory();
+  const diagnose = await startNewStory({ frontmatter: "track: diagnose\n" });
+  return {
+    plan: plan.created[0].prompt ?? "",
+    diagnose: diagnose.created[0].prompt ?? "",
+    implement: impl.created[0].prompt ?? "",
+    review: review.created[0].prompt ?? "",
+    implementMeta: storyMeta(impl.story),
+  };
+}
+
+test("the engine's Implement and Review prompts carry the testing-guidelines line; Plan and Diagnose do not", async () => {
+  const prompts = await stepPrompts();
+  const path = ".harness/skills/testing-guidelines/SKILL.md";
+
+  assert.ok(prompts.implement.includes(`Read the testing guidelines in \`${path}\``), prompts.implement);
+  assert.ok(prompts.review.includes(`Judge every new or changed test against the testing guidelines in \`${path}\``), prompts.review);
+  assert.equal(prompts.plan.includes("testing guidelines"), false);
+  assert.equal(prompts.diagnose.includes("testing guidelines"), false);
+});
+
+test("with the default pipeline the engine's Plan, Implement and Review prompts name no kit skill", async () => {
+  const prompts = await stepPrompts();
+
+  for (const prompt of [prompts.plan, prompts.implement, prompts.review]) {
+    assert.doesNotMatch(prompt, /Also use these skills/);
+    assert.doesNotMatch(prompt, /story-plan|story-impl|story-review/);
+  }
+  assert.equal(prompts.implementMeta.step_skills, undefined);
+});
