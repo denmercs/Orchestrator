@@ -274,18 +274,17 @@ export default function contribute(
         { repo, title: input.title, kind: input.kind },
         { startLoop: (loop) => initiativeLoop.start(paseo, loop) },
       );
-      // Soft context carry: after the ticket is in flight, compact the originating chat into the
-      // story's `.harness/context.md` so the planner reads it as background. Any failure is logged
-      // but never fails the Promote — the ticket is already created.
+      // Context carry: compact the originating chat into the story's `.harness/context.md` before
+      // returning, so the planner's first turn can read it. The client only navigates to the
+      // planning agent after this resolves. Any failure is logged but never fails the Promote —
+      // the ticket is already created.
       if (result.ok && input.carryContext && input.sourceAgentId && result.agentId) {
-        void (async () => {
-          try {
-            const agent = (await paseo.agents.ref(result.agentId!).refresh())?.agent;
-            const worktree = agent?.cwd ?? null;
-            if (!worktree) {
-              console.warn("orchestrator: promote context skipped — no agent cwd");
-              return;
-            }
+        try {
+          const agent = (await paseo.agents.ref(result.agentId).refresh())?.agent;
+          const worktree = agent?.cwd ?? null;
+          if (!worktree) {
+            console.warn("orchestrator: promote context skipped — no agent cwd");
+          } else {
             const carried = await carryChatContext({
               paseo,
               sourceAgentId: input.sourceAgentId,
@@ -296,10 +295,10 @@ export default function contribute(
             } else if (carried.fallback) {
               console.warn("orchestrator: promote context carry fell back to raw prompts");
             }
-          } catch (cause) {
-            console.warn("orchestrator: promote context carry threw:", cause);
           }
-        })();
+        } catch (cause) {
+          console.warn("orchestrator: promote context carry threw:", cause);
+        }
       }
       return { ok: result.ok, error: result.error, ticketKey: result.key, agentId: result.agentId };
     } catch (cause) {
