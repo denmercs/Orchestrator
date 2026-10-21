@@ -16,6 +16,14 @@ export type Then = (typeof THEN_VALUES)[number];
 // Skills already on this machine (~/.claude, ~/.agents). Nothing is copied for these.
 export const MACHINE_SOURCE = "installed";
 
+// Skills shipped inside this plugin, under its own skills/ folder. Always on, always available,
+// hidden from the Sources tab. Unlike MACHINE_SOURCE, kit skills are copied into each story
+// worktree so the agent picks them up as project skills.
+export const KIT_SOURCE = "kit";
+
+// The Story pipeline's default Plan skill, shipped in the kit.
+export const DEFAULT_PLAN_SKILL: { name: string; source: string } = { name: "story-plan", source: KIT_SOURCE };
+
 const skillRef = z.object({ name: z.string(), source: z.string() });
 const extra = skillRef.extend({
   required: z.boolean().optional(),
@@ -49,7 +57,7 @@ export type Phase = z.infer<typeof phase>;
 export type SkillSource = z.infer<typeof source>;
 
 export const DEFAULT_PHASES: Phase[] = [
-  { id: "plan", label: "Plan", runs: null, extras: [], then: "you" },
+  { id: "plan", label: "Plan", runs: { ...DEFAULT_PLAN_SKILL }, extras: [], then: "you" },
   { id: "implement", label: "Implement", runs: null, extras: [], then: "auto" },
   { id: "review", label: "Review", runs: null, extras: [], then: "pass" },
   { id: "done", label: "Done", runs: null, extras: [], then: "merge" },
@@ -77,11 +85,11 @@ const pipelineValues = z.object({
 export const pipelineSettings = defineSettings({
   id: "pipeline",
   scope: "host",
-  version: 3,
+  version: 4,
   schema: pipelineValues,
   migrate(values) {
     const row = values !== null && typeof values === "object" ? (values as Record<string, unknown>) : {};
-    const phases = Array.isArray(row.phases) ? row.phases.map(withoutSkillsync) : undefined;
+    const phases = Array.isArray(row.phases) ? row.phases.map(withoutSkillsync).map(withKitPlanDefault) : undefined;
     const parsed = pipelineValues.safeParse({ ...row, phases });
     return parsed.success ? parsed.data : pipelineValues.parse({});
   },
@@ -93,6 +101,16 @@ function isSkillsync(ref: unknown) {
   const row = ref !== null && typeof ref === "object" ? (ref as Record<string, unknown>) : {};
   const name = typeof row.name === "string" ? row.name : "";
   return row.source === MACHINE_SOURCE && (name.startsWith("ss-") || name === "tdd");
+}
+
+// A saved Plan phase with `runs: null` was the old built-in default; bump it to the kit's
+// story-plan skill so new runs pick up the default planner. Other saved values survive untouched.
+export function withKitPlanDefault(saved: unknown) {
+  if (saved === null || typeof saved !== "object") return saved;
+  const row = saved as Record<string, unknown>;
+  if (row.id !== "plan") return row;
+  if (row.runs !== null && row.runs !== undefined) return row;
+  return { ...row, runs: { ...DEFAULT_PLAN_SKILL } };
 }
 
 export function withoutSkillsync(saved: unknown) {

@@ -3,7 +3,8 @@ import { appendFile, cp, mkdir, readdir, readFile, realpath, rm, stat } from "no
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { MACHINE_SOURCE, type CatalogSkill, type SkillRef, type SkillSource } from "../shared/pipeline";
+import { KIT_SOURCE, MACHINE_SOURCE, type CatalogSkill, type SkillRef, type SkillSource } from "../shared/pipeline";
+import { kitDir } from "./kit-source";
 
 const run = promisify(execFile);
 const GIT_TIMEOUT_MS = 120_000;
@@ -270,6 +271,16 @@ export async function loadCatalog(sources: SkillSource[]) {
     source: MACHINE_SOURCE,
     kind: s.kind,
   }));
+  // Kit skills ship inside the plugin; they're always on and always available in the catalog.
+  // They are never listed in the saved `sources` array, so they don't show up on the Sources tab.
+  try {
+    const kit = await scan(kitDir());
+    for (const s of kit) {
+      skills.push({ name: s.name, folder: s.folder, description: s.description, source: KIT_SOURCE, kind: s.kind });
+    }
+  } catch {
+    // If the kit folder is missing, the catalog loads without it; readSkill will surface the error.
+  }
   const statuses = [];
   for (const source of sources) {
     try {
@@ -416,6 +427,9 @@ async function scanFor(id: string, sources: SkillSource[]) {
   if (id === MACHINE_SOURCE) {
     return { found: await scanMachine(), commit: null };
   }
+  if (id === KIT_SOURCE) {
+    return { found: await scan(kitDir()), commit: null };
+  }
   const source = sources.find((s) => s.id === id);
   if (!source || !source.enabled) {
     throw new Error(`source "${id}" is not connected or is off.`);
@@ -482,20 +496,32 @@ async function resolveSkills(refs: SkillRef[], sources: SkillSource[]): Promise<
       skip();
       continue;
     }
-    const source = sources.find((s) => s.id === ref.source);
-    if (!source || !source.enabled) {
-      skip(`${ref.name}: source "${ref.source}" is not connected or is off.`);
-      continue;
-    }
     let entry: Found | undefined;
-    try {
-      entry = findSkill(await scan(await materialise(source)), ref.name);
-    } catch (error) {
-      skip(`${ref.name}: ${message(error)}`);
-      continue;
+    let sourceLabel = ref.source;
+    if (ref.source === KIT_SOURCE) {
+      try {
+        entry = findSkill(await scan(kitDir()), ref.name);
+      } catch (error) {
+        skip(`${ref.name}: ${message(error)}`);
+        continue;
+      }
+      sourceLabel = "kit";
+    } else {
+      const source = sources.find((s) => s.id === ref.source);
+      if (!source || !source.enabled) {
+        skip(`${ref.name}: source "${ref.source}" is not connected or is off.`);
+        continue;
+      }
+      try {
+        entry = findSkill(await scan(await materialise(source)), ref.name);
+      } catch (error) {
+        skip(`${ref.name}: ${message(error)}`);
+        continue;
+      }
+      sourceLabel = source.label;
     }
     if (!entry) {
-      skip(`${ref.name}: not found in ${source.label}.`);
+      skip(`${ref.name}: not found in ${sourceLabel}.`);
       continue;
     }
     const targets =
@@ -509,10 +535,10 @@ async function resolveSkills(refs: SkillRef[], sources: SkillSource[]): Promise<
       continue;
     }
     if (first) {
-      skip(`${ref.name} (${source.label}): ${targets[0]} is already taken by ${first.label} in this phase; skipped.`);
+      skip(`${ref.name} (${sourceLabel}): ${targets[0]} is already taken by ${first.label} in this phase; skipped.`);
       continue;
     }
-    claimed.set(key, { label: `${ref.name} (${source.label})`, path: entry.path });
+    claimed.set(key, { label: `${ref.name} (${sourceLabel})`, path: entry.path });
     resolved.push({ ref, entry, targets, copy: true });
   }
   return resolved;

@@ -257,7 +257,7 @@ test("the real repo kit passes the guard", () => {
   );
 });
 
-export const PLAN_SKILLS = ["anti-slop", "arch-plan", "jira-write-ticket", "major-feature-roadmap", "plan-html", "ui-ux-planner"];
+export const PLAN_SKILLS = ["anti-slop", "arch-plan", "jira-write-ticket", "major-feature-roadmap", "plan-html", "story-plan", "ui-ux-planner"];
 
 // [phase, name] of each skill that renders a living plan through plan-html.
 export const LIVING_PLAN_SKILLS = [
