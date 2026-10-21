@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canTarget, sessionName, splitSessions, voicePill, voiceSessions } from "./voice-pill-model";
+import { canTarget, sessionName, splitSessions, voicePill, voicePillMenu, voiceSessions } from "./voice-pill-model";
 
 const target = { id: "abcdef123456", title: "Build" };
 const other = { id: "zzzzzzzz9999", title: "Docs" };
@@ -53,4 +53,45 @@ test("Jarvis sessions and the Voice helper are not targets: left out of the list
     { id: "j1", name: "Jarvis" },
     { id: "h1", name: "Voice helper" },
   ]);
+});
+
+test("voicePillMenu offers talk and the four speak modes, checking the current one", () => {
+  const items = voicePillMenu({ talk: true, speak: "short" });
+  assert.deepEqual(
+    items.map((e) => (e.kind === "separator" ? "-" : e.id)),
+    ["talk", "-", "speak-off", "speak-short", "speak-medium", "speak-full"],
+  );
+  const checked = items.filter((e) => e.kind === "item" && e.icon === "Check").map((e) => e.kind === "item" && e.id);
+  assert.deepEqual(checked, ["speak-short"]);
+});
+
+test("voicePillMenu leaves out talk when the session can't be a target, and the speak items when it has a parent", () => {
+  assert.deepEqual(voicePillMenu({ talk: false, speak: "off" }).map((e) => e.id), ["speak-off", "speak-short", "speak-medium", "speak-full"]);
+  assert.deepEqual(voicePillMenu({ talk: true, speak: null }).map((e) => e.id), ["talk"]);
+  assert.deepEqual(voicePillMenu({ talk: false, speak: null }), []);
+});
+
+test("voicePillMenu items carry what they do: talk picks, a speak item sets its mode", () => {
+  const items = voicePillMenu({ talk: true, speak: "off" });
+  const actions = items.flatMap((e) => (e.kind === "item" ? [e.action] : []));
+  assert.deepEqual(actions, [
+    { kind: "talk" },
+    { kind: "speak", mode: "off" },
+    { kind: "speak", mode: "short" },
+    { kind: "speak", mode: "medium" },
+    { kind: "speak", mode: "full" },
+  ]);
+});
+
+test("voicePill adds the speak mode to the label and title once replies are spoken", () => {
+  const state = { mode: "listening" as const, session: { id: target.id, name: "Build" }, micOn: true };
+  assert.equal(voicePill(target, state, "off").label, "Voice · listening");
+  const pill = voicePill(target, state, "medium");
+  assert.equal(pill.label, "Voice · listening · speak medium");
+  assert.match(pill.title, /Replies are spoken \(medium\)/);
+});
+
+test("voicePill with no voice runner is just the speak pill", () => {
+  assert.equal(voicePill(target, null, "off").label, "Speak replies");
+  assert.equal(voicePill(target, null, "full").label, "Speak · full");
 });

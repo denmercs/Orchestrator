@@ -18,7 +18,7 @@ function finalReply(timeline: TurnEnded["timeline"]): string | null {
 }
 
 /** A finished turn replies and finishes, a failed one is an error, a canceled one is silent; Voice's own sessions never speak. */
-/** `watched`: the session is on the Speak pill and the phone is its speaker, so the reply is heard whoever the target is; it replaces the finished notice, so it is said once. */
+/** `watched`: the session speaks its replies (voice pill menu) and the phone is its speaker, so the reply is heard whoever the target is; it replaces the finished notice, so it is said once. */
 export function turnEvents(event: Omit<TurnEnded, "turnId"> & { agent: Agent }, options: { watched?: boolean } = {}): VoiceEvent[] {
   const sessionId = event.agent.id;
   if (!canTarget(event.agent)) return [];

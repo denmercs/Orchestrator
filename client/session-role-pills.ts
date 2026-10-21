@@ -1,13 +1,12 @@
-import type { PluginButton, PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
+import type { PluginButton, PluginButtonMenuEntry, PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
 import { contextAct, contextSessionsRpc, type ContextAction, type ContextStatus } from "../shared/context";
 import { createContextPillIcon } from "./context-pill-icon";
 import { createRequestSequence, createToastQueue, pillMenu, pillView, usageChanged } from "./context-pill-model";
 import { RECAP_COMMAND, recapPill } from "./recap-pill-model";
 import { speakRepliesSet, speakRepliesState, type SpeakMode } from "../shared/speak-replies";
-import { nextSpeakMode, speakPill } from "./speak-pill-model";
 import { jarvisSessions } from "../shared/voice-loop";
 import type { createVoiceRunner } from "./voice-runner";
-import { canTarget, sessionName, splitSessions, voicePill } from "./voice-pill-model";
+import { canTarget, sessionName, splitSessions, voicePill, voicePillMenu, type VoiceMenuEntry } from "./voice-pill-model";
 
 // Paseo stamps spawned sessions with this label; the protocol package does not export it.
 const PARENT_LABEL = "paseo.parent-agent-id";
@@ -100,8 +99,8 @@ function reconcile(
   }
 }
 
-// Five pills share one agent subscription: the role pill (harness/worker), the context pill
-// (see CONTEXT.md, "Context pill"), the recap pill, the voice pill and the speak pill.
+// Four pills share one agent subscription: the role pill (harness/worker), the context pill
+// (see CONTEXT.md, "Context pill"), the recap pill, and the voice pill (talk to a session, hear its replies).
 export function contributeSessionRolePills(client: PluginClientContext, voice?: VoiceRunner) {
   // Composer pills arrived after this plugin's minimum Paseo version; skip on older apps.
   if (typeof client.addComposerPill !== "function") {
@@ -113,7 +112,6 @@ export function contributeSessionRolePills(client: PluginClientContext, voice?: 
   const contextPills = new Map<string, Pill>();
   const recapPills = new Map<string, Pill>();
   const voicePills = new Map<string, Pill>();
-  const speakPills = new Map<string, Pill>();
   // Sessions the daemon is speaking for; refreshed on every snapshot, so a daemon restart clears it.
   const speaking = new Map<string, Exclude<SpeakMode, "off">>();
   const statuses = new Map<string, ContextStatus | null>();
@@ -231,31 +229,39 @@ export function contributeSessionRolePills(client: PluginClientContext, voice?: 
 
   function voiceButton(agent: Agent): PluginButton | null {
     // Voice's own sessions (Jarvis, the Voice helper) can't be a target, so they get no pill.
-    if (!voice || !canTarget(agent)) return null;
-    const view = voicePill(agent, voice.getState());
+    const talk = !!voice && canTarget(agent);
+    // Only a top-level session speaks; a worker's replies belong to its harness.
+    const speak: SpeakMode | null = !parentOf(agent) && canTarget(agent) ? (speaking.get(agent.id) ?? "off") : null;
+    const items = voicePillMenu({ talk, speak });
+    if (items.length === 0) return null;
+    const view = voicePill(agent, talk ? voice.getState() : null, speak ?? "off");
     return {
       ...view,
       icon: "Mic",
-      behavior: { kind: "action", onPress: () => voice?.pick({ id: agent.id, name: sessionName(agent) }) },
+      behavior: { kind: "menu", items: items.map((entry) => menuEntry(agent, entry)) },
     };
   }
 
-  function speakButton(agent: Agent): PluginButton | null {
-    // Only a top-level session speaks; a worker's replies belong to its harness.
-    if (parentOf(agent)) return null;
-    const mode: SpeakMode = speaking.get(agent.id) ?? "off";
+  function menuEntry(agent: Agent, entry: VoiceMenuEntry): PluginButtonMenuEntry {
+    if (entry.kind === "separator") return entry;
+    const { action } = entry;
     return {
-      ...speakPill(mode),
-      // Paseo toasts a rejection (a missing script), and the pill stays as it was.
+      kind: "item",
+      id: entry.id,
+      title: entry.title,
+      ...(entry.icon ? { icon: entry.icon } : {}),
       behavior: {
         kind: "action",
-        onPress: async () => {
-          const next = nextSpeakMode(mode);
-          await client.rpc(speakRepliesSet, { agentId: agent.id, mode: next });
-          if (next === "off") speaking.delete(agent.id);
-          else speaking.set(agent.id, next);
-          sync();
-        },
+        onPress:
+          action.kind === "talk"
+            ? () => voice?.pick({ id: agent.id, name: sessionName(agent) })
+            : // Paseo toasts a rejection (a missing script), and the pill stays as it was.
+              async () => {
+                await client.rpc(speakRepliesSet, { agentId: agent.id, mode: action.mode });
+                if (action.mode === "off") speaking.delete(agent.id);
+                else speaking.set(agent.id, action.mode);
+                sync();
+              },
       },
     };
   }
@@ -288,7 +294,6 @@ export function contributeSessionRolePills(client: PluginClientContext, voice?: 
     const contextButtons = new Map<string, { workspaceId: string; button: PluginButton }>();
     const recapButtons = new Map<string, { workspaceId: string; button: PluginButton }>();
     const voiceButtons = new Map<string, { workspaceId: string; button: PluginButton }>();
-    const speakButtons = new Map<string, { workspaceId: string; button: PluginButton }>();
     for (const agent of live) {
       if (!agent.workspaceId) {
         continue;
@@ -306,16 +311,11 @@ export function contributeSessionRolePills(client: PluginClientContext, voice?: 
       if (voicePillButton) {
         voiceButtons.set(agent.id, { workspaceId: agent.workspaceId, button: voicePillButton });
       }
-      const speakPillButton = speakButton(agent);
-      if (speakPillButton) {
-        speakButtons.set(agent.id, { workspaceId: agent.workspaceId, button: speakPillButton });
-      }
     }
     reconcile(client, "session-role", rolePills, roleButtons);
     reconcile(client, "session-context", contextPills, contextButtons);
     reconcile(client, "session-recap", recapPills, recapButtons);
     reconcile(client, "session-voice", voicePills, voiceButtons);
-    reconcile(client, "speak", speakPills, speakButtons);
   }
 
   function replace(entries: AgentList["entries"]) {
@@ -364,14 +364,13 @@ export function contributeSessionRolePills(client: PluginClientContext, voice?: 
     clearTimeout(fetchTimer);
     void subscription?.release();
     unsubscribeVoice?.();
-    for (const pill of [...rolePills.values(), ...contextPills.values(), ...recapPills.values(), ...voicePills.values(), ...speakPills.values()]) {
+    for (const pill of [...rolePills.values(), ...contextPills.values(), ...recapPills.values(), ...voicePills.values()]) {
       pill.registration.remove();
     }
     rolePills.clear();
     contextPills.clear();
     recapPills.clear();
     voicePills.clear();
-    speakPills.clear();
     listeners.clear();
   };
 }
