@@ -1,6 +1,8 @@
 import type { PluginClientContext, PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { CURSOR_THEMES } from "./client/cursor-themes";
 import { OrchestrationDashboard } from "./client/orchestration-dashboard";
+import { PromotePanel } from "./client/promote-panel";
+import { contributePromoteEntry } from "./client/promote-entry";
 import { contributeSessionRolePills } from "./client/session-role-pills";
 import { attachSkill } from "./shared/pipeline";
 import { INSTALL_LABEL } from "./shared/install";
@@ -92,9 +94,13 @@ export default function contribute(client: PluginClientContext) {
   });
   const offPills = contributeSessionRolePills(client, voice);
   const offThemes = CURSOR_THEMES.map((theme) => client.addTheme(theme));
+  // Promote: a slash command and a composer pill that open the same form, which starts a Story on a
+  // scratch ticket. The screen takes the title (from /promote args) and the workspace via its params.
+  const offPromoteScreen = client.addScreen({ id: "promote", title: "Promote to story", Component: PromotePanel });
+  const offPromote = contributePromoteEntry(client);
   return async () => {
     offTarget();
     voice.off();
-    await Promise.all([offVoiceLines(), offAttach(), offPills(), ...offThemes.map((off) => off())]);
+    await Promise.all([offVoiceLines(), offAttach(), offPills(), offPromote(), offPromoteScreen(), ...offThemes.map((off) => off())]);
   };
 }
