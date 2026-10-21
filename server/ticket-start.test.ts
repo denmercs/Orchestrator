@@ -107,6 +107,7 @@ test("startLocalTicket mints PROMOTE-1 in a fresh repo and starts the loop as a 
     );
     assert.equal(result.ok, true);
     assert.equal(result.error, null);
+    assert.equal(result.key, "PROMOTE-1");
     assert.equal(result.initiative, "promote-1-try-the-new-idea");
     assert.equal(result.track, "plan");
     assert.equal(result.agentId, "agent-local");
@@ -132,6 +133,7 @@ test("startLocalTicket picks the next PROMOTE-<n> after the highest existing one
       { startLoop: okLoop() },
     );
     assert.equal(result.ok, true);
+    assert.equal(result.key, "PROMOTE-4");
     assert.equal(result.initiative, "promote-4-next-up");
   } finally {
     rmSync(repo, { recursive: true, force: true });

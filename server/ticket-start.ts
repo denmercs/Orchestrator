@@ -53,7 +53,7 @@ export async function startLocalTicket(
   input: { repo: string; title: string; kind: "story" | "bug" },
   deps: LocalTicketStartDeps,
 ) {
-  const fail = (error: string) => ({ ok: false, error, initiative: null, track: null, agentId: null });
+  const fail = (error: string) => ({ ok: false, error, key: null, initiative: null, track: null, agentId: null });
   try {
     const title = input.title.trim();
     if (!title) return fail("Give the ticket a title.");
@@ -72,6 +72,7 @@ export async function startLocalTicket(
     return {
       ok: true,
       error: null,
+      key,
       initiative: created.initiative,
       track: created.track,
       agentId: loop.started[0]?.agentId ?? null,

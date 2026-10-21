@@ -273,10 +273,7 @@ export default function contribute(
         { repo, title: input.title, kind: input.kind },
         { startLoop: (loop) => initiativeLoop.start(paseo, loop) },
       );
-      // The minted key is the initiative slug's `PROMOTE-<n>` prefix, uppercased.
-      const prefix = result.initiative?.match(/^promote-\d+/i)?.[0] ?? null;
-      const ticketKey = prefix ? prefix.toUpperCase() : null;
-      return { ok: result.ok, error: result.error, ticketKey, agentId: result.agentId };
+      return { ok: result.ok, error: result.error, ticketKey: result.key, agentId: result.agentId };
     } catch (cause) {
       return fail(cause instanceof Error ? cause.message : String(cause));
     }
