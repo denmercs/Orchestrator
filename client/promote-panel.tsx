@@ -34,7 +34,6 @@ export function PromotePanel({ theme, layout, params, navigation }: PluginScreen
   );
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
-  const [done, setDone] = useState<{ ticketKey: string | null; agentId: string | null } | null>(null);
 
   // Live-load the workspace list so the dropdown stays current. Shallow release on unmount.
   useEffect(() => {
@@ -75,42 +74,23 @@ export function PromotePanel({ theme, layout, params, navigation }: PluginScreen
         setServerError(result.error ?? "Could not promote this session.");
         return;
       }
-      setDone({ ticketKey: result.ticketKey, agentId: result.agentId });
+      // Success: navigate to the planning agent. Switching screens tears this one down, so this is
+      // our close-on-success. If the loop started without an agentId (unexpected), stay put and
+      // show a note so the user can open it from the dashboard.
+      if (result.agentId && navigation?.openAgent) {
+        navigation.openAgent({ agentId: result.agentId });
+        return;
+      }
+      setServerError(
+        result.ticketKey
+          ? `Started ${result.ticketKey}, but no planning agent came back. Open it from the dashboard.`
+          : "Started the story, but no planning agent came back. Open it from the dashboard.",
+      );
     } catch (cause) {
       setServerError(cause instanceof Error ? cause.message : "Could not promote this session.");
     } finally {
       setSubmitting(false);
     }
-  }
-
-  if (done) {
-    return (
-      <View style={styles.screen}>
-        <View style={styles.card}>
-          <Text style={styles.title}>Promoted</Text>
-          <Text style={styles.muted}>
-            {done.ticketKey ? `Started ${done.ticketKey}.` : "Started a new story."}
-            {done.agentId ? " The planning agent is live now." : ""}
-          </Text>
-          {done.agentId && navigation?.openAgent ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Open the planning agent"
-              onPress={() => {
-                try {
-                  navigation.openAgent?.({ agentId: done.agentId! });
-                } catch {
-                  // The agent closed between the mount and the tap; stay on this screen.
-                }
-              }}
-              style={styles.primary}
-            >
-              <Text style={styles.primaryText}>Open the planning agent</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      </View>
-    );
   }
 
   return (
