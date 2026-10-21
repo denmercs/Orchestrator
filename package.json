@@ -25,5 +25,8 @@
     "react-native": "^0.81.5",
     "typescript": "^5.8.0",
     "zod": "^4.4.3"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.137.0"
   }
 }

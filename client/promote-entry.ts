@@ -5,20 +5,25 @@ const PAGE_LIMIT = 200;
 type AgentList = Awaited<ReturnType<PluginClientContext["paseo"]["agents"]["list"]>>;
 type Agent = AgentList["entries"][number]["agent"];
 
-function openPromote(client: PluginClientContext, params: { workspaceId: string; title?: string }) {
+function openPromote(
+  client: PluginClientContext,
+  params: { workspaceId: string; title?: string; sourceAgentId: string | null },
+) {
   const trimmed = params.title?.trim();
   client.openScreen({
     screenId: "promote",
     params: {
       workspaceId: params.workspaceId,
+      // openScreen params are strings; the panel reads "" as "no chat to carry".
+      sourceAgentId: params.sourceAgentId ?? "",
       ...(trimmed ? { title: trimmed } : {}),
     },
   });
 }
 
 // Both the slash command and the composer pill open the same Promote screen. The slash command
-// pre-fills the title from its args; the pill opens an empty form. The pill rides a live agent list
-// so it comes and goes with the composer, like the other per-agent pills in this plugin.
+// pre-fills the title from its args and runs inside an agent, so it carries the current chat's
+// agent id as `sourceAgentId`; the pill opens an empty form and does the same for its own agent.
 export function contributePromoteEntry(client: PluginClientContext) {
   const cleanups: Array<() => void | Promise<void>> = [];
 
@@ -26,9 +31,9 @@ export function contributePromoteEntry(client: PluginClientContext) {
     name: "promote",
     description: "Promote this chat to a story",
     argumentHint: "[title]",
-    context: "workspace",
-    onSubmit({ args, workspace }) {
-      openPromote(client, { workspaceId: workspace.id, title: args });
+    context: "agent",
+    onSubmit({ args, workspace, agent }) {
+      openPromote(client, { workspaceId: workspace.id, title: args, sourceAgentId: agent?.id ?? null });
     },
   });
   cleanups.push(offSlash);
@@ -47,20 +52,21 @@ export function contributePromoteEntry(client: PluginClientContext) {
   function register(agent: Agent) {
     if (stopped || !agent.workspaceId || agent.archivedAt) return;
     const workspaceId = agent.workspaceId;
+    const agentId = agent.id;
     pills.get(agent.id)?.remove();
     pills.set(
       agent.id,
       client.addComposerPill({
         id: "promote",
         workspaceId,
-        agentId: agent.id,
+        agentId,
         button: {
           title: "Promote this chat to a story",
           label: "Promote",
           icon: "Rocket",
           behavior: {
             kind: "action",
-            onPress: () => openPromote(client, { workspaceId }),
+            onPress: () => openPromote(client, { workspaceId, sourceAgentId: agentId }),
           },
         },
       }),
