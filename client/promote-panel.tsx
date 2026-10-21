@@ -6,6 +6,7 @@ import { promoteSessionToStory } from "../shared/promote";
 import {
   initialPromoteForm,
   promoteInput,
+  setPromoteCarryContext,
   setPromoteKind,
   setPromoteTitle,
   setPromoteWorkspace,
@@ -34,6 +35,12 @@ export function PromotePanel({ theme, layout, params, navigation }: PluginScreen
   );
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+  // The chat we were summoned from. `null` → the Promote screen was opened without an open chat
+  // (slash command in an empty workspace), so there is nothing to carry: the checkbox is forced
+  // off and disabled, and the server skips the compaction regardless.
+  const rawSource = (params.sourceAgentId as string | null | undefined) ?? "";
+  const sourceAgentId = rawSource ? rawSource : null;
+  const canCarry = sourceAgentId !== null;
 
   // Live-load the workspace list so the dropdown stays current. Shallow release on unmount.
   useEffect(() => {
@@ -61,6 +68,13 @@ export function PromotePanel({ theme, layout, params, navigation }: PluginScreen
     };
   }, [paseo]);
 
+  // Keep the form flag honest: with no chat to carry, the UI shows the box unchecked and disabled.
+  useEffect(() => {
+    if (!canCarry && form.carryContext) {
+      setForm((current) => setPromoteCarryContext(current, false));
+    }
+  }, [canCarry, form.carryContext]);
+
   const validation = validatePromote(form);
   const canSubmit = validation.ok && !submitting;
 
@@ -69,7 +83,7 @@ export function PromotePanel({ theme, layout, params, navigation }: PluginScreen
     setSubmitting(true);
     setServerError(null);
     try {
-      const result = await promote(promoteInput(form));
+      const result = await promote(promoteInput(form, { sourceAgentId }));
       if (!result.ok) {
         setServerError(result.error ?? "Could not promote this session.");
         return;
@@ -138,6 +152,21 @@ export function PromotePanel({ theme, layout, params, navigation }: PluginScreen
               />
             ))}
           </View>
+        </View>
+
+        <View style={styles.field}>
+          <Text style={styles.label}>Context</Text>
+          <View style={styles.toggle}>
+            <CarryContextChip
+              active={form.carryContext}
+              disabled={!canCarry}
+              styles={styles}
+              onPress={() =>
+                setForm((current) => setPromoteCarryContext(current, !current.carryContext))
+              }
+            />
+          </View>
+          {!canCarry ? <Text style={styles.muted}>No chat to carry.</Text> : null}
         </View>
 
         {!validation.ok ? <Text style={[styles.muted, styles.danger]}>{validation.message}</Text> : null}
@@ -216,6 +245,33 @@ function KindChip({
     >
       <Text style={[styles.chipText, active ? styles.chipTextActive : null]}>
         {kind === "story" ? "Story" : "Bug"}
+      </Text>
+    </Pressable>
+  );
+}
+
+function CarryContextChip({
+  active,
+  disabled,
+  styles,
+  onPress,
+}: {
+  active: boolean;
+  disabled: boolean;
+  styles: Styles;
+  onPress(): void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="checkbox"
+      accessibilityLabel="Carry chat context"
+      accessibilityState={{ checked: active, disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      style={[styles.chip, active ? styles.chipActive : null, disabled ? styles.disabled : null]}
+    >
+      <Text style={[styles.chipText, active ? styles.chipTextActive : null]}>
+        {active ? "Carry chat context ✓" : "Carry chat context"}
       </Text>
     </Pressable>
   );
