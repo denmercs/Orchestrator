@@ -38,6 +38,7 @@ import { failureReport, prStatus } from "./pr-checks";
 import { loadPhaseConfig } from "./agent-runner";
 import { repoPipelineConfig } from "./repo-pipeline";
 import { installSkills } from "./skill-sources";
+import { prepareTestingSkill } from "./testing-skill";
 import { commitStory, currentBranch, failureText, openStoryPr, pushStoryFix } from "./story-git";
 
 type PaseoApi = PluginHandlerContext["paseo"];
@@ -324,6 +325,15 @@ async function startPhase(
       ? await installSkills(target.cwd, refs, config.sources)
       : ["No worktree folder found; skills from connected repos were not copied."];
     const cwd = target.cwd;
+    // Implement and Review only (never Fix CI): the repo's testing skill, the built-in one, or none.
+    const testing =
+      cwd && !fix
+        ? await prepareTestingSkill(cwd, id).catch((error) => ({
+            path: undefined,
+            warning: `testing skill: ${error instanceof Error ? error.message : String(error)}`,
+          }))
+        : {};
+    if (testing.warning) warnings.push(testing.warning);
     if (cwd) {
       setMarker(cwd, `${id}-running`);
     }
@@ -332,7 +342,14 @@ async function startPhase(
     const label = Number(round) > 1 ? `${base} r${round}` : base;
     const prompt = fix
       ? fixPrompt(phase, ticket, { round: Number(round), failing: step.failing, branch, base: BASE })
-      : phasePrompt(phase, ticket, { round: Number(round), cycle: step.cycle, plan: step.plan, branch, base: BASE });
+      : phasePrompt(phase, ticket, {
+          round: Number(round),
+          cycle: step.cycle,
+          plan: step.plan,
+          branch,
+          base: BASE,
+          testingSkill: testing.path,
+        });
     const options = {
       title: phaseTitle(ticket.key, ticket.title, label),
       config: await loadPhaseConfig(paseo, phase.profile, target.agentConfig),

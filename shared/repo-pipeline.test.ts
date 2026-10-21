@@ -52,3 +52,19 @@ test("a repo sets a profile per phase, so each phase runs its own model", () => 
   assert.equal(merged.phases.find((p) => p.id === "implement")?.profile, "sonnet");
   assert.equal(merged.phases.find((p) => p.id === "review")?.profile, undefined);
 });
+
+test("testingSkill takes true, false or a path inside the repo", () => {
+  for (const value of [true, false, ".orchestrator/testing.md", "docs/testing/SKILL.md"]) {
+    const { override, error } = parseRepoPipeline(JSON.stringify({ testingSkill: value }));
+    assert.equal(error, null, String(value));
+    assert.equal(override?.testingSkill, value);
+  }
+});
+
+test("testingSkill rejects paths outside the repo and empty strings", () => {
+  for (const value of ["/etc/testing.md", "~/testing.md", "../other/SKILL.md", "docs/../../x.md", "C:\\x.md", "", 3]) {
+    const { override, error } = parseRepoPipeline(JSON.stringify({ testingSkill: value }));
+    assert.equal(override, null, String(value));
+    assert.match(error ?? "", /testingSkill/);
+  }
+});
