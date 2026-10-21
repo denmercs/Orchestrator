@@ -87,6 +87,17 @@ Review is an audit container. No skill is forced into it by default; the loop's 
 
 _Avoid_: loop skills, step extras.
 
+## Loop tree
+
+A repo's own loop as a graph of phases, saved per repo. Nothing in the loop reads it yet: it is stored and checked, so later work can run it. Code: `LoopTree`, `TreePhase`, `defaultTree`, `parseTree`, `validateTree` in `shared/loop-tree.ts`; the store in `server/loop-trees.ts`.
+
+- A **tree phase** has `id` (kebab-case), `label`, `kind` (`plan`, `diagnose`, `implement`, `review`, `custom`, `open-pr`, `fix-ci`), `runs` (a Skill ref or null), `extras`, optional `profile` and `role`, `onPass` and `onFail` (a phase id, or null to end the run) and an optional `retries`. A tree also has `start: { story, bug }`, the phase a story begins at and the phase a bug story begins at. Tree and phase are strict: an unknown key such as `maxFixes` is refused. `maxFixes`, `reviewRounds`, `closeOnMerge` and `testingSkill` stay in the repo's pipeline file. `retries` is an override only: absent means the repo file's limit (`reviewRounds` for review, `maxFixes` for fix), and `defaultTree` never sets it, so a saved tree holds no copy. `runs` is data only for now: the loop still runs extras.
+- **Default tree**: `defaultTree(config)` is the built-in loop (plan, diagnose, implement, review, pr, fix) with `start: { story: "plan", bug: "diagnose" }`, mirroring `reconcile`: plan and diagnose both pass to implement, implement to review, review to pr, and each step's skills and profile taken through `STEP_PHASES` and `phaseSkills`, so team-required extras stay. Review fails back to implement, a failed PR goes to fix and back. Its `config` is the host pipeline settings with the repo's `.orchestrator/pipeline.json` applied (`repoPipelineConfig`), as the loop's stories get them.
+- **Validation rules**: ids are unique and kebab-case; `kind` is one of the list; every edge points at a phase; both `start` entries name phases and the pass path from each reaches an `open-pr` phase; and every cycle contains at least one `onFail` edge (the default's review loop and pr/fix loop are valid; a loop of `onPass` edges alone is refused). The cycle rule is the lead's reading, awaiting Den's confirmation. Each message names the phase it is about.
+- **Store**: `~/.orchestrator/loop-trees.json`, `{ [absoluteRepoPath]: tree }`, written through a temp file and rename. Repo paths are resolved (`path.resolve`) before keying, and writes are queued so two saves at once both land; a write failure returns `{ ok: false, error }`. A repo with no saved tree gets its default computed from its config. A file that can't be read, or an entry that is invalid, reads as the default with an error and is never rewritten; saving over an unreadable file is refused until it is fixed or deleted. Copy from a repo with no saved tree copies its computed default. RPCs: `orchestration.loop-tree.{get,save,reset,export,import,copy}`; save and import validate first and return `{ ok, error }`.
+
+_Avoid_: pipeline (that is the Story pipeline and its drawer phases), workflow.
+
 ## Worktree copy
 
 How drawer skills reach a new story agent, whether a Story pipeline phase or an initiative loop step starts it. `installSkills` copies each non-`installed` Skill ref from its source into the story worktree: for a pipeline phase the `runs` skill and the extras, for a loop step only the extras of its phase (see Loop step skills).

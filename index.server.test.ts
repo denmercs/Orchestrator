@@ -4,6 +4,8 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "./index.server";
 import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { startMemoryReplay } from "./shared/replay-rpc";
+import { defaultTree } from "./shared/loop-tree";
+import { pipelineSettings } from "./shared/pipeline";
 import { voiceEvents, voiceHelperStart, voiceHelperStop, voiceHelperSwitch, voiceInterpret, voiceSpeak, voiceStatus } from "./shared/voice-rpc";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1084,4 +1086,54 @@ test("Ignore me ON then an invalid settings state keeps dropping speech", async 
   on.subscribers.forEach((fn) => fn({ status: "invalid", revision: "1", error: "corrupt" }));
   assert.deepEqual(await on.turns(SPOKEN_WORDS), []);
   on.stop();
+});
+
+function loopTreeHandlers() {
+  const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
+  const noop = () => undefined;
+  const server = new Proxy({} as PluginServerContext, {
+    get: (_target, key) => {
+      if (key === "handle") {
+        return (rpc: { name: string }, handler: (input: unknown, context: unknown) => unknown) => {
+          handlers.set(rpc.name, handler);
+        };
+      }
+      if (key === "registerSettings") {
+        return () => new Proxy({}, { get: (_t, k) => (k === "read" ? async () => ({ status: "loading" }) : noop) });
+      }
+      return noop;
+    },
+  });
+  // Never the real ~/.orchestrator: the store's file is a temp one.
+  const file = join(mkdtempSync(join(tmpdir(), "loop-trees-")), "loop-trees.json");
+  contribute(server, { speakerPorts: quietSpeaker, loopTreesFile: file });
+  const call = async (name: string, input: unknown) => {
+    const handler = handlers.get(name);
+    assert.ok(handler, `${name} is handled`);
+    return handler(input, {});
+  };
+  return { call, file };
+}
+
+test("the loop tree RPCs: get returns the default, save refuses an invalid tree", async () => {
+  const { call, file } = loopTreeHandlers();
+  const repo = mkdtempSync(join(tmpdir(), "loop-tree-repo-"));
+  assert.deepEqual(await call("orchestration.loop-tree.get", { repo }), {
+    tree: defaultTree(pipelineSettings.schema.parse({})),
+    saved: false,
+    error: null,
+  });
+  const refused = (await call("orchestration.loop-tree.save", { repo, tree: { ...defaultTree(pipelineSettings.schema.parse({})), phases: [] } })) as { ok: boolean; error: string };
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /no phases/);
+  assert.equal(existsSync(file), false);
+  const tree = defaultTree(pipelineSettings.schema.parse({}));
+  assert.deepEqual(await call("orchestration.loop-tree.save", { repo, tree }), { ok: true, error: null });
+  assert.equal(((await call("orchestration.loop-tree.get", { repo })) as { saved: boolean }).saved, true);
+  assert.deepEqual(await call("orchestration.loop-tree.copy", { from: repo, to: "/other/repo" }), { ok: true, error: null });
+  assert.deepEqual(await call("orchestration.loop-tree.reset", { repo }), { ok: true, error: null });
+  assert.equal(((await call("orchestration.loop-tree.export", { repo })) as { text: string }).text.includes('"phases"'), true);
+  const broken = (await call("orchestration.loop-tree.import", { repo, text: "{x" })) as { ok: boolean; error: string };
+  assert.equal(broken.ok, false);
+  assert.match(broken.error, /not valid JSON/);
 });

@@ -28,7 +28,10 @@ import { getBranchInitials } from "./shared/naming";
 import { createContextWatch, paseoPort } from "./server/context-watch";
 import { createGateActions, loopGatePort } from "./server/gate-actions";
 import { createVoiceResume } from "./server/voice-resume";
+import { createLoopTrees } from "./server/loop-trees";
+import { repoPipelineConfig } from "./server/repo-pipeline";
 import { createSpeakReplies, speakRoute } from "./server/speak-replies";
+import { copyLoopTree, exportLoopTree, getLoopTree, importLoopTree, resetLoopTree, saveLoopTree } from "./shared/loop-tree";
 import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { gateAct } from "./shared/gates";
 import { profilesFromConfigGet } from "./shared/agent-profiles";
@@ -161,6 +164,8 @@ export default function contribute(
     localPorts?: (render: LocalPorts["render"]) => LocalPorts;
     // Where the cloned voice's reference clip lives when the voice setting is empty.
     defaultReferenceClip?: string;
+    // Where the per-repo loop trees are stored (tests use a temp file, never ~/.orchestrator).
+    loopTreesFile?: string;
   } = {},
 ) {
   // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
@@ -219,6 +224,18 @@ export default function contribute(
     const state = await pipeline.read();
     return state.status === "ready" ? state.values : null;
   };
+  // Per-repo loop trees. A repo's default is built from the same config its stories run on: the host's
+  // pipeline settings with the repo's own `.orchestrator/pipeline.json` applied.
+  const loopTrees = createLoopTrees({
+    file: deps.loopTreesFile,
+    config: async (repo) => repoPipelineConfig((await readPipelineValues()) ?? pipelineSettings.schema.parse({}), repo),
+  });
+  server.handle(getLoopTree, ({ repo }) => loopTrees.get(repo));
+  server.handle(saveLoopTree, ({ repo, tree }) => loopTrees.save(repo, tree));
+  server.handle(resetLoopTree, ({ repo }) => loopTrees.reset(repo));
+  server.handle(exportLoopTree, ({ repo }) => loopTrees.exportTree(repo));
+  server.handle(importLoopTree, ({ repo, text }) => loopTrees.importTree(repo, text));
+  server.handle(copyLoopTree, ({ from, to }) => loopTrees.copyTree(from, to));
   // Turn events, one source: the hub feeds the Mac's long poll and the Jarvis router (see publishVoice).
   const voiceHub = createVoiceHub(realHubPorts());
   let publishVoice: (events: VoiceEvent[]) => void = () => undefined;
