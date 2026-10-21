@@ -3,6 +3,16 @@ import { join } from "node:path";
 import type { PipelineConfig } from "../shared/pipeline";
 import { REPO_PIPELINE_FILE, applyRepoPipeline, parseRepoPipeline } from "../shared/repo-pipeline";
 
+// The repo's own Fix CI limit from `.orchestrator/pipeline.json`, or null when it sets none (or the file is
+// missing or broken). The CI watch uses this first, then the host setting.
+export function repoMaxFixes(cwd: string | null): number | null {
+  if (!cwd) return null;
+  const file = join(cwd, REPO_PIPELINE_FILE);
+  if (!existsSync(file)) return null;
+  const { override } = parseRepoPipeline(readFileSync(file, "utf8"));
+  return override?.maxFixes ?? null;
+}
+
 // The host config with the repo's `.orchestrator/pipeline.json` applied. A story's worktree is a checkout
 // of the repo, so the committed file is there. A missing or broken file leaves the host config as is.
 export function repoPipelineConfig(config: PipelineConfig, cwd: string | null): PipelineConfig {

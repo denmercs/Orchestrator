@@ -219,6 +219,12 @@ export async function watchPipelinePrs(paseo: PaseoApi, readConfig: ReadConfig, 
     const config = repoPipelineConfig(hostConfig, cwd);
     const action = ciAction(pr, record, config.maxFixes);
     if (action.kind === "wait") continue;
+    if (action.kind === "skip") {
+      // Fix CI is off for this repo: remember the head so it is noted once, and keep watching for the merge.
+      writeCi(cwd, { ...record, fixedSha: action.headSha });
+      console.warn("orchestrator: Fix CI skipped", cwd, action.reason);
+      continue;
+    }
     if (action.kind === "fix") {
       writeCi(cwd, { ...record, fixedSha: action.headSha, attempts: action.attempt });
       const labels: Labels = { ...agent.labels, round: String(action.attempt) };
