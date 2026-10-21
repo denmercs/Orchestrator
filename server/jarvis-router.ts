@@ -1,12 +1,12 @@
 // The Jarvis router: the Voice loop (shared/voice-loop.ts) run on the server for the Jarvis provider, the same
-// loop the Voice drawer runs, so the phone and the Mac follow one set of rules and one wording
+// loop the Mac's voice runner runs, so the phone and the Mac follow one set of rules and one wording
 // (shared/voice-lines.ts). Each utterance is stepped through the loop and its effects become steers to the
 // target plus lines to say back. The state is kept here, keyed by the router id in the session's persistence
 // handle, because Paseo reopens the provider session whenever voice mode turns on or off.
 import { isBriefGreeting, replyBrief, startBrief, type BriefData, type BriefState } from "../shared/morning-brief";
 import { addressed, CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
 import { namelessPassThrough, type InterpretOutcome } from "../shared/voice-interpreter";
-import { ASLEEP_NOTE, DIDNT_CATCH_NOTE, helperFallbackNote, newSessionFailedLine, NOTHING_SENT, notTargetLine, SENT_NOTE, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
+import { ASLEEP_NOTE, DIDNT_CATCH_NOTE, helperFallbackNote, newSessionFailedLine, NOTHING_SENT, SENT_NOTE, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
 import { isStatusAsk, statusLine, type StatusAgent } from "../shared/voice-status";
 import { createVoiceSession, VOICE_ROUTING_PREAMBLE, type VoiceCreatePaseo } from "../shared/voice-session";
 
@@ -50,6 +50,9 @@ type Entry = { state: VoiceState; confirmAt: number; choicesAt: number; owed: st
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+// The router id the Mac's "good morning" and "status" run under, kept apart from the phone routers.
+export const MAC_ROUTER = "mac";
+
 export function createJarvisRouter(ports: JarvisRouterPorts) {
   const now = ports.now ?? Date.now;
   const interpreter: JarvisInterpreter = ports.interpreter ?? {
@@ -60,19 +63,13 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
   // Sessions that already know the routing rule: ones the router created, and ones it has already told.
   const told = new Set<string>();
   const briefs = new Map<string, { state: BriefState; at: number }>();
-  let drawerTarget: VoiceSession | null = null;
-  let lastBlocked: VoiceSession[] = [];
-  const refresh = async () => {
-    const split = await ports.sessions().catch(() => null);
-    if (split) lastBlocked = split.blocked;
-    return split;
-  };
+  const refresh = () => ports.sessions().catch(() => null);
 
-  // A new router starts awake, on the drawer's target if there is one.
+  // A new router starts awake with no target: it picks one by voice.
   function entryFor(routerId: string): Entry {
     let entry = entries.get(routerId);
     if (!entry) {
-      entry = { state: step({ ...initialVoiceState(), session: drawerTarget }, { type: "wake" }).state, confirmAt: 0, choicesAt: 0, owed: [] };
+      entry = { state: step(initialVoiceState(), { type: "wake" }).state, confirmAt: 0, choicesAt: 0, owed: [] };
       entries.set(routerId, entry);
     }
     return entry;
@@ -147,7 +144,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     let state = entry.state;
     const split = await refresh();
     if (split) state = step(state, { type: "sessions", ...split }).state;
-    // The same timeout as the drawer's, checked when the next words arrive (there is no timer on the phone).
+    // The same timeout as the Mac's, checked when the next words arrive (there is no timer on the phone).
     if (state.mode === "confirming" && now() - entry.confirmAt > CONFIRM_TIMEOUT_MS) {
       state = step(state, { type: "confirm", word: CONFIRM_CANCEL }).state;
     }
@@ -233,7 +230,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
       return run;
     },
     /**
-     * The briefing alone, for the Voice drawer: "good morning" and an open briefing's answers, on the same chain as
+     * The briefing alone, for the Mac (`MAC_ROUTER`): "good morning" and an open briefing's answers, on the same chain as
      * `route`. Null means the words are not for the briefing and the caller carries on.
      */
     brief(routerId: string, text: string): Promise<RouteResult | null> {
@@ -241,7 +238,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
       chains.set(routerId, run.catch(() => undefined));
       return run;
     },
-    /** "Status" alone, for the Voice drawer, on the same chain as `route`. Null means the words are not a status ask. */
+    /** "Status" alone, for the Mac (`MAC_ROUTER`), on the same chain as `route`. Null means the words are not a status ask. */
     status(routerId: string, text: string): Promise<RouteResult | null> {
       const run = (chains.get(routerId) ?? Promise.resolve()).then(() => routeStatus(routerId, text));
       chains.set(routerId, run.catch(() => undefined));
@@ -269,13 +266,13 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
       );
       return lines;
     },
-    /** Whether any phone router's loop is awake: a watched reply is dropped by a sleeping loop, so the Mac must say it. The drawer's own briefing entry doesn't count. */
+    /** Whether any phone router's loop is awake: a watched reply is dropped by a sleeping loop, so the Mac must say it. The Mac's own briefing entry doesn't count. */
     listening(): boolean {
-      return [...entries].some(([routerId, entry]) => routerId !== "drawer" && entry.state.mode !== "asleep");
+      return [...entries].some(([routerId, entry]) => routerId !== MAC_ROUTER && entry.state.mode !== "asleep");
     },
-    /** Whether a reply from this session can be said as the target's: it is the drawer's target or some router's own. */
+    /** Whether a reply from this session can be said as the target's: it is some router's own target. */
     speaks(sessionId: string): boolean {
-      return drawerTarget?.id === sessionId || [...entries.values()].some((entry) => entry.state.session?.id === sessionId);
+      return [...entries.values()].some((entry) => entry.state.session?.id === sessionId);
     },
     /** What Jarvis said has finished playing (or failed to), so the loop is no longer `speaking`. */
     playbackEnded(routerId: string): void {
@@ -285,17 +282,6 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     /** Lines that couldn't be said out of turn: said first at the router's next words, once. */
     owe(routerId: string, lines: string[]): void {
       entryFor(routerId).owed.push(...lines);
-    },
-    /** The Voice drawer picked a target: every router follows it, unless it is one of Voice's own sessions. */
-    async setTarget(session: VoiceSession): Promise<{ ok: boolean; line: string | null }> {
-      const split = await refresh();
-      if (lastBlocked.some((s) => s.id === session.id)) return { ok: false, line: notTargetLine(session.name) };
-      drawerTarget = session;
-      for (const entry of entries.values()) {
-        const state = split ? step(entry.state, { type: "sessions", ...split }).state : entry.state;
-        entry.state = step(state, { type: "pick", session }).state;
-      }
-      return { ok: true, line: null };
     },
     /** A router's loop state, for tests. */
     stateOf: (routerId: string): VoiceState | null => entries.get(routerId)?.state ?? null,

@@ -282,6 +282,19 @@ test("setSessions and pick reach the loop", () => {
   assert.deepEqual(runner.getState().session, alpha);
 });
 
+test("one voice session at a time: a second pick replaces the first, and speech goes only to it", async () => {
+  const beta = { id: "b1", name: "Beta" };
+  const { runner, said } = setup();
+  runner.on();
+  runner.setSessions([alpha, beta]);
+  runner.pick(alpha);
+  runner.pick(beta);
+  assert.deepEqual(runner.getState().session, beta);
+  runner.dispatch({ type: "utterance", text: "please run the tests" });
+  await flush();
+  assert.deepEqual(said, [["b1", "please run the tests"]]);
+});
+
 test("off() sleeps the loop, clears timers and closes the mic", async () => {
   const closed: string[] = [];
   const base = talkSetup();

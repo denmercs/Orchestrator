@@ -1,4 +1,4 @@
-// Every line Voice says or shows, in one place, so the Jarvis panel (Mac) and Jarvis (phone) word things the
+// Every line Voice says or shows, in one place, so the Mac's voice runner and Jarvis (phone) word things the
 // same way. Pure: no imports, so any bundle can reach it.
 
 const SPOKEN_CAP = 300;
@@ -15,7 +15,7 @@ export const NO_MIC_MESSAGE = "This device can't record from a plugin. Use voice
 export const MIC_DENIED_MESSAGE = "Microphone permission was denied. Allow the microphone for Paseo, then turn voice on again.";
 export const PASEO_VOICE_TITLE = "Talk with Paseo voice mode";
 export const PASEO_VOICE_LINE =
-  "To talk to Jarvis, turn on Paseo voice mode in a Jarvis session. What you say and Jarvis's replies show here.";
+  "To talk to Jarvis, turn on Paseo voice mode in a Jarvis session.";
 
 /** A choice number as said: "one" … "ten", then digits. */
 export const numberWord = (n: number): string => NUMBER_WORDS[n] ?? String(n);
@@ -242,20 +242,3 @@ export const statusRunningLine = (names: string[]) => `${namesLine(names)} ${nam
 export const statusIdleLine = (count: number) => `${capital(numberWord(count))} idle.`;
 /** A status line kept to the spoken cap, cut at a sentence end. */
 export const statusCapped = (line: string) => cap(line, SPOKEN_CAP);
-
-/** Shown (never said) when Ask is tapped on a story with no running session: the text box is still filled. */
-export const noStorySessionLine = (id: string, target: string | null) =>
-  target ? `${id} has no session, so this goes to ${target}.` : `${id} has no session, and no target is picked yet. Pick a session first.`;
-
-/** The briefing when nothing merged, runs or needs you since the panel was last open. */
-export const NOTHING_NEW = "Nothing new since you last looked.";
-
-/** The briefing, shown (never said) when the panel opens: "Merged since you last looked: S1 and S2. Running: S3. Needs you: S4." */
-export function briefingLine({ merged, running, needsYou }: { merged: string[]; running: string[]; needsYou: string[] }): string {
-  const parts = [
-    merged.length ? `Merged since you last looked: ${namesLine(merged)}.` : "",
-    running.length ? `Running: ${namesLine(running)}.` : "",
-    needsYou.length ? `Needs you: ${namesLine(needsYou)}.` : "",
-  ].filter(Boolean);
-  return parts.length ? parts.join(" ") : NOTHING_NEW;
-}
