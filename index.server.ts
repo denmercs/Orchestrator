@@ -21,7 +21,8 @@ import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { advancePipeline, closeMergedStories, startStory, watchPipelinePrs } from "./server/pipeline-advance";
 import { createLoopAdvance } from "./server/loop-advance";
 import { createInitiativeLoop } from "./server/initiative-loop";
-import { startTicket } from "./server/ticket-start";
+import { startLocalTicket, startTicket } from "./server/ticket-start";
+import { promoteSessionToStory } from "./shared/promote";
 import { readBranchInitials } from "./server/git-identity";
 import { getBranchInitials } from "./shared/naming";
 import { createContextWatch, paseoPort } from "./server/context-watch";
@@ -262,6 +263,24 @@ export default function contribute(
       startLoop: (loop) => initiativeLoop.start(paseo, loop),
     }),
   );
+  server.handle(promoteSessionToStory, async (input, { paseo }) => {
+    const fail = (error: string) => ({ ok: false, error, ticketKey: null, agentId: null });
+    try {
+      const workspace = paseo.workspaces.ref(input.workspaceId);
+      const repo = workspace.directory ?? (await workspace.refresh())?.workspaceDirectory ?? null;
+      if (!repo) return fail("That workspace has no directory on disk.");
+      const result = await startLocalTicket(
+        { repo, title: input.title, kind: input.kind },
+        { startLoop: (loop) => initiativeLoop.start(paseo, loop) },
+      );
+      // The minted key is the initiative slug's `PROMOTE-<n>` prefix, uppercased.
+      const prefix = result.initiative?.match(/^promote-\d+/i)?.[0] ?? null;
+      const ticketKey = prefix ? prefix.toUpperCase() : null;
+      return { ok: result.ok, error: result.error, ticketKey, agentId: result.agentId };
+    } catch (cause) {
+      return fail(cause instanceof Error ? cause.message : String(cause));
+    }
+  });
   server.handle(openPhasePlanRpc, openPhasePlan);
   server.handle(refreshPhasePlanRpc, refreshPhasePlan);
   server.handle(registerMcpScopeRpc, (input) => {
