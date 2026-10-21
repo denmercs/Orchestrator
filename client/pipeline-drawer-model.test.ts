@@ -22,7 +22,11 @@ test("phaseSummary: runs skill name and extras joined after two spaces and a plu
 });
 
 test("phaseSummary: built-in step with no extras", () => {
-  assert.deepEqual(phaseSummary(phase("implement")), { runs: "built-in step", extras: "" });
+  assert.deepEqual(phaseSummary(phase("done")), { runs: "built-in step", extras: "" });
+});
+
+test("phaseSummary: Implement defaults to the kit's story-impl", () => {
+  assert.deepEqual(phaseSummary(phase("implement")), { runs: "story-impl", extras: "" });
 });
 
 test("phaseSummary: required defaults are included even if the saved phase dropped them", () => {

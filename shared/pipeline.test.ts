@@ -70,7 +70,7 @@ test("saved phases drop retired skillsync skills but keep skills from connected 
   assert.deepEqual(withoutSkillsync(kept), kept);
 });
 
-test("migrating from v3 bumps a saved Plan phase with runs: null to the kit's story-plan", () => {
+test("migrating from v3 bumps saved Plan, Implement and Review phases with runs: null to the kit's skills", () => {
   const migrate = pipelineSettings.migrate as (values: unknown, from: number) => { phases: unknown[] };
   const saved = {
     enabled: true,
@@ -87,7 +87,9 @@ test("migrating from v3 bumps a saved Plan phase with runs: null to the kit's st
   };
   const result = migrate(saved, 3) as { phases: Array<{ id: string; runs: unknown }>; reviewRounds: number };
   assert.deepEqual(result.phases.find((p) => p.id === "plan")?.runs, { name: "story-plan", source: "kit" });
-  assert.equal(result.phases.find((p) => p.id === "implement")?.runs, null);
+  assert.deepEqual(result.phases.find((p) => p.id === "implement")?.runs, { name: "story-impl", source: "kit" });
+  assert.deepEqual(result.phases.find((p) => p.id === "review")?.runs, { name: "story-review", source: "kit" });
+  assert.equal(result.phases.find((p) => p.id === "done")?.runs, null);
   assert.equal(result.reviewRounds, 5);
 });
 
@@ -98,11 +100,13 @@ test("withKitPlanDefault leaves a Plan phase alone when runs is already set", ()
   assert.deepEqual(withKitPlanDefault(review), review);
 });
 
-test("the default pipeline uses the kit's story-plan planner and built-in steps elsewhere, never a skillsync command", () => {
+test("the default pipeline uses the kit's story-plan, story-impl and story-review skills and a built-in Done, never a skillsync command", () => {
   const ticket = { key: "KEY-1", title: "Example", url: null };
   for (const phase of DEFAULT_PHASES) {
-    if (phase.id === "plan") {
-      assert.deepEqual(phase.runs, { name: "story-plan", source: "kit" });
+    const kitSkills: Record<string, string> = { plan: "story-plan", implement: "story-impl", review: "story-review" };
+    const kitSkill = kitSkills[phase.id];
+    if (kitSkill) {
+      assert.deepEqual(phase.runs, { name: kitSkill, source: "kit" });
     } else {
       assert.equal(phase.runs, null);
     }

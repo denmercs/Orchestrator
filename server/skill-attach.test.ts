@@ -28,10 +28,13 @@ async function folderSource(name: string, files: Record<string, string>): Promis
   return { id: sourceId(location), label: name, location, kind: "personal", enabled: true, pin: null };
 }
 
-// Runs `fn` with HOME pointed at `dir`, restoring it (or unsetting it) afterwards.
+// Runs `fn` with HOME pointed at `dir` and PASEO_HOME unset (so the kit source looks under `dir` too, not at
+// this machine's installed plugin), restoring both afterwards.
 async function withHome<T>(dir: string, fn: () => Promise<T>): Promise<T> {
   const saved = process.env.HOME;
+  const savedPaseo = process.env.PASEO_HOME;
   process.env.HOME = dir;
+  delete process.env.PASEO_HOME;
   try {
     return await fn();
   } finally {
@@ -40,6 +43,7 @@ async function withHome<T>(dir: string, fn: () => Promise<T>): Promise<T> {
     } else {
       process.env.HOME = saved;
     }
+    if (savedPaseo !== undefined) process.env.PASEO_HOME = savedPaseo;
   }
 }
 
