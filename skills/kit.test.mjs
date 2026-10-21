@@ -288,7 +288,7 @@ test("no app-map or wayfinder skill folder exists", () => {
   }
 });
 
-export const IMPLEMENT_SKILLS = ["bugfix", "feature-video-evidence", "visual-parity-check"];
+export const IMPLEMENT_SKILLS = ["bugfix", "feature-video-evidence", "story-impl", "visual-parity-check"];
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -331,7 +331,7 @@ test("visual-parity-check holds no private values", () => {
   assert.match(skill, /private file outside the repo/);
 });
 
-export const REVIEW_SKILLS = ["code-handoff", "peer-review", "review-patterns", "security-plan"];
+export const REVIEW_SKILLS = ["code-handoff", "peer-review", "review-patterns", "security-plan", "story-review"];
 
 test("review skills exist and are named after their folder", () => {
   checkNamedAfterFolder("review", REVIEW_SKILLS);
