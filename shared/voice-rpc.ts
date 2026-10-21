@@ -29,8 +29,8 @@ export const voiceHelperStop = defineRpc({
   output: z.object({ ok: z.boolean() }),
 });
 
-// Reads (no `enabled`) or flips the helper's switch, which lives in the server's interpret service. Both the drawer
-// and Jarvis follow it. Answers the switch as it is now.
+// Reads (no `enabled`) or flips the helper's switch, which lives in the server's interpret service. Both the voice
+// runner and Jarvis follow it. Answers the switch as it is now.
 export const voiceHelperSwitch = defineRpc({
   name: "orchestration.voice.helper.switch",
   input: z.object({ enabled: z.boolean().optional() }),
@@ -68,13 +68,6 @@ export const voiceWakeModel = defineRpc({
   output: z.object({ bytes: z.string() }),
 });
 
-// The Voice drawer's target, told to the server so the Jarvis router sends to the same session.
-export const voiceTarget = defineRpc({
-  name: "orchestration.voice.target",
-  input: z.object({ id: z.string().max(200), name: z.string().max(200) }),
-  output: z.object({ ok: z.boolean() }),
-});
-
 // One sentence (or short reply) for the Speaker. `replyId` ties sentences of one reply together so that, once Chatterbox
 // is too slow for one, the rest of that reply stays on Kokoro.
 export const MAX_SPEAK_CHARS = 400;
@@ -87,34 +80,35 @@ export const voiceSpeak = defineRpc({
   output: z.object({ audio: z.string(), engine: z.enum(["chatterbox", "kokoro", "loading"]) }),
 });
 
-// Long poll for the drawer: answers at once when there are events past `after`, else waits up to 20 s. `phoneActive`
-// means Jarvis is speaking on the phone, so the drawer stays quiet.
+// Long poll for the Mac's voice runner: answers at once when there are events past `after`, else waits up to 20 s. `phoneActive`
+// means Jarvis is speaking on the phone, so the Mac stays quiet.
 export const voiceEvents = defineRpc({
   name: "orchestration.voice.events",
-  input: z.object({ after: z.number().int().min(0) }),
+  // `target`: the Mac's current voice target (the pill's pick), so the server knows its replies get a spoken summary.
+  input: z.object({ after: z.number().int().min(0), target: z.string().max(200).optional() }),
   output: z.object({
     cursor: z.number().int().min(0),
     events: z.array(z.custom<VoiceEvent>((v) => v !== null && typeof v === "object" && typeof (v as { type?: unknown }).type === "string")),
     phoneActive: z.boolean(),
     // A best guess at whether Paseo voice mode is on, from the Jarvis sessions Paseo opened; absent from an older server.
     voice: z.enum(["on", "off", "unknown"]).optional(),
-    // The saved voice setting can't be read, so Ignore me is off and speech goes through; the drawer says so.
+    // The saved voice setting can't be read, so Ignore me is off and speech goes through; the Mac says so.
     settingsUnreadable: z.boolean().optional(),
-    // The saved Ignore me value hasn't been read yet, so the server is holding speech; the drawer says it is checking.
+    // The saved Ignore me value hasn't been read yet, so the server is holding speech; the Mac says it is checking.
     settingsChecking: z.boolean().optional(),
   }),
 });
 
-// The morning briefing for the drawer: spoken lines when the words are "good morning" or an open briefing's answer,
-// null when they are not for it and the drawer carries on as usual.
+// The morning briefing for the Mac's voice runner: spoken lines when the words are "good morning" or an open briefing's answer,
+// null when they are not for it and the runner carries on as usual.
 export const voiceBrief = defineRpc({
   name: "orchestration.voice.brief",
   input: z.object({ text: z.string().max(2000) }),
   output: z.object({ spoken: z.array(z.string()) }).nullable(),
 });
 
-// "Status" for the drawer: one spoken line about the sessions' states when the words are a status ask, null when
-// they are not and the drawer carries on as usual.
+// "Status" for the Mac's voice runner: one spoken line about the sessions' states when the words are a status ask, null when
+// they are not and the runner carries on as usual.
 export const voiceStatus = defineRpc({
   name: "orchestration.voice.status",
   input: z.object({ text: z.string().max(2000) }),

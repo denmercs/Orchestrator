@@ -6,7 +6,7 @@ import { DIDNT_CATCH_NOTE, NOTHING_TO_CONFIRM, notTargetLine, pickFirstLine, SEN
 import type { BriefData } from "../shared/morning-brief";
 import type { StatusAgent } from "../shared/voice-status";
 import { VOICE_ROUTING_PREAMBLE, VOICE_SESSION_ENV } from "../shared/voice-session";
-import { createJarvisRouter, voiceSessionCreator, type JarvisInterpreter } from "./jarvis-router";
+import { createJarvisRouter, MAC_ROUTER, voiceSessionCreator, type JarvisInterpreter } from "./jarvis-router";
 
 const api: VoiceSession = { id: "s1", name: "api-refactor" };
 const docs: VoiceSession = { id: "s2", name: "docs" };
@@ -37,6 +37,11 @@ function setup(opts: { sessions?: VoiceSession[]; fail?: boolean; interpreter?: 
   return { router, sent, raw, created, tick: (ms: number) => void (clock += ms) };
 }
 
+// Picks api-refactor by voice on each router (r1 by default), the way a phone router gets its target.
+async function pick(router: ReturnType<typeof createJarvisRouter>, ...routerIds: string[]) {
+  for (const id of routerIds.length ? routerIds : ["r1"]) await router.route(id, "Jarvis, switch to api-refactor");
+}
+
 test("with no target it shows how to pick one (note only, nothing said) and names a few sessions", async () => {
   const { router, sent } = setup();
   const r = await router.route("r1", "run the tests please");
@@ -60,18 +65,19 @@ test("switch to <name> picks the target, then speech goes there as heard, withou
   assert.deepEqual(sent, [["s2", "run the tests please."]]);
 });
 
-test("the Voice drawer's target is followed by new and existing routers", async () => {
+test("a router never follows another router's pick, new or existing", async () => {
   const { router, sent } = setup();
-  await router.route("r1", "hello");
-  await router.setTarget(api);
-  await router.route("r1", "run the tests");
-  await router.route("r2", "check the build");
-  assert.deepEqual(sent, [["s1", "run the tests"], ["s1", "check the build"]]);
+  await router.route("r2", "hello");
+  await router.route("r1", "Jarvis, switch to docs");
+  // Neither an existing router (r2) nor a new one (r3) follows r1's pick.
+  assert.deepEqual(await router.route("r2", "run the tests"), { spoken: [], note: pickFirstLine(["api-refactor", "docs"]) });
+  assert.deepEqual(await router.route("r3", "run the tests"), { spoken: [], note: pickFirstLine(["api-refactor", "docs"]) });
+  assert.deepEqual(sent, []);
 });
 
 test("no word, merge and delete included, asks for a confirm; it just sends", async () => {
   const { router, sent } = setup();
-  await router.setTarget(api);
+  await pick(router);
   assert.deepEqual((await router.route("r1", "let's stop the build here")).spoken, []);
   assert.deepEqual((await router.route("r1", "don't interrupt the run")).spoken, []);
   assert.deepEqual((await router.route("r1", "merge it")).spoken, []);
@@ -81,7 +87,7 @@ test("no word, merge and delete included, asks for a confirm; it just sends", as
 
 test("a steer that went out is not reported as 'Nothing sent.', and says nothing aloud", async () => {
   const { router, sent } = setup();
-  await router.setTarget(api);
+  await pick(router);
   const r = await router.route("r1", "run the tests please");
   assert.deepEqual(sent, [["s1", "run the tests please"]]);
   assert.deepEqual(r, { spoken: [], note: SENT_NOTE });
@@ -89,14 +95,14 @@ test("a steer that went out is not reported as 'Nothing sent.', and says nothing
 
 test("empty speech is 'didn't catch that', not a routing failure", async () => {
   const { router, sent } = setup();
-  await router.setTarget(api);
+  await pick(router);
   assert.deepEqual(await router.route("r1", "  "), { spoken: [], note: DIDNT_CATCH_NOTE });
   assert.deepEqual(sent, []);
 });
 
 test("fragments do nothing and say nothing", async () => {
   const { router, sent } = setup();
-  await router.setTarget(api);
+  await pick(router);
   const r = await router.route("r1", "this");
   assert.deepEqual(r, { spoken: [], note: "Nothing sent." });
   assert.deepEqual(sent, []);
@@ -104,7 +110,7 @@ test("fragments do nothing and say nothing", async () => {
 
 test("Jarvis, ignore me (or silent mode) goes quiet until the name wakes it", async () => {
   const { router, sent } = setup();
-  await router.setTarget(api);
+  await pick(router);
   assert.deepEqual((await router.route("r1", "Jarvis, silent mode")).spoken, [SLEEP_LINE]);
   const asleep = await router.route("r1", "run the tests");
   assert.deepEqual(asleep.spoken, []);
@@ -118,7 +124,7 @@ test("Jarvis, ignore me (or silent mode) goes quiet until the name wakes it", as
 
 test("a failed send is said instead of a silent success", async () => {
   const { router } = setup({ fail: true });
-  await router.setTarget(api);
+  await pick(router);
   assert.deepEqual((await router.route("r1", "run the tests")).spoken, ["Couldn't send to api-refactor: agent not found"]);
 });
 
@@ -141,7 +147,7 @@ test("an interpreter gets the target's id and the sessions, and its result reach
     },
   };
   const { router, sent } = setup({ interpreter: helper });
-  await router.setTarget(api);
+  await pick(router);
   assert.deepEqual((await router.route("r1", "run the tests in orchestra tour")).spoken, []);
   assert.deepEqual((await router.route("r1", "merge england")).spoken, []);
   assert.deepEqual(seen, [
@@ -153,7 +159,7 @@ test("an interpreter gets the target's id and the sessions, and its result reach
 
 test("a failing interpreter falls back to the words as heard", async () => {
   const { router, sent } = setup({ interpreter: { interpret: async () => Promise.reject(new Error("down")) } });
-  await router.setTarget(api);
+  await pick(router);
   await router.route("r1", "Jarvis, run the tests");
   assert.deepEqual(sent, [["s1", "run the tests"]]);
 });
@@ -167,7 +173,7 @@ test("a fallback reason adds a note to the chat text only, never to what is spok
     const { router, sent } = setup({
       interpreter: { interpret: async (text) => ({ result: { type: "send", text }, via: "passThrough", reason }) },
     });
-    await router.setTarget(api);
+    await pick(router);
     const r = await router.route("r1", "run the tests");
     assert.deepEqual(r.spoken, []);
     assert.equal(r.note, note);
@@ -175,13 +181,12 @@ test("a fallback reason adds a note to the chat text only, never to what is spok
   }
   // A clean helper answer has no note.
   const { router } = setup({ interpreter: { interpret: async (text) => helped({ type: "send", text }) } });
-  await router.setTarget(api);
+  await pick(router);
   assert.equal((await router.route("r1", "run the tests")).note, SENT_NOTE);
 });
 
-test("Voice's own sessions are never a target: the drawer's pick and switch by name are refused", async () => {
+test("Voice's own sessions are never a target: switch by name is refused", async () => {
   const { router, sent } = setup();
-  assert.deepEqual(await router.setTarget(self), { ok: false, line: notTargetLine("Jarvis") });
   assert.deepEqual(await router.route("r1", "run the tests"), { spoken: [], note: pickFirstLine(["api-refactor", "docs"]) });
   assert.deepEqual((await router.route("r1", "Jarvis, switch to Jarvis")).spoken, [notTargetLine("Jarvis")]);
   assert.equal(router.stateOf("r1")?.session, null);
@@ -190,7 +195,7 @@ test("Voice's own sessions are never a target: the drawer's pick and switch by n
 
 test("asleep, a mishearing of the name does not wake it", async () => {
   const { router, sent } = setup();
-  await router.setTarget(api);
+  await pick(router);
   await router.route("r1", "Jarvis, silent mode");
   for (const heard of ["Travis, run the tests", "service the car please"]) {
     assert.deepEqual((await router.route("r1", heard)).spoken, [], heard);
@@ -201,7 +206,7 @@ test("asleep, a mishearing of the name does not wake it", async () => {
 
 test("an aborted route sends nothing and leaves the state as it was", async () => {
   const { router, sent } = setup();
-  await router.setTarget(api);
+  await pick(router);
   const abort = new AbortController();
   abort.abort();
   assert.deepEqual(await router.route("r1", "run the tests", abort.signal), { spoken: [], note: STOPPED_NOTE });
@@ -234,7 +239,7 @@ test("a numbered list expires after the confirm timeout, so a late number picks 
 
 test("a new session is created marked, becomes the target, and is never briefed", async () => {
   const { router, raw, created } = setup();
-  await router.setTarget(api);
+  await pick(router);
   const r = await router.route("r1", "start a new session");
   assert.deepEqual(created, [api]);
   assert.match(r.spoken[0], /^Starting a voice session in /);
@@ -261,7 +266,7 @@ test("voiceSessionCreator makes a marked session on the target's provider, no mo
 
 test("the first steer to an unmarked target carries the routing preamble once", async () => {
   const { router, raw } = setup();
-  await router.setTarget(api);
+  await pick(router);
   await router.route("r1", "run the tests");
   await router.route("r1", "check the build");
   assert.deepEqual(raw, [["s1", `${VOICE_ROUTING_PREAMBLE}\n\nrun the tests`], ["s1", "check the build"]]);
@@ -269,7 +274,7 @@ test("the first steer to an unmarked target carries the routing preamble once", 
 
 test("a failing create speaks a failure line and keeps the old target", async () => {
   const { router, raw } = setup({ createFail: true });
-  await router.setTarget(api);
+  await pick(router);
   const r = await router.route("r1", "start a new session");
   assert.ok(r.spoken.some((line) => line.includes("no room")));
   assert.equal(router.stateOf("r1")?.session?.id, "s1");
@@ -279,9 +284,7 @@ test("a failing create speaks a failure line and keeps the old target", async ()
 
 test("event() steps every router and returns lines per router; owed lines are prepended once to the next route()", async () => {
   const { router } = setup();
-  await router.setTarget(api);
-  await router.route("r1", "hello");
-  await router.route("r2", "hello");
+  await pick(router, "r1", "r2");
   const lines = await router.event({ type: "reply", sessionId: "s1", text: "All done." });
   assert.deepEqual(lines, { r1: ["api-refactor: All done."], r2: ["api-refactor: All done."] });
   // Other sessions' notices come out as one line per router; replies for non-targets say nothing.
@@ -392,10 +395,10 @@ test("a line owed to the next words is not spoken with the briefing, and is said
 
 test("brief() answers a good morning and its replies without touching the Voice loop; other words are null", async () => {
   const { router, started, sent } = briefSetup();
-  assert.equal(await router.brief("drawer", "run the tests"), null);
-  const open = await router.brief("drawer", "good morning");
+  assert.equal(await router.brief(MAC_ROUTER, "run the tests"), null);
+  const open = await router.brief(MAC_ROUTER, "good morning");
   assert.match(open?.spoken[0] ?? "", /^Good morning, Dennis\./);
-  const go = await router.brief("drawer", "do it");
+  const go = await router.brief(MAC_ROUTER, "do it");
   assert.equal(go?.spoken[0], "Starting Orchestration Redesign.");
   assert.deepEqual(started, ["start"]);
   assert.deepEqual(sent, []);
@@ -403,15 +406,15 @@ test("brief() answers a good morning and its replies without touching the Voice 
 
 test("brief() ends an open briefing on words that are not an answer", async () => {
   const { router, started } = briefSetup();
-  await router.brief("drawer", "good morning");
-  assert.equal(await router.brief("drawer", "run the tests please"), null);
-  assert.equal(await router.brief("drawer", "yes"), null);
+  await router.brief(MAC_ROUTER, "good morning");
+  assert.equal(await router.brief(MAC_ROUTER, "run the tests please"), null);
+  assert.equal(await router.brief(MAC_ROUTER, "yes"), null);
   assert.deepEqual(started, []);
 });
 
 test("event() carries a watched reply from a non-target session to every router, one line each", async () => {
   const { router } = setup();
-  await router.setTarget(api);
+  await pick(router);
   await router.route("r1", "hello");
   const lines = await router.event({ type: "reply", sessionId: "s2", text: "All **done**.", watched: true });
   assert.deepEqual(lines, { r1: ["docs: All done."] });
@@ -419,7 +422,7 @@ test("event() carries a watched reply from a non-target session to every router,
 
 test("event() gives the phone the helper summary, named, for the target's reply", async () => {
   const { router } = setup();
-  await router.setTarget(api);
+  await pick(router);
   await router.route("r1", "hello");
   const lines = await router.event({ type: "reply", sessionId: "s1", text: "Long reply.\n\nMore detail.", summary: "Two files changed and tests pass." });
   assert.deepEqual(lines, { r1: ["api-refactor: Two files changed and tests pass."] });
@@ -427,16 +430,16 @@ test("event() gives the phone the helper summary, named, for the target's reply"
 
 test("event() gives the phone the helper summary for a watched reply too", async () => {
   const { router } = setup();
-  await router.setTarget(api);
+  await pick(router);
   await router.route("r1", "hello");
   const lines = await router.event({ type: "reply", sessionId: "s2", text: "Long reply.\n\nMore.", summary: "Docs are done.", watched: true });
   assert.deepEqual(lines, { r1: ["docs: Docs are done."] });
 });
 
-test("speaks() is true for the drawer's target and any router's own target, so only their replies get a summary", async () => {
+test("speaks() is true for any router's own target, so only their replies get a summary", async () => {
   const { router } = setup();
   assert.equal(router.speaks("s1"), false);
-  await router.setTarget(api);
+  await pick(router);
   assert.equal(router.speaks("s1"), true);
   assert.equal(router.speaks("s2"), false);
   await router.route("r1", "hello");
@@ -447,7 +450,7 @@ test("speaks() is true for the drawer's target and any router's own target, so o
 test("listening() is true only while a phone router's loop is awake, so a reply the loop would drop can fall back to the Mac", async () => {
   const { router } = setup();
   assert.equal(router.listening(), false);
-  await router.setTarget(api);
+  await pick(router);
   await router.route("r1", "hello");
   assert.equal(router.listening(), true);
   await router.route("r1", "Jarvis, ignore me");
@@ -473,7 +476,7 @@ function statusSetup(opts: { list?: () => Promise<StatusAgent[]> } = {}) {
 
 test("awake, status is answered with the sessions' states and nothing is sent to the target", async () => {
   const { router, sent } = statusSetup();
-  await router.setTarget(api);
+  await pick(router);
   const r = await router.route("r1", "Jarvis, status");
   assert.deepEqual(r.spoken, ["docs needs you. api-refactor is running."]);
   assert.deepEqual(sent, []);
@@ -498,7 +501,7 @@ test("a status list that can't be read is said, not thrown", async () => {
 
 test("a long request that mentions status still goes to the target", async () => {
   const { router, sent } = statusSetup();
-  await router.setTarget(api);
+  await pick(router);
   await router.route("r1", "the status of the build is red, fix it");
   assert.equal(sent.length, 1);
   assert.equal(sent[0][0], "s1");
@@ -507,14 +510,14 @@ test("a long request that mentions status still goes to the target", async () =>
 
 test("a typed one-word message reaches the target, even asleep; spoken one-word is still dropped", async () => {
   const { router, sent } = setup();
-  await router.setTarget(api);
+  await pick(router);
   await router.route("r1", "Jarvis");
   await router.route("r1", "continue");
   assert.deepEqual(sent, []);
   await router.route("r1", "continue", undefined, { typed: true });
   assert.deepEqual(sent, [["s1", "continue"]]);
   const asleep = setup();
-  await asleep.router.setTarget(api);
+  await pick(asleep.router, "r2");
   await asleep.router.route("r2", "continue", undefined, { typed: true });
   assert.deepEqual(asleep.sent, [["s1", "continue"]]);
 });

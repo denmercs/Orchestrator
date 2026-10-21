@@ -1,4 +1,4 @@
-import type { PluginClientContext, PluginSurfaceProps } from "@getpaseo/plugin/client";
+import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { CURSOR_THEMES } from "./client/cursor-themes";
 import { OrchestrationDashboard } from "./client/orchestration-dashboard";
 import { PromotePanel } from "./client/promote-panel";
@@ -16,7 +16,7 @@ import { createVoicePrefs } from "./client/voice-prefs";
 import { createVoiceRunner } from "./client/voice-runner";
 import { createVoiceSpeaker } from "./client/voice-speaker";
 import { createVoiceLineRenderer, voiceLineSchema } from "./client/voice-line-renderer";
-import { voiceBrief, voiceEvents, voiceStatus, voiceTarget } from "./shared/voice-rpc";
+import { voiceBrief, voiceEvents, voiceStatus } from "./shared/voice-rpc";
 
 const TITLE = INSTALL_LABEL ? `Orchestration (${INSTALL_LABEL})` : "Orchestration";
 
@@ -26,7 +26,8 @@ export default function contribute(client: PluginClientContext) {
     recorder: createVoiceMic(),
     transcriber: createVoiceTranscriber(client.rpc),
     helper: createVoiceHelperClient(client.rpc),
-    events: { read: (after) => client.rpc(voiceEvents, { after }) },
+    // Each poll carries the pill's pick, so the server summarises the Mac target's long replies.
+    events: { read: (after) => client.rpc(voiceEvents, { after, target: voice.getState().session?.id }) },
     brief: async (text) => (await client.rpc(voiceBrief, { text }))?.spoken ?? null,
     status: async (text) => (await client.rpc(voiceStatus, { text }))?.spoken ?? null,
     speaker: createVoiceSpeaker(client.rpc, client.playAudio),
@@ -43,16 +44,7 @@ export default function contribute(client: PluginClientContext) {
     schema: voiceLineSchema,
     Component: createVoiceLineRenderer(createVoiceSpeaker(client.rpc, client.playAudio)),
   });
-  // The Jarvis router (server) sends to the drawer's target, so every new target is passed on.
-  let toldTarget: string | undefined;
-  const offTarget = voice.subscribe(() => {
-    const session = voice.getState().session;
-    if (!session || session.id === toldTarget) return;
-    toldTarget = session.id;
-    client.rpc(voiceTarget, session).catch((error) => console.warn("orchestrator: voice target not passed on", error));
-  });
-  const Dashboard = (props: PluginSurfaceProps) => <OrchestrationDashboard {...props} voice={voice} />;
-  client.addSurface("orchestration", Dashboard);
+  client.addSurface("orchestration", OrchestrationDashboard);
   client.addSidebarItem({
     id: "orchestration",
     title: TITLE,
@@ -99,7 +91,6 @@ export default function contribute(client: PluginClientContext) {
   const offPromoteScreen = client.addScreen({ id: "promote", title: "Promote to story", Component: PromotePanel });
   const offPromote = contributePromoteEntry(client);
   return async () => {
-    offTarget();
     voice.off();
     await Promise.all([offVoiceLines(), offAttach(), offPills(), offPromote(), offPromoteScreen(), ...offThemes.map((off) => off())]);
   };

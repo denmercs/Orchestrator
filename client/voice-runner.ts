@@ -10,7 +10,7 @@ export const MAX_INTERPRETS = 20;
 
 export const MAX_HOLD_MS = 30_000;
 export const MIN_HOLD_MS = 300;
-// One timeout for the Jarvis panel (Mac) and Jarvis on the phone.
+// One timeout for the Mac's runner and Jarvis on the phone.
 export { CONFIRM_TIMEOUT_MS };
 export const POLL_BACKOFF_MS = 2_000;
 export const BASE_HINTS = ["merge", "Orchestrator", "Paseo", "Jarvis"];
@@ -593,7 +593,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     ports.helper?.start().catch(fail);
   }
 
-  /** The panel's helper switch: shown at once, then the server's answer wins. */
+  /** The helper switch: shown at once, then the server's answer wins. */
   function setHelper(enabled: boolean) {
     publish({ helper: enabled });
     ports.helper?.setEnabled(enabled).then((helper) => publish({ helper }), fail);

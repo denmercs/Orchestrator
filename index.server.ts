@@ -63,7 +63,6 @@ import {
   voiceInterpret,
   voiceSpeak,
   voiceStatus,
-  voiceTarget,
   voiceWakeModel,
 } from "./shared/voice-rpc";
 import { createReplySummary } from "./server/reply-summary";
@@ -72,7 +71,7 @@ import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createMicOffGate } from "./server/mic-off-gate";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
-import { createJarvisRouter, voiceSessionCreator } from "./server/jarvis-router";
+import { createJarvisRouter, MAC_ROUTER, voiceSessionCreator } from "./server/jarvis-router";
 import { createMorningBrief, fetchWeather } from "./server/morning-brief";
 import { splitSessions, type VoiceEvent } from "./shared/voice-loop";
 
@@ -220,7 +219,7 @@ export default function contribute(
     const state = await pipeline.read();
     return state.status === "ready" ? state.values : null;
   };
-  // Turn events, one source: the hub feeds the drawer's long poll and the Jarvis router (see publishVoice).
+  // Turn events, one source: the hub feeds the Mac's long poll and the Jarvis router (see publishVoice).
   const voiceHub = createVoiceHub(realHubPorts());
   let publishVoice: (events: VoiceEvent[]) => void = () => undefined;
   // Events go out in the order they came, even when a reply waits (up to ~3 s) on its summary.
@@ -492,7 +491,7 @@ export default function contribute(
   // after voice turns off (the id already forgotten) must still stay telemetry only.
   const isVoiceHelper = (agent: { id: string; cwd: string }) =>
     agent.id === voiceHelper.agentId() || resolve(agent.cwd) === resolve(helperCwd);
-  // One interpret service for the drawer's RPCs and Jarvis: it owns the switch, the helper's lifecycle and the fallback.
+  // One interpret service for the Mac's RPCs and Jarvis: it owns the switch, the helper's lifecycle and the fallback.
   const voiceInterpretService = createVoiceInterpret({
     start: async () => {
       await mkdir(helperCwd, { recursive: true });
@@ -523,6 +522,8 @@ export default function contribute(
     helperPaseo = paseo;
     return voiceInterpretService.interpret(input.transcript, { sessionId: input.sessionId, sessions: input.sessions });
   });
+  // The Mac's voice target as its last events poll reported it: its replies are said by the Mac's loop, so they get a summary.
+  let macTarget: string | null = null;
   // Whether the phone plays lines in the cloned voice (voice.phoneAudio) is read once and kept current.
   const voice = voiceSetting;
   let phoneAudio = false;
@@ -537,7 +538,7 @@ export default function contribute(
   const offVoiceSettings = voice.subscribe(syncVoice);
   void voice.read().then(syncVoice, () => undefined);
   void micOffGate.start();
-  // The Speaker: the one voice for the Mac (drawer, Speak pill, Jarvis) and the phone. Its workers start now, so the cloned voice is
+  // The Speaker: the one voice for the Mac (voice runner, Speak pill, Jarvis) and the phone. Its workers start now, so the cloned voice is
   // warm at launch, and stop on cleanup. Until they are up it answers "loading" and the Mac falls back to `say`.
   const speakerPorts = (deps.speakerPorts ?? realSpeakerPorts)(() =>
     resolveReferenceClip(referenceClip, existsSync, deps.defaultReferenceClip ?? DEFAULT_REFERENCE_CLIP),
@@ -583,7 +584,7 @@ export default function contribute(
     }
     // A session on the Speak pill is heard on one device only. Phone active with voice.phoneAudio on: its reply goes through the
     // router as a watched reply (a `voice-line`), and the Mac stays quiet. Otherwise the pill speaks it on the Mac and its reply is
-    // kept from the drawer and Jarvis, so it is never said twice.
+    // kept from the Mac and Jarvis, so it is never said twice.
     // A reply is never heard nowhere: if every phone loop is asleep it would drop the watched reply, so the Mac plays it instead.
     const picked = speakRoute({
       pill: speakReplies.has(event.agent.id),
@@ -593,11 +594,11 @@ export default function contribute(
     const route = picked === "phone" && !jarvis.listening() ? "mac" : picked;
     if (route !== "phone") speakReplies.onTurnEnded(event);
     const events = turnEvents(event, { watched: route === "phone" }).filter((e) => !(e.type === "reply" && route === "mac"));
-    // Only a reply a loop will say gets a summary: watched, or from a target (a Mac-route reply is filtered above). Off or late, it goes without.
+    // Only a reply a loop will say gets a summary: watched, or from a phone router's or the Mac's target (a Mac-route reply is filtered above). Off or late, it goes without.
     publishInOrder(async () =>
       Promise.all(
         events.map(async (e) => {
-          if (e.type !== "reply" || !(e.watched || jarvis.speaks(e.sessionId)) || !voiceInterpretService.enabled()) return e;
+          if (e.type !== "reply" || !(e.watched || jarvis.speaks(e.sessionId) || e.sessionId === macTarget) || !voiceInterpretService.enabled()) return e;
           const summary = await replySummary.summarize(e.text).catch(() => null);
           return summary ? { ...e, summary } : e;
         }),
@@ -675,7 +676,7 @@ export default function contribute(
     );
   }, loopStart.everyMs);
   loopStartTimer.unref?.();
-  // Jarvis: a provider whose sessions route what you say (Paseo voice mode) to the Voice drawer's target.
+  // Jarvis: a provider whose sessions route what you say (Paseo voice mode) to the target each router picks by voice.
   // Providers get no Paseo handle, so it uses the last one any event or RPC gave.
   const jarvisPaseo = () => {
     const paseo = paseoNow() ?? voicePaseo ?? helperPaseo;
@@ -706,7 +707,7 @@ export default function contribute(
     }),
   });
   // What each event says to the phone: the router steps it into every router's loop, and the open voice-mode
-  // session says (or is owed) the lines. The drawer reads the same events from the hub.
+  // session says (or is owed) the lines. The Mac reads the same events from the hub.
   let jarvisConnection: JarvisConnection | null = null;
   publishVoice = (events) => {
     for (const event of events) {
@@ -717,21 +718,24 @@ export default function contribute(
         .catch((error) => console.warn("orchestrator: Jarvis event failed", error));
     }
   };
-  server.handle(voiceEvents, async ({ after }) => ({ ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false, voice: jarvisConnection?.voiceState(Date.now()) ?? "unknown", settingsUnreadable: micOffGate.unreadable(), settingsChecking: micOffGate.checking() }));
-  // The drawer's "good morning": the same briefing as Jarvis, under its own router id so its open briefing is the drawer's.
-  server.handle(voiceBrief, async ({ text }) => {
-    const briefed = await jarvis.brief("drawer", text);
+  // The long poll (and brief/status below) leave their Paseo handle too, so the router can list sessions before any
+  // turn event arrives.
+  server.handle(voiceEvents, async ({ after, target }, { paseo }) => {
+    helperPaseo = paseo;
+    macTarget = target ?? null;
+    return { ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false, voice: jarvisConnection?.voiceState(Date.now()) ?? "unknown", settingsUnreadable: micOffGate.unreadable(), settingsChecking: micOffGate.checking() };
+  });
+  // The Mac's "good morning": the same briefing as Jarvis, under its own router id so its open briefing is the Mac's.
+  server.handle(voiceBrief, async ({ text }, { paseo }) => {
+    helperPaseo = paseo;
+    const briefed = await jarvis.brief(MAC_ROUTER, text);
     return briefed && { spoken: briefed.spoken };
   });
-  // The drawer's "status": the same line as Jarvis says on the phone.
-  server.handle(voiceStatus, async ({ text }) => {
-    const answered = await jarvis.status("drawer", text);
-    return answered && { spoken: answered.spoken };
-  });
-  // A Jarvis session or the Voice helper is refused (ok: false), or Jarvis would steer itself.
-  server.handle(voiceTarget, async (session, { paseo }) => {
+  // The Mac's "status": the same line as Jarvis says on the phone.
+  server.handle(voiceStatus, async ({ text }, { paseo }) => {
     helperPaseo = paseo;
-    return { ok: (await jarvis.setTarget(session)).ok };
+    const answered = await jarvis.status(MAC_ROUTER, text);
+    return answered && { spoken: answered.spoken };
   });
   // Paseo 0.11.0+ only, like the usage source.
   const jarvisProvider = createJarvisProvider({
@@ -740,7 +744,7 @@ export default function contribute(
     owe: jarvis.owe,
     playbackEnded: jarvis.playbackEnded,
     phoneAudio: () => phoneAudio,
-    // voice.micOff: what Paseo voice mode heard is dropped before the router; the drawer shows what got through.
+    // voice.micOff: what Paseo voice mode heard is dropped before the router; the Mac shows what got through.
     muted: () => micOffGate.muted(),
     heard: (_routerId, text) => voiceHub.publish({ type: "heard", text }),
     // On the Mac Jarvis speaks through the same Speaker; false (an empty line) lets Paseo's `speak` take it.

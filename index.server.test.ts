@@ -4,7 +4,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "./index.server";
 import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { startMemoryReplay } from "./shared/replay-rpc";
-import { voiceEvents, voiceHelperStart, voiceHelperStop, voiceHelperSwitch, voiceInterpret, voiceSpeak, voiceStatus, voiceTarget } from "./shared/voice-rpc";
+import { voiceEvents, voiceHelperStart, voiceHelperStop, voiceHelperSwitch, voiceInterpret, voiceSpeak, voiceStatus } from "./shared/voice-rpc";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -353,7 +353,7 @@ test("the voice helper RPCs start and stop one helper agent, and interpret falls
   stop();
 });
 
-test("the drawer's status RPC says who needs you, hit an error or is running, and leaves out other words", async () => {
+test("the Mac's status RPC says who needs you, hit an error or is running, and leaves out other words", async () => {
   const { handlers, stop } = wired();
   const agents = [
     { id: "a1", title: "api", status: "running", provider: "claude", labels: {} },
@@ -362,7 +362,6 @@ test("the drawer's status RPC says who needs you, hit an error or is running, an
     { id: "a4", title: "old", status: "closed", provider: "claude", labels: {} },
   ];
   const paseo = { agents: { ref: () => ({ refresh: async () => null }), list: async () => ({ entries: agents.map((agent) => ({ agent })) }) } };
-  await handlers.get(voiceTarget.name)!({ id: "a1", name: "api" }, { paseo });
   const status = handlers.get(voiceStatus.name)!;
   assert.deepEqual(await status({ text: "Jarvis, status" }, { paseo }), { spoken: ["docs needs you. web hit an error. api is running."] });
   assert.equal(await status({ text: "run the tests" }, { paseo }), null);
@@ -525,11 +524,10 @@ test("turn_ended / permission_requested reach the hub and the router; orchestrat
       persistence: { version: 1, data: { routerId: "r1" } },
       history: "skip",
     });
-    await handlers.get(voiceTarget.name)!({ id: "s1", name: "api" }, { paseo: listing });
     await jarvis.send({
       type: "session.prompt",
       sessionId: "p1",
-      prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "hello" }] } },
+      prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Jarvis, switch to api" }] } },
     });
     await until(() => seen.some((e) => e.type === "session.turn" && e.state === "completed"));
     spoken.length = 0;
@@ -578,11 +576,10 @@ for (const [phoneAudio, asleep] of [[true, false], [false, false], [true, true]]
         persistence: { version: 1, data: { routerId: "r1" } },
         history: "skip",
       });
-      await handlers.get(voiceTarget.name)!({ id: "s1", name: "api" }, { paseo });
       await jarvis.send({
         type: "session.prompt",
         sessionId: "p1",
-        prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "hello" }] } },
+        prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Jarvis, switch to api" }] } },
       });
       await until(() => seen.some((e) => e.type === "session.turn" && e.state === "completed"));
       if (asleep) {
@@ -865,7 +862,7 @@ function summaryPaseo(answer: (prompt: string) => Promise<{ status: string; last
         promptsByAgent.set(`helper-${n}`, spec.config.systemPrompt);
         return { id: `helper-${n}` };
       },
-      list: async () => ({ entries: [] }),
+      list: async () => ({ entries: [{ agent: { id: "s1", provider: "claude", title: "api", cwd: "/x", labels: {} } }] }),
       ref: (id: string) => ({
         refresh: async () => null,
         archive: async () => undefined,
@@ -880,9 +877,30 @@ function summaryPaseo(answer: (prompt: string) => Promise<{ status: string; last
   return { paseo, prompts };
 }
 
+// A phone session (router r1) that picks `name` by voice, so replies from that session are the router's target's.
+async function pickByPhone(providers: { connect(): Promise<unknown> }[], name: string) {
+  const phone = (await providers[0].connect()) as { send(input: unknown): Promise<void>; onEvent(listener: (e: { type: string; state?: string }) => void): void };
+  let done = false;
+  phone.onEvent((e) => void (e.type === "session.turn" && e.state === "completed" && (done = true)));
+  await phone.send({
+    type: "session.open",
+    requestId: "q1",
+    sessionId: "p1",
+    config: { cwd: "/repo", env: {}, mcpServers: { paseo: { type: "http", url: "http://127.0.0.1:1/mcp", headers: {} } }, settings: {}, persist: true },
+    persistence: { version: 1, data: { routerId: "r1" } },
+    history: "skip",
+  });
+  await phone.send({
+    type: "session.prompt",
+    sessionId: "p1",
+    prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: `Jarvis, switch to ${name}` }] } },
+  });
+  await until(() => done);
+}
+
 async function summaryRun(
   answer: (prompt: string) => Promise<{ status: string; lastMessage: string }>,
-  opts: { off?: boolean; mac?: boolean; text?: string; untargeted?: boolean } = {},
+  opts: { off?: boolean; mac?: boolean; text?: string; untargeted?: boolean; macTarget?: boolean } = {},
 ) {
   const cwd = mkdtempSync(join(tmpdir(), "voice-helper-"));
   const w = opts.mac ? speakWired([], cwd) : wired([], true, undefined, undefined, cwd);
@@ -890,7 +908,9 @@ async function summaryRun(
   if (opts.off) await w.handlers.get(voiceHelperSwitch.name)!({ enabled: false }, { paseo });
   await w.handlers.get(voiceHelperStart.name)!({}, { paseo });
   if (opts.mac) await w.handlers.get(speakRepliesSet.name)!({ agentId: "s1", mode: "short" }, { paseo });
-  if (!opts.untargeted) await w.handlers.get(voiceTarget.name)!({ id: "s1", name: "api" }, { paseo });
+  // The Mac's pill pick reaches the server on its events poll; a phone router picks by voice.
+  if (opts.macTarget) await w.handlers.get(voiceEvents.name)!({ after: 0, target: "s1" }, { paseo });
+  else if (!opts.untargeted) await pickByPhone(w.providers, "api");
   const started = Date.now();
   await w.listeners.get("agent.turn_ended")!(longTurn("s1", opts.text), { paseo });
   const read = async () => (await w.handlers.get(voiceEvents.name)!({ after: 0 }, { paseo })) as { events: { type: string; text?: string; summary?: string }[] };
@@ -905,6 +925,18 @@ test("a reply that will reach a loop is published with its summary, in order bef
     assert.deepEqual(events.map((e) => e.type), ["reply", "notice"]);
     assert.equal(events[0].summary, "The migration is ready. Should I run it now?");
     assert.equal(events[0].text, longReply);
+    assert.equal(run.prompts.length, 1);
+  } finally {
+    run.stop();
+  }
+});
+
+test("a reply from the Mac pill's target, reported on the events poll, gets its summary too", async () => {
+  const run = await summaryRun(async () => ({ status: "idle", lastMessage: "The migration is ready. Should I run it now?" }), { macTarget: true });
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    const { events } = await run.read();
+    assert.equal(events[0].summary, "The migration is ready. Should I run it now?");
     assert.equal(run.prompts.length, 1);
   } finally {
     run.stop();
