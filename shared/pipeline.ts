@@ -24,6 +24,12 @@ export const KIT_SOURCE = "kit";
 // The Story pipeline's default Plan skill, shipped in the kit.
 export const DEFAULT_PLAN_SKILL: { name: string; source: string } = { name: "story-plan", source: KIT_SOURCE };
 
+// The Story pipeline's default Implement skill, shipped in the kit.
+export const DEFAULT_IMPLEMENT_SKILL: { name: string; source: string } = { name: "story-impl", source: KIT_SOURCE };
+
+// The Story pipeline's default Review skill, shipped in the kit.
+export const DEFAULT_REVIEW_SKILL: { name: string; source: string } = { name: "story-review", source: KIT_SOURCE };
+
 const skillRef = z.object({ name: z.string(), source: z.string() });
 const extra = skillRef.extend({
   required: z.boolean().optional(),
@@ -58,8 +64,8 @@ export type SkillSource = z.infer<typeof source>;
 
 export const DEFAULT_PHASES: Phase[] = [
   { id: "plan", label: "Plan", runs: { ...DEFAULT_PLAN_SKILL }, extras: [], then: "you" },
-  { id: "implement", label: "Implement", runs: null, extras: [], then: "auto" },
-  { id: "review", label: "Review", runs: null, extras: [], then: "pass" },
+  { id: "implement", label: "Implement", runs: { ...DEFAULT_IMPLEMENT_SKILL }, extras: [], then: "auto" },
+  { id: "review", label: "Review", runs: { ...DEFAULT_REVIEW_SKILL }, extras: [], then: "pass" },
   { id: "done", label: "Done", runs: null, extras: [], then: "merge" },
 ];
 
@@ -85,11 +91,13 @@ const pipelineValues = z.object({
 export const pipelineSettings = defineSettings({
   id: "pipeline",
   scope: "host",
-  version: 4,
+  version: 5,
   schema: pipelineValues,
   migrate(values) {
     const row = values !== null && typeof values === "object" ? (values as Record<string, unknown>) : {};
-    const phases = Array.isArray(row.phases) ? row.phases.map(withoutSkillsync).map(withKitPlanDefault) : undefined;
+    const phases = Array.isArray(row.phases)
+      ? row.phases.map(withoutSkillsync).map(withKitPlanDefault).map(withKitImplementDefault).map(withKitReviewDefault)
+      : undefined;
     const parsed = pipelineValues.safeParse({ ...row, phases });
     return parsed.success ? parsed.data : pipelineValues.parse({});
   },
@@ -111,6 +119,26 @@ export function withKitPlanDefault(saved: unknown) {
   if (row.id !== "plan") return row;
   if (row.runs !== null && row.runs !== undefined) return row;
   return { ...row, runs: { ...DEFAULT_PLAN_SKILL } };
+}
+
+// A saved Implement phase with `runs: null` was the old built-in default; bump it to the kit's
+// story-impl skill. Other saved values survive untouched.
+export function withKitImplementDefault(saved: unknown) {
+  if (saved === null || typeof saved !== "object") return saved;
+  const row = saved as Record<string, unknown>;
+  if (row.id !== "implement") return row;
+  if (row.runs !== null && row.runs !== undefined) return row;
+  return { ...row, runs: { ...DEFAULT_IMPLEMENT_SKILL } };
+}
+
+// A saved Review phase with `runs: null` was the old built-in default; bump it to the kit's
+// story-review skill. Other saved values survive untouched.
+export function withKitReviewDefault(saved: unknown) {
+  if (saved === null || typeof saved !== "object") return saved;
+  const row = saved as Record<string, unknown>;
+  if (row.id !== "review") return row;
+  if (row.runs !== null && row.runs !== undefined) return row;
+  return { ...row, runs: { ...DEFAULT_REVIEW_SKILL } };
 }
 
 export function withoutSkillsync(saved: unknown) {
