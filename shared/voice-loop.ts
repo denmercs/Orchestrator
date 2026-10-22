@@ -26,7 +26,7 @@ export type VoiceState = {
   /** The target's spoken reply, held while you talk or confirm. */
   held: string | null;
   queue: Notice[];
-  /** Replies of sessions you asked to hear (the Speak pill), as spoken lines, waiting their turn like the notices. */
+  /** Replies of sessions you asked to hear (Speak replies), as spoken lines, waiting their turn like the notices. */
   heard: { sessionId: string; line: string }[];
   seq: number;
 };
@@ -46,7 +46,7 @@ export type VoiceEvent =
   /** Paseo voice mode heard this on the phone or laptop (not typed, not muted). The drawer shows it as a "you" line; the loop ignores it. */
   | { type: "heard"; text: string }
   | { type: "interpreted"; seq: number; result: InterpretResult }
-  /** `watched`: the session is on the Speak pill, so its reply is heard even when it is not the target. */
+  /** `watched`: the session speaks its replies, so its reply is heard even when it is not the target. */
   | { type: "reply"; sessionId: string; text: string; summary?: string; watched?: boolean }
   | { type: "playbackEnded" }
   | { type: "confirm"; word: string }

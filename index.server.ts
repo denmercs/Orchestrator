@@ -157,7 +157,7 @@ export default function contribute(
     voiceHelperCwd?: string;
     // The Speaker's workers (tests stand in for the Python ones).
     speakerPorts?: (readClip: () => string | undefined) => SpeakerPorts & { start: () => void; stop: () => void };
-    // Plays the Speaker's sentences on the Mac for the Speak pill and Jarvis (tests stand in for afplay and `say`).
+    // Plays the Speaker's sentences on the Mac for Speak replies and Jarvis (tests stand in for afplay and `say`).
     localPorts?: (render: LocalPorts["render"]) => LocalPorts;
     // Where the cloned voice's reference clip lives when the voice setting is empty.
     defaultReferenceClip?: string;
@@ -538,7 +538,7 @@ export default function contribute(
   const offVoiceSettings = voice.subscribe(syncVoice);
   void voice.read().then(syncVoice, () => undefined);
   void micOffGate.start();
-  // The Speaker: the one voice for the Mac (voice runner, Speak pill, Jarvis) and the phone. Its workers start now, so the cloned voice is
+  // The Speaker: the one voice for the Mac (voice runner, Speak replies, Jarvis) and the phone. Its workers start now, so the cloned voice is
   // warm at launch, and stop on cleanup. Until they are up it answers "loading" and the Mac falls back to `say`.
   const speakerPorts = (deps.speakerPorts ?? realSpeakerPorts)(() =>
     resolveReferenceClip(referenceClip, existsSync, deps.defaultReferenceClip ?? DEFAULT_REFERENCE_CLIP),
@@ -582,8 +582,8 @@ export default function contribute(
         .catch((error) => console.warn("orchestrator: memory replay failed", error));
       return;
     }
-    // A session on the Speak pill is heard on one device only. Phone active with voice.phoneAudio on: its reply goes through the
-    // router as a watched reply (a `voice-line`), and the Mac stays quiet. Otherwise the pill speaks it on the Mac and its reply is
+    // A session set to speak replies is heard on one device only. Phone active with voice.phoneAudio on: its reply goes through the
+    // router as a watched reply (a `voice-line`), and the Mac stays quiet. Otherwise the Speaker plays it on the Mac and its reply is
     // kept from the Mac and Jarvis, so it is never said twice.
     // A reply is never heard nowhere: if every phone loop is asleep it would drop the watched reply, so the Mac plays it instead.
     const picked = speakRoute({

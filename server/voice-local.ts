@@ -1,4 +1,4 @@
-// Speaks on the Mac itself, for the Speak pill and Jarvis: sentence by sentence through the one Speaker, so it is the same
+// Speaks on the Mac itself, for Speak replies and Jarvis: sentence by sentence through the one Speaker, so it is the same
 // voice as the drawer's. Players are ports (afplay and `say` in real life), so tests need neither audio nor a Mac.
 import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";

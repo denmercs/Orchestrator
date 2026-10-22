@@ -4,7 +4,9 @@ import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { contributeSessionRolePills } from "./session-role-pills";
 import { createVoiceRunner } from "./voice-runner";
 
-type Reg = { id: string; workspaceId: string; agentId: string; label: string; removed: boolean };
+type Menu = { kind: string; items?: { kind: string; id: string; behavior?: { onPress(): unknown } }[] };
+type Button = { label: string; behavior: Menu };
+type Reg = { id: string; workspaceId: string; agentId: string; label: string; button: Button; removed: boolean };
 type Snapshot = (message: { entries: unknown[] }) => void;
 type Update = (message: unknown) => void;
 
@@ -23,6 +25,7 @@ function setup(initial: unknown[]) {
   let snapshot: Snapshot = () => {};
   let update: Update = () => {};
   const micCalls: string[] = [];
+  const rpcCalls: [string, unknown][] = [];
   const runner = createVoiceRunner({
     link: { say: async () => {}, interrupt: async () => {} },
     ears: {
@@ -49,13 +52,19 @@ function setup(initial: unknown[]) {
         }),
       },
     },
-    rpc: async () => ({ modes: {}, ok: true }),
+    rpc: async (rpc: { name: string }, input: unknown) => {
+      rpcCalls.push([rpc.name, input]);
+      return { modes: {}, ok: true };
+    },
     openSurface() {},
-    addComposerPill(input: { id: string; workspaceId: string; agentId: string; button: { label: string } }) {
-      const reg: Reg = { id: input.id, workspaceId: input.workspaceId, agentId: input.agentId, label: input.button.label, removed: false };
+    addComposerPill(input: { id: string; workspaceId: string; agentId: string; button: Button }) {
+      const reg: Reg = { id: input.id, workspaceId: input.workspaceId, agentId: input.agentId, label: input.button.label, button: input.button, removed: false };
       regs.push(reg);
       return {
-        update: (button: { label: string }) => void (reg.label = button.label),
+        update: (button: Button) => {
+          reg.label = button.label;
+          reg.button = button;
+        },
         remove: () => void (reg.removed = true),
       };
     },
@@ -65,6 +74,7 @@ function setup(initial: unknown[]) {
   return {
     runner,
     micCalls,
+    rpcCalls,
     stop,
     voicePills,
     snapshot: (agents: unknown[]) => snapshot({ entries: agents.map((a) => ({ agent: a })) }),
@@ -137,4 +147,35 @@ test("stopping removes every pill and stops following the runner", async () => {
   assert.equal(t.voicePills().length, 0);
   t.runner.on();
   assert.equal(reg?.label, "Voice · asleep");
+});
+
+// Presses the menu item `id` on `agentId`'s voice pill.
+async function press(t: ReturnType<typeof setup>, agentId: string, id: string) {
+  const pill = t.voicePills().find((p) => p.agentId === agentId);
+  const item = pill?.button.behavior.items?.find((entry) => entry.id === id);
+  assert.ok(item?.behavior, `no ${id} item on ${agentId}`);
+  await item.behavior.onPress();
+}
+
+test("the voice pill's menu talks to the session and switches how its replies are spoken", async () => {
+  const t = setup([agent("a1", "w1"), agent("a2", "w1")]);
+  await t.runner.start();
+  await flush();
+  await press(t, "a1", "talk");
+  assert.equal(t.runner.getState().session?.id, "a1");
+  await press(t, "a2", "talk");
+  assert.equal(t.runner.getState().session?.id, "a2", "a second pick replaces the first");
+  await press(t, "a1", "speak-medium");
+  assert.deepEqual(t.rpcCalls.at(-1), ["orchestration.speak-replies.set", { agentId: "a1", mode: "medium" }]);
+  assert.equal(t.voicePills().find((p) => p.agentId === "a1")?.label, "Voice · asleep · speak medium");
+  t.stop();
+});
+
+test("a worker's voice pill offers talk only", async () => {
+  const t = setup([agent("h1", "w1"), agent("k1", "w1", { labels: { "paseo.parent-agent-id": "h1" } })]);
+  await t.runner.start();
+  await flush();
+  const ids = t.voicePills().find((p) => p.agentId === "k1")?.button.behavior.items?.map((entry) => entry.id);
+  assert.deepEqual(ids, ["talk"]);
+  t.stop();
 });

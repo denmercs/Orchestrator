@@ -1,4 +1,4 @@
-// The "Speak replies" pill's RPCs. Imported by the client bundle, so it must stay free of node: modules
+// The "Speak replies" modes' RPCs (the voice pill's menu). Imported by the client bundle, so it must stay free of node: modules
 // and of server/ code.
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
