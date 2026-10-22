@@ -244,13 +244,13 @@ docs/review-patterns.md (from \`review-patterns\`), use it. Also check:
 const REVIEW_CHECKS = `${REVIEW_LOOK}
 - The full test suite, lint and build pass (run them; keep only the summary and any failures).`;
 
-// Both light prompts: lint only the changed files when the repo says how, and nothing else of the full gate. Local
-// verification before the merge runs lint, type-check, the full suite and build.
-const LIGHT_LINT = `Run the repo's lint on only the files changed in the diff, if AGENTS.md gives a changed-files lint command.
-Any error is a blocking finding. Do not run the full test suite, full lint, type-check or build; they run before the
-merge.`;
+// Both light prompts: the changed-files lint and the light type-check when the repo's AGENTS.md says how, and nothing
+// else of the full gate. Local verification before the merge runs lint, type-check, the full suite and build.
+const LIGHT_LINT = `If AGENTS.md gives a changed-files lint or a light type-check command, run each one it gives;
+any error is a blocking finding. Do not run the full test suite, full lint or build; they run before the merge.`;
 
-// Light mode's round 1: the same look, but only the story's own tests and the changed-files lint run.
+// Light mode's round 1: the same look, but only the story's own tests, the changed-files lint and the light
+// type-check run.
 const LIGHT_TESTS = `Run only the story's own test commands: the narrowest one under \`**Commands:**\` in \`## Plan\` and the
 commands on the \`## Cycles\` lines (keep only the summary and any failures).
 ${LIGHT_LINT}`;
@@ -326,8 +326,8 @@ ${REVIEW_LOOK}
 ${FINDINGS_END}`;
 
 // Light mode's rounds 2 and later: check the fixes only, from the findings list and the diff. No review skill and
-// no full checks beyond the changed-files lint. findingsOnly's re-review doesn't fit: it re-reviews the whole diff
-// with peer-review and must not write \`## Preview\` or .harness/pr-body.md, which the PR needs.
+// no full checks beyond the changed-files lint and the light type-check. findingsOnly's re-review doesn't fit: it
+// re-reviews the whole diff with peer-review and must not write \`## Preview\` or .harness/pr-body.md, which the PR needs.
 const LIGHT_REREVIEW = `## This step: check the review fixes and list what is still open
 Read only \`## Review findings\` in ${STATE} and the diff against the base branch named under \`## Where it sits\`
 (\`git diff <base>...HEAD\`). The fix agent ticked each line it fixed. Do not use the peer-review, review-patterns or

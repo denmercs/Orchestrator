@@ -577,14 +577,14 @@ test("light mode off leaves both Review prompts exactly as they are", () => {
   }
 });
 
-test("a light round 1 reviews with peer-review but runs only the story's own tests and a changed-files lint", () => {
+test("a light round 1 reviews with peer-review but runs only the story's own tests, a changed-files lint and a light type-check", () => {
   const light = stepPrompt("review", story, { round: 1, light: true, testingSkill: ".harness/skills/testing/SKILL.md" });
   assert.match(light, /Review the diff with the `peer-review` skill in its Own branch mode\./);
   assert.match(light, /docs\/review-patterns\.md/);
   assert.match(light, /Run only the story's own test commands: the narrowest one under `\*\*Commands:\*\*` in `## Plan`/);
-  assert.match(light, /Run the repo's lint on only the files changed in the diff, if AGENTS\.md gives a changed-files lint command\./);
-  assert.match(light, /Any error is a blocking finding\./);
-  assert.match(light, /Do not run the full test suite, full lint, type-check or build; they run before the\nmerge\./);
+  assert.match(light, /If AGENTS\.md gives a changed-files lint or a light type-check command, run each one it gives;\nany error is a blocking finding\./);
+  assert.match(light, /Do not run the full test suite, full lint or build; they run before the merge\./);
+  assert.doesNotMatch(light, /full lint, type-check or build/);
   assert.doesNotMatch(light, /The full test suite, lint and build pass \(run them/);
   // Everything else a live round 1 does stays: the findings format, list-only, Preview, pr-body, the marker.
   assert.match(light, /- \[ \] blocking: file:line — what is wrong — what would fix it/);
@@ -597,7 +597,7 @@ test("a light round 1 reviews with peer-review but runs only the story's own tes
   assert.match(light, /\.harness\/skills\/testing\/SKILL\.md/);
 });
 
-test("a light round 2 or later only checks the fixes, with no review skill and only a changed-files lint", () => {
+test("a light round 2 or later only checks the fixes, with no review skill and only a changed-files lint and light type-check", () => {
   for (const round of [2, 3]) {
     const light = stepPrompt("review", story, { round, light: true, testingSkill: ".harness/skills/testing/SKILL.md" });
     const label = `round ${round}`;
@@ -606,9 +606,9 @@ test("a light round 2 or later only checks the fixes, with no review skill and o
     assert.match(light, /run the story test that covers it/, label);
     assert.match(light, /Add only new `blocking:` lines/, label);
     assert.match(light, /Do not add new non-blocking lines/, label);
-    assert.match(light, /Run the repo's lint on only the files changed in the diff, if AGENTS\.md gives a changed-files lint command\./, label);
-    assert.match(light, /Any error is a blocking finding\./, label);
-    assert.match(light, /Do not run the full test suite, full lint, type-check or build; they run before the\nmerge\./, label);
+    assert.match(light, /If AGENTS\.md gives a changed-files lint or a light type-check command, run each one it gives;\nany error is a blocking finding\./, label);
+    assert.match(light, /Do not run the full test suite, full lint or build; they run before the merge\./, label);
+    assert.doesNotMatch(light, /full lint, type-check or build/, label);
     assert.match(light, /Do not use the peer-review, review-patterns or\nstory-review skills/, label);
     assert.doesNotMatch(light, /Review the diff with the `peer-review` skill/, label);
     assert.doesNotMatch(light, /docs\/review-patterns\.md/, label);
