@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PHASE_IDS, THEN_CHOICES, THEN_VALUES, type Phase, type PipelineConfig } from "./pipeline";
+import { PHASE_IDS, REVIEW_MODES, THEN_CHOICES, THEN_VALUES, type Phase, type PipelineConfig, type ReviewMode } from "./pipeline";
 
 // A repo's own Story pipeline: `.orchestrator/pipeline.json` at the repo root, committed with the code.
 // It overrides the host's pipeline settings for stories started in that repo. Anything it leaves out
@@ -31,8 +31,17 @@ export const repoPipelineFile = z.object({
   // The testing-guidelines skill Implement and Review load (shared/testing-skill.ts). Absent or true uses the
   // plugin's built-in one, a repo-relative path to a Markdown file uses the repo's own, false loads none.
   testingSkill: z.union([z.boolean(), z.string().trim().min(1).refine(isRepoPath, REPO_PATH_MESSAGE)]).optional(),
+  // How the loop's Review runs (shared/story-method.ts). Absent or "full" is today's Review. "light" runs only the
+  // story's own tests in round 1 (local verification before merge covers lint, type-check, suite and build) and gives
+  // rounds 2 and later a short fix check without the peer-review and review-patterns skills.
+  reviewMode: z.enum(REVIEW_MODES).optional(),
 });
 export type RepoPipeline = z.infer<typeof repoPipelineFile>;
+
+// A repo-only setting, like testingSkill: the host has no review mode, so a repo that sets none runs the full one.
+export function reviewModeOf(override: RepoPipeline | null): ReviewMode {
+  return override?.reviewMode ?? "full";
+}
 
 // Parsed file text, or the reason it can't be used. Empty text is no override.
 export function parseRepoPipeline(text: string): { override: RepoPipeline | null; error: string | null } {

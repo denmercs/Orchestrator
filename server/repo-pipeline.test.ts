@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DEFAULT_PHASES, type PipelineConfig } from "../shared/pipeline";
-import { repoMaxFixes, repoPipelineConfig } from "./repo-pipeline";
+import { repoMaxFixes, repoPipelineConfig, repoReviewMode } from "./repo-pipeline";
 
 const host: PipelineConfig = { enabled: true, phases: DEFAULT_PHASES, reviewRounds: 3, maxFixes: 3, closeOnMerge: true, sources: [] };
 
@@ -42,4 +42,19 @@ test("loadPhaseConfig uses the phase's profile, else the fallback", async () => 
   assert.deepEqual(await loadPhaseConfig(paseo, undefined, fallback), fallback);
   assert.deepEqual(await loadPhaseConfig(paseo, "fast", fallback), { provider: "claude/haiku" });
   assert.deepEqual(await loadPhaseConfig(paseo, "missing", fallback), fallback);
+});
+
+test("repoReviewMode reads the repo's review mode, else full", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "repo-pipeline-"));
+  assert.equal(repoReviewMode(null), "full");
+  assert.equal(repoReviewMode(cwd), "full");
+  mkdirSync(join(cwd, ".orchestrator"));
+  writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), JSON.stringify({ reviewRounds: 3 }));
+  assert.equal(repoReviewMode(cwd), "full");
+  writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), JSON.stringify({ reviewMode: "light" }));
+  assert.equal(repoReviewMode(cwd), "light");
+  writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), JSON.stringify({ reviewMode: "lite" }));
+  assert.equal(repoReviewMode(cwd), "full");
+  writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), "{broken");
+  assert.equal(repoReviewMode(cwd), "full");
 });

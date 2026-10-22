@@ -12,6 +12,7 @@ import {
   phasePrompt,
   phaseSkills,
   phaseTitle,
+  reviewRoundSkills,
   type PipelineConfig,
   type Phase,
   type SkillRef,
@@ -36,7 +37,7 @@ import { closeIssue } from "./jira";
 import { withMcpScope } from "./mcp-scope";
 import { failureReport, prStatus } from "./pr-checks";
 import { loadPhaseConfig } from "./agent-runner";
-import { repoPipelineConfig } from "./repo-pipeline";
+import { repoPipelineConfig, repoReviewMode } from "./repo-pipeline";
 import { installSkills } from "./skill-sources";
 import { prepareTestingSkill } from "./testing-skill";
 import { commitStory, currentBranch, failureText, openStoryPr, pushStoryFix } from "./story-git";
@@ -320,7 +321,13 @@ async function startPhase(
 
   try {
     const skills = phaseSkills(phase);
-    const refs = [skills.runs, ...skills.extras].filter((ref): ref is SkillRef => ref !== null);
+    // A repo's light Review drops the full-diff review skills after round 1, so they aren't copied either.
+    const reviewMode = !fix && phase.id === "review" ? repoReviewMode(target.cwd) : "full";
+    const refs = reviewRoundSkills(
+      [skills.runs, ...skills.extras].filter((ref): ref is SkillRef => ref !== null),
+      reviewMode,
+      Number(round),
+    );
     const warnings = target.cwd
       ? await installSkills(target.cwd, refs, config.sources)
       : ["No worktree folder found; skills from connected repos were not copied."];
@@ -349,6 +356,7 @@ async function startPhase(
           branch,
           base: BASE,
           testingSkill: testing.path,
+          reviewMode,
         });
     const options = {
       title: phaseTitle(ticket.key, ticket.title, label),

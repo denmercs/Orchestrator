@@ -13,6 +13,10 @@ export type PhaseId = (typeof PHASE_IDS)[number];
 export const THEN_VALUES = ["you", "auto", "pass", "merge"] as const;
 export type Then = (typeof THEN_VALUES)[number];
 
+// How the loop's Review runs, set per repo in `.orchestrator/pipeline.json` (`"reviewMode"`). See LIGHT_REVIEW_SKIPS.
+export const REVIEW_MODES = ["full", "light"] as const;
+export type ReviewMode = (typeof REVIEW_MODES)[number];
+
 // Skills already on this machine (~/.claude, ~/.agents). Nothing is copied for these.
 export const MACHINE_SOURCE = "installed";
 
@@ -296,10 +300,22 @@ export const STEP_PHASES: Record<LoopStep, PhaseId> = {
 };
 
 // A loop step's extras from the saved phases, or the default phase when they lack it. Never `runs`.
-export function stepSkills(step: LoopStep, phases: Phase[]): Extra[] {
+// `review` is the repo's review mode and the Review round; a light Review's later rounds drop LIGHT_REVIEW_SKIPS.
+export function stepSkills(step: LoopStep, phases: Phase[], review?: { mode: ReviewMode; round: number }): Extra[] {
   const id = STEP_PHASES[step];
   const phase = phases.find((p) => p.id === id) ?? DEFAULT_PHASES.find((p) => p.id === id);
-  return phase ? phaseSkills(phase).extras : [];
+  const extras = phase ? phaseSkills(phase).extras : [];
+  return step === "review" && review ? reviewRoundSkills(extras, review.mode, review.round) : extras;
+}
+
+// The review skills a light Review's rounds 2 and later don't load: those rounds only check the fixes, and each
+// of these walks the whole diff. story-review is the Story pipeline's default Review skill (DEFAULT_REVIEW_SKILL).
+export const LIGHT_REVIEW_SKIPS = ["peer-review", "review-patterns", DEFAULT_REVIEW_SKILL.name];
+
+// The skills a Review round loads. Full mode, and round 1 in light mode, keep them all.
+export function reviewRoundSkills<T extends { name: string }>(skills: T[], mode: ReviewMode, round: number): T[] {
+  if (mode !== "light" || round <= 1) return skills;
+  return skills.filter((skill) => !LIGHT_REVIEW_SKIPS.includes(skill.name));
 }
 
 export function pipelineStory(ticket: Ticket, branch = "", base = "origin/main"): StoryContext {
@@ -331,6 +347,8 @@ export type PhasePromptOptions = {
   failing?: string;
   // Implement and Review: the worktree path of the testing-guidelines skill. Fix CI never gets it.
   testingSkill?: string;
+  // Review: the repo's review mode. Absent is "full".
+  reviewMode?: ReviewMode;
 };
 
 export const DONE_DESCRIPTION =
@@ -346,13 +364,16 @@ function skillNames(phase: Phase) {
 export function phasePrompt(phase: Phase, ticket: Ticket, options: PhasePromptOptions = {}) {
   if (phase.id === "done") return DONE_DESCRIPTION;
   const story = pipelineStory(ticket, options.branch, options.base);
+  const round = options.round ?? 1;
+  const light = phase.id === "review" && options.reviewMode === "light";
   const lines = [
     stepPrompt(phase.id, story, {
-      round: options.round ?? 1,
+      round,
       cycle: options.cycle,
       plan: options.plan,
-      skills: skillNames(phase),
+      skills: light ? reviewRoundSkills(skillNames(phase), "light", round) : skillNames(phase),
       testingSkill: options.testingSkill,
+      ...(light ? { light: true } : {}),
     }),
   ];
   if (phase.id === "plan" && phase.then === "auto") {

@@ -8,6 +8,8 @@ import {
   matchesRef,
   phasePrompt,
   phaseSkills,
+  LIGHT_REVIEW_SKIPS,
+  reviewRoundSkills,
   STEP_PHASES,
   stepSkills,
   withKitPlanDefault,
@@ -171,4 +173,43 @@ test("every loop step loads its mapped phase's extras", () => {
     assert.ok(phase);
     assert.deepEqual(stepSkills(step, phases), phaseSkills(phase).extras);
   }
+});
+
+test("a light Review drops peer-review, review-patterns and story-review after round 1; full mode keeps every skill", () => {
+  const extras = [
+    { name: "peer-review", source: "kit" },
+    { name: "review-patterns", source: "kit" },
+    { name: "security-plan", source: "kit" },
+  ];
+  const phases = DEFAULT_PHASES.map((p) => (p.id === "review" ? { ...p, extras } : p));
+  assert.deepEqual(LIGHT_REVIEW_SKIPS, ["peer-review", "review-patterns", "story-review"]);
+  assert.deepEqual(stepSkills("review", phases), extras);
+  for (const round of [1, 2, 3]) assert.deepEqual(stepSkills("review", phases, { mode: "full", round }), extras);
+  assert.deepEqual(stepSkills("review", phases, { mode: "light", round: 1 }), extras);
+  for (const round of [2, 3]) {
+    assert.deepEqual(stepSkills("review", phases, { mode: "light", round }), [{ name: "security-plan", source: "kit" }]);
+  }
+  // Only Review is affected.
+  const implement = [{ name: "peer-review", source: "kit" }];
+  const both = phases.map((p) => (p.id === "implement" ? { ...p, extras: implement } : p));
+  assert.deepEqual(stepSkills("implement", both, { mode: "light", round: 2 }), implement);
+  assert.deepEqual(stepSkills("fix", both, { mode: "light", round: 2 }), implement);
+  assert.deepEqual(reviewRoundSkills([{ name: "story-review" }], "light", 2), []);
+  assert.deepEqual(reviewRoundSkills([{ name: "story-review" }], "full", 2), [{ name: "story-review" }]);
+});
+
+test("the Story pipeline's Review prompt follows the repo's review mode", () => {
+  const ticket = { key: "KEY-1", title: "Example", url: null };
+  const review = { ...DEFAULT_PHASES.find((p) => p.id === "review")!, extras: [{ name: "peer-review", source: "kit" }] };
+  const implement = DEFAULT_PHASES.find((p) => p.id === "implement")!;
+  for (const round of [1, 2]) {
+    assert.equal(phasePrompt(review, ticket, { round, reviewMode: "full" }), phasePrompt(review, ticket, { round }));
+    assert.equal(phasePrompt(implement, ticket, { round, reviewMode: "light" }), phasePrompt(implement, ticket, { round }));
+  }
+  const first = phasePrompt(review, ticket, { round: 1, reviewMode: "light" });
+  assert.match(first, /Also use these skills: story-review, peer-review\./);
+  assert.match(first, /Run only the story's own test commands/);
+  const later = phasePrompt(review, ticket, { round: 2, reviewMode: "light" });
+  assert.doesNotMatch(later, /Also use these skills/);
+  assert.match(later, /check the review fixes/);
 });

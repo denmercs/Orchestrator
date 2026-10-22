@@ -569,3 +569,70 @@ test("writeMarker leaves one ## Status section when there were several", () => {
   assert.match(written, /## Review findings\n- a/);
   assert.match(written, /## Plan\nx/);
 });
+
+// Light review mode (`"reviewMode": "light"` in a repo's .orchestrator/pipeline.json).
+test("light mode off leaves both Review prompts exactly as they are", () => {
+  for (const round of [1, 2, 3]) {
+    assert.equal(stepPrompt("review", story, { round, light: false }), stepPrompt("review", story, { round }), `round ${round}`);
+  }
+});
+
+test("a light round 1 reviews with peer-review but runs only the story's own tests", () => {
+  const light = stepPrompt("review", story, { round: 1, light: true, testingSkill: ".harness/skills/testing/SKILL.md" });
+  assert.match(light, /Review the diff with the `peer-review` skill in its Own branch mode\./);
+  assert.match(light, /docs\/review-patterns\.md/);
+  assert.match(light, /Run only the story's own test commands: the narrowest one under `\*\*Commands:\*\*` in `## Plan`/);
+  assert.match(light, /Do not run the full test suite, lint,\ntype-check or build/);
+  assert.doesNotMatch(light, /The full test suite, lint and build pass \(run them/);
+  // Everything else a live round 1 does stays: the findings format, list-only, Preview, pr-body, the marker.
+  assert.match(light, /- \[ \] blocking: file:line — what is wrong — what would fix it/);
+  assert.match(light, /- \[ \] non-blocking: file:line — what could be better — how/);
+  assert.match(light, /Do not fix anything/);
+  assert.match(light, /Write `## Preview`/);
+  assert.match(light, /Write \.harness\/pr-body\.md/);
+  assert.match(light, /set `## Status` to `review-done` with nothing after it/);
+  assert.match(light, /## Rules for every step/);
+  assert.match(light, /\.harness\/skills\/testing\/SKILL\.md/);
+});
+
+test("a light round 2 or later only checks the fixes, with no review skill and no full checks", () => {
+  for (const round of [2, 3]) {
+    const light = stepPrompt("review", story, { round, light: true, testingSkill: ".harness/skills/testing/SKILL.md" });
+    const label = `round ${round}`;
+    assert.match(light, /check the review fixes/, label);
+    assert.match(light, /Read only `## Review findings` in \.harness\/state\.md and the diff/, label);
+    assert.match(light, /run the story test that covers it/, label);
+    assert.match(light, /Add only new `blocking:` lines/, label);
+    assert.match(light, /Do not add new non-blocking lines/, label);
+    assert.match(light, /Do not run the full test suite, lint, type-check or build/, label);
+    assert.match(light, /Do not use the peer-review, review-patterns or\nstory-review skills/, label);
+    assert.doesNotMatch(light, /Review the diff with the `peer-review` skill/, label);
+    assert.doesNotMatch(light, /docs\/review-patterns\.md/, label);
+    assert.doesNotMatch(light, /Review the whole diff again/, label);
+    assert.doesNotMatch(light, /run them; keep only the summary/, label);
+    assert.match(light, /Do not fix anything/, label);
+    assert.match(light, /Keep `## Preview` and \.harness\/pr-body\.md/, label);
+    assert.match(light, /set `## Status` to `review-done` with nothing after it/, label);
+    assert.match(light, /\(round \d\)\./, label);
+    // Rules and the testing guidelines load in every round, as in full mode.
+    assert.match(light, /## Rules for every step/, label);
+    assert.match(light, /\.harness\/skills\/testing\/SKILL\.md/, label);
+    assert.ok(light.length < stepPrompt("review", story, { round }).length, `${label} is shorter than the full re-review`);
+  }
+});
+
+test("findingsOnly wins over light, so the memory replay's prompts don't move", () => {
+  for (const round of [1, 2]) {
+    assert.equal(
+      stepPrompt("review", story, { round, findingsOnly: true, light: true }),
+      stepPrompt("review", story, { round, findingsOnly: true }),
+    );
+  }
+});
+
+test("light mode changes only Review", () => {
+  for (const step of LOOP_STEPS.filter((s) => s !== "review")) {
+    const extra: StepExtra = { round: 2 };
+    assert.equal(stepPrompt(step, story, { ...extra, light: true }), stepPrompt(step, story, extra), step);
+  }
+});

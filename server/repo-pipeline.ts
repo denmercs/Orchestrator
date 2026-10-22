@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { PipelineConfig } from "../shared/pipeline";
-import { REPO_PIPELINE_FILE, applyRepoPipeline, parseRepoPipeline } from "../shared/repo-pipeline";
+import type { PipelineConfig, ReviewMode } from "../shared/pipeline";
+import { REPO_PIPELINE_FILE, applyRepoPipeline, parseRepoPipeline, reviewModeOf } from "../shared/repo-pipeline";
 
 // The repo's own Fix CI limit from `.orchestrator/pipeline.json`, or null when it sets none (or the file is
 // missing or broken). The CI watch uses this first, then the host setting.
@@ -22,4 +22,13 @@ export function repoPipelineConfig(config: PipelineConfig, cwd: string | null): 
   const { override, error } = parseRepoPipeline(readFileSync(file, "utf8"));
   if (error) console.warn("orchestrator: ignoring", file, error);
   return applyRepoPipeline(config, override);
+}
+
+// The repo's `"reviewMode"` from `.orchestrator/pipeline.json`: "full" when it sets none, or the file is missing or
+// broken, so only a repo that opts in gets the light Review.
+export function repoReviewMode(cwd: string | null): ReviewMode {
+  if (!cwd) return "full";
+  const file = join(cwd, REPO_PIPELINE_FILE);
+  if (!existsSync(file)) return "full";
+  return reviewModeOf(parseRepoPipeline(readFileSync(file, "utf8")).override);
 }

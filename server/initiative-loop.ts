@@ -12,7 +12,7 @@ import { budgetMoney } from "../shared/stats-strip";
 import { storyCost, type TelemetryRow } from "./context-telemetry";
 import { DEFAULT_PHASES, STEP_PHASES, pipelineSettings, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import { loadPhaseConfig } from "./agent-runner";
-import { repoMaxFixes, repoPipelineConfig } from "./repo-pipeline";
+import { repoMaxFixes, repoPipelineConfig, repoReviewMode } from "./repo-pipeline";
 import type { ToolItem } from "../shared/exploration";
 import { midTurnCheck, stuckCheck, toolRunningSince, type StuckCounters, type TimelineEntry } from "../shared/stuck";
 import { appendOutcome, type OutcomeEvent } from "../shared/story-outcome";
@@ -349,12 +349,12 @@ export function createInitiativeLoop(
 
   // A resumed agent's skills line: the first prompt's, saved as `step_skills`. A story started
   // before that field existed looks the paths up again, without copying.
-  async function resumeSkills(step: LoopStep, meta: StoryFile["meta"]) {
+  async function resumeSkills(step: LoopStep, meta: StoryFile["meta"], round: number) {
     if (meta.step_skills) return parseSkills(meta.step_skills);
     const piped = await readPipeline().catch(() => ({ phases: DEFAULT_PHASES, sources: [] }));
     const { sources } = piped;
     const phases = repoPhases(piped.phases, meta.worktree || null);
-    const extras = stepSkills(step, phases);
+    const extras = stepSkills(step, phases, { mode: repoReviewMode(meta.worktree || null), round });
     if (!meta.worktree) return extras.map((skill) => ({ name: skill.name }));
     return skillPaths(meta.worktree, extras, sources);
   }
@@ -424,7 +424,9 @@ export function createInitiativeLoop(
         phases.find((p) => p.id === phaseId)?.profile,
         await readAgentConfig(api, step, config),
       );
-      const extras = stepSkills(step, phases);
+      // A repo's light Review drops the full-diff review skills after round 1 (shared/pipeline.ts reviewRoundSkills).
+      const reviewMode = step === "review" ? repoReviewMode(worktree) : "full";
+      const extras = stepSkills(step, phases, { mode: reviewMode, round });
       warnings.push(...(await installSkills(worktree, extras, sources).catch((error) => [`skills: ${reason(error)}`])));
       for (const warning of warnings) console.warn("orchestrator: skills", story.id, warning);
       const skills = await skillPaths(worktree, extras, sources);
@@ -446,6 +448,7 @@ export function createInitiativeLoop(
         missing: planMissing(step, state, worktree),
         skills,
         testingSkill: testing.path,
+        ...(reviewMode === "light" ? { light: true } : {}),
       });
       // Story steps work from the story file and the worktree; none of them needs an MCP server.
       const agent = await withMcpScope(worktree, "none", () =>
@@ -1052,16 +1055,19 @@ export function createInitiativeLoop(
       // A parent gets back only the cycles it hasn't ticked yet.
       const cycles =
         labels["loop-cycles"] === "subagents" ? readCycles(state).filter((item) => !item.done) : undefined;
+      const round = Number(labels["loop-round"]) || 1;
+      const light = step === "review" && repoReviewMode(found.story.meta.worktree || null) === "light";
       const prompt = stepPrompt(step, ctx, {
-        round: Number(labels["loop-round"]) || 1,
+        round,
         cycle,
         cycles,
         plan: readSection(state, "Plan"),
         missing: found.story.meta.worktree ? planMissing(step, state, found.story.meta.worktree) : [],
-        skills: await resumeSkills(step, found.story.meta),
+        skills: await resumeSkills(step, found.story.meta, round),
         testingSkill: found.story.meta.worktree
           ? (await prepareTestingSkill(found.story.meta.worktree, step).catch(() => ({ path: undefined }))).path
           : undefined,
+        ...(light ? { light: true } : {}),
       });
       return `${prompt}\n\n${RESUME_LINE}`;
     },

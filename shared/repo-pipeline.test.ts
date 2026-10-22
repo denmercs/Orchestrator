@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DEFAULT_PHASES, type PipelineConfig } from "./pipeline";
-import { applyRepoPipeline, parseRepoPipeline } from "./repo-pipeline";
+import { applyRepoPipeline, parseRepoPipeline, reviewModeOf } from "./repo-pipeline";
 
 const host: PipelineConfig = {
   enabled: true,
@@ -67,4 +67,22 @@ test("testingSkill rejects paths outside the repo and empty strings", () => {
     assert.equal(override, null, String(value));
     assert.match(error ?? "", /testingSkill/);
   }
+});
+
+test("reviewMode takes full or light and is off by default", () => {
+  for (const value of ["full", "light"] as const) {
+    const { override, error } = parseRepoPipeline(JSON.stringify({ reviewMode: value }));
+    assert.equal(error, null, value);
+    assert.equal(reviewModeOf(override), value);
+  }
+  for (const value of ["lite", true, 1]) {
+    const { override, error } = parseRepoPipeline(JSON.stringify({ reviewMode: value }));
+    assert.equal(override, null, String(value));
+    assert.match(error ?? "", /^reviewMode: /, String(value));
+  }
+  assert.equal(reviewModeOf(null), "full");
+  assert.equal(reviewModeOf(parseRepoPipeline(JSON.stringify({ reviewRounds: 3 })).override), "full");
+  // A repo-only setting: it doesn't change the merged host config.
+  const { override } = parseRepoPipeline(JSON.stringify({ reviewMode: "light" }));
+  assert.deepEqual(applyRepoPipeline(host, override), { ...host, phases: host.phases });
 });
