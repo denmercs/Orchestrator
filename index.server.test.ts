@@ -231,12 +231,16 @@ test("startMemoryReplay refuses to start when Claude Code is signed out", async 
   assert.equal(fake.replayed.length, 0);
 });
 
+// Any Paseo stub that sees a turn end needs a `list`: the loop's merged-PR check (server/loop-advance.ts) lists agents when
+// the real `gh` reports a fresh merge, and under load that lands after the test is over.
+const noSessions = async () => ({ entries: [] });
+
 test("a memory-replay turn end reaches the runner and not the initiative loop", async () => {
   const { listeners, fake } = wired(["replay-1"]);
   const onTurn = listeners.get("agent.turn_ended");
   assert.ok(onTurn);
   let looked = 0;
-  const paseo = { agents: { ref: () => (looked++, { refresh: async () => null }) } };
+  const paseo = { agents: { ref: () => (looked++, { refresh: async () => null }), list: noSessions } };
   const agent = (id: string) => ({ id, workspaceId: null, parentAgentId: null, provider: "claude", cwd: "/x", title: null });
   const end = (id: string, outcome: object) => onTurn({ agent: agent(id), turnId: null, outcome, timeline: [] }, { paseo });
   await end("replay-1", { kind: "completed" });
@@ -314,6 +318,7 @@ function helperPaseo() {
   const paseo = {
     agents: {
       create: async () => (calls.push("create"), { id: "helper-1" }),
+      list: noSessions,
       ref: (id: string) => (
         calls.push(`ref:${id}`),
         {
@@ -451,10 +456,10 @@ const spokenTurn = (id: string) => ({
   timeline: [{ type: "assistant_message", text: "All done." }],
 });
 
-const paseoStub = { agents: { ref: () => ({ refresh: async () => null }) } };
+const paseoStub = { agents: { ref: () => ({ refresh: async () => null }), list: noSessions } };
 const tick = () => new Promise((r) => setTimeout(r, 10));
 
-test("speak replies: a switched-on session's reply is spoken once on the Mac, and kept from the drawer", async () => {
+test("speak replies: a switched-on session's reply is spoken once on the Mac, and kept from the Mac's voice loop", async () => {
   const { handlers, listeners, plays, stop } = speakWired();
   const paseo = paseoStub;
   await handlers.get(speakRepliesSet.name)!({ agentId: "s1", mode: "short" }, { paseo });
