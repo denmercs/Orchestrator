@@ -244,11 +244,16 @@ docs/review-patterns.md (from \`review-patterns\`), use it. Also check:
 const REVIEW_CHECKS = `${REVIEW_LOOK}
 - The full test suite, lint and build pass (run them; keep only the summary and any failures).`;
 
-// Light mode's round 1: the same look, but only the story's own tests run. Local verification before the merge
-// runs lint, type-check, the full suite and build.
+// Both light prompts: lint only the changed files when the repo says how, and nothing else of the full gate. Local
+// verification before the merge runs lint, type-check, the full suite and build.
+const LIGHT_LINT = `Run the repo's lint on only the files changed in the diff, if AGENTS.md gives a changed-files lint command.
+Any error is a blocking finding. Do not run the full test suite, full lint, type-check or build; they run before the
+merge.`;
+
+// Light mode's round 1: the same look, but only the story's own tests and the changed-files lint run.
 const LIGHT_TESTS = `Run only the story's own test commands: the narrowest one under \`**Commands:**\` in \`## Plan\` and the
-commands on the \`## Cycles\` lines (keep only the summary and any failures). Do not run the full test suite, lint,
-type-check or build; they run before the merge.`;
+commands on the \`## Cycles\` lines (keep only the summary and any failures).
+${LIGHT_LINT}`;
 
 const LIGHT_REVIEW_CHECKS = `${REVIEW_LOOK}
 - The story's own tests pass. ${LIGHT_TESTS}`;
@@ -321,8 +326,8 @@ ${REVIEW_LOOK}
 ${FINDINGS_END}`;
 
 // Light mode's rounds 2 and later: check the fixes only, from the findings list and the diff. No review skill and
-// no full checks. findingsOnly's re-review doesn't fit: it re-reviews the whole diff with peer-review and must not
-// write \`## Preview\` or .harness/pr-body.md, which the PR needs.
+// no full checks beyond the changed-files lint. findingsOnly's re-review doesn't fit: it re-reviews the whole diff
+// with peer-review and must not write \`## Preview\` or .harness/pr-body.md, which the PR needs.
 const LIGHT_REREVIEW = `## This step: check the review fixes and list what is still open
 Read only \`## Review findings\` in ${STATE} and the diff against the base branch named under \`## Where it sits\`
 (\`git diff <base>...HEAD\`). The fix agent ticked each line it fixed. Do not use the peer-review, review-patterns or
@@ -332,12 +337,11 @@ story-review skills, and do not re-review the whole diff.
    "won't fix" line you disagree with is unticked too.
 2. Add only new \`blocking:\` lines (\`- [ ] blocking: file:line — what is wrong — what would fix it\`) for something
    a fix broke. Do not add new non-blocking lines.
-Do not run the full test suite, lint, type-check or build; they run before the merge.
+${LIGHT_LINT}
 ${REVIEW_LIST}
-Keep \`## Preview\` and .harness/pr-body.md; update them only where the fixes changed what they say.
+Keep \`## Preview\` and .harness/pr-body.md; update them only where a fix changed them.
 When the check is written, set \`## Status\` to \`${MARKERS.reviewDone}\` with nothing after it. The plugin reads
-the checklist: any unticked line goes to a fresh agent to fix, and when none is left the plugin commits and opens
-the PR.`;
+the checklist: any unticked line goes to a fresh agent to fix, and when none is left it commits and opens the PR.`;
 
 function planData(plan: string | undefined) {
   const planLines = (plan ?? "").trim().split("\n");
