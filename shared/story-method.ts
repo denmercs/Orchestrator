@@ -67,6 +67,9 @@ export type StepExtra = {
   brief?: string[];
   // Review: list findings only, no fixing or full suite. The memory replay uses it; the live loop never does.
   findingsOnly?: boolean;
+  // Review: the repo's light review mode (`"reviewMode": "light"` in .orchestrator/pipeline.json). Round 1 runs
+  // only the story's own tests; later rounds only check the fixes. findingsOnly wins when both are set.
+  light?: boolean;
   // Implement and Review: the worktree path of the testing-guidelines skill (shared/testing-skill.ts).
   // Ignored by every other step, so Plan, the PR step and Fix CI never name it.
   testingSkill?: string;
@@ -241,6 +244,15 @@ docs/review-patterns.md (from \`review-patterns\`), use it. Also check:
 const REVIEW_CHECKS = `${REVIEW_LOOK}
 - The full test suite, lint and build pass (run them; keep only the summary and any failures).`;
 
+// Light mode's round 1: the same look, but only the story's own tests run. Local verification before the merge
+// runs lint, type-check, the full suite and build.
+const LIGHT_TESTS = `Run only the story's own test commands: the narrowest one under \`**Commands:**\` in \`## Plan\` and the
+commands on the \`## Cycles\` lines (keep only the summary and any failures). Do not run the full test suite, lint,
+type-check or build; they run before the merge.`;
+
+const LIGHT_REVIEW_CHECKS = `${REVIEW_LOOK}
+- The story's own tests pass. ${LIGHT_TESTS}`;
+
 // The plugin reads the checklist, not the marker, to decide between a fix round and the PR (afterReview).
 const REVIEW_END = `Write \`## Preview\`: one line per app route or screen the story changes, "- <route> — what to look at", or
 \`none — <why>\` when nothing is visible.
@@ -276,6 +288,13 @@ ${REVIEW_FORMAT}
 ${REVIEW_LIST}
 ${REVIEW_END}`;
 
+const LIGHT_REVIEW = `## This step: review the change as a fresh critic and list what you find
+${REVIEW_DIFF}
+${LIGHT_REVIEW_CHECKS}
+${REVIEW_FORMAT}
+${REVIEW_LIST}
+${REVIEW_END}`;
+
 const REVIEW_FINDINGS = `## This step: review the change as a fresh critic and list what you find
 ${REVIEW_DIFF}
 ${REVIEW_LOOK}
@@ -300,6 +319,25 @@ const REREVIEW_FINDINGS = `## This step: re-review the change after the fixes an
 ${REREVIEW_STEPS}
 ${REVIEW_LOOK}
 ${FINDINGS_END}`;
+
+// Light mode's rounds 2 and later: check the fixes only, from the findings list and the diff. No review skill and
+// no full checks. findingsOnly's re-review doesn't fit: it re-reviews the whole diff with peer-review and must not
+// write \`## Preview\` or .harness/pr-body.md, which the PR needs.
+const LIGHT_REREVIEW = `## This step: check the review fixes and list what is still open
+Read only \`## Review findings\` in ${STATE} and the diff against the base branch named under \`## Where it sits\`
+(\`git diff <base>...HEAD\`). The fix agent ticked each line it fixed. Do not use the peer-review, review-patterns or
+story-review skills, and do not re-review the whole diff.
+1. For each ticked line, check the fix is in the diff and run the story test that covers it (from \`## Cycles\` or
+   \`**Commands:**\` in \`## Plan\`). If it isn't fixed, untick it and say why at the end of the line. A
+   "won't fix" line you disagree with is unticked too.
+2. Add only new \`blocking:\` lines (\`- [ ] blocking: file:line — what is wrong — what would fix it\`) for something
+   a fix broke. Do not add new non-blocking lines.
+Do not run the full test suite, lint, type-check or build; they run before the merge.
+${REVIEW_LIST}
+Keep \`## Preview\` and .harness/pr-body.md; update them only where the fixes changed what they say.
+When the check is written, set \`## Status\` to \`${MARKERS.reviewDone}\` with nothing after it. The plugin reads
+the checklist: any unticked line goes to a fresh agent to fix, and when none is left the plugin commits and opens
+the PR.`;
 
 function planData(plan: string | undefined) {
   const planLines = (plan ?? "").trim().split("\n");
@@ -385,8 +423,9 @@ Then set \`## Status\` to ${DONE}.
 If you cannot go on, set it to \`${MARKERS.implementBlocked}\` and put the reason on the next line.`;
   },
 
-  review: ({ round, findingsOnly }) => {
+  review: ({ round, findingsOnly, light }) => {
     if (findingsOnly) return round > 1 ? REREVIEW_FINDINGS : REVIEW_FINDINGS;
+    if (light) return round > 1 ? LIGHT_REREVIEW : LIGHT_REVIEW;
     return round > 1 ? REREVIEW : REVIEW;
   },
 

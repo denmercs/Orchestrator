@@ -2846,3 +2846,52 @@ test("with the default pipeline the engine's Plan, Implement and Review prompts 
   }
   assert.equal(prompts.implementMeta.step_skills, undefined);
 });
+
+// A repo's light Review: the Review after an Implement step, with peer-review as the repo's Review extra.
+async function reviewAfterImplement(round: number, reviewMode?: "light") {
+  const fx = fixture("a1");
+  execFileSync("git", ["config", "user.email", "loop@test"], { cwd: fx.worktree });
+  execFileSync("git", ["config", "user.name", "Loop"], { cwd: fx.worktree });
+  mkdirSync(join(fx.worktree, ".orchestrator"), { recursive: true });
+  writeFileSync(
+    join(fx.worktree, ".orchestrator", "pipeline.json"),
+    JSON.stringify({ phases: { review: { extras: [{ name: "peer-review", source: "kit" }] } }, ...(reviewMode ? { reviewMode } : {}) }),
+  );
+  writeFileSync(join(fx.worktree, "meter.ts"), "export const meter = 1;\n", "utf8");
+  writeFrontmatter(fx.story, { round });
+  const findings = round > 1 ? "\n## Review findings\n- [x] blocking: meter.ts:1 — wrong — fix it\n" : "";
+  writeFileSync(join(fx.worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\nimplement-done\nFix the meter\n${findings}`, "utf8");
+  const labels = { ...fx.labels, "loop-round": String(round) };
+  const { api, created } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  await initiative.onTurnEnded(api, ended("a1", { kind: "completed" }));
+  assert.deepEqual(created.map((agent) => agent.labels["loop-step"]), ["review"]);
+  const resumed = await initiative.resumePrompt(created[0].labels);
+  return { prompt: created[0].prompt ?? "", resumed: resumed ?? "", meta: storyMeta(fx.story), round: created[0].labels["loop-round"] };
+}
+
+test("a repo without reviewMode keeps the full Review, with peer-review in every round", async () => {
+  for (const round of [1, 2]) {
+    const { prompt } = await reviewAfterImplement(round);
+    assert.match(prompt, /Also use these skills: peer-review/, `round ${round}`);
+    assert.match(prompt, /The full test suite, lint and build pass \(run them/, `round ${round}`);
+  }
+});
+
+test("a repo's light Review keeps peer-review in round 1 and drops it, and the full checks, after", async () => {
+  const first = await reviewAfterImplement(1, "light");
+  assert.match(first.prompt, /Also use these skills: peer-review/);
+  assert.match(first.prompt, /Run only the story's own test commands/);
+  assert.doesNotMatch(first.prompt, /The full test suite, lint and build pass \(run them/);
+  assert.match(first.resumed, /Run only the story's own test commands/);
+  assert.equal(first.round, "1");
+
+  const later = await reviewAfterImplement(2, "light");
+  assert.equal(later.round, "2");
+  assert.match(later.prompt, /check the review fixes/);
+  assert.doesNotMatch(later.prompt, /Also use these skills/);
+  assert.doesNotMatch(later.prompt, /Review the diff with the `peer-review` skill/);
+  assert.equal(later.meta.step_skills ?? "", "");
+  assert.match(later.resumed, /check the review fixes/);
+  assert.doesNotMatch(later.resumed, /Also use these skills/);
+});

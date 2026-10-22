@@ -62,6 +62,7 @@ A repo's own Story pipeline: `.orchestrator/pipeline.json` at the repo root, com
 - `phases.<id>` may set `label`, `runs`, `extras`, `then` and `profile`. `profile` is a Paseo agent profile (id or name), which sets the phase's model. Fix CI runs on Implement's.
 - Top level may set `reviewRounds`, `maxFixes` and `closeOnMerge`. `maxFixes` is the Fix CI limit (0 to 20; 0 turns Fix CI off for the repo). Both CI watches use it before the host value (`repoMaxFixes` in `server/repo-pipeline.ts` for the initiative loop).
 - Top level may set `testingSkill`: which testing guidelines Implement and Review load (see **Testing skill**). Absent or `true` is the built-in one, a repo-relative path is the repo's own Markdown file, `false` loads none. Absolute paths and `..` are rejected.
+- Top level may set `reviewMode`: `"full"` (the default, also when absent) or `"light"` (see **Light review**). Like `testingSkill` it is repo-only: the host has no review mode, and `repoReviewMode` (`server/repo-pipeline.ts`) reads it from the story's worktree for both the initiative loop and the Story pipeline. A missing or broken file, or any other value, is `"full"`.
 - Anything left out keeps the host value. A `then` the phase doesn't allow keeps the host's. A missing or broken file is ignored (broken ones log a warning).
 - Skill sources stay host-wide, so a skill ref names a source connected on the host.
 - The initiative loop reads the same file for its steps' extras and model (through `STEP_PHASES`). The host's on/off switch still gates the Story pipeline.
@@ -84,6 +85,8 @@ The skills an initiative loop step loads: the extras of the Skills drawer phase 
 `Phase.runs` is pipeline-only. The skill a phase runs carries its own `.harness/state.md` contract, which would fight the step prompt, so a loop step loads only the extras. The pipeline switch (`enabled`) does not affect loop step skills: they load whether the Story pipeline is on or off.
 
 Review is an audit container. No skill is forced into it by default; the loop's review step loads whatever the user adds to the drawer's Review phase.
+
+A repo in light review mode drops peer-review, review-patterns and story-review from Review at round 2 and later (see **Light review**).
 
 _Avoid_: loop skills, step extras.
 
@@ -237,6 +240,8 @@ The checklist a Review agent writes under `## Review findings` in `.harness/stat
 - **Fix round**: the Implement step at round > 1. It fixes every unticked finding, blocking and non-blocking, and ticks each one. It may tick a non-blocking line it judges wrong with "— won't fix: <why>".
 - **Re-review**: Review at round > 1. It checks each ticked line, unticks any that isn't fixed, and adds only new blocking lines, so the rounds settle instead of finding new nits each time. It lists only and fixes nothing, as the first review does.
 - **Decision** (`afterReview`), on `review-done`: no unticked finding opens the PR. Otherwise a fix round (the initiative loop records it, and a block, as a `Review round` entry in the story's `## Outcome`), until `reviewRounds`. At the limit, an open blocking finding blocks the story (the pipeline writes `review-blocked`). Open non-blocking ones go to the PR as **unfixed**, listed under "Not fixed in review (non-blocking)" in its body (`openStoryPr`'s `unfixed`). The reviewer's marker doesn't choose; an older reviewer's `review-failed` with no checklist still gets a fix round.
+
+- **Light review**: a repo's opt-in Review, `"reviewMode": "light"` in `.orchestrator/pipeline.json`, for repos that run lint, type-check, the full suite and build themselves before they merge. Round 1 is the same review with the same extras (peer-review and review-patterns when the repo adds them), but it runs only the story's own test commands (`**Commands:**` in `## Plan` and the `## Cycles` lines), not the full gate. Rounds 2 and later get a short fix check (`LIGHT_REREVIEW` in `shared/story-method.ts`): read only `## Review findings` and the diff, check each ticked fix is in place and run the story test that covers it, untick what isn't fixed, add only blocking lines for something a fix broke, and keep `## Preview` and the PR body. Those rounds don't load `LIGHT_REVIEW_SKIPS` (peer-review, review-patterns, story-review; `reviewRoundSkills` in `shared/pipeline.ts`), so the skills aren't copied or named. Severities, `reviewRounds`, the markers, the decision, supervision, the rules block and the testing guidelines are the same in both modes. The findings-only prompts are not reused: they re-review the whole diff and must not write the PR body. `findingsOnly` (the memory replay) wins over light. Code: `StepExtra.light`.
 
 _Avoid_: nits, must-fix, severity levels beyond these two.
 
