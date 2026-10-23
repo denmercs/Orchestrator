@@ -1733,6 +1733,10 @@ async function startNewStory(
     pipeline?: Parameters<typeof createInitiativeLoop>[2];
     usage?: unknown[];
     agentConfig?: Parameters<typeof createInitiativeLoop>[1];
+    // Agent profiles `paseo.config.get` returns, so a phase profile id can resolve to a provider.
+    profiles?: { id: string; name: string; provider: string; model?: string | null }[];
+    // Written to `.orchestrator/pipeline.json` and copied into the new worktree, as a committed file would be.
+    repoPipeline?: unknown;
   } = {},
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "loop-start-")));
@@ -1751,6 +1755,10 @@ async function startNewStory(
   const saved = options.branch ? `branch: ${options.branch}\n` : "";
   const extra = options.frontmatter ?? "";
   writeFileSync(story, `---\nid: S1\ntitle: Add search\nstatus: todo\n${saved}${extra}---\n\n## Goal\n\nShip it.\n`, "utf8");
+  if (options.repoPipeline !== undefined) {
+    mkdirSync(join(root, ".orchestrator"), { recursive: true });
+    writeFileSync(join(root, ".orchestrator", "pipeline.json"), JSON.stringify(options.repoPipeline), "utf8");
+  }
   const fake = fakePaseo([], options.usage ? { providers: options.usage } : undefined);
   const requested: string[] = [];
   const api = fake.api as unknown as Record<string, unknown> & { workspaces: Record<string, unknown> };
@@ -1759,8 +1767,17 @@ async function startNewStory(
     requested.push(input.source.branchName);
     const directory = join(root, "wt");
     mkdirSync(directory, { recursive: true });
+    // A real worktree checks out the repo's pipeline file; the fake has to copy it.
+    const pipelineFile = join(root, ".orchestrator", "pipeline.json");
+    if (existsSync(pipelineFile)) {
+      mkdirSync(join(directory, ".orchestrator"), { recursive: true });
+      writeFileSync(join(directory, ".orchestrator", "pipeline.json"), readFileSync(pipelineFile));
+    }
     return { id: "ws-new", directory };
   };
+  if (options.profiles) {
+    api.config = { get: async () => ({ daemon: { agentProfiles: options.profiles } }) };
+  }
   const initiative = createInitiativeLoop(
     async () => DEFAULT_LOOP_CONFIG,
     options.agentConfig ?? (async () => FALLBACK_AGENT_CONFIG),
@@ -1814,6 +1831,80 @@ test("no story starts while its first step's provider is at its plan limit", asy
   assert.deepEqual(created, []);
   assert.equal(meta.status, "todo");
   assert.match(reason, /^paused for the Claude limit until \d{1,2}:\d{2}/);
+});
+
+const grokProfile = { id: "grok", name: "Grok", provider: "cursor", model: "grok-4.7" };
+const claudeProfile = { id: "opus", name: "Opus", provider: "claude", model: "claude-opus-4" };
+const withPlanProfile = (profile: string) =>
+  DEFAULT_PHASES.map((phase) => (phase.id === "plan" ? { ...phase, profile } : phase));
+
+test("a Plan step whose pipeline profile is grok starts while the default profile's Claude window is full", async () => {
+  const { created, meta, reason } = await startNewStory({
+    usage: claudeAt(100),
+    agentConfig: async () => ({ provider: "claude" }),
+    profiles: [claudeProfile, grokProfile],
+    pipeline: async () => ({ phases: withPlanProfile("grok"), sources: [] }),
+  });
+  assert.deepEqual(
+    created.map((agent) => [agent.labels["loop-step"], agent.config]),
+    [["plan", { provider: "cursor/grok-4.7" }]],
+  );
+  assert.equal(meta.status, "planning");
+  assert.equal(meta.paused_for, undefined);
+  assert.doesNotMatch(reason, /Claude/);
+});
+
+test("a Plan step whose repo pipeline profile is grok starts while the default profile's Claude window is full", async () => {
+  const { created, meta } = await startNewStory({
+    usage: claudeAt(100),
+    agentConfig: async () => ({ provider: "claude" }),
+    profiles: [claudeProfile, grokProfile],
+    repoPipeline: { phases: { plan: { profile: "grok" } } },
+  });
+  assert.deepEqual(
+    created.map((agent) => [agent.labels["loop-step"], agent.config]),
+    [["plan", { provider: "cursor/grok-4.7" }]],
+  );
+  assert.equal(meta.status, "planning");
+  assert.equal(meta.paused_for, undefined);
+});
+
+test("a Plan step whose pipeline profile is Claude stays paused while Claude is limited, even when the default profile is Cursor", async () => {
+  const { created, meta, reason } = await startNewStory({
+    usage: claudeAt(100),
+    agentConfig: async () => ({ provider: "cursor/grok-4.7" }),
+    profiles: [claudeProfile, grokProfile],
+    pipeline: async () => ({ phases: withPlanProfile("opus"), sources: [] }),
+  });
+  assert.deepEqual(created, []);
+  assert.equal(meta.status, "todo");
+  assert.match(reason, /^paused for the Claude limit until \d{1,2}:\d{2}/);
+});
+
+test("a repo pipeline Claude profile blocks Plan while Claude is limited, even when the host pipeline profile is grok", async () => {
+  const { created, meta, reason } = await startNewStory({
+    usage: claudeAt(100),
+    agentConfig: async () => ({ provider: "cursor/grok-4.7" }),
+    profiles: [claudeProfile, grokProfile],
+    pipeline: async () => ({ phases: withPlanProfile("grok"), sources: [] }),
+    repoPipeline: { phases: { plan: { profile: "opus" } } },
+  });
+  assert.deepEqual(created, []);
+  assert.equal(meta.status, "todo");
+  assert.match(reason, /^paused for the Claude limit until \d{1,2}:\d{2}/);
+});
+
+test("a Plan step on grok is paused when Cursor's window is full", async () => {
+  const resetsAt = new Date(Date.now() + 3_600_000).toISOString();
+  const { created, meta, reason } = await startNewStory({
+    usage: [{ providerId: "cursor", status: "available", planLabel: "Pro", windows: [{ id: "five_hour", label: "5h", usedPct: 100, resetsAt }] }],
+    agentConfig: async () => ({ provider: "claude" }),
+    profiles: [claudeProfile, grokProfile],
+    pipeline: async () => ({ phases: withPlanProfile("grok"), sources: [] }),
+  });
+  assert.deepEqual(created, []);
+  assert.equal(meta.status, "todo");
+  assert.match(reason, /^paused for the Cursor limit until \d{1,2}:\d{2}/);
 });
 
 test("a diagnose story is gated on Diagnose's provider, not Plan's", async () => {
