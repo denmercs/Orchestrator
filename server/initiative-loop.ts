@@ -285,8 +285,9 @@ export function createInitiativeLoop(
   // Providers at their plan limit, from the last read of live plan usage: since when the loop has seen
   // it, and until when it holds. In memory only, so a restart forgets `since` until the next read.
   const limits = new Map<string, { since: number; until: number }>();
-  // Each step's provider, read once per tick; null when its config can't be read.
-  const stepProviders = new Map<LoopStep, string | null>();
+  // Each step's provider for one checkout, read once per tick; null when its config can't be read.
+  // The key is the step plus the directory the pipeline file was read from, so two repos don't share one.
+  const stepProviders = new Map<string, string | null>();
   // Steps started by this process, so a repeated event can't start one twice before its label shows.
   const started = new Set<string>();
   // One loop action at a time: Start, turn ends and the tick all read and write the same story files.
@@ -318,18 +319,35 @@ export function createInitiativeLoop(
     for (const id of [...limits.keys()]) if (!limited.has(id)) limits.delete(id);
   }
 
-  // The plan limit a step's provider is at, or null when it isn't (or its config can't be read).
-  // A model-qualified provider ("claude/opus") is gated by its provider's limit.
-  async function limitFor(api: PaseoApi, config: LoopConfig, step: LoopStep) {
-    if (!limits.size) return null;
-    if (!stepProviders.has(step)) {
-      const provider = await readAgentConfig(api, step, config).then(
-        (agentConfig) => agentConfig.provider.split("/")[0],
-        () => null,
-      );
-      stepProviders.set(step, provider);
+  // The provider a step will start on: the pipeline phase's profile (the host phases, then the repo's
+  // `.orchestrator/pipeline.json` in `cwd` when that checkout exists), else the runner config `readAgentConfig`
+  // returns. The same lookup `startStep` uses, so a Plan set to Cursor isn't gated by a Claude window.
+  // Null when the runner config can't be read. A model-qualified provider ("cursor/grok-4.7") counts as its provider.
+  async function stepProviderId(api: PaseoApi, config: LoopConfig, step: LoopStep, cwd: string | null) {
+    let fallback: AgentCreateConfig;
+    try {
+      fallback = await readAgentConfig(api, step, config);
+    } catch {
+      return null;
     }
-    const provider = stepProviders.get(step);
+    const piped = await readPipeline().catch(() => ({ phases: DEFAULT_PHASES, sources: [] }));
+    const phases = repoPhases(piped.phases, cwd);
+    const agentConfig = await loadPhaseConfig(
+      api,
+      phases.find((phase) => phase.id === STEP_PHASES[step])?.profile,
+      fallback,
+    );
+    return agentConfig.provider.split("/")[0] || null;
+  }
+
+  // The plan limit the provider a step will start on is at, or null when it isn't (or its config can't be read).
+  // `cwd` is the checkout whose pipeline file applies: the repo for a story that has no worktree yet, the
+  // worktree once it does. A model-qualified provider ("claude/opus") is gated by its provider's limit.
+  async function limitFor(api: PaseoApi, config: LoopConfig, step: LoopStep, cwd: string | null = null) {
+    if (!limits.size) return null;
+    const key = `${step}\0${cwd ?? ""}`;
+    if (!stepProviders.has(key)) stepProviders.set(key, await stepProviderId(api, config, step, cwd));
+    const provider = stepProviders.get(key);
     const limit = provider ? limits.get(provider) : undefined;
     // A limit that has reset no longer gates, even if the usage read hasn't confirmed it yet.
     return provider && limit && limit.until > Date.now() ? { provider, since: limit.since, until: new Date(limit.until) } : null;
@@ -524,7 +542,15 @@ export function createInitiativeLoop(
     writeFrontmatter(story.path, { branch, base, workspace: workspaceId, worktree });
     const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
     if (!existsSync(stateFile(worktree))) writeFileSync(stateFile(worktree), seedState(storyContext(init, phaseDir, fresh)), "utf8");
-    return startStep(api, config, init, phaseDir, fresh, fresh.meta.track === "diagnose" ? "diagnose" : "plan", 1);
+    const step = fresh.meta.track === "diagnose" ? "diagnose" : "plan";
+    // The worktree's pipeline file is the one this step runs with. Recheck here: the gate in advance
+    // ran before this checkout existed, against the repo root.
+    const limit = await limitFor(api, config, step, worktree);
+    if (limit) {
+      writeFrontmatter(story.path, { paused_until: limit.until.toISOString(), paused_for: limit.provider });
+      return null;
+    }
+    return startStep(api, config, init, phaseDir, fresh, step, 1);
   }
 
   // Moves an in-flight story to its next step from the marker its current step wrote.
@@ -731,7 +757,8 @@ export function createInitiativeLoop(
     let paused = "";
     for (const story of ready.slice(0, Math.max(0, config.parallel - inFlight))) {
       // Its first step's provider is at its plan limit: starting it would only hit the wall.
-      const limit = await limitFor(api, config, story.meta.track === "diagnose" ? "diagnose" : "plan");
+      // No worktree yet: the repo's pipeline file is the one this story will branch off with.
+      const limit = await limitFor(api, config, story.meta.track === "diagnose" ? "diagnose" : "plan", init.root);
       if (limit) {
         paused = `paused for the ${providerName(limit.provider)} limit until ${clockTime(limit.until)}`;
         continue;
@@ -739,6 +766,13 @@ export function createInitiativeLoop(
       try {
         const agentId = await startStory(api, config, init, phaseDir, story);
         if (agentId) startedNow.push({ story: story.id, agentId });
+        else {
+          const held = readStoryFiles(phaseDir).find((item) => item.id === story.id);
+          const until = Date.parse(held?.meta.paused_until ?? "");
+          if (held?.meta.paused_for && until > Date.now()) {
+            paused = `paused for the ${providerName(held.meta.paused_for)} limit until ${clockTime(new Date(until))}`;
+          }
+        }
       } catch (error) {
         block(story, `Could not start: ${error instanceof Error ? error.message : String(error)}`, "start");
       }
@@ -787,7 +821,7 @@ export function createInitiativeLoop(
     if (!dead && !meta.stalled && !resuming && !waitedOut) return;
     // Its provider is at its plan limit (or still is, past an earlier pause): wait out the reset rather
     // than nudge or restart into it. Not a retry.
-    const limit = await limitFor(api, config, step);
+    const limit = await limitFor(api, config, step, meta.worktree || null);
     if (limit) {
       writeFrontmatter(story.path, { paused_until: limit.until.toISOString(), paused_for: limit.provider, stalled: null });
       return;
@@ -934,7 +968,7 @@ export function createInitiativeLoop(
     const step = meta.step as LoopStep;
     if (meta.status !== "blocked" || meta.block_kind !== "retry-limit" || !SUPERVISED_STEPS.has(step)) return false;
     const blockedAt = Date.parse(meta.blocked_at ?? "");
-    const limit = Number.isNaN(blockedAt) ? null : await limitFor(api, config, step);
+    const limit = Number.isNaN(blockedAt) ? null : await limitFor(api, config, step, meta.worktree || null);
     if (!limit || blockedAt < limit.since - LIMIT_GRACE_MS) return false;
     // Once per limit episode: a story that blocks again in the same one is broken, not caught by it.
     const episode = new Date(limit.since).toISOString();
