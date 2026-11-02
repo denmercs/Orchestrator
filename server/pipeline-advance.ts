@@ -220,7 +220,8 @@ export async function watchPipelinePrs(paseo: PaseoApi, readConfig: ReadConfig, 
     if (!pr) continue;
     const config = repoPipelineConfig(hostConfig, cwd);
     const action = ciAction(pr, record, config.maxFixes);
-    if (action.kind === "wait") continue;
+    // The Story pipeline doesn't pass autoMerge, so "merge" never comes back here; it waits like "wait".
+    if (action.kind === "wait" || action.kind === "merge") continue;
     if (action.kind === "skip") {
       // Fix CI is off for this repo: remember the head so it is noted once, and keep watching for the merge.
       writeCi(cwd, { ...record, fixedSha: action.headSha });

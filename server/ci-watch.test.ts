@@ -55,3 +55,14 @@ test("ciAction with maxFixes 0 skips Fix CI once per failing head and then waits
   assert.deepEqual(ciAction(pr("failing", "abc"), { fixedSha: "abc", attempts: 0 }, 0), { kind: "wait", ci: "failing" });
   assert.deepEqual(ciAction(pr("merged"), { fixedSha: "abc", attempts: 0 }, 0), { kind: "merged" });
 });
+
+test("ciAction merges a green head when the repo turns autoMerge on", () => {
+  assert.deepEqual(ciAction(pr("green", "abc"), fresh, 3, true), { kind: "merge", ci: "green", headSha: "abc" });
+  assert.deepEqual(ciAction(pr("green"), fresh, 3, false), { kind: "wait", ci: "green" });
+});
+
+test("ciAction with autoMerge still waits on pending and no-checks, and fixes a failing head", () => {
+  assert.deepEqual(ciAction(pr("pending"), fresh, 3, true), { kind: "wait", ci: "pending" });
+  assert.deepEqual(ciAction(pr("no-checks"), fresh, 3, true), { kind: "wait", ci: "none" });
+  assert.deepEqual(ciAction(pr("failing", "abc"), fresh, 3, true), { kind: "fix", ci: "failing", attempt: 1, headSha: "abc" });
+});

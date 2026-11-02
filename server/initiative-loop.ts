@@ -12,7 +12,7 @@ import { budgetMoney } from "../shared/stats-strip";
 import { storyCost, type TelemetryRow } from "./context-telemetry";
 import { DEFAULT_PHASES, STEP_PHASES, pipelineSettings, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import { loadPhaseConfig } from "./agent-runner";
-import { repoMaxFixes, repoPipelineConfig, repoReviewMode } from "./repo-pipeline";
+import { repoAutoMerge, repoMaxFixes, repoPipelineConfig, repoReviewMode } from "./repo-pipeline";
 import type { ToolItem } from "../shared/exploration";
 import { midTurnCheck, stuckCheck, toolRunningSince, type StuckCounters, type TimelineEntry } from "../shared/stuck";
 import { appendOutcome, type OutcomeEvent } from "../shared/story-outcome";
@@ -32,7 +32,7 @@ import {
 } from "./harness-layout";
 import { briefTag, installBrief } from "./brief-install";
 import { ciAction } from "./ci-watch";
-import { failureReport, prForBranch, prStatus } from "./pr-checks";
+import { failureReport, mergePr, prForBranch, prStatus } from "./pr-checks";
 import { missingPaths, planPaths } from "./plan-paths";
 import {
   MARKERS,
@@ -693,7 +693,10 @@ export function createInitiativeLoop(
     if (!pr) return;
     // The repo's `.orchestrator/pipeline.json` maxFixes wins over the host loop setting.
     const maxFixes = repoMaxFixes(cwd) ?? config.maxFixes;
-    const action = ciAction(pr, { fixedSha: meta.fixed_sha ?? null, attempts: Number(meta.fix_attempts) || 0 }, maxFixes);
+    // autoMerge is read from the repo's own checkout too, so a story branched before it was turned on still gets it.
+    const autoMerge = repoAutoMerge(init.root) || repoAutoMerge(cwd);
+    const watch = { fixedSha: meta.fixed_sha ?? null, attempts: Number(meta.fix_attempts) || 0 };
+    const action = ciAction(pr, watch, maxFixes, autoMerge);
     if (action.kind === "merged") {
       recordOutcome(story, { kind: "merged" });
       writeFrontmatter(story.path, { status: "merged", merged_at: pr.mergedAt || new Date().toISOString(), ci: null, agent: null });
@@ -709,6 +712,16 @@ export function createInitiativeLoop(
     if (action.kind === "wait" || initiativeLoopState(init.dir) !== "on") return;
     if (action.kind === "give-up") {
       block(story, action.reason, "ci");
+      return;
+    }
+    if (action.kind === "merge") {
+      // The next tick sees the merge and records it, as it does for a merge you make.
+      try {
+        await mergePr(cwd, pr.number, action.headSha);
+      } catch (error) {
+        const why = error instanceof Error ? error.message : String(error);
+        block(story, `Auto-merge of PR #${pr.number} failed: ${why}`, "ci");
+      }
       return;
     }
     if (action.kind === "skip") {
