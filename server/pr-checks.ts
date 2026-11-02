@@ -103,6 +103,11 @@ export async function prStatus(cwd: string, pr: number | string): Promise<PrStat
   }
 }
 
+// Merges a story PR with a merge commit, only if its head is still the commit whose checks passed.
+export async function mergePr(cwd: string, pr: number, headSha: string) {
+  await gh(["pr", "merge", String(pr), "--merge", "--match-head-commit", headSha], cwd, 60_000);
+}
+
 // The failed checks with the failures and summary of each failed GitHub Actions log, for the Fix CI prompt.
 export async function failureReport(cwd: string, failing: FailingCheck[]) {
   const runs = [...new Set(failing.map((check) => check.runId).filter((id): id is string => Boolean(id)))];

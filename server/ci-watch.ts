@@ -20,13 +20,16 @@ export type CiAction =
   | { kind: "merged" }
   | { kind: "closed" }
   | { kind: "wait"; ci: CiState }
+  | { kind: "merge"; ci: "green"; headSha: string }
   | { kind: "fix"; ci: "failing"; attempt: number; headSha: string }
   | { kind: "skip"; ci: "failing"; headSha: string; reason: string }
   | { kind: "give-up"; ci: "failing"; reason: string };
 
-export function ciAction(pr: PrStatus, watch: CiWatch, maxFixes: number): CiAction {
+// With `autoMerge`, a green head is merged instead of waiting for you; no checks at all still waits.
+export function ciAction(pr: PrStatus, watch: CiWatch, maxFixes: number, autoMerge = false): CiAction {
   if (pr.state === "merged") return { kind: "merged" };
   if (pr.state === "closed") return { kind: "closed" };
+  if (pr.state === "green" && autoMerge) return { kind: "merge", ci: "green", headSha: pr.headSha };
   if (pr.state !== "failing") return { kind: "wait", ci: pr.state === "no-checks" ? "none" : pr.state };
   if (watch.fixedSha === pr.headSha) return { kind: "wait", ci: "failing" };
   if (maxFixes === 0) {

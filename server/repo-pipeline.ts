@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PipelineConfig, ReviewMode } from "../shared/pipeline";
-import { REPO_PIPELINE_FILE, applyRepoPipeline, parseRepoPipeline, reviewModeOf } from "../shared/repo-pipeline";
+import { REPO_PIPELINE_FILE, applyRepoPipeline, autoMergeOf, parseRepoPipeline, reviewModeOf } from "../shared/repo-pipeline";
 
 // The repo's own Fix CI limit from `.orchestrator/pipeline.json`, or null when it sets none (or the file is
 // missing or broken). The CI watch uses this first, then the host setting.
@@ -31,4 +31,13 @@ export function repoReviewMode(cwd: string | null): ReviewMode {
   const file = join(cwd, REPO_PIPELINE_FILE);
   if (!existsSync(file)) return "full";
   return reviewModeOf(parseRepoPipeline(readFileSync(file, "utf8")).override);
+}
+
+// The repo's `"autoMerge"` from `.orchestrator/pipeline.json`: false when it sets none, or the file is missing or
+// broken, so only a repo that opts in has its green story PRs merged for it.
+export function repoAutoMerge(cwd: string | null): boolean {
+  if (!cwd) return false;
+  const file = join(cwd, REPO_PIPELINE_FILE);
+  if (!existsSync(file)) return false;
+  return autoMergeOf(parseRepoPipeline(readFileSync(file, "utf8")).override);
 }

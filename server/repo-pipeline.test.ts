@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DEFAULT_PHASES, type PipelineConfig } from "../shared/pipeline";
-import { repoMaxFixes, repoPipelineConfig, repoReviewMode } from "./repo-pipeline";
+import { repoAutoMerge, repoMaxFixes, repoPipelineConfig, repoReviewMode } from "./repo-pipeline";
 
 const host: PipelineConfig = { enabled: true, phases: DEFAULT_PHASES, reviewRounds: 3, maxFixes: 3, closeOnMerge: true, sources: [] };
 
@@ -57,4 +57,19 @@ test("repoReviewMode reads the repo's review mode, else full", () => {
   assert.equal(repoReviewMode(cwd), "full");
   writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), "{broken");
   assert.equal(repoReviewMode(cwd), "full");
+});
+
+test("repoAutoMerge is on only when the repo sets it", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "repo-pipeline-"));
+  assert.equal(repoAutoMerge(null), false);
+  assert.equal(repoAutoMerge(cwd), false);
+  mkdirSync(join(cwd, ".orchestrator"));
+  writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), JSON.stringify({ reviewRounds: 3 }));
+  assert.equal(repoAutoMerge(cwd), false);
+  writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), JSON.stringify({ autoMerge: true }));
+  assert.equal(repoAutoMerge(cwd), true);
+  writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), JSON.stringify({ autoMerge: "yes" }));
+  assert.equal(repoAutoMerge(cwd), false);
+  writeFileSync(join(cwd, ".orchestrator", "pipeline.json"), "{broken");
+  assert.equal(repoAutoMerge(cwd), false);
 });

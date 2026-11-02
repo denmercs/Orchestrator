@@ -35,12 +35,20 @@ export const repoPipelineFile = z.object({
   // story's own tests in round 1 (local verification before merge covers lint, type-check, suite and build) and gives
   // rounds 2 and later a short fix check without the peer-review and review-patterns skills.
   reviewMode: z.enum(REVIEW_MODES).optional(),
+  // Merge a story PR once Review has passed and every check on its head is green. Absent or false leaves the
+  // merge to you. The initiative loop reads it from the repo's own checkout, so turning it on takes no new story.
+  autoMerge: z.boolean().optional(),
 });
 export type RepoPipeline = z.infer<typeof repoPipelineFile>;
 
 // A repo-only setting, like testingSkill: the host has no review mode, so a repo that sets none runs the full one.
 export function reviewModeOf(override: RepoPipeline | null): ReviewMode {
   return override?.reviewMode ?? "full";
+}
+
+// A repo-only setting: the host never merges for you, so a repo that sets none waits for your merge.
+export function autoMergeOf(override: RepoPipeline | null): boolean {
+  return override?.autoMerge ?? false;
 }
 
 // Parsed file text, or the reason it can't be used. Empty text is no override.
