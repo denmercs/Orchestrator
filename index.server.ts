@@ -1,4 +1,4 @@
-import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import type { RpcInput } from "@getpaseo/plugin";
 import { loadDailyVerse } from "./server/bible-verse";
 import { listMergedPrs } from "./server/github-prs";
@@ -21,7 +21,9 @@ import { stopPlanServer } from "./server/plan-server";
 import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { advancePipeline, closeMergedStories, startStory, watchPipelinePrs } from "./server/pipeline-advance";
 import { createLoopAdvance } from "./server/loop-advance";
+import { factorySeatTurnEnded } from "./server/factory-slice-stuck";
 import { createInitiativeLoop, type ReadCost } from "./server/initiative-loop";
+import { loopPermissionRequested, loopPermissionResolved, loopTurnEnded, paseoLoopHost } from "./server/loop-host-paseo";
 import { startLocalTicket, startTicket } from "./server/ticket-start";
 import { promoteSessionToStory } from "./shared/promote";
 import { readBranchInitials } from "./server/git-identity";
@@ -213,7 +215,7 @@ export default function contribute(
   server.handle(getBranchInitials, async () => ({ initials: await readInitials() }));
   server.handle(getEpicBoards, async ({ repos }, { paseo }) => {
     // The board polls every few seconds, so this keeps the loop's Paseo handle fresh for its timer.
-    initiativeLoop.rememberPaseo(paseo);
+    initiativeLoop.rememberHost(paseoLoopHost(paseo));
     return loadHarnessBoards(repos, await readHarness());
   });
   server.handle(deleteEpicInitiative, deleteInitiative);
@@ -281,7 +283,8 @@ export default function contribute(
   };
   const initiativeLoop = createInitiativeLoop(
     readLoopConfig,
-    async (paseo, step, loop) => loadStepConfig(paseo, loop, step, await readRunnerProfileId()),
+    async (host, step, loop) =>
+      loadStepConfig({ config: { get: () => host.readRunnerProfiles() } }, loop, step, await readRunnerProfileId()),
     readLoopPipeline,
     readInitials,
     readCost,
@@ -301,14 +304,14 @@ export default function contribute(
     },
   );
   // The Initiatives tab and the loop start file both start the loop here.
-  const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: Parameters<typeof initiativeLoop.start>[0]) =>
-    initiativeLoop.start(paseo, input);
+  const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: PluginHandlerContext["paseo"]) =>
+    initiativeLoop.start(paseoLoopHost(paseo), input);
   server.handle(startInitiativeLoop, (input, { paseo }) => startLoop(input, paseo));
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
   server.handle(startTicketRpc, (input, { paseo }) =>
     startTicket(input, {
       readIssue: async (key) => (await readIssueStatuses([key])).get(key),
-      startLoop: (loop) => initiativeLoop.start(paseo, loop),
+      startLoop: (loop) => initiativeLoop.start(paseoLoopHost(paseo), loop),
     }),
   );
   server.handle(promoteSessionToStory, async (input, { paseo }) => {
@@ -319,7 +322,7 @@ export default function contribute(
       if (!repo) return fail("That workspace has no directory on disk.");
       const result = await startLocalTicket(
         { repo, title: input.title, kind: input.kind },
-        { startLoop: (loop) => initiativeLoop.start(paseo, loop) },
+        { startLoop: (loop) => initiativeLoop.start(paseoLoopHost(paseo), loop) },
       );
       return { ok: result.ok, error: result.error, ticketKey: result.key, agentId: result.agentId };
     } catch (cause) {
@@ -333,8 +336,8 @@ export default function contribute(
     return { ok: true as const };
   });
   const context = server.registerSettings(contextSettings);
-  let contextPaseo: Parameters<typeof loadRunnerConfig>[0] | null = null;
-  let replayPaseo: Parameters<typeof loadRunnerConfig>[0] | null = null;
+  let contextPaseo: PluginHandlerContext["paseo"] | null = null;
+  let replayPaseo: PluginHandlerContext["paseo"] | null = null;
   const memoryReplay =
     deps.replay ??
     createMemoryReplay(
@@ -659,9 +662,19 @@ export default function contribute(
     void advancePipeline(paseo, event, readPipeline, readAgentConfig).catch((error) => {
       console.warn("orchestrator: pipeline advance failed", error);
     });
-    void initiativeLoop.onTurnEnded(paseo, event).catch((error) => {
-      console.warn("orchestrator: initiative loop failed", error);
+    // A factory slice's seat first: the stuck check on its story. The initiative loop ignores those agents.
+    void factorySeatTurnEnded(paseo, event, {
+      readFactoryRoot: async () => (await readHarness()).repo ?? null,
+      readConfig: readLoopConfig,
+    }).catch((error) => {
+      console.warn("orchestrator: factory seat check failed", error);
     });
+    // Mapped inside the chain, so an event the loop can't read is a warning, not a throw in the hook.
+    void Promise.resolve()
+      .then(() => initiativeLoop.onTurnEnded(paseoLoopHost(paseo), loopTurnEnded(event)))
+      .catch((error) => {
+        console.warn("orchestrator: initiative loop failed", error);
+      });
     contextPaseo = paseo;
     void contextWatch.onTurnEnded(event).catch((error) => {
       console.warn("orchestrator: context watch failed", error);
@@ -672,7 +685,7 @@ export default function contribute(
   // opens or starts a turn, not only at the next turn end.
   const arm = (paseo: Parameters<typeof loop.rememberPaseo>[0]) => {
     loop.rememberPaseo(paseo);
-    initiativeLoop.rememberPaseo(paseo);
+    initiativeLoop.rememberHost(paseoLoopHost(paseo));
     pipelinePaseo = paseo;
   };
   const offSessionOpen = server.before("agent.session_open", (_input, { paseo }) => {
@@ -687,13 +700,16 @@ export default function contribute(
   const offPermissionRequested = server.on("agent.permission_requested", (event, { paseo }) => {
     arm(paseo);
     publishInOrder(() => permissionEvents(event));
-    void initiativeLoop.onPermissionRequested(paseo, event).catch((error) => {
-      console.warn("orchestrator: loop permission request failed", error);
-    });
+    // Mapped inside the chain, so an event the loop can't read is a warning, as before, not a throw in the hook.
+    void Promise.resolve()
+      .then(() => initiativeLoop.onPermissionRequested(paseoLoopHost(paseo), loopPermissionRequested(event)))
+      .catch((error) => {
+        console.warn("orchestrator: loop permission request failed", error);
+      });
   });
   const offPermissionResolved = server.on("agent.permission_resolved", (event, { paseo }) => {
     arm(paseo);
-    void initiativeLoop.onPermissionResolved(paseo, event).catch((error) => {
+    void initiativeLoop.onPermissionResolved(paseoLoopHost(paseo), loopPermissionResolved(event)).catch((error) => {
       console.warn("orchestrator: loop permission resolve failed", error);
     });
   });

@@ -2,6 +2,8 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { GateAction } from "../shared/gates";
 import type { ActResult } from "./context-watch";
 import type { BlockKind } from "./initiative-loop";
+import type { LoopHost } from "../shared/loop-host";
+import { paseoLoopHost } from "./loop-host-paseo";
 
 // Gate actions (see CONTEXT.md, "Gate action"): the rules for acting on a story's gate from outside
 // its session. Everything outside this file reaches it through GatePort.
@@ -168,7 +170,7 @@ type PaseoApi = PluginHandlerContext["paseo"];
 type LoopFiles = {
   gateStory(ref: { repo: string; initiative: string; storyId: string }): Promise<GateStory | null>;
   reopen(ref: { repo: string; initiative: string; storyId: string }): Promise<void>;
-  retryStep(api: PaseoApi, ref: { repo: string; initiative: string; storyId: string }): Promise<GateResult>;
+  retryStep(host: LoopHost, ref: { repo: string; initiative: string; storyId: string }): Promise<GateResult>;
   closedPr(ref: { repo: string; initiative: string; storyId: string }): Promise<number | null>;
   raiseCap(ref: { repo: string; initiative: string; storyId: string }): Promise<void>;
   leaveStopped(ref: { repo: string; initiative: string; storyId: string }): Promise<void>;
@@ -214,7 +216,7 @@ export function loopGatePort(loop: LoopFiles, paseo: PaseoApi, contextWatch: Fre
     },
     async retryStep({ board, storyId }) {
       const split = splitBoard(board);
-      return split ? loop.retryStep(paseo, { ...split, storyId }) : refuse(`${storyId} is not on that board.`);
+      return split ? loop.retryStep(paseoLoopHost(paseo), { ...split, storyId }) : refuse(`${storyId} is not on that board.`);
     },
     async closedPr({ board, storyId }) {
       const split = splitBoard(board);

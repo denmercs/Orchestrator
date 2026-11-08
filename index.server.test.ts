@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import contribute from "./index.server";
 import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
@@ -1177,4 +1177,88 @@ test("the loop tree RPCs: get returns the default, save refuses an invalid tree"
   const broken = (await call("orchestration.loop-tree.import", { repo, text: "{x" })) as { ok: boolean; error: string };
   assert.equal(broken.ok, false);
   assert.match(broken.error, /not valid JSON/);
+});
+
+test("the turn-end hook hands a factory slice's seat to the stuck check, and any other agent to the initiative loop", async () => {
+  // Arrange: a slice whose builder is one turn short of the default stuck limit, its story edits only .harness files.
+  const root = mkdtempSync(join(tmpdir(), "slice-hook-"));
+  const worktree = join(root, "wt");
+  mkdirSync(join(worktree, ".harness"), { recursive: true });
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1\n\n## Status\nimplement-running\n", "utf8");
+  const story = join(root, "story.md");
+  writeFileSync(story, `---\nid: S1\ntitle: Demo\nstatus: implementing\nstep: implement\nround: 1\nworktree: ${worktree}\nagent: a1\nceremony_turns: 7\n---\n`, "utf8");
+  const home = join(root, ".harness", "factory");
+  const dir = join(home, "missions", "m1", "slices", "s1");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(home, "project.md"), "Ship.\n");
+  writeFileSync(join(home, "missions", "m1", "mission.md"), "Land one slice.\n");
+  writeFileSync(join(dir, "spec.md"), "Build it.\n");
+  writeFileSync(join(dir, "state.md"), `---\nphase: build\nrun: on\nseat: builder\nagent: a1\nworktree: ${worktree}\nstory: ${story}\n---\n`, "utf8");
+  const labels = { kind: "factory-seat", seat: "builder", "factory-slice": "s1", "factory-mission": "m1", "loop-step": "implement", "loop-round": "1" };
+  // And a loop story in the same repo, whose step agent a2 is not a factory seat.
+  const phase = join(root, ".harness", "initiatives", "demo", "phases", "1-meter");
+  mkdirSync(join(phase, "stories"), { recursive: true });
+  writeFileSync(join(root, ".harness", "initiatives", "demo", "initiative.md"), "---\nloop: on\n---\n# Initiative: Demo\n", "utf8");
+  const loopStory = join(phase, "stories", "01-story.md");
+  writeFileSync(loopStory, `---\nid: S2\ntitle: Loop story\nstatus: implementing\nstep: implement\nround: 1\nworktree: ${worktree}\nagent: a2\n---\n`, "utf8");
+  const loopLabels = { kind: "initiative-loop", "loop-repo": root, "loop-initiative": "demo", "loop-phase": "1-meter", "loop-story": "S2", "loop-step": "implement", "loop-round": "1" };
+  const sent: { id: string; text: string }[] = [];
+  const paseo = {
+    agents: {
+      list: noSessions,
+      ref: (id: string) => ({
+        refresh: async () => ({ agent: { id, labels: id === "a1" ? labels : loopLabels } }),
+        send: async (text: string) => void sent.push({ id, text }),
+      }),
+    },
+  };
+  const { listeners, stop } = wired([], true, undefined, undefined, undefined, { harness: { repo: root, epic: "" } });
+  try {
+    // Act: the builder finishes a turn that only edited the story's own state file.
+    const harnessEdit = { type: "tool_call", status: "completed", detail: { type: "edit", filePath: "/w/.harness/state.md", newString: "x" } };
+    await listeners.get("agent.turn_ended")!(
+      { agent: turnAgent("a1", worktree), turnId: null, outcome: { kind: "completed" }, timeline: [{ type: "user_message" }, harnessEdit] },
+      { paseo },
+    );
+
+    // Assert: the hook ran the slice check, so the seat got the nudge.
+    await until(() => sent.length > 0);
+    assert.equal(sent[0].id, "a1");
+    assert.match(sent[0].text, /You look stuck: 8 turns in a row edited only \.harness files/);
+
+    // Act: the loop's step agent fails a turn.
+    await listeners.get("agent.turn_ended")!(
+      { agent: turnAgent("a2", worktree), turnId: null, outcome: { kind: "failed", error: { message: "rate limited" } }, timeline: [] },
+      { paseo },
+    );
+
+    // Assert: the loop got the turn, with the failure's error as its message, and marked the step stalled.
+    const stalled = () => readFileSync(loopStory, "utf8").includes("stalled: Its last turn failed: rate limited");
+    await until(stalled);
+    assert.ok(stalled(), "the loop marks its story's step stalled");
+  } finally {
+    stop();
+  }
+});
+
+test("a turn end the loop can't map is a warning, and the context watch still gets the turn", async () => {
+  // Arrange: a failed outcome with no error, which the loop's event mapping can't read.
+  const warnings: string[] = [];
+  const warn = mock.method(console, "warn", (message: string) => void warnings.push(String(message)));
+  const { listeners, stop } = wired();
+  try {
+    // Act
+    await listeners.get("agent.turn_ended")!(
+      { agent: turnAgent("a1"), turnId: null, outcome: { kind: "failed" }, timeline: [] },
+      { paseo: { agents: { list: noSessions, ref: () => ({ refresh: async () => null }) } } },
+    );
+    await until(() => warnings.some((line) => line.includes("initiative loop failed")));
+
+    // Assert: the loop's failure is a warning, and the hook went on to the context watch after it.
+    assert.ok(warnings.some((line) => line.includes("initiative loop failed")));
+    await until(() => warnings.some((line) => line.includes("context watch failed")));
+  } finally {
+    warn.mock.restore();
+    stop();
+  }
 });

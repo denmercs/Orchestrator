@@ -216,6 +216,18 @@ There is no gate. `reconcile` hands `diagnose-done` straight to Implement, as it
 
 _Avoid_: bugfix track, triage (for the track); diagnosing (as a status).
 
+## LoopHost
+
+The host port the initiative loop uses for agents and workspaces instead of calling Paseo types directly. Code: the `LoopHost` type in `shared/loop-host.ts`, with no Paseo imports, and `paseoLoopHost` in `server/loop-host-paseo.ts`. The loop names what it needs: list step agents, refresh a session, send or steer a nudge, read a recent timeline, create, refresh and archive a story worktree, start a step agent, and read plan usage and runner profiles. Turns and permissions reach the loop as `LoopTurnEnded`, `LoopPermissionRequested` and `LoopPermissionResolved`, and `index.server.ts` maps Paseo's hook events onto them (`loopTurnEnded` and friends in `server/loop-host-paseo.ts`). `server/initiative-loop.ts` imports nothing from `@getpaseo`; a test asserts it.
+
+Paseo is the default and the only path run day to day: `index.server.ts` wraps the plugin's `paseo` handle with `paseoLoopHost(paseo)` at each call into the loop. Runner profiles are read through `RunnerProfiles` (`{ config: { get() } }`), which Paseo satisfies. Tests use `fakeLoopHost` in `test-support/fake-loop-host.ts`, and `server/loop-host.contract.test.ts` drives a story step on it alone.
+
+Factory slice seats stay on Paseo: `factorySeatTurnEnded` in `server/factory-slice-stuck.ts` runs first on every turn end, and the loop ignores `factory-seat` agents.
+
+Later work, still on Paseo calls: architecture sessions (`server/harness-architect.ts`), the factory tick and its manager, and the Board.
+
+_Avoid_: Paseo adapter (for the interface name alone; say LoopHost or host port in loop code).
+
 ## Loop supervision
 
 How the initiative loop keeps a step moving with no agent watching it. Code: `supervise` and the turn-end and permission handlers in `server/initiative-loop.ts`. It covers the `plan`, `diagnose`, `implement` and `review` steps while the story is `planning`, `implementing` or `reviewing` and its `.harness/state.md` marker is still `<step>-running` (or its worktree is gone). `awaiting-approval` waits on you and `pr-open` has its own watcher, so neither is supervised.
