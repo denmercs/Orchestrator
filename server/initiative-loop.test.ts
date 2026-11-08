@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { mock, test } from "node:test";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
@@ -1310,6 +1310,50 @@ test("a turn you cancel is left alone", async () => {
 
   assert.equal(storyMeta(story).stalled, undefined);
   assert.deepEqual([sent, created], [[], []]);
+});
+
+test("with the loop and the factory tick both running, an adopted story's dead builder is replaced once by the tick only", async () => {
+  const { root, story, worktree } = fixture("gone");
+  const factoryHome = join(root, ".harness", "factory");
+  const slice = join(factoryHome, "missions", "m1", "slices", "s1");
+  mkdirSync(slice, { recursive: true });
+  writeFileSync(join(factoryHome, "project.md"), "Ship.\n");
+  writeFileSync(join(factoryHome, "missions", "m1", "mission.md"), "Land one slice.\n");
+  writeFileSync(join(slice, "spec.md"), "Build it.\n");
+  writeFileSync(
+    join(slice, "state.md"),
+    `---\nphase: build\nrun: on\nseat: builder\nagent: gone\nattempt: 1\nworktree: ${worktree}\nstory: ${resolve(story)}\n---\n`,
+    "utf8",
+  );
+
+  const factoryCreated: { cwd: string; prompt: string }[] = [];
+  const known: Record<string, { status: string }> = {};
+  const { api, created } = fakePaseo([]);
+  const tickPaseo = {
+    agents: {
+      ref: (id: string) => ({
+        refresh: async () => (known[id] ? { agent: known[id] } : api.agents.ref(id).refresh()),
+      }),
+      create: async (request: { cwd: string; prompt: string }) => {
+        factoryCreated.push({ cwd: request.cwd, prompt: request.prompt });
+        const id = `builder-${factoryCreated.length}`;
+        known[id] = { status: "idle" };
+        return { id };
+      },
+    },
+  };
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+  const { runFactoryTick } = await import("./factory-tick");
+
+  await Promise.all([initiative.tick(), runFactoryTick(root, tickPaseo)]);
+  await initiative.tick();
+  await runFactoryTick(root, tickPaseo);
+
+  assert.equal(created.length, 0, "the loop must not replace a story the factory owns");
+  assert.equal(factoryCreated.length, 1);
+  assert.equal(factoryCreated[0].cwd, worktree);
+  assert.match(factoryCreated[0].prompt, /Build it\./);
 });
 
 test("a closed session is replaced by a fresh one on the same step that resumes from state.md", async () => {
@@ -2985,4 +3029,97 @@ test("a repo's light Review keeps peer-review in round 1 and drops it, and the f
   assert.equal(later.meta.step_skills ?? "", "");
   assert.match(later.resumed, /check the review fixes/);
   assert.doesNotMatch(later.resumed, /Also use these skills/);
+});
+
+// A loop whose factory adopts the given story files (as namedStories would give them).
+const adoptingLoop = (...stories: string[]) =>
+  createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+    async () => null,
+    { cap: async () => 5, rows: () => [] },
+    undefined,
+    async () => new Set(stories.map((file) => realpathSync(file))),
+  );
+
+// A fake Paseo that records the workspaces the loop tries to create for a story, then refuses them.
+function workspaceSpy() {
+  const { api, created } = fakePaseo([]);
+  const requests: unknown[] = [];
+  const spied = api as unknown as {
+    projects: unknown;
+    workspaces: { create: (request: unknown) => Promise<never> };
+  };
+  spied.projects = { list: async () => ({ projects: [] }) };
+  spied.workspaces.create = async (request) => {
+    requests.push(request);
+    throw new Error("stop");
+  };
+  return { api, created, requests };
+}
+
+test("a todo story starts unless the factory adopted it, then the loop leaves it alone", async () => {
+  const todo = () => {
+    const fx = fixture();
+    writeFrontmatter(fx.story, { status: "todo", agent: null, worktree: null, step: null, workspace: null });
+    return fx;
+  };
+  const warn = mock.method(console, "warn", () => {});
+  const free = todo();
+  const open = workspaceSpy();
+  const plain = loop();
+  plain.rememberPaseo(open.api);
+  await plain.tick();
+  assert.equal(open.requests.length, 1, "a story nobody adopted starts");
+
+  const owned = todo();
+  const held = workspaceSpy();
+  const initiative = adoptingLoop(owned.story);
+  initiative.rememberPaseo(held.api);
+  await initiative.tick();
+  warn.mock.restore();
+  assert.equal(held.requests.length, 0);
+  assert.equal(storyMeta(owned.story).status, "todo");
+  assert.ok(free.story);
+});
+
+test("retry, turn end and reopen on an adopted story do nothing", async () => {
+  const { story, root, api, created, turnEnded } = planDone();
+  const initiative = adoptingLoop(story);
+  await initiative.onTurnEnded(api, turnEnded("a1"));
+  assert.equal(created.length, 0);
+
+  writeFrontmatter(story, { status: "blocked", blocked_from: "planning", block_kind: "step" });
+  const ref = { repo: root, initiative: "demo", storyId: "S1" };
+  const retry = await initiative.retryStep(api, ref);
+  assert.equal(retry.ok, false);
+  assert.match(retry.error ?? "", /belongs to a factory slice/);
+  assert.equal(created.length, 0);
+
+  await initiative.reopen(ref);
+  await initiative.raiseCap(ref);
+  assert.equal(storyMeta(story).status, "blocked");
+});
+
+test("a failing factory read adopts nothing and doesn't fail the sweep", async () => {
+  const { story } = fixture();
+  writeFrontmatter(story, { status: "todo", agent: null, worktree: null, step: null, workspace: null });
+  const { api, requests } = workspaceSpy();
+  const warn = mock.method(console, "warn", () => {});
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+    async () => null,
+    undefined,
+    undefined,
+    async () => {
+      throw new Error("unreadable");
+    },
+  );
+  initiative.rememberPaseo(api);
+  await initiative.tick();
+  warn.mock.restore();
+  assert.equal(requests.length, 1);
 });
