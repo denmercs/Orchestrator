@@ -140,6 +140,17 @@ Tmux, the terminal UI, and a separate daemon are OpenRig's transport. The factor
 
 The design seat is part of the factory. The manager sets `design: on` when the slice is a screen or a visual, and the tick runs the design phase after spec and before build. The design seat writes `design.md` and does not edit product code. A slice without `design: on` skips that phase. A second independent reviewer and a saved rig template still wait until one builder and one reviewer have finished a slice.
 
+## One provider
+
+A factory runs on one provider's models: all Cursor or all Claude, never a mix. The manager, every seat, the builder's cheap helpers, the one-shot calls and every fallback take their model from that provider. When no model of that provider fits, the create fails and the manager is told. It never falls through to the other provider. The provider is the Paseo provider, so `cursor/claude-haiku-5-5` counts as Cursor.
+
+The code mixes today, and these must change before the rule holds:
+
+- `MANAGER_MODELS` falls back from `claude` to `cursor`.
+- A seat with no profile of the runner's provider falls back to `MANAGER_MODELS`.
+- The one-shot calls (status reporter, correction classifier, replay judge) always use the Claude CLI.
+- The voice helper, the reply summariser and the Prod Pulse schedule are pinned to `claude/claude-haiku-4-5`.
+
 ## Tick
 
 One pass, owned by the factory. Do not leave the initiative loop's own supervisor running as a peer. A slice with no `run: on` is idle, even when its spec exists and its dependencies are done.
