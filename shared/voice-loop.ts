@@ -7,7 +7,7 @@ import { choiceNumber, exactSessions, matchSessions, shortName } from "./voice-n
 
 export type VoiceMode = "asleep" | "listening" | "confirming" | "waiting" | "speaking";
 export type VoiceSession = { id: string; name: string };
-export type NoticeKind = "finished" | "needsYou" | "error" | "costCap";
+export type NoticeKind = "finished" | "needsYou" | "error" | "costCap" | "roundCap";
 export type Notice = { kind: NoticeKind; sessionId: string; name: string };
 
 export type VoiceState = {
@@ -102,9 +102,21 @@ const LIST_SESSIONS = /^(?:(?:list|show|read|which|what)(?: me)?(?: the| all| my
 // "switch to X" (and "go/talk/change/move to X"), or "use/pick/open/choose/select X".
 const SWITCH_TO = /^(?:(switch|go|talk|change|move) to|(use|pick|open|choose|select)) (.+)$/;
 const NEW_SESSION = /^(?:start |create |open )?(?:a )?new (?:voice )?session$/;
-const NOTICE_ORDER: NoticeKind[] = ["finished", "needsYou", "error", "costCap"];
-const NOTICE_ONE: Record<NoticeKind, string> = { finished: "finished", needsYou: "needs you", error: "hit an error", costCap: "hit the cost cap" };
-const NOTICE_MANY: Record<NoticeKind, string> = { finished: "finished", needsYou: "need you", error: "hit an error", costCap: "hit the cost cap" };
+const NOTICE_ORDER: NoticeKind[] = ["finished", "needsYou", "error", "costCap", "roundCap"];
+const NOTICE_ONE: Record<NoticeKind, string> = {
+  finished: "finished",
+  needsYou: "needs you",
+  error: "hit an error",
+  costCap: "hit the cost cap",
+  roundCap: "is on round 3, near the cap on rounds and spend",
+};
+const NOTICE_MANY: Record<NoticeKind, string> = {
+  finished: "finished",
+  needsYou: "need you",
+  error: "hit an error",
+  costCap: "hit the cost cap",
+  roundCap: "are on round 3, near the cap on rounds and spend",
+};
 const NUMBER_WORDS = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
 // Said after the name to wake the loop with nothing else to do.
 const WAKE_WORDS = new Set(["", "wake up", "wake", "i m back", "im back", "listen", "you there", "are you there"]);

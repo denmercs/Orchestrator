@@ -2326,6 +2326,44 @@ test("cost-cap block calls onCostCap(agentId), and a turn under the cap doesn't"
   assert.deepEqual(hit, ["a1"]);
 });
 
+test("review round 3 nudge: voice once on the new step agent, not at rounds 1 or 2 and not again", async () => {
+  const nudged: string[] = [];
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+    async () => null,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    (id) => nudged.push(id),
+  );
+  const { story, worktree, labels } = fixture("a1");
+  const reviewLabels = { ...labels, "loop-step": "review" };
+  const findings = (body: string, marker = "review-done") =>
+    writeFileSync(join(worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\n${marker}\n\n## Review findings\n${body}\n`, "utf8");
+  const failed = async (round: number) => {
+    writeFrontmatter(story, { status: "reviewing", step: "review", round, agent: "a1" });
+    findings("- [ ] blocking: a.ts:1 — wrong — fix");
+    const { api, created } = fakePaseo([{ id: "a1", labels: { ...reviewLabels, "loop-round": String(round) } }]);
+    await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as never);
+    return created;
+  };
+  assert.deepEqual((await failed(1)).map((agent) => agent.labels["loop-round"]), ["2"]);
+  assert.equal(nudged.length, 0);
+  assert.equal(storyMeta(story).round_nudged, undefined);
+  assert.deepEqual((await failed(2)).map((agent) => agent.labels["loop-round"]), ["3"]);
+  assert.deepEqual(nudged, ["n1"]);
+  assert.equal(storyMeta(story).round_nudged, "3");
+  const before = nudged.length;
+  writeFrontmatter(story, { status: "implementing", step: "implement", round: 3, agent: "a2" });
+  writeFileSync(join(worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\nimplement-done\n`, "utf8");
+  const { api: again } = fakePaseo([{ id: "a2", labels: { ...labels, "loop-step": "implement", "loop-round": "3" } }]);
+  await initiative.onTurnEnded(again, { agent: { id: "a2" }, outcome: { kind: "completed" } } as never);
+  assert.equal(nudged.length, before);
+});
+
 test("a failed turn at the cap blocks; a canceled one and one under the cap do not", async () => {
   const failed = capped(6, 5, "failed", "implement-running");
   await failed.end();

@@ -293,6 +293,8 @@ Running, Ready and Merged show "—" until the boards first load. Each stat has 
 
 **Cost cap**: the most one story may spend, `storyCapUsd` from the **Budget** (a story's own `cost_cap_usd` overrides it once **continue** has raised it). Checked at each turn end of an agent step: a story at or over the cap blocks with `block_kind` `cost-cap` (reason "cost cap ($x.xx of $y)"), a stuck-style gate that offers **continue** and **leave**. Spend is the story's telemetry cost, counting the live session. Code: `ReadCost` and `raiseCap`/`leaveStopped` in `server/initiative-loop.ts`.
 
+**Round-3 nudge**: the first time a story enters review round 3 (loop `round` on Implement or Review after a failed review, factory `review_round` so QA rounds on `round` don't count), the loop publishes one Voice `roundCap` notice on the new step agent and the factory tick steers one line to the manager. It names the story, says it is on round 3, and that the cap on rounds and spend is near. `round_nudged: 3` in the story frontmatter makes later ticks skip a second send. It does not change what step runs next. Code: `shared/round-nudge.ts`, `maybeRoundNudge` in `server/round-nudge.ts`, `startStep` in `server/initiative-loop.ts`, the slice launcher in `server/factory-phases.ts`.
+
 _Avoid_: KPI row, metrics (for the strip); quota, limit (for the budget).
 
 ## Plan usage

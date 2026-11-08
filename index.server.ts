@@ -286,6 +286,7 @@ export default function contribute(
     },
     // A slice agent's labels name its slice; its factory is the harness repo's.
     async () => (await readHarness()).repo ?? null,
+    (sessionId) => publishVoice([{ type: "notice", kind: "roundCap", sessionId }]),
   );
   // The Initiatives tab and the loop start file both start the loop here.
   const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: Parameters<typeof initiativeLoop.start>[0]) =>
