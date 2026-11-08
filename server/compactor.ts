@@ -93,7 +93,9 @@ export function freshCompactor(port: FreshPort): Compactor {
       const old = await port.session(agentId);
       if (!old) throw new Error("That session is no longer running.");
       if (old.running) throw new Error("Wait for the turn to end, then start fresh.");
-      const loop = old.labels.kind === LOOP_AGENT_KIND ? await port.loopPrompt(old.labels) : null;
+      // A factory slice's step agent restarts its step the same way; a seat with no loop step gets no prompt and writes a handoff.
+      const stepAgent = old.labels.kind === LOOP_AGENT_KIND || (old.labels.kind === "factory-seat" && old.labels["factory-slice"]);
+      const loop = stepAgent ? await port.loopPrompt(old.labels) : null;
       if (!loop) await port.handoff(agentId, old.cwd, handoffAsk(list));
       const created = await port.create({
         workspaceId: old.workspaceId,

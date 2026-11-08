@@ -26,6 +26,8 @@ function fakePort(
   closed: number | null = null,
   // Whether the story's step marker is still `<step>-running`.
   running = true,
+  // The stories a factory slice names.
+  adopted: string[] = [],
 ) {
   // Every port call in order, so a test can check what happened first.
   const calls: string[] = [];
@@ -65,6 +67,7 @@ function fakePort(
       calls.push("leaveStopped");
     },
     stepRunning: async () => running,
+    adopted: async ({ storyId }) => adopted.includes(storyId),
   };
   return { port, sent, reopened, fresh, retried, calls };
 }
@@ -151,6 +154,39 @@ for (const [name, stories, live, storyId, action, error] of refusals) {
     assert.deepEqual(fresh, []);
   });
 }
+
+// A story a factory slice names belongs to the tick: the dashboard refuses and touches nothing.
+for (const [action, status] of [
+  ["approve", "awaiting-approval"],
+  ["nudge", "blocked"],
+  ["restart", "blocked"],
+] as const) {
+  test(`refused: ${action} on a story a factory slice names`, async () => {
+    const { port, sent, reopened, fresh, calls } = fakePort(
+      { S12: { status, agent: "a1", waitingOn: null }, S13: { status, agent: "a2", waitingOn: null } },
+      ["a1", "a2"],
+      undefined,
+      [],
+      undefined,
+      null,
+      true,
+      ["S12"],
+    );
+    const result = await createGateActions(port).act({ board: BOARD, storyId: "S12", action });
+    assert.deepEqual(result, { ok: false, error: "S12 belongs to a factory slice; ask the manager.", agentId: null });
+    assert.deepEqual(calls, []);
+    assert.deepEqual([sent, reopened, fresh], [[], [], []]);
+    // A story no slice names is still acted on.
+    assert.equal((await createGateActions(port).act({ board: BOARD, storyId: "S13", action })).ok, true);
+  });
+}
+
+test("loopGatePort: asks the loop whether a slice names the story, with the split board key", async () => {
+  const { port, looked } = realPort({});
+  assert.equal(await port.adopted?.({ board: BOARD, storyId: "S12" }), true);
+  assert.deepEqual(looked, [{ repo: "/repo", initiative: "orchestration-redesign", storyId: "S12" }]);
+  assert.equal(await port.adopted?.({ board: "no-newline", storyId: "S12" }), false);
+});
 
 test("nudge: a blocked story's agent is sent the nudge, then the story is reopened", async () => {
   const { port, sent, reopened, fresh, calls } = fakePort(
@@ -355,6 +391,10 @@ function realPort(agents: Record<string, { status: string; archivedAt?: string }
       looked.push(ref);
     },
     stepRunning: async (ref: { repo: string; initiative: string; storyId: string }) => {
+      looked.push(ref);
+      return true;
+    },
+    adopted: async (ref: { repo: string; initiative: string; storyId: string }) => {
       looked.push(ref);
       return true;
     },
