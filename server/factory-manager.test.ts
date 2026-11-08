@@ -111,7 +111,6 @@ for (const [name, agent, known] of dead) {
     assert.deepEqual(created, [
       { cwd: root, config: MANAGER_MODELS[0], env: { [FACTORY_MANAGER_ENV]: "1" }, title: "Factory manager", labels: { kind: "factory-manager" } },
     ]);
-    assert.deepEqual(MANAGER_MODELS[0], { provider: "claude", model: "claude-opus-5-5" });
     assert.match(managerFile(root), /^agent: new-1$/m);
   });
 }

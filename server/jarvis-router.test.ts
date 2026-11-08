@@ -564,10 +564,36 @@ test("a manager that is also in the session list shows once", async () => {
   assert.deepEqual(router.stateOf("r1")?.sessions.map((s) => s.id), ["s1", "s2", "m1"]);
 });
 
-test("a null manager or a manager that rejects leaves routing as today: pick first, nothing sent", async () => {
-  for (const manager of [async () => null, async () => Promise.reject(new Error("no factory"))]) {
-    const { router, sent } = setup({ manager });
-    assert.deepEqual(await router.route("r1", "run the tests please"), { spoken: [], note: pickFirstLine(["api-refactor", "docs"]) });
-    assert.deepEqual(sent, []);
-  }
+test("a null manager leaves routing as today: pick first, nothing said, nothing sent", async () => {
+  const { router, sent } = setup({ manager: async () => null });
+  assert.deepEqual(await router.route("r1", "run the tests please"), { spoken: [], note: pickFirstLine(["api-refactor", "docs"]) });
+  assert.deepEqual(sent, []);
+});
+
+test("a manager that rejects is said once, then routing is as today", async () => {
+  const { router, sent } = setup({ manager: async () => Promise.reject(new Error("no model signed in")) });
+  const r = await router.route("r1", "run the tests please");
+  assert.deepEqual(r.spoken, ["I couldn't start the factory manager: no model signed in"]);
+  assert.equal(r.note, pickFirstLine(["api-refactor", "docs"]));
+  assert.deepEqual(sent, []);
+});
+
+// The sessions step drops a target that turns out to be one of Voice's own (blocked) sessions.
+test("when the target is dropped, the next utterance says it is now on the manager before sending", async () => {
+  let list = [api, docs];
+  let blocked: VoiceSession[] = [];
+  const sent: [string, string][] = [];
+  const router = createJarvisRouter({
+    sessions: async () => ({ list, blocked }),
+    send: async (id, text) => void sent.push([id, text.replace(`${VOICE_ROUTING_PREAMBLE}\n\n`, "")]),
+    create: async () => "new1",
+    manager: async () => manager,
+  });
+  await pick(router);
+  assert.equal(router.stateOf("r1")?.session?.id, "s1");
+  list = [docs];
+  blocked = [api];
+  const r = await router.route("r1", "any news");
+  assert.deepEqual(r.spoken, ["Now on Factory manager."]);
+  assert.deepEqual(sent.at(-1), ["m1", "any news"]);
 });

@@ -150,12 +150,24 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     if (!text.trim()) return { spoken: [], note: DIDNT_CATCH_NOTE };
     const entry = entryFor(routerId);
     let state = entry.state;
-    let split = await refresh();
-    const factory = ports.manager ? await ports.manager().catch(() => null) : null;
+    // A rejection (both model creates failed) is told apart from null (no factory): the first is said, the second is silent.
+    let managerError: string | null = null;
+    const [refreshed, factory] = await Promise.all([
+      refresh(),
+      ports.manager
+        ? ports.manager().catch((error) => {
+            managerError = errorText(error);
+            return null;
+          })
+        : null,
+    ]);
+    let split = refreshed;
     if (split && factory) split = { ...split, list: [...split.list.filter((s) => s.id !== factory.id), { id: factory.id, name: FACTORY_MANAGER_NAME }] };
+    const hadTarget = !!state.session;
     if (split) state = step(state, { type: "sessions", ...split }).state;
-    // With no target, the manager is the default one.
-    if (split && factory && !state.session) state = step(state, { type: "pick", session: { id: factory.id, name: FACTORY_MANAGER_NAME } }).state;
+    // With no target, the manager is the default one. A target that just went away is said, as an explicit switch is.
+    const landedOnManager = !!split && !!factory && !state.session;
+    if (landedOnManager) state = step(state, { type: "pick", session: { id: factory.id, name: FACTORY_MANAGER_NAME } }).state;
     // The same timeout as the Mac's, checked when the next words arrive (there is no timer on the phone).
     if (state.mode === "confirming" && now() - entry.confirmAt > CONFIRM_TIMEOUT_MS) {
       state = step(state, { type: "confirm", word: CONFIRM_CANCEL }).state;
@@ -166,6 +178,8 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     const wasConfirming = state.mode === "confirming";
     // Lines Jarvis couldn't say out of turn come first, once.
     const spoken: string[] = entry.owed.splice(0);
+    if (managerError) spoken.push(`I couldn't start the factory manager: ${managerError}`);
+    if (landedOnManager && hadTarget) spoken.push(`Now on ${FACTORY_MANAGER_NAME}.`);
     const shown: string[] = [];
     let steered = false;
     let fallbackNote: string | null = null;
