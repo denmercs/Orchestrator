@@ -102,6 +102,28 @@ test("createStoryWorkspace asks for a branch-off worktree, and takes the folder 
   ]);
 });
 
+test("createStoryWorkspace leaves out a missing projectId, and takes the created folder without a refresh", async () => {
+  const requests: unknown[] = [];
+  let refreshed = 0;
+  const host = hostOver({
+    workspaces: {
+      create: async (request: unknown) => {
+        requests.push(request);
+        return { id: "w1", directory: "/wt/one", refresh: async () => (refreshed++, null) };
+      },
+    },
+  });
+
+  const created = await host.createStoryWorkspace({ title: "S1", repoRoot: "/repo", baseBranch: "main", branchName: "s1", worktreeSlug: "s1" });
+
+  assert.deepEqual(created, { id: "w1", directory: "/wt/one" });
+  assert.equal(refreshed, 0);
+  assert.deepEqual(requests, [
+    { title: "S1", source: { kind: "worktree", cwd: "/repo", action: "branch-off", baseBranch: "main", branchName: "s1", worktreeSlug: "s1" } },
+  ]);
+  assert.equal(Object.hasOwn((requests[0] as { source: object }).source, "projectId"), false);
+});
+
 test("createStoryWorkspace throws when Paseo reports no folder", async () => {
   const host = hostOver({
     workspaces: {
@@ -118,13 +140,19 @@ test("createStoryWorkspace throws when Paseo reports no folder", async () => {
 test("timelineTail asks for the projected tail and returns null when the read throws", async () => {
   const asked: unknown[] = [];
   const answering = hostOver({
-    agents: { ref: () => ({ timeline: { refetch: async (query: unknown) => (asked.push(query), { entries: [{ type: "x" }], error: null }) } }) },
+    agents: { ref: (id: string) => ({ timeline: { refetch: async (query: unknown) => (asked.push({ id, query }), { entries: [{ type: "x" }], error: null }) } }) },
   });
   const throwing = hostOver({ agents: { ref: () => ({ timeline: { refetch: async () => Promise.reject(new Error("daemon down")) } }) } });
 
   assert.deepEqual(await answering.timelineTail("a1", { limit: 5 }), { entries: [{ type: "x" }], error: null });
-  assert.deepEqual(asked, [{ direction: "tail", limit: 5, projection: "projected" }]);
+  assert.deepEqual(asked, [{ id: "a1", query: { direction: "tail", limit: 5, projection: "projected" } }]);
   assert.equal(await throwing.timelineTail("a1", { limit: 5 }), null);
+});
+
+test("timelineTail passes a page's error through, so the caller can tell a partial read", async () => {
+  const host = hostOver({ agents: { ref: () => ({ timeline: { refetch: async () => ({ entries: [], error: "timeline unavailable" }) } }) } });
+
+  assert.deepEqual(await host.timelineTail("a1", { limit: 50 }), { entries: [], error: "timeline unavailable" });
 });
 
 test("listStepAgents maps each live agent to a session, with defaults for what Paseo leaves out", async () => {
