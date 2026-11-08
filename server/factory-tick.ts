@@ -63,7 +63,8 @@ export type TickResult =
   | { kind: "waiting"; slice: string; why: string }
   | { kind: "advanced"; slice: string; phase: FactoryPhase }
   | { kind: "alive"; slice: string; agent: string }
-  | { kind: "restarted"; slice: string; agent: string };
+  | { kind: "restarted"; slice: string; agent: string }
+  | { kind: "fan-out"; results: TickResult[] };
 
 export const isDead = (session: { status?: string; archivedAt?: string | null } | undefined | null) =>
   !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
@@ -94,7 +95,7 @@ export function seatPrompt(seat: string, slice: FactorySlice, mission: string, p
 
 let running = false;
 
-// One factory pass: finds the one runnable slice and, when its seat's agent is missing, archived, closed or in error,
+// One factory pass: walks every runnable slice and, when its seat's agent is missing, archived, closed or in error,
 // starts one fresh agent in the slice's worktree and records its id. A live agent (a permission wait included) is left
 // alone, and so is a story whose loop session is still live: one owner per story. Never throws on a missing factory.
 export async function runFactoryTick(root: string, ports: TickPaseo): Promise<TickResult> {
@@ -214,9 +215,24 @@ async function seatConfig(seat: FactorySeat | undefined, role: string, ports: Ti
   }
 }
 
+// One pass over every runnable slice, one after another so the seat file and the slice files never get two writers.
+// Each slice has its own try: one slice's failure doesn't stop the others, and the first error is rethrown once all have run.
 async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
-  const slice = factoryTick(root);
-  if (!slice) return { kind: "idle" };
+  const results: TickResult[] = [];
+  const failures: unknown[] = [];
+  for (const slice of factoryTick(root)) {
+    try {
+      results.push(await passSlice(root, slice, ports));
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length) throw failures[0];
+  if (results.length === 0) return { kind: "idle" };
+  return results.length === 1 ? results[0] : { kind: "fan-out", results };
+}
+
+async function passSlice(root: string, slice: FactorySlice, ports: TickPaseo): Promise<TickResult> {
   const moved = await advanceSlice(root, slice, ports);
   if (moved) return moved;
   const seat = SEATS[slice.state.phase];

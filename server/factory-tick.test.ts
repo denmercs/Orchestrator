@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { FALLBACK_AGENT_CONFIG, type AgentProfile } from "../shared/agent-runner";
 import { DEFAULT_PHASES } from "../shared/pipeline";
-import { runnableSlice } from "../shared/factory";
+import { runnableSlices } from "../shared/factory";
 import { namedStories, readFactory, sliceDir, storyKey } from "./factory-layout";
 import { MANAGER_MODELS } from "./factory-manager";
 import { buildContext, runFactoryTick, type TickPaseo } from "./factory-tick";
@@ -1019,7 +1019,7 @@ for (const [name, build] of blockedCases) {
     assert.match(blocked[0], /s1/);
     assert.equal(field(ctx.stateFile, "ready"), "blocked");
     assert.equal(created.length, 0);
-    assert.equal(runnableSlice(readFactory(ctx.root)), null);
+    assert.equal(runnableSlices(readFactory(ctx.root)).length, 0);
   });
 }
 
@@ -1366,4 +1366,135 @@ test("cost cap: after ready is cleared, a cost reader that throws keeps the slic
   assert.equal(field(story, "cost_cap_usd"), "10");
   assert.equal(created.length, 1);
   assert.equal(steers.length, 1);
+});
+
+// A second slice beside setup's s1, in the same mission; `state` is its state.md frontmatter beyond the phase and run.
+function addSlice(root: string, id: string, state: string, phase = "spec") {
+  const dir = sliceDir(root, "m1", id);
+  put(join(dir, "spec.md"), `Do ${id}.\n`);
+  put(join(dir, "state.md"), `---\nphase: ${phase}\nrun: on\n${state}\n---\n`);
+  return join(dir, "state.md");
+}
+
+// A fake whose worktrees land in <cwd>/wt-<slug>, so two slices get two folders; the shared fake always makes made-wt.
+function perSlicePaseo(known: Parameters<typeof fakePaseo>[0] = {}) {
+  const fake = fakePaseo(known);
+  const slugs: string[] = [];
+  fake.paseo.worktrees = {
+    create: async (request) => {
+      slugs.push(request.slug);
+      const directory = join(request.cwd, `wt-${request.slug}`);
+      mkdirSync(directory, { recursive: true });
+      return { directory };
+    },
+  };
+  delete fake.paseo.steps;
+  return { ...fake, slugs };
+}
+
+test("two independent spec slices each get their own worktree, then their own seat agent in it", async () => {
+  // Arrange: s1 and s2 both runnable, neither has a worktree yet.
+  const first = setup("", "on", "spec");
+  rmSync(first.worktree, { recursive: true });
+  const secondState = addSlice(first.root, "s2", "");
+  const { paseo, created, slugs } = perSlicePaseo();
+
+  // Act: the first pass hands both specs off.
+  const handoff = await runFactoryTick(first.root, paseo);
+
+  // Assert: two worktrees, different slugs and folders, one per slice.
+  assert.equal(handoff.kind, "fan-out");
+  assert.equal(slugs.length, 2);
+  assert.notEqual(slugs[0], slugs[1]);
+  const worktrees = [field(first.stateFile, "worktree"), field(secondState, "worktree")];
+  assert.notEqual(worktrees[0], worktrees[1]);
+  assert.deepEqual(worktrees, slugs.map((slug) => join(first.root, `wt-${slug}`)));
+  assert.equal(created.length, 0);
+
+  // Act: the next pass works the build seats.
+  const seats = await runFactoryTick(first.root, paseo);
+
+  // Assert: one agent per slice, each in that slice's own worktree.
+  assert.equal(seats.kind, "fan-out");
+  assert.deepEqual(created.map((agent) => agent.cwd).sort(), [...(worktrees as string[])].sort());
+  assert.deepEqual(created.map((agent) => agent.labels.slice).sort(), ["s1", "s2"]);
+});
+
+test("a slice that depends on a slice with an empty proof.md gets no worktree and no agent while its dependency is worked", async () => {
+  // Arrange: s2 depends on s1, whose proof.md is empty.
+  const { root, stateFile } = setup("", "on", "spec");
+  rmSync(join(root, "wt"), { recursive: true });
+  const dependentState = addSlice(root, "s2", "depends: s1");
+  writeFileSync(join(sliceDir(root, "m1", "s1"), "proof.md"), "\n");
+  const { paseo, created, slugs } = perSlicePaseo();
+
+  // Act: the handoff pass, then the seat pass.
+  const handoff = await runFactoryTick(root, paseo);
+  const seat = await runFactoryTick(root, paseo);
+
+  // Assert: only s1 moved; s2 has nothing.
+  assert.deepEqual(handoff, { kind: "advanced", slice: "s1", phase: "build" });
+  assert.equal(seat.kind, "restarted");
+  assert.deepEqual(slugs, ["s1"]);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].cwd, field(stateFile, "worktree"));
+  assert.equal(field(dependentState, "worktree"), undefined);
+  assert.equal(field(dependentState, "agent"), undefined);
+});
+
+test("when the first slice's agent can't be started, the second still gets its agent and the pass rejects", async () => {
+  // Arrange: two build slices with worktrees; starting an agent in s1's folder always throws.
+  const { root, worktree, stateFile } = setup("", "on", "build");
+  const otherTree = join(root, "wt2");
+  mkdirSync(otherTree);
+  const otherState = addSlice(root, "s2", `worktree: ${otherTree}`, "build");
+  const { paseo, created } = perSlicePaseo();
+  const started = paseo.agents.create;
+  paseo.agents.create = async (request) => {
+    if (request.cwd === worktree) throw new Error("no capacity for s1");
+    return started(request);
+  };
+
+  // Act and assert: the pass rejects with the first slice's error.
+  await assert.rejects(runFactoryTick(root, paseo), /no capacity for s1/);
+
+  // Assert: s2 was still worked, and s1 recorded nothing.
+  assert.deepEqual(created.map((agent) => agent.cwd), [otherTree]);
+  assert.equal(field(otherState, "agent"), "new-1");
+  assert.equal(field(stateFile, "agent"), undefined);
+});
+
+test("the loop's parallel setting of 1 doesn't cap the factory: three runnable build slices each get one agent", async () => {
+  // Arrange: three build slices with dead agents, each with its own worktree, and a loop on the default (parallel 1).
+  const { root, worktree, stateFile } = setup("agent: dead-1", "on", "build");
+  const trees = [worktree];
+  const states = [stateFile];
+  for (const id of ["s2", "s3"]) {
+    const tree = join(root, `wt-${id}`);
+    mkdirSync(tree);
+    trees.push(tree);
+    states.push(addSlice(root, id, `agent: dead-${id}\nworktree: ${tree}`, "build"));
+  }
+  const { paseo, created } = perSlicePaseo({ "dead-1": { status: "closed" }, "dead-s2": { status: "closed" }, "dead-s3": { status: "closed" } });
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    async () => ({ phases: DEFAULT_PHASES, sources: [] }),
+    async () => null,
+    undefined,
+    undefined,
+    undefined,
+    async () => root,
+  );
+  assert.equal(DEFAULT_LOOP_CONFIG.parallel, 1);
+
+  // Act: the loop and the factory tick run together.
+  const [, result] = await Promise.all([initiative.tick(), runFactoryTick(root, paseo)]);
+
+  // Assert: every slice got exactly one new agent, in its own worktree.
+  assert.equal(result.kind, "fan-out");
+  assert.deepEqual(created.map((agent) => agent.cwd).sort(), [...trees].sort());
+  assert.deepEqual(created.map((agent) => agent.labels.slice).sort(), ["s1", "s2", "s3"]);
+  assert.equal(new Set(states.map((file) => field(file, "agent"))).size, 3);
+  assert.ok(states.every((file) => /^new-\d$/.test(field(file, "agent") ?? "")));
 });
