@@ -457,9 +457,11 @@ on the line after \`${MARKERS.fixDone}\`.`,
 const STEP_DATA: Partial<Record<LoopStep, (story: StoryContext, extra: StepExtra) => string>> = {
   diagnose: (story) => `## Bug
 ${[story.ticketKey, story.ticketUrl].filter(Boolean).join(" — ") || "(no ticket; the story body describes the bug)"}`,
-  implement: (_story, { round, cycle, cycles, plan }) => {
-    if (cycle) return cycleData(cycle, plan);
-    return cycles?.length && round === 1 ? cyclesData(cycles, plan) : "";
+  implement: (_story, { round, cycle, cycles, plan, failing }) => {
+    // The checks a QA seat saw fail, for the Implement round that follows it.
+    const failed = failing ? `## Failing checks\n${failing}` : "";
+    if (cycle) return [cycleData(cycle, plan), failed].filter(Boolean).join("\n\n");
+    return [cycles?.length && round === 1 ? cyclesData(cycles, plan) : "", failed].filter(Boolean).join("\n\n");
   },
   review: (_story, { brief }) => (brief?.length ? `## Memory brief\n${brief.map((l) => `- ${l}`).join("\n")}` : ""),
   fix: (_story, { failing }) => `## Failing checks

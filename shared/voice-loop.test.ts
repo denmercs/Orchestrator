@@ -191,12 +191,13 @@ test("playbackEnded returns to listening and speechStart while speaking only sto
 });
 
 // Cycle 7
-test("finished, needsYou, error and costCap speak; progress does not; the target's own finished is dropped", () => {
+test("finished, needsYou, error, costCap and roundCap speak; progress does not; the target's own finished is dropped", () => {
   for (const [kind, line] of [
     ["finished", "Docs finished."],
     ["needsYou", "Docs needs you."],
     ["error", "Docs hit an error."],
     ["costCap", "Docs hit the cost cap."],
+    ["roundCap", "Docs is on round 3, near the cap on rounds and spend."],
   ]) {
     assert.deepEqual(step(awake(), { type: "notice", kind, sessionId: "s2" }).effects, [{ type: "speak", line }], kind);
   }

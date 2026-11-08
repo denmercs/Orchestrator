@@ -2,7 +2,8 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { namedStories, storyKey } from "./factory-layout";
+import { buildContext } from "./factory-tick";
+import { namedStories, readFactory, storyKey, writeSliceState } from "./factory-layout";
 import { promisify } from "node:util";
 import type { PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
 import type { AgentCreateConfig } from "../shared/agent-runner";
@@ -11,9 +12,9 @@ import { branchName } from "../shared/naming";
 import { phaseLabel } from "../shared/orchestration";
 import { budgetMoney } from "../shared/stats-strip";
 import { storyCost, type TelemetryRow } from "./context-telemetry";
-import { DEFAULT_PHASES, STEP_PHASES, pipelineSettings, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
+import { DEFAULT_PHASES, STEP_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import { loadPhaseConfig } from "./agent-runner";
-import { repoAutoMerge, repoMaxFixes, repoPipelineConfig, repoReviewMode } from "./repo-pipeline";
+import { repoAutoMerge, repoMaxFixes, repoReviewMode } from "./repo-pipeline";
 import type { ToolItem } from "../shared/exploration";
 import { midTurnCheck, stuckCheck, toolRunningSince, type StuckCounters, type TimelineEntry } from "../shared/stuck";
 import { appendOutcome, type OutcomeEvent } from "../shared/story-outcome";
@@ -31,17 +32,14 @@ import {
   writeFrontmatter,
   slugOf,
 } from "./harness-layout";
-import { briefTag, installBrief } from "./brief-install";
 import { ciAction } from "./ci-watch";
 import { failureReport, mergePr, prForBranch, prStatus } from "./pr-checks";
-import { missingPaths, planPaths } from "./plan-paths";
 import {
   MARKERS,
   STEP_LABELS,
   afterImplement,
   afterReview,
   commitSubject,
-  formatSkills,
   parseSkills,
   readCycles,
   readMarker,
@@ -53,27 +51,16 @@ import {
   type LoopStep,
   type StoryContext,
 } from "../shared/story-method";
+import { MARK, RESTART_LINE, STUCK_CLEAR, launchStep, planMissing, repoPhases } from "./story-steps";
 import { withMcpScope } from "./mcp-scope";
-import { installSkills, skillPaths } from "./skill-sources";
+import { skillPaths } from "./skill-sources";
 import { prepareTestingSkill } from "./testing-skill";
 import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
 import { activeBriefRuns, briefRuns, worktreeFingerprint } from "./turn-progress";
 import { clockTime, providerName } from "../shared/plan-usage";
 import { type LoopHost, loopHostConfig, paseoLoopHost } from "./loop-host";
 import { inHoldWindow, limitNotice, planLimitUntil, usageLimitResumeAt } from "./usage-limit";
-
-// The stuck evidence a step carries in its frontmatter; a new step or a reopen starts it clean.
-const STUCK_CLEAR = {
-  idle_turns: null,
-  fail_tests: null,
-  fail_runs: null,
-  stuck_nudged: null,
-  mid_turn: null,
-  mid_fingerprint: null,
-  mid_changed: null,
-  mid_nudged: null,
-  waiting_subagent_since: null,
-};
+import { maybeRoundNudge } from "./round-nudge";
 
 // How long a parent may sit waiting on a subagent before the tick counts it as stalled: a subagent that
 // died never wakes its parent.
@@ -121,8 +108,6 @@ type StoryRef = { repo: string; initiative: string; storyId: string };
 type Initiative = { root: string; slug: string; dir: string };
 
 const KIND = LOOP_AGENT_KIND;
-// Marks loop workspaces and sessions, like 📐 marks architecture sessions.
-const MARK = "🔁";
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 // Repos with an initiative that has been started, so the tick knows where to look.
 const REGISTRY = join(homedir(), ".orchestrator", "initiative-loops.json");
@@ -141,21 +126,11 @@ const STEP_ANSWERS: Record<string, string[]> = {
 const PERMISSION = "permission";
 // How long before the loop first saw a plan limit a retry-limit block can be and still be put down to it.
 const LIMIT_GRACE_MS = 30 * 60 * 1000;
-const STATUS_FOR: Record<LoopStep, string> = {
-  plan: "planning",
-  diagnose: "planning",
-  implement: "implementing",
-  review: "reviewing",
-  pr: "reviewing",
-  fix: "pr-open",
-};
-
 const execFileAsync = promisify(execFile);
 
 // Ends a loop agent's prompt when a fresh compact restarts its step in a new session.
 export const RESUME_LINE = "Resume from `.harness/state.md`. An earlier session for this step ran out of context.";
-// Ends the prompt of a fresh session that replaces one that died mid-step.
-export const RESTART_LINE = "Resume from `.harness/state.md`. An earlier session for this step stopped before it finished.";
+export { RESTART_LINE };
 
 // The follow-up sent to a stalled step session.
 export function nudgePrompt(why: string) {
@@ -286,6 +261,10 @@ export function createInitiativeLoop(
   // The stories a factory slice names (as `namedStories` gives them), read from the factory the tick
   // reads. Absent, the initiative's own repo is the factory.
   readAdopted: (init: Initiative) => Set<string> | Promise<Set<string>> = (init) => namedStories(init.root),
+  // The repo whose factory a slice agent's labels point into (the harness repo). Absent, slice agents' stories aren't found.
+  readFactoryRoot: () => Promise<string | null> = async () => null,
+  // Told once when a story first enters review round 3, with the new step agent (Voice says so).
+  onRoundNudge?: (agentId: string) => void,
 ) {
   let host: LoopHost | null = null;
   // Providers at their plan limit, from the last read of live plan usage: since when the loop has seen
@@ -379,13 +358,6 @@ export function createInitiativeLoop(
     return (await loopHost.listStepAgents()).filter((agent) => agent.labels?.kind === KIND);
   }
 
-  // The `## Plan` paths that Implement, Review or Fix CI can't find on disk. The Plan step writes them,
-  // so it isn't checked.
-  function planMissing(step: LoopStep, state: string, worktree: string) {
-    if (step !== "implement" && step !== "review" && step !== "fix") return [];
-    return missingPaths(planPaths(readSection(state, "Plan")), worktree);
-  }
-
   // A resumed agent's skills line: the first prompt's, saved as `step_skills`. A story started
   // before that field existed looks the paths up again, without copying.
   async function resumeSkills(step: LoopStep, meta: StoryFile["meta"], round: number) {
@@ -396,11 +368,6 @@ export function createInitiativeLoop(
     const extras = stepSkills(step, phases, { mode: repoReviewMode(meta.worktree || null), round });
     if (!meta.worktree) return extras.map((skill) => ({ name: skill.name }));
     return skillPaths(meta.worktree, extras, sources);
-  }
-
-  // The drawer's phases with the repo's `.orchestrator/pipeline.json` applied, as its stories run them.
-  function repoPhases(phases: Phase[], worktree: string | null) {
-    return repoPipelineConfig(pipelineSettings.schema.parse({ phases }), worktree).phases;
   }
 
   async function startStep(
@@ -438,89 +405,26 @@ export function createInitiativeLoop(
     if (existing) return null;
     started.add(key);
     try {
-      const state = readText(stateFile(worktree)) || seedState(storyContext(init, phaseDir, story));
-      writeFileSync(stateFile(worktree), writeMarker(state, `${step}-running`), "utf8");
       const ctx = storyContext(init, phaseDir, story);
-      const base = extra.cycle ? `${STEP_LABELS[step]} ${extra.cycle.number}` : STEP_LABELS[step];
-      const label = round > 1 ? `${base} r${round}` : base;
-      // A missing wrapper costs the agent its short test output, not the step.
-      await installBrief(worktree, briefTag(step, round, extra.cycle?.number)).catch((error) =>
-        console.warn("orchestrator: install brief", story.id, error),
-      );
-      // Skills help a step but never gate it: a failed read or copy becomes a warning on the story.
-      const reason = (error: unknown) => (error instanceof Error ? error.message : String(error));
-      const warnings: string[] = [];
-      const piped = await readPipeline().catch((error) => {
-        warnings.push(`pipeline: ${reason(error)}`);
-        return { phases: DEFAULT_PHASES, sources: [] };
-      });
-      const { sources } = piped;
-      const phases = repoPhases(piped.phases, worktree);
-      // A repo can give each story phase its own model; the default tier (Opus for Plan and Review, Sonnet for Implement and Fix CI) applies when it doesn't.
-      const phaseId = STEP_PHASES[step];
-      const profileHost = loopHostConfig(loopHost) as Parameters<typeof loadPhaseConfig>[0];
-      const agentConfig = await loadPhaseConfig(
-        profileHost,
-        phases.find((p) => p.id === phaseId)?.profile,
-        await readAgentConfig(loopHost, step, config),
-      );
-      // A repo's light Review drops the full-diff review skills after round 1 (shared/pipeline.ts reviewRoundSkills).
-      const reviewMode = step === "review" ? repoReviewMode(worktree) : "full";
-      const extras = stepSkills(step, phases, { mode: reviewMode, round });
-      warnings.push(...(await installSkills(worktree, extras, sources).catch((error) => [`skills: ${reason(error)}`])));
-      for (const warning of warnings) console.warn("orchestrator: skills", story.id, warning);
-      const skills = await skillPaths(worktree, extras, sources);
-      // Implement and Review only: the testing guidelines (the repo's own, the built-in, or none).
-      const testing = await prepareTestingSkill(worktree, step).catch((error) => ({
-        path: undefined,
-        warning: `testing skill: ${reason(error)}`,
-      }));
-      if (testing.warning) {
-        warnings.push(testing.warning);
-        console.warn("orchestrator: skills", story.id, testing.warning);
-      }
-      const prompt = stepPrompt(step, ctx, {
+      const profileHost = loopHostConfig(loopHost) as Parameters<typeof launchStep>[0]["api"];
+      const agentId = await launchStep({
+        api: profileHost,
+        storyFile: story.path,
+        worktree,
+        ctx,
+        step,
         round,
+        labels,
+        readPipeline,
+        readAgentConfig: () => readAgentConfig(loopHost, step, config),
+        create: (spec) => withMcpScope(worktree, "none", () => loopHost.startStepAgent(workspace, spec)),
         failing: extra.failing,
         cycle: extra.cycle,
         cycles: extra.cycles,
-        plan: readSection(state, "Plan"),
-        missing: planMissing(step, state, worktree),
-        skills,
-        testingSkill: testing.path,
-        ...(reviewMode === "light" ? { light: true } : {}),
+        attempt: extra.attempt,
       });
-      // Story steps work from the story file and the worktree; none of them needs an MCP server.
-      const agent = await withMcpScope(worktree, "none", () =>
-        loopHost.startStepAgent(workspace, {
-          title: `${MARK} ${story.id} · ${label} — ${ctx.title}`.slice(0, 60),
-          config: agentConfig,
-          prompt: extra.attempt ? `${prompt}\n\n${RESTART_LINE}` : prompt,
-          labels,
-        }),
-      );
-      writeFrontmatter(story.path, {
-        status: STATUS_FOR[step],
-        ...(step === "fix"
-          ? {}
-          : { step, round, cycle: extra.cycle?.number ?? null, cycles: extra.cycles ? "subagents" : null }),
-        agent: agent.id,
-        blocked_reason: null,
-        blocked_from: null,
-        blocked_at: null,
-        limit_recovered: null,
-        block_kind: null,
-        stalled: null,
-        paused_until: null,
-        paused_for: null,
-        waiting_on: null,
-        ...(extra.attempt ? {} : { retries: null }),
-        ...STUCK_CLEAR,
-        skill_warnings: warnings.join(" · ") || null,
-        // The first prompt's skills line, so a resumed agent gets the same one.
-        step_skills: formatSkills(skills) || null,
-      });
-      return agent.id;
+      maybeRoundNudge(story.path, story.id, ctx.title, step, round, false, () => onRoundNudge?.(agentId));
+      return agentId;
     } catch (error) {
       started.delete(key);
       throw error;
@@ -1058,6 +962,22 @@ export function createInitiativeLoop(
     return story ? { init, phaseDir, story } : null;
   }
 
+  // The story a factory slice agent's labels point at, found through the slice's state.md and the factory root;
+  // null when the loop has no factory, or the slice or its story is gone. No initiative is involved.
+  async function sliceStory(labels: Record<string, string>) {
+    const [slice, mission] = [labels["factory-slice"], labels["factory-mission"]];
+    if (labels.kind !== "factory-seat" || !slice || !mission) return null;
+    const root = await readFactoryRoot();
+    const state = root ? readFactory(root).missions.find((item) => item.id === mission)?.slices.find((item) => item.id === slice) : null;
+    if (!root || !state?.state.story) return null;
+    const path = resolve(root, state.state.story);
+    if (!existsSync(path)) return null;
+    const text = readText(path);
+    const meta = frontmatter(text);
+    const story = { path, id: meta.id || slice, meta, body: text.replace(/^---\n[\s\S]*?\n---\n?/, "") };
+    return { root, mission, slice: state, story, ctx: buildContext(state) };
+  }
+
   // A story by its id in any phase of the initiative, with both, or null when either isn't there.
   function locateStory(input: StoryRef) {
     let init: Initiative;
@@ -1116,10 +1036,13 @@ export function createInitiativeLoop(
     // the resume line. A cycle agent gets its cycle and the plan back, as startStep gave them.
     // A Fix CI resume has no failure report; the prompt points at the PR's checks.
     async resumePrompt(labels: Record<string, string>): Promise<string | null> {
-      const found = labelledStory(labels);
+      const loopStory = labelledStory(labels);
+      const found = loopStory
+        ? { story: loopStory.story, ctx: storyContext(loopStory.init, loopStory.phaseDir, loopStory.story) }
+        : await sliceStory(labels);
       const step = labels["loop-step"] as LoopStep | undefined;
       if (!found || !step || !(step in STEP_LABELS)) return null;
-      const ctx = storyContext(found.init, found.phaseDir, found.story);
+      const { ctx } = found;
       const state = found.story.meta.worktree ? readText(stateFile(found.story.meta.worktree)) : "";
       const cycle = labels["loop-cycle"]
         ? readCycles(state).find((item) => String(item.number) === labels["loop-cycle"])
@@ -1149,7 +1072,15 @@ export function createInitiativeLoop(
     handOver(labels: Record<string, string>, fromId: string, toId: string): Promise<void> {
       return serial(async () => {
         const found = labelledStory(labels);
-        if (found?.story.meta.agent === fromId) writeFrontmatter(found.story.path, { agent: toId });
+        if (found) {
+          if (found.story.meta.agent === fromId) writeFrontmatter(found.story.path, { agent: toId });
+          return;
+        }
+        // A slice agent: its state.md and its story each follow the new session.
+        const slice = await sliceStory(labels);
+        if (!slice) return;
+        if (slice.story.meta.agent === fromId) writeFrontmatter(slice.story.path, { agent: toId });
+        if (slice.slice.state.agent === fromId) writeSliceState(slice.root, slice.mission, slice.slice.id, { agent: toId });
       });
     },
 
@@ -1157,7 +1088,7 @@ export function createInitiativeLoop(
     // `<step>-running`. A step that wrote `-done` or moved on is not, so the context watch leaves it alone.
     stepActive(labels: Record<string, string>, agentId: string): Promise<boolean> {
       return serial(async () => {
-        const found = labelledStory(labels);
+        const found = labelledStory(labels) ?? (await sliceStory(labels));
         const step = labels["loop-step"];
         const worktree = found?.story.meta.worktree;
         if (!found || !step || !worktree || found.story.meta.agent !== agentId) return false;
@@ -1176,6 +1107,14 @@ export function createInitiativeLoop(
           waitingOn: story.meta.waiting_on || null,
           blockKind: (story.meta.block_kind || null) as BlockKind | null,
         };
+      });
+    },
+
+    // Whether a factory slice names the story, so the tick owns it; false when the story isn't there.
+    adopted(input: StoryRef): Promise<boolean> {
+      return serial(async () => {
+        const found = locateStory(input);
+        return found ? adopted(found.init, found.story) : false;
       });
     },
 

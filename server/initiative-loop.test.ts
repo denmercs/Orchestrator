@@ -2252,6 +2252,44 @@ test("cost-cap block calls onCostCap(agentId), and a turn under the cap doesn't"
   assert.deepEqual(hit, ["a1"]);
 });
 
+test("review round 3 nudge: voice once on the new step agent, not at rounds 1 or 2 and not again", async () => {
+  const nudged: string[] = [];
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+    async () => null,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    (id) => nudged.push(id),
+  );
+  const { story, worktree, labels } = fixture("a1");
+  const reviewLabels = { ...labels, "loop-step": "review" };
+  const findings = (body: string, marker = "review-done") =>
+    writeFileSync(join(worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\n${marker}\n\n## Review findings\n${body}\n`, "utf8");
+  const failed = async (round: number) => {
+    writeFrontmatter(story, { status: "reviewing", step: "review", round, agent: "a1" });
+    findings("- [ ] blocking: a.ts:1 — wrong — fix");
+    const { api, created } = fakePaseo([{ id: "a1", labels: { ...reviewLabels, "loop-round": String(round) } }]);
+    await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as never);
+    return created;
+  };
+  assert.deepEqual((await failed(1)).map((agent) => agent.labels["loop-round"]), ["2"]);
+  assert.equal(nudged.length, 0);
+  assert.equal(storyMeta(story).round_nudged, undefined);
+  assert.deepEqual((await failed(2)).map((agent) => agent.labels["loop-round"]), ["3"]);
+  assert.deepEqual(nudged, ["n1"]);
+  assert.equal(storyMeta(story).round_nudged, "3");
+  const before = nudged.length;
+  writeFrontmatter(story, { status: "implementing", step: "implement", round: 3, agent: "a2" });
+  writeFileSync(join(worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\nimplement-done\n`, "utf8");
+  const { api: again } = fakePaseo([{ id: "a2", labels: { ...labels, "loop-step": "implement", "loop-round": "3" } }]);
+  await initiative.onTurnEnded(again, { agent: { id: "a2" }, outcome: { kind: "completed" } } as never);
+  assert.equal(nudged.length, before);
+});
+
 test("a failed turn at the cap blocks; a canceled one and one under the cap do not", async () => {
   const failed = capped(6, 5, "failed", "implement-running");
   await failed.end();
@@ -3044,4 +3082,86 @@ test("a failing factory read adopts nothing and doesn't fail the sweep", async (
   await initiative.tick();
   warn.mock.restore();
   assert.equal(requests.length, 1);
+});
+
+// A factory slice's build agent: the story and the slice's state.md name it, and its labels carry the slice, not an initiative.
+function sliceFixture(agent = "a1") {
+  const root = mkdtempSync(join(tmpdir(), "slice-repo-"));
+  const worktree = join(root, "wt");
+  mkdirSync(join(worktree, ".harness"), { recursive: true });
+  const story = join(root, "story.md");
+  writeFileSync(
+    story,
+    `---\nid: S1\ntitle: Demo story\nstatus: implementing\nstep: implement\nround: 1\nworktree: ${worktree}\nagent: ${agent}\n---\n\n## Goal\n\nShip it.\n`,
+    "utf8",
+  );
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nimplement-running\n", "utf8");
+  const home = join(root, ".harness", "factory");
+  const dir = join(home, "missions", "m1", "slices", "s1");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(home, "project.md"), "Ship.\n");
+  writeFileSync(join(home, "missions", "m1", "mission.md"), "Land one slice.\n");
+  writeFileSync(join(dir, "spec.md"), "Build it.\n");
+  const state = join(dir, "state.md");
+  writeFileSync(state, `---\nphase: build\nrun: on\nseat: builder\nagent: ${agent}\nworktree: ${worktree}\nstory: ${story}\n---\n`, "utf8");
+  const labels = {
+    kind: "factory-seat",
+    seat: "builder",
+    "factory-slice": "s1",
+    "factory-mission": "m1",
+    "loop-step": "implement",
+    "loop-round": "1",
+  };
+  return { root, worktree, story, state, labels };
+}
+
+// A loop that finds the factory at `root`, as the plugin does with the harness repo.
+const sliceLoop = (root: string) =>
+  createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+    async () => null,
+    undefined,
+    undefined,
+    undefined,
+    async () => root,
+  );
+
+test("handOver with factory-slice labels moves the slice's agent and the story's, only when they name the old id", async () => {
+  const { root, story, state, labels } = sliceFixture("a1");
+  const initiative = sliceLoop(root);
+
+  await initiative.handOver(labels, "a1", "a2");
+  assert.equal(storyMeta(story).agent, "a2");
+  assert.equal(storyMeta(state).agent, "a2");
+
+  await initiative.handOver(labels, "a1", "a3");
+  assert.equal(storyMeta(story).agent, "a2");
+  assert.equal(storyMeta(state).agent, "a2");
+});
+
+test("resumePrompt and stepActive find a slice's story by its factory-slice labels, with no initiative", async () => {
+  const { root, worktree, labels } = sliceFixture("a1");
+  const initiative = sliceLoop(root);
+
+  const prompt = await initiative.resumePrompt(labels);
+  assert.ok(prompt);
+  assert.match(prompt, /^Implement for story s1 — s1\.$/m);
+  assert.match(prompt, /## This step: implement the story/);
+  assert.ok(prompt.endsWith(`\n\n${RESUME_LINE}`));
+  assert.equal(await initiative.resumePrompt({ ...labels, "factory-slice": "s9" }), null);
+
+  assert.equal(await initiative.stepActive(labels, "a1"), true);
+  assert.equal(await initiative.stepActive(labels, "other"), false);
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1\n\n## Status\nimplement-done\n", "utf8");
+  assert.equal(await initiative.stepActive(labels, "a1"), false);
+});
+
+test("a slice agent's labels find nothing when the loop has no factory", async () => {
+  const { labels, story } = sliceFixture("a1");
+  const initiative = loop();
+  await initiative.handOver(labels, "a1", "a2");
+  assert.equal(storyMeta(story).agent, "a1");
+  assert.equal(await initiative.resumePrompt(labels), null);
 });

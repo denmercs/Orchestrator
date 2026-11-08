@@ -44,7 +44,7 @@ import { readPlanUsage } from "./server/plan-usage";
 import { planUsageRpc } from "./shared/plan-usage";
 import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay";
 import { readArms, readCorpus, readCostCap, readRunName, realReplayPorts } from "./server/replay-start";
-import { claudeSignedIn } from "./server/claude-cli";
+import { askUnavailable } from "./server/ask";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { createTranscriber, realTranscribePorts } from "./server/voice-transcribe";
 import { createWakeModelLoader, realWakeModelPorts } from "./server/voice-wake-models";
@@ -75,8 +75,10 @@ import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createMicOffGate } from "./server/mic-off-gate";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
-import { applyFactoryManager, ensureManager } from "./server/factory-manager";
-import { runFactoryTick } from "./server/factory-tick";
+import { applyFactoryManager, ensureManager, steerManager } from "./server/factory-manager";
+import { runFactoryTick, type TickPaseo } from "./server/factory-tick";
+import { commitStory } from "./server/story-git";
+import { MARK } from "./server/story-steps";
 import { namedStories } from "./server/factory-layout";
 import { createJarvisRouter, MAC_ROUTER, voiceSessionCreator } from "./server/jarvis-router";
 import { createMorningBrief, fetchWeather } from "./server/morning-brief";
@@ -152,13 +154,13 @@ import {
 
 type ReplayRunner = ReturnType<typeof createMemoryReplay>;
 
-// `deps.replay` and `deps.signedIn` let tests stand in for the memory replay runner and the Claude Code login check;
+// `deps.replay` and `deps.askUnavailable` let tests stand in for the memory replay runner and the one-shot model check;
 // `deps.replayStart` and `deps.loopStart` move the replay and initiative loop start files and their polls.
 export default function contribute(
   server: PluginServerContext,
   deps: {
     replay?: ReplayRunner;
-    signedIn?: () => Promise<boolean>;
+    askUnavailable?: () => Promise<string | null>;
     replayStart?: { file: string; everyMs: number };
     loopStart?: { file: string; everyMs: number };
     voiceHelperCwd?: string;
@@ -256,18 +258,20 @@ export default function contribute(
       .catch((error) => console.warn("orchestrator: voice publish failed", error));
   };
   const loopSettings = server.registerSettings(initiativeLoopSettings);
+  const readLoopConfig = async () => {
+    const state = await loopSettings.read();
+    return state.status === "ready" ? state.values : DEFAULT_LOOP_CONFIG;
+  };
+  // Loop steps load the drawer's extras whether or not the Story pipeline is switched on (d2).
+  const readLoopPipeline = async () => {
+    const values = await readPipelineValues();
+    return values ? { phases: values.phases, sources: values.sources } : { phases: DEFAULT_PHASES, sources: [] };
+  };
   const initiativeLoop = createInitiativeLoop(
-    async () => {
-      const state = await loopSettings.read();
-      return state.status === "ready" ? state.values : DEFAULT_LOOP_CONFIG;
-    },
+    readLoopConfig,
     async (host, step, loop) =>
       loadStepConfig(loopHostConfig(host) as Parameters<typeof loadStepConfig>[0], loop, step, await readRunnerProfileId()),
-    // Loop steps load the drawer's extras whether or not the Story pipeline is switched on (d2).
-    async () => {
-      const values = await readPipelineValues();
-      return values ? { phases: values.phases, sources: values.sources } : { phases: DEFAULT_PHASES, sources: [] };
-    },
+    readLoopPipeline,
     readInitials,
     {
       cap: async () => {
@@ -282,6 +286,9 @@ export default function contribute(
       const { repo } = await readHarness();
       return repo ? namedStories(repo) : new Set<string>();
     },
+    // A slice agent's labels name its slice; its factory is the harness repo's.
+    async () => (await readHarness()).repo ?? null,
+    (sessionId) => publishVoice([{ type: "notice", kind: "roundCap", sessionId }]),
   );
   // The Initiatives tab and the loop start file both start the loop here.
   const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: PluginHandlerContext["paseo"]) =>
@@ -340,10 +347,9 @@ export default function contribute(
     contextPaseo = paseo;
     if (replaying || memoryReplay.pendingAgents().length > 0) throw new Error("A memory replay is already running.");
     const corpus = readCorpus(input.root, input.controls);
-    // The judge runs on the Claude Code CLI; signed out, every round would come back with no verdict.
-    if (!(await (deps.signedIn ?? claudeSignedIn)())) {
-      throw new Error("Claude Code is not signed in, so the replay judge can't run. Run `claude` and log in, then start the replay again.");
-    }
+    // The judge runs on the one-shot model (server/ask.ts); without one, every round would come back with no verdict.
+    const unavailable = await (deps.askUnavailable ?? (() => askUnavailable()))();
+    if (unavailable) throw new Error(`The replay judge can't run: ${unavailable} Then start the replay again.`);
     const costCap = input.costCap ?? readCostCap(input.root) ?? DEFAULT_COST_CAP_USD;
     const arms = readArms(input.root);
     const run = readRunName(input.root);
@@ -692,7 +698,7 @@ export default function contribute(
       });
       void readHarness().then(({ repo }) => {
         if (!repo) return;
-        return runFactoryTick(repo, paseo).catch((error) => {
+        return runFactoryTick(repo, factoryPorts(repo, paseo)).catch((error) => {
           console.warn("orchestrator: factory tick failed", error);
         });
       });
@@ -701,6 +707,39 @@ export default function contribute(
   timer.unref?.();
   // A Claude session starts the replay by writing the start file; any Paseo handle we have seen will do.
   const replayStart = deps.replayStart ?? { file: REPLAY_START_FILE, everyMs: REPLAY_START_POLL_MS };
+  // What the factory tick drives slices with: loop steps, the worktree for a fresh slice, the manager steer and a message to a seat.
+  const factoryPorts = (repo: string, paseo: NonNullable<typeof pipelinePaseo>): TickPaseo => ({
+    agents: paseo.agents,
+    steps: {
+      api: paseo,
+      readPipeline: readLoopPipeline,
+      readAgentConfig: async (step) => loadStepConfig(paseo, await readLoopConfig(), step, await readRunnerProfileId()),
+    },
+    commit: commitStory,
+    steer: (line) => steerManager(repo, line, paseo),
+    send: (agentId, text) => paseo.agents.ref(agentId).send(text),
+    worktrees: {
+      create: async ({ cwd, branch, base, slug }) => {
+        const { projects } = await paseo.projects.list().catch(() => ({ projects: [] as { projectId: string; projectRootPath: string }[] }));
+        const project = projects.find((item) => resolve(item.projectRootPath) === cwd);
+        const created = await paseo.workspaces.create({
+          title: `${MARK} ${slug}`.slice(0, 60),
+          source: {
+            kind: "worktree",
+            cwd,
+            ...(project ? { projectId: project.projectId } : {}),
+            action: "branch-off",
+            baseBranch: base,
+            branchName: branch,
+            worktreeSlug: slug,
+          },
+        });
+        const directory = created.directory ?? (await created.refresh())?.workspaceDirectory ?? "";
+        if (!directory) throw new Error("Paseo created the workspace but did not report its folder.");
+        return { directory };
+      },
+    },
+  });
   const paseoNow = () => contextPaseo ?? pipelinePaseo;
   const replayStartTimer = setInterval(() => {
     void tickReplayStart(replayStart.file, () => paseoNow() !== null, (input) => startReplay(input, paseoNow()!)).catch(
