@@ -3,6 +3,7 @@ import type { RpcInput } from "@getpaseo/plugin";
 import { loadDailyVerse } from "./server/bible-verse";
 import { listMergedPrs } from "./server/github-prs";
 import { pickMcpServers, readHostMcpServers } from "./server/host-mcp";
+import { voiceNudgeLive } from "./server/round-nudge";
 import { mcpScopeFor, registerMcpScope, scopeWorkerWorkspace } from "./server/mcp-scope";
 import {
   listAccessibleJiraBoards,
@@ -257,6 +258,9 @@ export default function contribute(
       .then(async () => publishVoice(await make()))
       .catch((error) => console.warn("orchestrator: voice publish failed", error));
   };
+  // Voice is live when a phone router is awake or the Mac's loop was awake at a poll lately; a notice published to
+  // neither would be lost, so `voiceNudgeLive` is what lets a nudge count as delivered.
+  let lastAwakeMacPoll = 0;
   const loopSettings = server.registerSettings(initiativeLoopSettings);
   const readLoopConfig = async () => {
     const state = await loopSettings.read();
@@ -287,7 +291,12 @@ export default function contribute(
     },
     // A slice agent's labels name its slice; its factory is the harness repo's.
     async () => (await readHarness()).repo ?? null,
-    (sessionId) => publishVoice([{ type: "notice", kind: "roundCap", sessionId }]),
+    // The round 3 nudge: said through Voice only while someone is listening, else it stays pending and the loop tries again.
+    (sessionId, _line, detail) => {
+      if (!voiceNudgeLive(Date.now(), jarvis.listening(), lastAwakeMacPoll)) return false;
+      publishVoice([{ type: "notice", kind: "roundCap", sessionId, ...(detail ? { detail } : {}) }]);
+      return true;
+    },
   );
   // The Initiatives tab and the loop start file both start the loop here.
   const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: Parameters<typeof initiativeLoop.start>[0]) =>
@@ -817,7 +826,8 @@ export default function contribute(
   };
   // The long poll (and brief/status below) leave their Paseo handle too, so the router can list sessions before any
   // turn event arrives.
-  server.handle(voiceEvents, async ({ after, target }, { paseo }) => {
+  server.handle(voiceEvents, async ({ after, target, awake }, { paseo }) => {
+    if (awake) lastAwakeMacPoll = Date.now();
     helperPaseo = paseo;
     macTarget = target ?? null;
     return { ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false, voice: jarvisConnection?.voiceState(Date.now()) ?? "unknown", settingsUnreadable: micOffGate.unreadable(), settingsChecking: micOffGate.checking() };

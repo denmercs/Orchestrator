@@ -35,6 +35,7 @@ test("voiceEvents takes { after } and returns { cursor, events, phoneActive }", 
   assert.equal(voiceEvents.name, "orchestration.voice.events");
   assert.equal(voiceEvents.input.safeParse({ after: 0 }).success, true);
   assert.equal(voiceEvents.input.safeParse({}).success, false);
+  assert.equal(voiceEvents.input.safeParse({ after: 0, awake: false }).success, true);
   const out = { cursor: 2, events: [{ type: "reply", sessionId: "a", text: "done" }, { type: "notice", kind: "finished", sessionId: "a" }], phoneActive: false };
   assert.equal(voiceEvents.output.safeParse(out).success, true);
   assert.equal(voiceEvents.output.safeParse({ cursor: 0, events: [] }).success, false);

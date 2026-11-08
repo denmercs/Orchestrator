@@ -8,7 +8,7 @@ import { branchName } from "../shared/naming";
 import type { LoopStep, StoryContext } from "../shared/story-method";
 import { type ManagerPaseo, MANAGER_MODELS } from "./factory-manager";
 import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from "./factory-layout";
-import { REFOCUS, TEST_DONE, TEST_FAILED, leaveBuild, leaveReview, leaveShip, leaveTest } from "./factory-phases";
+import { REFOCUS, TEST_DONE, TEST_FAILED, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge } from "./factory-phases";
 import { frontmatter, slugOf, writeFrontmatter } from "./harness-layout";
 import type { FailingCheck, PrStatus } from "./pr-checks";
 import type { OpenedPr } from "./story-git";
@@ -109,6 +109,7 @@ export async function runFactoryTick(root: string, ports: TickPaseo): Promise<Ti
 async function advanceSlice(root: string, slice: FactorySlice, ports: TickPaseo): Promise<TickResult | null> {
   if (slice.state.phase === "spec") return (await adoptStory(root, slice)) ?? leaveSpec(root, slice, ports);
   if (slice.state.phase === "design") return leaveDesign(root, slice, ports);
+  if (["build", "test", "review"].includes(slice.state.phase)) await retryRoundNudge(slice, ports);
   if (slice.state.phase === "build") return leaveBuild(root, slice, ports, buildContext(slice));
   if (slice.state.phase === "test") return leaveTest(root, slice, ports, buildContext(slice));
   if (slice.state.phase === "review") return leaveReview(root, slice, ports, buildContext(slice));
