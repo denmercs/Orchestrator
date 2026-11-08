@@ -15,7 +15,8 @@ import { failureReport, prStatus } from "./pr-checks";
 import { repoMaxFixes, repoPipelineConfig } from "./repo-pipeline";
 import { commitStory, failureText, openStoryPr, pushStoryFix } from "./story-git";
 import { launchStep } from "./story-steps";
-import { ROUND_NUDGE_AT, roundNudgeDue, roundNudgeLine } from "../shared/round-nudge";
+import { budgetMoney } from "../shared/stats-strip";
+import { ROUND_NUDGE_AT, roundNudgeDetail, roundNudgeDue, roundNudgeLine } from "../shared/round-nudge";
 import { maybeRoundNudge } from "./round-nudge";
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
@@ -100,8 +101,14 @@ const storedFailing = (saved: string | undefined) => {
 
 // A slice that cannot go on tells the manager once and leaves the runnable set (`ready: blocked`), so the next slice can run.
 // The manager clears `ready` in the slice's state.md to put it back.
-async function block(root: string, slice: FactorySlice, ports: TickPaseo, why: string): Promise<TickResult> {
-  await ports.steer?.(`Slice ${slice.id} is blocked: ${why} Clear \`ready\` in its state.md once it is sorted out.`);
+async function block(
+  root: string,
+  slice: FactorySlice,
+  ports: TickPaseo,
+  why: string,
+  how = "Clear `ready` in its state.md once it is sorted out.",
+): Promise<TickResult> {
+  await ports.steer?.(`Slice ${slice.id} is blocked: ${why} ${how}`);
   writeSliceState(root, slice.mission, slice.id, { ready: "blocked" });
   return { kind: "waiting", slice: slice.id, why };
 }
@@ -109,8 +116,9 @@ async function block(root: string, slice: FactorySlice, ports: TickPaseo, why: s
 // The story's review rounds, counted apart from `round` (which a failed test run also advances).
 const reviewRoundOf = (meta: Record<string, string>) => Number(meta.review_round) || 1;
 
-const sliceSpend = async (slice: FactorySlice, meta: Record<string, string>, cost: ReadCost) => ({
-  spent: storyCost(await cost.rows(), sliceSpendKey(slice)),
+// `live` is the slice agent's own cost so far, which counts even before its row is written.
+const sliceSpend = async (slice: FactorySlice, meta: Record<string, string>, cost: ReadCost, live?: { agentId: string; costUsd: number }) => ({
+  spent: storyCost(await cost.rows(), sliceSpendKey(slice), live),
   cap: storyCap(meta, await cost.cap()),
 });
 
@@ -131,6 +139,44 @@ async function sliceNudge(slice: FactorySlice, ports: TickPaseo, reviewRound: nu
 export async function retryRoundNudge(slice: FactorySlice, ports: TickPaseo): Promise<void> {
   if (!slice.state.story || !existsSync(slice.state.story)) return;
   await sliceNudge(slice, ports, reviewRoundOf(frontmatter(readText(slice.state.story))));
+}
+
+// The cost cap for a slice in build, test or review, checked only once its agent's turn has ended (a dead or missing agent
+// counts), so nothing new starts over the cap. At or over it the story is marked `block_kind: cost-cap` and the slice blocks.
+// Null when under the cap, mid-turn, or when spend can't be read (no `cost` port, no rows, a reader that throws), except
+// that a story still marked `cost-cap` waits while spend can't be read, so the raise isn't lost when the step launches.
+export async function sliceCostCap(root: string, slice: FactorySlice, ports: TickPaseo): Promise<TickResult | null> {
+  const { cost } = ports;
+  const file = slice.state.story;
+  if (!cost || !file || !existsSync(file)) return null;
+  const session = slice.state.agent ? (await ports.agents.ref(slice.state.agent).refresh())?.agent : undefined;
+  if (session?.status === "running" || session?.status === "initializing") return null;
+  const liveCost = session?.lastUsage?.totalCostUsd;
+  const live = slice.state.agent && typeof liveCost === "number" ? { agentId: slice.state.agent, costUsd: liveCost } : undefined;
+  const meta = frontmatter(readText(file));
+  const marked = meta.block_kind === "cost-cap";
+  const read = await Promise.all([cost.rows(), cost.cap()]).catch(() => undefined);
+  if (!read) return marked ? { kind: "waiting", slice: slice.id, why: "its cost can't be read, so the cost cap can't be raised yet" } : null;
+  const [rows, base] = read;
+  const spent = storyCost(rows, sliceSpendKey(slice), live);
+  if (spent === null) return null;
+  const cap = storyCap(meta, base);
+  // Continue: the manager cleared `ready` on a cost-cap block. The cap goes up by the base cap unless spend is already
+  // under it (a cap raised by hand), then the marker is dropped and the step goes on.
+  if (marked) {
+    if (spent >= cap) writeFrontmatter(file, { cost_cap_usd: cap + base });
+    writeFrontmatter(file, { block_kind: null });
+    return null;
+  }
+  if (spent < cap) return null;
+  writeFrontmatter(file, { block_kind: "cost-cap" });
+  return block(
+    root,
+    slice,
+    ports,
+    `cost cap (${roundNudgeDetail({ spent, cap })}).`,
+    `Clear \`ready\` in its state.md to continue with the cap raised by ${budgetMoney(base)}, or leave it to stay stopped.`,
+  );
 }
 
 // `build` runs the loop's steps in the slice's worktree: Plan (Diagnose on a diagnose track), then Implement a cycle at a

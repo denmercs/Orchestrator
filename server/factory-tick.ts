@@ -8,7 +8,7 @@ import { branchName } from "../shared/naming";
 import type { LoopStep, StoryContext } from "../shared/story-method";
 import { type ManagerPaseo, MANAGER_MODELS } from "./factory-manager";
 import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from "./factory-layout";
-import { REFOCUS, TEST_DONE, TEST_FAILED, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge } from "./factory-phases";
+import { REFOCUS, TEST_DONE, TEST_FAILED, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge, sliceCostCap, sliceSpendKey } from "./factory-phases";
 import { frontmatter, slugOf, writeFrontmatter } from "./harness-layout";
 import type { FailingCheck, PrStatus } from "./pr-checks";
 import type { ReadCost } from "./initiative-loop";
@@ -37,7 +37,7 @@ export type TickPaseo = {
     // The runner config for a step: the loop picks a per-step profile, so the step is passed.
     readAgentConfig: (step: LoopStep) => Promise<AgentCreateConfig>;
   };
-  // The telemetry rows and base cap the round 3 nudge reads a slice's spend from. Absent: the nudge leaves spend out.
+  // The telemetry rows and base cap a slice's spend and cap are read from, for the round 3 nudge and the build, test and review cost cap. Absent: the nudge leaves spend out and the slice is not capped.
   cost?: ReadCost;
   // Commits a finished Implement's work (`commitStory` when absent).
   commit?: (cwd: string, message: string) => Promise<boolean>;
@@ -53,7 +53,7 @@ export type TickPaseo = {
   // The Paseo agent profiles and the runner's profile id, to resolve a seat's profile. Absent or failing: seats start on MANAGER_MODELS.
   profiles?: () => Promise<{ list: AgentProfile[]; runnerProfileId: string }>;
   agents: {
-    ref(id: string): { refresh(): Promise<{ agent: { status?: string; archivedAt?: string | null } } | null> };
+    ref(id: string): { refresh(): Promise<{ agent: { status?: string; archivedAt?: string | null; lastUsage?: { totalCostUsd?: number } | null } } | null> };
     create(request: Omit<Parameters<ManagerPaseo["agents"]["create"]>[0], "config"> & { prompt: string; config: AgentCreateConfig }): Promise<{ id: string }>;
   };
 };
@@ -112,7 +112,11 @@ export async function runFactoryTick(root: string, ports: TickPaseo): Promise<Ti
 async function advanceSlice(root: string, slice: FactorySlice, ports: TickPaseo): Promise<TickResult | null> {
   if (slice.state.phase === "spec") return (await adoptStory(root, slice)) ?? leaveSpec(root, slice, ports);
   if (slice.state.phase === "design") return leaveDesign(root, slice, ports);
-  if (["build", "test", "review"].includes(slice.state.phase)) await retryRoundNudge(slice, ports);
+  if (["build", "test", "review"].includes(slice.state.phase)) {
+    await retryRoundNudge(slice, ports);
+    const capped = await sliceCostCap(root, slice, ports);
+    if (capped) return capped;
+  }
   if (slice.state.phase === "build") return leaveBuild(root, slice, ports, buildContext(slice));
   if (slice.state.phase === "test") return leaveTest(root, slice, ports, buildContext(slice));
   if (slice.state.phase === "review") return leaveReview(root, slice, ports, buildContext(slice));
@@ -237,6 +241,7 @@ async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
   const factory = readFactory(root);
   const mission = factory.missions.find((item) => item.id === slice.mission);
   const prompt = seatPrompt(seat, slice, mission?.outcome ?? "", factory.project, sliceDir(root, slice.mission, slice.id));
+  const spend = sliceSpendKey(slice);
   let failure: unknown;
   for (const config of [...(await seatConfig(factory.seats.find((item) => item.role === seat), seat, ports)), ...MANAGER_MODELS]) {
     try {
@@ -246,7 +251,7 @@ async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
         prompt,
         env: {},
         title: `${seat}: ${slice.id}`,
-        labels: { kind: "factory-seat", seat, slice: slice.id, mission: slice.mission },
+        labels: { kind: "factory-seat", seat, slice: slice.id, mission: slice.mission, "loop-initiative": spend.initiative, "loop-story": spend.story },
       });
       writeSliceState(root, slice.mission, slice.id, { seat, agent: id, attempt: state.attempt + 1 });
       const seatFile = join(factoryDir(root), "seats", `${seat}.md`);
