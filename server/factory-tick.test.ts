@@ -1568,3 +1568,61 @@ test("the held note clears when its cause goes away, and a later cause steers ag
   assert.deepEqual(steers, ["Slice s2 can't start: blocked dependency s1.", "Slice s2 can't start: blocked dependency s1."]);
   assert.equal(field(dependentState, "held"), "blocked dependency s1");
 });
+
+test("a held note the manager never received is not saved, and the next pass with a manager steers once and saves it", async () => {
+  // Arrange: s1 is blocked; s2 depends on it; no manager yet, so steer resolves false.
+  const { root } = setup("ready: blocked", "on", "build");
+  const dependentState = addSlice(root, "s2", "depends: s1");
+  const { paseo, steers } = steeringPaseo();
+  paseo.steer = async () => false;
+
+  // Act: a pass with no manager, then the manager appears and two more passes run.
+  await runFactoryTick(root, paseo);
+  const unsent = field(dependentState, "held");
+  paseo.steer = async (line) => steers.push(line);
+  await runFactoryTick(root, paseo);
+  await runFactoryTick(root, paseo);
+
+  // Assert: nothing saved until a steer was delivered, then one steer and the note.
+  assert.equal(unsent, undefined);
+  assert.deepEqual(steers, ["Slice s2 can't start: blocked dependency s1."]);
+  assert.equal(field(dependentState, "held"), "blocked dependency s1");
+});
+
+test("with no steer port a held slice saves no note", async () => {
+  // Arrange: s1 is blocked; s2 depends on it; the ports have no steer.
+  const { root } = setup("ready: blocked", "on", "build");
+  const dependentState = addSlice(root, "s2", "depends: s1");
+  const { paseo } = steeringPaseo();
+  delete paseo.steer;
+
+  // Act
+  await runFactoryTick(root, paseo);
+
+  // Assert
+  assert.equal(field(dependentState, "held"), undefined);
+});
+
+test("a steer that throws leaves the held note unsaved, does not stop other slices, and the next pass retries", async () => {
+  // Arrange: s1 is blocked; s2 depends on it; s3 is runnable; the first steer throws.
+  const { root } = setup("ready: blocked", "on", "build");
+  const dependentState = addSlice(root, "s2", "depends: s1");
+  addSlice(root, "s3", "");
+  const { paseo, steers, slugs } = steeringPaseo();
+  paseo.steer = async () => {
+    throw new Error("manager unreachable");
+  };
+
+  // Act: a pass whose steer throws, then a pass whose steer is delivered.
+  await runFactoryTick(root, paseo);
+  const unsent = field(dependentState, "held");
+  const ranOthers = slugs.length;
+  paseo.steer = async (line) => steers.push(line);
+  await runFactoryTick(root, paseo);
+
+  // Assert: the throw saved nothing and s3 still ran; the retry steered once and saved the note.
+  assert.equal(unsent, undefined);
+  assert.ok(ranOthers > 0);
+  assert.deepEqual(steers, ["Slice s2 can't start: blocked dependency s1."]);
+  assert.equal(field(dependentState, "held"), "blocked dependency s1");
+});

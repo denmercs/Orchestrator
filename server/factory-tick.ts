@@ -240,12 +240,19 @@ async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
 
 // A slice held by a blocked or unknown dependency would wait in silence: the manager hears once per cause, and `held` in
 // state.md remembers it across passes and restarts. It clears when the cause goes away, so a later cause steers again.
+// `held` is saved only when the steer was delivered (the round 3 nudge's rule): no steer, a `false` or a throw leaves it
+// unchanged, so the next pass tries again.
 async function noteHeld(root: string, ports: TickPaseo) {
+  const { steer } = ports;
   for (const mission of readFactory(root).missions) {
     for (const slice of mission.slices) {
       const cause = heldBy(slice, mission);
       if ((cause ?? "") === slice.state.held) continue;
-      if (cause) await ports.steer?.(`Slice ${slice.id} can't start: ${cause}.`);
+      if (cause) {
+        const line = `Slice ${slice.id} can't start: ${cause}.`;
+        const delivered = steer && (await Promise.resolve().then(() => steer(line)).catch(() => false)) !== false;
+        if (!delivered) continue;
+      }
       writeSliceState(root, mission.id, slice.id, { held: cause });
     }
   }
