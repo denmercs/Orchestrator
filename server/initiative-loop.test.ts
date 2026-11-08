@@ -13,6 +13,7 @@ import { gatesOf } from "../shared/gates";
 import type { TelemetryRow } from "./context-telemetry";
 import { worktreeFingerprint } from "./turn-progress";
 import { frontmatter, readStories, writeFrontmatter } from "./harness-layout";
+import { STUCK_CLEAR } from "./story-steps";
 import { sourceId } from "./skill-sources";
 
 // The loop's registry lives under the home folder, so each run gets its own.
@@ -3308,4 +3309,130 @@ test("a slice agent's labels find nothing when the loop has no factory", async (
   await initiative.handOver(labels, "a1", "a2");
   assert.equal(storyMeta(story).agent, "a1");
   assert.equal(await initiative.resumePrompt(labels), null);
+});
+
+// A loop with stuckTurns 3 that finds the factory at `root` and records the manager steers instead of sending them.
+function sliceStuckLoop(root: string) {
+  const steers: string[] = [];
+  const initiative = createInitiativeLoop(
+    async () => ({ ...DEFAULT_LOOP_CONFIG, stuckTurns: 3 }),
+    async () => FALLBACK_AGENT_CONFIG,
+    noExtras,
+    async () => null,
+    undefined,
+    undefined,
+    undefined,
+    async () => root,
+    undefined,
+    async (_root, line) => {
+      steers.push(line);
+    },
+  );
+  return { initiative, steers };
+}
+const harnessEdit = { type: "tool_call", status: "completed", detail: { type: "edit", filePath: "/w/.harness/state.md", newString: "x" } };
+const codeEdit = { type: "tool_call", status: "completed", detail: { type: "edit", filePath: "src/a.ts", newString: "x" } };
+const testEdit = { type: "tool_call", status: "completed", detail: { type: "edit", filePath: "src/a.test.ts", newString: "x" } };
+const passingRun = { type: "tool_call", status: "completed", detail: { type: "shell", command: ".harness/bin/brief npm test", output: "# tests 5\n# pass 5\n# fail 0" } };
+const sliceTurn = (initiative: ReturnType<typeof createInitiativeLoop>, api: Parameters<typeof initiative.onTurnEnded>[0], ...items: unknown[]) =>
+  initiative.onTurnEnded(api, ended("a1", { kind: "completed" }, [{ type: "user_message" }, ...items]));
+
+test("a slice seat that edits only .harness files for stuckTurns turns is nudged, then blocked with one manager steer", async () => {
+  const { root, story, state, labels } = sliceFixture("a1");
+  // A review seat: on Implement the idle count would speak first, since a .harness edit isn't an edit.
+  const { api, sent } = fakePaseo([{ id: "a1", labels: { ...labels, seat: "reviewer", "loop-step": "review" } }]);
+  const { initiative, steers } = sliceStuckLoop(root);
+
+  for (let turn = 0; turn < 2; turn++) await sliceTurn(initiative, api, harnessEdit);
+  assert.deepEqual(sent, []);
+  assert.equal(storyMeta(story).ceremony_turns, "2");
+
+  await sliceTurn(initiative, api, harnessEdit);
+  assert.deepEqual(sent, [{ id: "a1", text: nudgePrompt("You look stuck: 3 turns in a row edited only .harness files.") }]);
+  assert.equal(storyMeta(story).stuck_nudged, "1");
+  assert.equal(storyMeta(state).ready, undefined);
+  assert.deepEqual(steers, []);
+
+  await sliceTurn(initiative, api, harnessEdit);
+  assert.equal(storyMeta(state).ready, "blocked");
+  assert.deepEqual(steers, ["Slice s1 is blocked: stuck: 4 turns in a row edited only .harness files. Clear `ready` in its state.md once it is sorted out."]);
+  assert.equal(sent.length, 1, "the block sends the seat nothing more");
+  const meta = storyMeta(story);
+  assert.deepEqual([meta.ceremony_turns, meta.stuck_nudged], [undefined, undefined], "a reopen starts the counters clean");
+
+  await sliceTurn(initiative, api, harnessEdit);
+  assert.equal(steers.length, 1, "a blocked slice is not blocked again");
+});
+
+test("a slice seat's turn that edits product code, or turns a failing test green, is not stuck", async () => {
+  const { root, story, state, labels } = sliceFixture("a1");
+  const { api, sent } = fakePaseo([{ id: "a1", labels }]);
+  const { initiative, steers } = sliceStuckLoop(root);
+
+  writeFrontmatter(story, { ceremony_turns: 2 });
+  await sliceTurn(initiative, api, harnessEdit, codeEdit);
+  assert.equal(storyMeta(story).ceremony_turns, undefined);
+
+  writeFrontmatter(story, { fail_tests: '["parses a turn"]', fail_runs: 2, fail_edits: "tests" });
+  await sliceTurn(initiative, api, harnessEdit, passingRun);
+  const meta = storyMeta(story);
+  assert.deepEqual([meta.fail_runs, meta.fail_edits, meta.ceremony_turns], [undefined, undefined, "1"]);
+
+  writeFrontmatter(story, { fail_tests: '["parses a turn"]', fail_runs: 2, fail_edits: "tests" });
+  await sliceTurn(initiative, api, codeEdit, failingRun);
+  assert.equal(storyMeta(story).fail_edits, "code");
+  assert.equal(storyMeta(state).ready, undefined);
+  assert.deepEqual(steers, []);
+  assert.equal(sent.length, 1, "only the plain failing streak got a nudge, and no block");
+});
+
+test("a slice seat that only edits tests while one test keeps failing is blocked as checks instead of a fix", async () => {
+  const { root, story, state, labels } = sliceFixture("a1");
+  const { api, sent } = fakePaseo([{ id: "a1", labels }]);
+  const { initiative, steers } = sliceStuckLoop(root);
+
+  await sliceTurn(initiative, api, testEdit, failingRun);
+  await sliceTurn(initiative, api, testEdit, failingRun);
+  await sliceTurn(initiative, api, testEdit, failingRun);
+  assert.equal(
+    sent[0].text,
+    nudgePrompt("You look stuck: parses a turn failed 3 test runs in a row, and every turn edited only tests or .harness files, not the code under test."),
+  );
+  await sliceTurn(initiative, api, testEdit, failingRun);
+  assert.equal(storyMeta(state).ready, "blocked");
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /^Slice s1 is blocked: stuck: parses a turn failed 3 test runs in a row, and every turn edited only tests/);
+  assert.equal(storyMeta(story).fail_runs, undefined);
+});
+
+test("a slice seat that is not on a loop step (QA, Ship) gets the ceremony check, and a Plan step is exempt", async () => {
+  const { root, story, state, labels } = sliceFixture("a1");
+  const { api, sent } = fakePaseo([{ id: "a1", labels: { kind: "factory-seat", seat: "qa", slice: "s1", mission: "m1" } }]);
+  const { initiative, steers } = sliceStuckLoop(root);
+  writeFrontmatter(state, { phase: "test", seat: "qa" });
+  writeFrontmatter(story, { ceremony_turns: 2, stuck_nudged: 1 });
+
+  await sliceTurn(initiative, api, harnessEdit);
+  assert.equal(storyMeta(state).ready, "blocked");
+  assert.match(steers[0], /^Slice s1 is blocked: stuck: 3 turns in a row edited only \.harness files\./);
+
+  writeFrontmatter(state, { ready: null, phase: "build", seat: "builder" });
+  writeFrontmatter(story, { ceremony_turns: 5, stuck_nudged: 1 });
+  const planner = fakePaseo([{ id: "a1", labels: { ...labels, "loop-step": "plan" } }]);
+  await sliceTurn(initiative, planner.api, harnessEdit);
+  assert.equal(storyMeta(state).ready, undefined);
+  assert.equal(steers.length, 1);
+  assert.deepEqual(sent, []);
+});
+
+test("a turn from a slice agent the slice no longer names, or a failed turn, leaves the story alone", async () => {
+  const { root, story, labels } = sliceFixture("a2");
+  const { api } = fakePaseo([{ id: "a1", labels }]);
+  const { initiative, steers } = sliceStuckLoop(root);
+  writeFrontmatter(story, { ceremony_turns: 2 });
+
+  await sliceTurn(initiative, api, harnessEdit);
+  await initiative.onTurnEnded(api, ended("a1", { kind: "failed", error: { message: "x" } }, [{ type: "user_message" }, harnessEdit]));
+  assert.equal(storyMeta(story).ceremony_turns, "2");
+  assert.deepEqual(steers, []);
 });

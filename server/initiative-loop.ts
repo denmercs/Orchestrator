@@ -4,6 +4,8 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildContext } from "./factory-tick";
 import { namedStories, readFactory, storyKey, writeSliceState } from "./factory-layout";
+import { block as blockSlice } from "./factory-phases";
+import { steerManager } from "./factory-manager";
 import { promisify } from "node:util";
 import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
 import type { AgentCreateConfig } from "../shared/agent-runner";
@@ -16,7 +18,7 @@ import { DEFAULT_PHASES, STEP_PHASES, stepSkills, type Phase, type SkillSource }
 import { loadPhaseConfig } from "./agent-runner";
 import { repoAutoMerge, repoMaxFixes, repoReviewMode } from "./repo-pipeline";
 import type { ToolItem } from "../shared/exploration";
-import { midTurnCheck, stuckCheck, toolRunningSince, type StuckCounters, type TimelineEntry } from "../shared/stuck";
+import { midTurnCheck, toolRunningSince, type TimelineEntry } from "../shared/stuck";
 import { appendOutcome, type OutcomeEvent } from "../shared/story-outcome";
 import {
   PHASES_DIR,
@@ -51,6 +53,7 @@ import {
   type LoopStep,
   type StoryContext,
 } from "../shared/story-method";
+import { carryStuck, turnItems } from "./stuck-carry";
 import { MARK, RESTART_LINE, STUCK_CLEAR, launchStep, planMissing, repoPhases } from "./story-steps";
 import { skillPaths } from "./skill-sources";
 import { prepareTestingSkill } from "./testing-skill";
@@ -264,6 +267,8 @@ export function createInitiativeLoop(
   // Told when a story's review is about to start round 3 (and again each tick until it says it reached someone),
   // with the agent whose turn it is and the line to say. Returns true once the line was delivered (Voice is live).
   onRoundNudge?: (agentId: string, line: string, spend?: string) => boolean | Promise<boolean>,
+  // One line to the factory manager at `root` as a steer, for a slice whose seat looks stuck. Absent, `steerManager`.
+  steerFactory?: (root: string, line: string, api: PaseoApi) => Promise<unknown>,
 ) {
   let paseo: PaseoApi | null = null;
   // Providers at their plan limit, from the last read of live plan usage: since when the loop has seen
@@ -1004,6 +1009,35 @@ export function createInitiativeLoop(
     return { root, mission, slice: state, story, ctx: buildContext(state) };
   }
 
+  // A completed turn of a factory slice's seat (the loop never supervises these stories): the same stuck check as a loop
+  // step, on the slice's story. It runs for the builder, QA and reviewer seats while the slice is in build, test, review
+  // or ship and not already stopped. The first evidence nudges the seat; evidence again, or a nudge that won't send, blocks
+  // the slice and steers the manager. Seats started by the tick's own create carry `slice` and `mission` labels, the loop
+  // steps `factory-slice` and `factory-mission`; the step is the `loop-step` label, none for a seat off the loop's steps.
+  async function sliceTurnEnded(api: PaseoApi, event: { agent: PluginHookAgent; timeline?: readonly unknown[] }, labels: Record<string, string>) {
+    if (!["builder", "qa", "reviewer"].includes(labels.seat ?? "")) return;
+    const found = await sliceStory({ ...labels, "factory-slice": labels["factory-slice"] ?? labels.slice, "factory-mission": labels["factory-mission"] ?? labels.mission });
+    if (!found || found.slice.state.agent !== event.agent.id || found.slice.state.ready) return;
+    if (!["build", "test", "review", "ship"].includes(found.slice.state.phase)) return;
+    const { story } = found;
+    const evidence = carryStuck(story.path, story.meta, turnItems(event.timeline), {
+      step: labels["loop-step"] ?? null,
+      subagents: story.meta.cycles === "subagents",
+      stuckTurns: (await readConfig()).stuckTurns,
+    });
+    if (!evidence) return;
+    const why = `You look stuck: ${evidence}.`;
+    // A nudge that doesn't send leaves the seat idle with nothing for the tick to act on: block instead.
+    if (!story.meta.stuck_nudged && (await api.agents.ref(event.agent.id).send(nudgePrompt(why)).then(() => true, () => false))) {
+      writeFrontmatter(story.path, { stuck_nudged: 1 });
+      return;
+    }
+    // A reopen starts the counters clean, as a reopened loop story does.
+    writeFrontmatter(story.path, STUCK_CLEAR);
+    const steer = (line: string) => (steerFactory ?? steerManager)(found.root, line, api);
+    await blockSlice(found.root, found.slice, { steer }, `stuck: ${evidence}.`);
+  }
+
   // A story by its id in any phase of the initiative, with both, or null when either isn't there.
   function locateStory(input: StoryRef) {
     let init: Initiative;
@@ -1276,6 +1310,10 @@ export function createInitiativeLoop(
       return serial(async () => {
         const refreshed = (await api.agents.ref(event.agent.id).refresh())?.agent;
         const labels = refreshed?.labels ?? {};
+        if (labels.kind === "factory-seat") {
+          if (outcome.kind === "completed") await sliceTurnEnded(api, event, labels);
+          return;
+        }
         if (labels.kind !== KIND || !labels["loop-repo"] || !labels["loop-initiative"]) return;
         const init = initiativeAt(labels["loop-repo"], labels["loop-initiative"]);
         const phaseDir = join(init.dir, PHASES_DIR, labels["loop-phase"] ?? "");
@@ -1332,15 +1370,13 @@ export function createInitiativeLoop(
           SUPERVISED_STEPS.has(after.meta.step ?? "") &&
           readMarker(state).marker === `${after.meta.step}-running`
         ) {
-          // This turn's items are those after the last user message.
-          const items = (event.timeline ?? []) as readonly ToolItem[];
-          const lastUser = items.map((item) => item.type).lastIndexOf("user_message");
+          const turn = turnItems(event.timeline);
           // A parent that ticked a cycle since the last turn end is making progress: its retries start
           // over. One whose turn ended on a subagent call is waiting on it, and that isn't a stall until
           // the wait outlasts SUBAGENT_WAIT_MS (supervise).
           const ticked = readCycles(state).filter((cycle) => cycle.done).length;
           const before = Number(after.meta.ticked_cycles) || 0;
-          const lastCall = items.slice(lastUser + 1).filter((item) => item.type === "tool_call").at(-1);
+          const lastCall = turn.filter((item) => item.type === "tool_call").at(-1);
           const waiting = lastCall?.detail?.type === "sub_agent";
           writeFrontmatter(after.path, {
             ...(ticked !== before ? { ticked_cycles: ticked || null } : {}),
@@ -1351,8 +1387,7 @@ export function createInitiativeLoop(
           // failing it: that waits for the reset like a failed turn would, and isn't a stall. Only its
           // own notice counts, not a reply that talks about limits. It comes from Claude Code, so the
           // pause is for Claude and gates by provider rather than holding every story.
-          const reply = items
-            .slice(lastUser + 1)
+          const reply = turn
             .filter((item): item is ToolItem & { text: string } => item.type === "assistant_message" && typeof (item as { text?: unknown }).text === "string")
             .at(-1)?.text;
           const resumeAt = reply ? limitNotice(reply, new Date()) : null;
@@ -1360,34 +1395,10 @@ export function createInitiativeLoop(
             writeFrontmatter(after.path, { paused_until: resumeAt.toISOString(), paused_for: "claude", stalled: null });
             return;
           }
-          let failTests: string[] = [];
-          try {
-            const parsed: unknown = JSON.parse(after.meta.fail_tests || "[]");
-            if (Array.isArray(parsed)) failTests = parsed.filter((name): name is string => typeof name === "string");
-          } catch {
-            // an unreadable list restarts the streak
-          }
-          const carried: StuckCounters = {
-            idle_turns: Number(after.meta.idle_turns) || 0,
-            fail_tests: failTests,
-            fail_runs: Number(after.meta.fail_runs) || 0,
-            ceremony_turns: Number(after.meta.ceremony_turns) || 0,
-            fail_edits: after.meta.fail_edits === "tests" || after.meta.fail_edits === "code" ? after.meta.fail_edits : "none",
-          };
-          const config = await readConfig();
-          const { counters, evidence } = stuckCheck(carried, items.slice(lastUser + 1), {
+          const evidence = carryStuck(after.path, after.meta, turn, {
             step: after.meta.step ?? null,
             subagents: after.meta.cycles === "subagents",
-            stuckTurns: config.stuckTurns,
-          });
-          const progressed = !evidence && after.meta.stuck_nudged;
-          writeFrontmatter(after.path, {
-            idle_turns: counters.idle_turns || null,
-            fail_tests: counters.fail_tests.length ? JSON.stringify(counters.fail_tests) : null,
-            fail_runs: counters.fail_runs || null,
-            ceremony_turns: counters.ceremony_turns || null,
-            fail_edits: counters.fail_edits === "none" ? null : counters.fail_edits,
-            ...(progressed ? { stuck_nudged: null } : {}),
+            stuckTurns: (await readConfig()).stuckTurns,
           });
           if (evidence && after.meta.stuck_nudged) {
             block(after, `stuck: ${evidence}`, "stuck");

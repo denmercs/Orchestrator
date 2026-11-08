@@ -46,25 +46,32 @@ export type StuckCounters = { idle_turns: number; fail_tests: string[]; fail_run
 const FAIL_RUNS = 3;
 
 // The shared-failure streak: each run's failing names fold into the carried streak. A pass resets it;
-// a run sharing no name with the streak restarts it.
-function foldRuns(streak: { fail_tests: string[]; fail_runs: number }, runs: readonly string[][]): { fail_tests: string[]; fail_runs: number } {
+// a run sharing no name with the streak restarts it. `restarted` is true when either happened during the fold,
+// so the streak left standing began inside these runs rather than carrying on from before.
+function foldRuns(
+  streak: { fail_tests: string[]; fail_runs: number },
+  runs: readonly string[][],
+): { fail_tests: string[]; fail_runs: number; restarted: boolean } {
   let { fail_tests, fail_runs } = streak;
+  let restarted = false;
   for (const names of runs) {
     if (names.length === 0) {
       fail_tests = [];
       fail_runs = 0;
+      restarted = true;
       continue;
     }
     const shared = fail_runs === 0 ? names : fail_tests.filter((name) => names.includes(name));
     if (shared.length === 0) {
       fail_tests = names;
       fail_runs = 1;
+      restarted = true;
     } else {
       fail_tests = shared;
       fail_runs += 1;
     }
   }
-  return { fail_tests, fail_runs };
+  return { fail_tests, fail_runs, restarted };
 }
 
 function failEvidence(fail_tests: string[], fail_runs: number, fail_edits: FailEdits = "code"): string | null {
@@ -115,11 +122,12 @@ export function stuckCheck(
   }
   const edited = editedFiles(items);
   const streakBefore = fail_runs;
-  ({ fail_tests, fail_runs } = foldRuns({ fail_tests, fail_runs }, testRuns(items)));
+  const folded = foldRuns({ fail_tests, fail_runs }, testRuns(items));
+  ({ fail_tests, fail_runs } = folded);
   // A streak that began or restarted this turn starts from this turn's edits; a longer one keeps the larger of the two.
   const turnEdits: FailEdits = edited.code ? "code" : edited.test || edited.harness ? "tests" : "none";
-  const restarted = fail_runs > 0 && (streakBefore === 0 || fail_runs <= streakBefore);
-  fail_edits = fail_runs === 0 ? "none" : restarted || RANK[turnEdits] > RANK[fail_edits] ? turnEdits : fail_edits;
+  const fresh = streakBefore === 0 || folded.restarted;
+  fail_edits = fail_runs === 0 ? "none" : fresh || RANK[turnEdits] > RANK[fail_edits] ? turnEdits : fail_edits;
   if (edited.code || edited.test) ceremony_turns = 0;
   else if (edited.harness) ceremony_turns += 1;
   let evidence = failEvidence(fail_tests, fail_runs, fail_edits);

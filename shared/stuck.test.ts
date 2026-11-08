@@ -121,11 +121,11 @@ test("stuckCheck ceremony skips turns with no edits and resets on a code or test
   assert.equal(stuckCheck(carried, [edit("src/a.test.ts")], { ...opts, step: "review" }).counters.ceremony_turns, 0);
 });
 
-test("stuckCheck ceremony fires on review, fix and pr but not Plan or Diagnose", () => {
+test("stuckCheck ceremony fires on review, implement and a seat off the loop's steps (QA, Ship) but not Plan or Diagnose", () => {
   const carried = { ...zero, ceremony_turns: 2 };
   const state = edit("/w/.harness/state.md");
-  for (const step of ["review", "fix", "pr", "implement"]) {
-    assert.equal(stuckCheck(carried, [state], { ...opts, step }).evidence, "3 turns in a row edited only .harness files", step);
+  for (const step of ["review", "implement", null]) {
+    assert.equal(stuckCheck(carried, [state], { ...opts, step }).evidence, "3 turns in a row edited only .harness files", String(step));
   }
   for (const step of ["plan", "diagnose"]) assert.equal(stuckCheck(carried, [state], { ...opts, step }).evidence, null, step);
 });
@@ -152,6 +152,21 @@ test("stuckCheck keeps a streak with no edits plain, restarts the edit record wi
   const coded = { ...zero, fail_tests: ["a"], fail_runs: 2, fail_edits: "code" as const };
   assert.equal(stuckCheck(coded, [edit("src/a.test.ts"), fail("z")], opts).counters.fail_edits, "tests");
   assert.equal(stuckCheck(coded, [pass], opts).counters.fail_edits, "none");
+});
+
+test("stuckCheck restarts the edit record when the streak restarts inside one turn, even past its old length", () => {
+  const coded = { ...zero, fail_tests: ["a"], fail_runs: 2, fail_edits: "code" as const };
+  // A new failing name run three times after a test-only edit is a longer streak than the carried one, but not the same one.
+  const renamed = stuckCheck(coded, [edit("src/a.test.ts"), fail("z"), fail("z"), fail("z")], opts);
+  assert.equal(renamed.counters.fail_runs, 3);
+  assert.equal(renamed.counters.fail_edits, "tests");
+  assert.equal(renamed.evidence, "z failed 3 test runs in a row, and every turn edited only tests or .harness files, not the code under test");
+  // A pass in the middle ends the old streak the same way.
+  const passed = stuckCheck(coded, [edit("src/a.test.ts"), fail("a"), pass, fail("a"), fail("a"), fail("a")], opts);
+  assert.equal(passed.counters.fail_runs, 3);
+  assert.equal(passed.counters.fail_edits, "tests");
+  // A streak that carries on keeps the code edit from an earlier turn.
+  assert.equal(stuckCheck(coded, [edit("src/a.test.ts"), fail("a"), fail("a")], opts).counters.fail_edits, "code");
 });
 
 const NOW = Date.parse("2026-01-01T12:00:00.000Z");
