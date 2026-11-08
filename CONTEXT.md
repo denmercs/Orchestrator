@@ -388,6 +388,8 @@ A Paseo agent provider (`jarvis`, "Jarvis", one model, `router`) with no model b
 
 Replies are said through the `speak` tool of the `paseo` MCP server Paseo gives the session (one JSON-RPC `tools/call` over HTTP; it exists only while voice mode is on and returns when playback ends) and shown in the chat as an assistant message. A typed message is routed the same way and answered in the chat only. A new prompt while a turn is still open (you spoke again mid-reply) completes the earlier turn first; an interrupt cancels the open turn and stops its steer if it hasn't gone out yet. The loop state lives in the server, keyed by the router id in the session's persistence handle, because Paseo reopens the provider session whenever voice mode turns on or off; it is lost when the plugin restarts. Providers get no Paseo handle, so sends and the session list use the last one any event or RPC gave. Target replies and notices (from the **Voice event hub**) are spoken back too, in the **Speaker**'s voice. Which device speaks: Jarvis counts as active for 10 minutes after its last prompt or line, and while it is active the Mac runner says none of its own lines (`phoneActive`) and the phone speaks; otherwise the Mac does. With the host setting `voice.phoneAudio` off (the default) Jarvis says each line on the Mac through the **Speaker**, and through Paseo's `speak` tool (Paseo's voice) only if that cannot. With it on, Jarvis emits a `voice-line` timeline item (`{ lineId, text }`) instead, and the plugin's timeline renderer (`client/voice-line-renderer.tsx`) shows the line as a small chat item and, on a phone only, plays it through the **Speaker** with `client.playAudio`, once per `lineId` and never for an item older than this app load (`client/voice-line-model.ts`), so scrolling back doesn't replay it. Whether the renderer mounts and plays on a real phone is the hand check still pending. Silent mode only stops routing: Paseo keeps listening until voice mode is turned off. Code: `server/jarvis-provider.ts` (provider, turns, `speak`), `server/jarvis-router.ts` (loop state, effects); wired in `index.server.ts`.
 
+With a factory present, a router with no target lands on the **Manager** (listed as "Factory manager"), and "switch to factory manager" brings it back.
+
 _Avoid_: assistant, voice mode (that is Paseo's), voice agent.
 
 ### Morning briefing
@@ -408,7 +410,7 @@ _Avoid_: mute (in the UI), voice mode (that is Paseo's).
 
 ## Factory
 
-The `.harness/factory/` tree in a repo: the files a project's factory runs from. Machine fields live in frontmatter, prose stays markdown. A repo with no `.harness/factory/` reads as an empty factory (`project` and `culture` empty, no seats, no missions), not an error. Code: `shared/factory.ts` (types, parsing with defaults, the runnable rule; no Node imports), `server/factory-layout.ts` (reads and writes the tree). Nothing is wired into `index.server.ts` yet.
+The `.harness/factory/` tree in a repo: the files a project's factory runs from. Machine fields live in frontmatter, prose stays markdown. A repo with no `.harness/factory/` reads as an empty factory (`project` and `culture` empty, no seats, no missions), not an error. Code: `shared/factory.ts` (types, parsing with defaults, the runnable rule; no Node imports), `server/factory-layout.ts` (reads and writes the tree). Only the **Manager** is wired into `index.server.ts` so far.
 
 **Project** (`project.md`): the prose describing what the factory builds. **Manager file** (`manager.md`): its frontmatter `agent` names the manager's session. **Culture** (`culture.md`): prose house rules every seat follows. A missing file reads as empty.
 
@@ -423,5 +425,9 @@ The `.harness/factory/` tree in a repo: the files a project's factory runs from.
 **Runnable slice**: the first slice, in mission order and then slice order, with `run: on`. Absent `run` means idle. `depends` is parsed but ignored until the dependency story (S6), and at most one slice is returned.
 
 **`factoryTick`**: a read-only pass. It reads the factory and returns the one runnable slice, or null when nothing is runnable or there is no `.harness/factory/`. It never throws on a missing tree. It starts and changes nothing yet.
+
+**Manager**: the model session in the factory home worktree (the harness `repo` setting) whose id is in `.harness/factory/manager.md`. It is created with the factory limits appended to its system prompt (an env marker on the create, picked up by the `agent.create` hook) and replaced lazily when dead (missing, archived, closed or `error`), only when a Jarvis route or a steer needs it; two callers at once share one create. A repo with no factory has no manager. Code: `server/factory-manager.ts`.
+
+**Status steer**: one status line sent as a steer to the manager id only, never to another session. It does nothing (returns false) when there is no factory. The first caller is the tick in a later story; nothing calls it yet.
 
 _Avoid_: pipeline, job (for a slice).

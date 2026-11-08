@@ -37,6 +37,11 @@ export type JarvisRouterPorts = {
   };
   /** "Status": the live agents to summarise, from the same list as `sessions`. See `statusLine`. */
   status?(): Promise<StatusAgent[]>;
+  /**
+   * The factory manager as a session, or null when there is no factory. It shows in the list as "Factory manager" and is the
+   * target of a router that has none. Asked on every route, never keyed on the Jarvis session id; a rejection counts as null.
+   */
+  manager?(): Promise<VoiceSession | null>;
   now?(): number;
 };
 
@@ -52,6 +57,9 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 
 // The router id the Mac's "good morning" and "status" run under, kept apart from the phone routers.
 export const MAC_ROUTER = "mac";
+
+// The name the factory manager answers to in the session list ("switch to factory manager").
+const FACTORY_MANAGER_NAME = "Factory manager";
 
 export function createJarvisRouter(ports: JarvisRouterPorts) {
   const now = ports.now ?? Date.now;
@@ -142,8 +150,12 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     if (!text.trim()) return { spoken: [], note: DIDNT_CATCH_NOTE };
     const entry = entryFor(routerId);
     let state = entry.state;
-    const split = await refresh();
+    let split = await refresh();
+    const factory = ports.manager ? await ports.manager().catch(() => null) : null;
+    if (split && factory) split = { ...split, list: [...split.list.filter((s) => s.id !== factory.id), { id: factory.id, name: FACTORY_MANAGER_NAME }] };
     if (split) state = step(state, { type: "sessions", ...split }).state;
+    // With no target, the manager is the default one.
+    if (split && factory && !state.session) state = step(state, { type: "pick", session: { id: factory.id, name: FACTORY_MANAGER_NAME } }).state;
     // The same timeout as the Mac's, checked when the next words arrive (there is no timer on the phone).
     if (state.mode === "confirming" && now() - entry.confirmAt > CONFIRM_TIMEOUT_MS) {
       state = step(state, { type: "confirm", word: CONFIRM_CANCEL }).state;
