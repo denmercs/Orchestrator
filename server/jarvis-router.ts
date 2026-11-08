@@ -7,7 +7,7 @@ import { isBriefGreeting, replyBrief, startBrief, type BriefData, type BriefStat
 import { addressed, CONFIRM_CANCEL, CONFIRM_TIMEOUT_MS, initialVoiceState, step, type VoiceEvent, type VoiceSession, type VoiceState } from "../shared/voice-loop";
 import { namelessPassThrough, type InterpretOutcome } from "../shared/voice-interpreter";
 import { ASLEEP_NOTE, DIDNT_CATCH_NOTE, helperFallbackNote, newSessionFailedLine, NOTHING_SENT, SENT_NOTE, sendFailedLine, SLEEP_LINE, STOPPED_NOTE } from "../shared/voice-lines";
-import { isStatusAsk, statusLine, type StatusAgent } from "../shared/voice-status";
+import { isFactoryStatusAsk, isStatusAsk, statusLine, type StatusAgent } from "../shared/voice-status";
 import { createVoiceSession, VOICE_ROUTING_PREAMBLE, type VoiceCreatePaseo } from "../shared/voice-session";
 
 /** The `create` port: a marked voice session beside the target. See `createVoiceSession`. */
@@ -42,6 +42,11 @@ export type JarvisRouterPorts = {
    * target of a router that has none. Asked on every route, never keyed on the Jarvis session id; a rejection is said, then routing is as with null.
    */
   manager?(): Promise<VoiceSession | null>;
+  /**
+   * The factory's status, answered by a cheap one-shot from its files: `answer` is spoken and nothing is sent, `unavailable`
+   * carries why it can't run (routing carries on to the manager, with a note), null means there is no factory. Read-only.
+   */
+  factoryStatus?(): Promise<{ answer: string } | { unavailable: string } | null>;
   now?(): number;
 };
 
@@ -141,10 +146,32 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     }
   }
 
+  // "Where are we" and plain "status" go to the factory reporter ahead of the loop, so the manager isn't woken to answer them.
+  // Null means carry on: not an ask, no factory (plain "status" then reads the sessions), or asleep and not addressed.
+  // `unavailable` is a note, and the words route on to the manager as any other.
+  async function routeFactoryStatus(routerId: string, text: string): Promise<RouteResult | { unavailable: string } | null> {
+    const report = ports.factoryStatus;
+    if (!report || !(isFactoryStatusAsk(text) || isStatusAsk(text))) return null;
+    const entry = entryFor(routerId);
+    if (entry.state.mode === "asleep" && !addressed(text)) return null;
+    let reply: Awaited<ReturnType<NonNullable<JarvisRouterPorts["factoryStatus"]>>>;
+    try {
+      reply = await report();
+    } catch (error) {
+      reply = { unavailable: errorText(error) };
+    }
+    if (!reply) return null;
+    if ("unavailable" in reply) return reply;
+    if (entry.state.mode === "asleep") entry.state = step(entry.state, { type: "wake" }).state;
+    return { spoken: [reply.answer], note: null };
+  }
+
   async function routeNow(routerId: string, text: string, signal?: AbortSignal, typed = false): Promise<RouteResult> {
     const briefed = await routeBrief(routerId, text);
     if (briefed) return briefed;
-    const statused = await routeStatus(routerId, text);
+    const reported = await routeFactoryStatus(routerId, text);
+    if (reported && "spoken" in reported) return reported;
+    const statused = reported ? null : await routeStatus(routerId, text);
     if (statused) return statused;
     // Empty speech (silence, a whisper the transcriber dropped) is not a routing failure.
     if (!text.trim()) return { spoken: [], note: DIDNT_CATCH_NOTE };
@@ -186,7 +213,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     if (landedOnManager && hadTarget) spoken.push(`Now on ${FACTORY_MANAGER_NAME}.`);
     const shown: string[] = [];
     let steered = false;
-    let fallbackNote: string | null = null;
+    let fallbackNote: string | null = reported ? `The status reporter is unavailable (${reported.unavailable}), so this went to the manager.` : null;
     // Typing is deliberate: it wakes a sleeping loop, and skips the short-text and helper filters.
     if (typed && state.mode === "asleep") state = step(state, { type: "wake" }).state;
     const events: VoiceEvent[] = [{ type: "utterance", text, ...(typed ? { typed } : {}) }];

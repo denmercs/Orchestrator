@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FactoryPhase, FactorySlice } from "../shared/factory";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
-import type { AgentCreateConfig } from "../shared/agent-runner";
+import { type AgentCreateConfig, type AgentProfile, materializeProfile, seatProfile } from "../shared/agent-runner";
 import type { Phase, SkillSource } from "../shared/pipeline";
 import { branchName } from "../shared/naming";
 import type { LoopStep, StoryContext } from "../shared/story-method";
@@ -47,6 +47,8 @@ export type TickPaseo = {
   steer?: (line: string) => Promise<unknown>;
   // A message to a slice agent's session, for the plan gate's approval.
   send?: (agentId: string, text: string) => Promise<unknown>;
+  // The Paseo agent profiles and the runner's profile id, to resolve a seat's profile. Absent or failing: seats start on MANAGER_MODELS.
+  profiles?: () => Promise<{ list: AgentProfile[]; runnerProfileId: string }>;
   agents: {
     ref(id: string): { refresh(): Promise<{ agent: { status?: string; archivedAt?: string | null } } | null> };
     create(request: Omit<Parameters<ManagerPaseo["agents"]["create"]>[0], "config"> & { prompt: string; config: AgentCreateConfig }): Promise<{ id: string }>;
@@ -60,7 +62,7 @@ export type TickResult =
   | { kind: "alive"; slice: string; agent: string }
   | { kind: "restarted"; slice: string; agent: string };
 
-const isDead = (session: { status?: string; archivedAt?: string | null } | undefined | null) =>
+export const isDead = (session: { status?: string; archivedAt?: string | null } | undefined | null) =>
   !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
 
 // The QA seat's brief: run the checks the spec names (they're in the spec above), fill proof.md, and give a verdict where the
@@ -192,6 +194,19 @@ async function leaveSpec(root: string, slice: FactorySlice, ports: TickPaseo): P
   return { kind: "advanced", slice: id, phase };
 }
 
+// The seat's own model config (its file's profile, else its role's tier), or none to start on MANAGER_MODELS.
+async function seatConfig(root: string, role: string, ports: TickPaseo): Promise<AgentCreateConfig[]> {
+  if (!ports.profiles) return [];
+  try {
+    const { list, runnerProfileId } = await ports.profiles();
+    const seat = readFactory(root).seats.find((item) => item.role === role);
+    const profile = seatProfile(seat, role, list, runnerProfileId);
+    return profile ? [materializeProfile(profile)] : [];
+  } catch {
+    return [];
+  }
+}
+
 async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
   const slice = factoryTick(root);
   if (!slice) return { kind: "idle" };
@@ -220,7 +235,7 @@ async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
   const mission = factory.missions.find((item) => item.id === slice.mission);
   const prompt = seatPrompt(seat, slice, mission?.outcome ?? "", factory.project, sliceDir(root, slice.mission, slice.id));
   let failure: unknown;
-  for (const config of MANAGER_MODELS) {
+  for (const config of [...(await seatConfig(root, seat, ports)), ...MANAGER_MODELS]) {
     try {
       const { id } = await ports.agents.create({
         cwd: state.worktree,

@@ -7,6 +7,8 @@ export {
   pickProfile,
   profileCaption,
   profileForStep,
+  profileForTier,
+  seatProfile,
   profilesFromConfigGet,
   resolveRunnerConfig,
   type AgentCreateConfig,

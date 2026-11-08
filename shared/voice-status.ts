@@ -6,6 +6,8 @@ import { shortName } from "./voice-names";
 
 const ASK = /^(?:status|give me (?:a |the )?status|status report|what are the agents doing|what s going on|what is going on|what s happening|what is happening)(?: please)?$/;
 
+const FACTORY_ASK = /^(?:where are we(?: at)?|what s the factory doing|what is the factory doing|factory status|how s the factory(?: going)?|how is the factory(?: going)?)(?: please)?$/;
+
 const norm = (text: string): string =>
   withoutName(text).toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
 
@@ -15,6 +17,9 @@ export const isStatusAsk = (text: string): boolean => {
   // The whole phrase only: "status check the logs" or "the status of the build is red, fix it" is for the session.
   return ASK.test(said);
 };
+
+/** "Where are we" or "what's the factory doing" (optionally after the name) asks how the factory is getting on. Whole phrase only, like `isStatusAsk`. */
+export const isFactoryStatusAsk = (text: string): boolean => FACTORY_ASK.test(norm(text));
 
 /** What the summary reads of a live agent; a subset of what `agents.list` returns. */
 export type StatusAgent = {
