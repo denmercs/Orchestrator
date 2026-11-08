@@ -1070,10 +1070,10 @@ test("a reviewer with no profile is created on the deep profile, and a QA seat o
   await runFactoryTick(review.root, withProfiles(reviewing.paseo, [fast, deep, runner]));
   assert.deepEqual(reviewing.created.map((item) => item.config), [{ provider: "claude/claude-opus-5-5" }]);
 
-  const test_ = setup("agent: dead-1", "on", "test");
-  seatFile(test_.root, "qa");
+  const qaSlice = setup("agent: dead-1", "on", "test");
+  seatFile(qaSlice.root, "qa");
   const testing = fakePaseo({ "dead-1": { status: "error" } });
-  await runFactoryTick(test_.root, withProfiles(testing.paseo, [deep, fast, runner]));
+  await runFactoryTick(qaSlice.root, withProfiles(testing.paseo, [deep, fast, runner]));
   assert.deepEqual(testing.created.map((item) => item.config), [{ provider: "claude/claude-sonnet-5-5" }]);
 });
 
@@ -1098,12 +1098,15 @@ test("a failed create on the seat's profile falls back to MANAGER_MODELS, and th
   const { root, stateFile } = setup("agent: dead-1", "on", "test");
   const { paseo, created } = fakePaseo({ "dead-1": { status: "error" } });
   const create = paseo.agents.create;
+  const attempted: unknown[] = [];
   paseo.agents.create = async (request) => {
+    attempted.push(request.config);
     if (request.config.provider === "claude/claude-sonnet-5-5") throw new Error("model unavailable");
     return create(request);
   };
   const result = await runFactoryTick(root, withProfiles(paseo, [deep, fast, runner]));
   assert.deepEqual(result, { kind: "restarted", slice: "s1", agent: "new-1" });
+  assert.deepEqual(attempted, [{ provider: "claude/claude-sonnet-5-5" }, MANAGER_MODELS[0]]);
   assert.deepEqual(created.map((item) => item.config), [MANAGER_MODELS[0]]);
   assert.match(readFileSync(stateFile, "utf8"), /agent: new-1/);
 });

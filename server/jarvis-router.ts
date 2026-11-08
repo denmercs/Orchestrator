@@ -171,8 +171,9 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     if (briefed) return briefed;
     const reported = await routeFactoryStatus(routerId, text);
     if (reported && "spoken" in reported) return reported;
-    const statused = reported ? null : await routeStatus(routerId, text);
-    if (statused) return statused;
+    // Plain "status" with the reporter down still has its free session line; only the factory phrases need the reporter.
+    const statused = reported && isFactoryStatusAsk(text) ? null : await routeStatus(routerId, text);
+    if (statused) return reported ? { ...statused, note: `The status reporter is unavailable (${reported.unavailable}), so this shows the live sessions.` } : statused;
     // Empty speech (silence, a whisper the transcriber dropped) is not a routing failure.
     if (!text.trim()) return { spoken: [], note: DIDNT_CATCH_NOTE };
     const entry = entryFor(routerId);
@@ -213,7 +214,8 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     if (landedOnManager && hadTarget) spoken.push(`Now on ${FACTORY_MANAGER_NAME}.`);
     const shown: string[] = [];
     let steered = false;
-    let fallbackNote: string | null = reported ? `The status reporter is unavailable (${reported.unavailable}), so this went to the manager.` : null;
+    let steeredTo: string | null = null;
+    let fallbackNote: string | null = null;
     // Typing is deliberate: it wakes a sleeping loop, and skips the short-text and helper filters.
     if (typed && state.mode === "asleep") state = step(state, { type: "wake" }).state;
     const events: VoiceEvent[] = [{ type: "utterance", text, ...(typed ? { typed } : {}) }];
@@ -239,6 +241,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
               await ports.send(effect.session.id, first ? `${VOICE_ROUTING_PREAMBLE}\n\n${effect.text}` : effect.text);
               told.add(effect.session.id);
               steered = true;
+              steeredTo = effect.session.name;
             } catch (error) {
               spoken.push(sendFailedLine(effect.session.name, errorText(error)));
             }
@@ -270,6 +273,8 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
         }
       }
     }
+    // Said from what happened, not from where the words were meant to go: the steer may have gone to another session, or nowhere.
+    if (reported) fallbackNote = `The status reporter is unavailable (${reported.unavailable}), so ${steeredTo ? `this went to ${steeredTo}` : "nothing was sent"}.`;
     if (state.mode === "confirming" && !wasConfirming) entry.confirmAt = now();
     if (state.choices && state.choices !== choicesBefore) entry.choicesAt = now();
     entry.state = state;

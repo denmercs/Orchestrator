@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { FactoryPhase, FactorySlice } from "../shared/factory";
+import type { FactoryPhase, FactorySeat, FactorySlice } from "../shared/factory";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { type AgentCreateConfig, type AgentProfile, materializeProfile, seatProfile } from "../shared/agent-runner";
 import type { Phase, SkillSource } from "../shared/pipeline";
@@ -195,11 +195,10 @@ async function leaveSpec(root: string, slice: FactorySlice, ports: TickPaseo): P
 }
 
 // The seat's own model config (its file's profile, else its role's tier), or none to start on MANAGER_MODELS.
-async function seatConfig(root: string, role: string, ports: TickPaseo): Promise<AgentCreateConfig[]> {
+async function seatConfig(seat: FactorySeat | undefined, role: string, ports: TickPaseo): Promise<AgentCreateConfig[]> {
   if (!ports.profiles) return [];
   try {
     const { list, runnerProfileId } = await ports.profiles();
-    const seat = readFactory(root).seats.find((item) => item.role === role);
     const profile = seatProfile(seat, role, list, runnerProfileId);
     return profile ? [materializeProfile(profile)] : [];
   } catch {
@@ -235,7 +234,7 @@ async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
   const mission = factory.missions.find((item) => item.id === slice.mission);
   const prompt = seatPrompt(seat, slice, mission?.outcome ?? "", factory.project, sliceDir(root, slice.mission, slice.id));
   let failure: unknown;
-  for (const config of [...(await seatConfig(root, seat, ports)), ...MANAGER_MODELS]) {
+  for (const config of [...(await seatConfig(factory.seats.find((item) => item.role === seat), seat, ports)), ...MANAGER_MODELS]) {
     try {
       const { id } = await ports.agents.create({
         cwd: state.worktree,

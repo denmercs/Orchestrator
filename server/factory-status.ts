@@ -31,10 +31,12 @@ export async function factoryStatus(
   root: string,
   ports: { ask: Ask; unavailable: () => Promise<string | null>; alive: (agent: string) => Promise<boolean> },
 ): Promise<FactoryStatus | null> {
-  const projection = await factoryProjection(root, ports.alive);
-  if (!projection) return null;
+  const factory = readFactory(root);
+  if (!factory.project && factory.missions.length === 0) return null;
   const reason = await ports.unavailable();
   if (reason) return { unavailable: reason };
+  const projection = await factoryProjection(root, ports.alive);
+  if (!projection) return null;
   try {
     const { text } = await ports.ask(SYSTEM, projection);
     return { answer: text.trim() };

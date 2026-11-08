@@ -652,6 +652,24 @@ test("when the reporter is unavailable the words go to the manager, with a note 
   assert.match(r.note ?? "", /Claude Code is not signed in\./);
 });
 
+test("the unavailable note names the session the words actually went to, not the manager", async () => {
+  const { router, sent } = reporterSetup(async () => ({ unavailable: "offline" }));
+  await router.route("r1", "Jarvis, switch to docs");
+  const r = await router.route("r1", "where are we");
+  assert.deepEqual(sent, [["s2", "where are we"]]);
+  assert.match(r.note ?? "", /this went to docs/);
+  assert.doesNotMatch(r.note ?? "", /manager/);
+});
+
+test("plain 'status' with the reporter unavailable keeps the free session line and says why", async () => {
+  const { router, sent, managerCalls } = reporterSetup(async () => ({ unavailable: "offline" }));
+  const r = await router.route("r1", "Jarvis, status");
+  assert.match(r.spoken[0] ?? "", /docs needs you/);
+  assert.match(r.note ?? "", /offline/);
+  assert.equal(managerCalls(), 0);
+  assert.deepEqual(sent, []);
+});
+
 test("a reporter that throws is treated as unavailable", async () => {
   const { router, sent } = reporterSetup(async () => Promise.reject(new Error("disk gone")));
   const r = await router.route("r1", "what's the factory doing");
