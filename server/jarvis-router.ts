@@ -39,7 +39,7 @@ export type JarvisRouterPorts = {
   status?(): Promise<StatusAgent[]>;
   /**
    * The factory manager as a session, or null when there is no factory. It shows in the list as "Factory manager" and is the
-   * target of a router that has none. Asked on every route, never keyed on the Jarvis session id; a rejection counts as null.
+   * target of a router that has none. Asked on every route, never keyed on the Jarvis session id; a rejection is said, then routing is as with null.
    */
   manager?(): Promise<VoiceSession | null>;
   now?(): number;
@@ -51,7 +51,7 @@ export type RouteResult = { spoken: string[]; note: string | null };
 // A briefing waiting on your answer lapses after this, so a later "yes" isn't taken for it.
 const BRIEF_TIMEOUT_MS = 120_000;
 
-type Entry = { state: VoiceState; confirmAt: number; choicesAt: number; owed: string[] };
+type Entry = { state: VoiceState; confirmAt: number; choicesAt: number; owed: string[]; managerId: string | null };
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -77,7 +77,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
   function entryFor(routerId: string): Entry {
     let entry = entries.get(routerId);
     if (!entry) {
-      entry = { state: step(initialVoiceState(), { type: "wake" }).state, confirmAt: 0, choicesAt: 0, owed: [] };
+      entry = { state: step(initialVoiceState(), { type: "wake" }).state, confirmAt: 0, choicesAt: 0, owed: [], managerId: null };
       entries.set(routerId, entry);
     }
     return entry;
@@ -166,6 +166,10 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     const hadTarget = !!state.session;
     if (split) state = step(state, { type: "sessions", ...split }).state;
     // With no target, the manager is the default one. A target that just went away is said, as an explicit switch is.
+    // A target that is the manager this router last saw, now replaced in manager.md, is re-picked at the new id.
+    const replaced = !!factory && !!state.session && !!entry.managerId && state.session.id === entry.managerId && entry.managerId !== factory.id;
+    if (factory) entry.managerId = factory.id;
+    if (replaced) state = { ...state, session: null };
     const landedOnManager = !!split && !!factory && !state.session;
     if (landedOnManager) state = step(state, { type: "pick", session: { id: factory.id, name: FACTORY_MANAGER_NAME } }).state;
     // The same timeout as the Mac's, checked when the next words arrive (there is no timer on the phone).

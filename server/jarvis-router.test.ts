@@ -597,3 +597,23 @@ test("when the target is dropped, the next utterance says it is now on the manag
   assert.deepEqual(r.spoken, ["Now on Factory manager."]);
   assert.deepEqual(sent.at(-1), ["m1", "any news"]);
 });
+
+test("when the manager is replaced, the next utterance goes to the new id in manager.md", async () => {
+  // Arrange: the router lands on m1, then the manager dies and ensureManager hands back m2.
+  let current: VoiceSession = manager;
+  const sent: [string, string][] = [];
+  const router = createJarvisRouter({
+    sessions: async () => ({ list: [api, docs], blocked: [] }),
+    send: async (id, text) => void sent.push([id, text.replace(`${VOICE_ROUTING_PREAMBLE}\n\n`, "")]),
+    create: async () => "new1",
+    manager: async () => current,
+  });
+  await router.route("r1", "status of the slice");
+  current = { id: "m2", name: "Manager title from Paseo" };
+  // Act
+  const r = await router.route("r1", "and the next one");
+  // Assert: said once, and sent to the new id, not the dead one
+  assert.deepEqual(r.spoken, ["Now on Factory manager."]);
+  assert.deepEqual(sent, [["m1", "status of the slice"], ["m2", "and the next one"]]);
+  assert.equal(router.stateOf("r1")?.session?.id, "m2");
+});
