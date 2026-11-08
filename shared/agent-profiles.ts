@@ -61,14 +61,19 @@ export function resolveRunnerConfig(
   };
 }
 
-// Decision d1: Plan and Review default to an Opus profile, Implement and Fix CI to a Sonnet one.
-const STEP_TIER: Partial<Record<LoopStep, string>> = {
-  plan: "opus",
-  diagnose: "opus",
-  review: "opus",
-  implement: "sonnet",
-  fix: "sonnet",
+// Decision d1: Plan and Review default to a deep profile, Implement and Fix CI to a fast one.
+const STEP_TIER: Partial<Record<LoopStep, "deep" | "fast">> = {
+  plan: "deep",
+  diagnose: "deep",
+  review: "deep",
+  implement: "fast",
+  fix: "fast",
 };
+
+// What marks a profile's tier in its name or model, first match wins. The role word works for any provider
+// ("Grok deep", "grok-code-fast") and must stand alone, so "deepseek" is no tier; the Claude model names are the
+// fallback for profiles named before roles existed.
+const TIER_WORDS = { deep: [/\bdeep\b/, /opus/], fast: [/\bfast\b/, /sonnet/] } as const;
 
 // The loop step's default profile: the legacy `profiles` setting (id or name; nothing in the dashboard sets it
 // now), else the d1 tier
@@ -84,14 +89,13 @@ export function profileForStep(
   // Diagnose has no profile row of its own; it runs on Plan's.
   const setId = step === "pr" ? "" : loop.profiles[step === "diagnose" ? "plan" : step];
   const provider = runner?.provider ?? FALLBACK_AGENT_CONFIG.provider;
+  const ofProvider = profiles.filter((candidate) => candidate.provider === provider);
   const profile =
     (setId ? pickProfile(profiles, setId) : null) ??
     (tier
-      ? profiles.find(
-          (candidate) =>
-            candidate.provider === provider &&
-            `${candidate.model ?? ""} ${candidate.name}`.toLowerCase().includes(tier),
-        )
+      ? TIER_WORDS[tier]
+          .map((word) => ofProvider.find((candidate) => word.test(`${candidate.model ?? ""} ${candidate.name}`.toLowerCase())))
+          .find(Boolean)
       : null) ??
     runner;
   return {
