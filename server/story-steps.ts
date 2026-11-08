@@ -45,6 +45,8 @@ export const STUCK_CLEAR = {
   idle_turns: null,
   fail_tests: null,
   fail_runs: null,
+  ceremony_turns: null,
+  fail_edits: null,
   stuck_nudged: null,
   mid_turn: null,
   mid_fingerprint: null,

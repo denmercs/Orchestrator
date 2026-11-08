@@ -1371,6 +1371,8 @@ export function createInitiativeLoop(
             idle_turns: Number(after.meta.idle_turns) || 0,
             fail_tests: failTests,
             fail_runs: Number(after.meta.fail_runs) || 0,
+            ceremony_turns: Number(after.meta.ceremony_turns) || 0,
+            fail_edits: after.meta.fail_edits === "tests" || after.meta.fail_edits === "code" ? after.meta.fail_edits : "none",
           };
           const config = await readConfig();
           const { counters, evidence } = stuckCheck(carried, items.slice(lastUser + 1), {
@@ -1383,6 +1385,8 @@ export function createInitiativeLoop(
             idle_turns: counters.idle_turns || null,
             fail_tests: counters.fail_tests.length ? JSON.stringify(counters.fail_tests) : null,
             fail_runs: counters.fail_runs || null,
+            ceremony_turns: counters.ceremony_turns || null,
+            fail_edits: counters.fail_edits === "none" ? null : counters.fail_edits,
             ...(progressed ? { stuck_nudged: null } : {}),
           });
           if (evidence && after.meta.stuck_nudged) {
