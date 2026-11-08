@@ -187,7 +187,14 @@ Each step is done when its check passes. Do not start the next step first.
 4. **Phases.** Spec, design when `design: on`, build, test, review, and ship for `kind: ship` advance only on the evidence in the files and the turn outcome, through the loop steps in the phase table, and each advance hands the packet to the next seat. A slice without `design: on` never starts the design seat. A scout slice never opens a PR. Ready for the human produces one manager steer and does not merge. An in-flight story can be adopted as a slice. The start paths move to S8: the morning brief (`startInitiative` in `server/morning-brief.ts` and its "do it" in the Jarvis router), ticket start (`startTicket`, `startLocalTicket`), promote, the loop start file (`tickLoopStart`), the Start input (`routeStart`), and the Initiatives Start buttons.
 5. **Health.** The ceremony block fires on the two signals above, on every seat phase, and does not fire on a turn that edits product code or turns a failing test green.
 6. **Fan-out.** Honor `depends`. Two slices with no dependency both run, each in its own worktree. A slice whose dependency has an empty proof does not start.
-Rig templates (saved seat arrangements plus culture), a health panel, and a second machine are after step 6 has run on a real story.
+7. **Factory view.** A Factory tab replaces the Initiatives tab and opens by default when the repo has a factory. Today, Todos, Board and Pulse stay. Start only after step 6 has run on a real story, and remove the Initiatives tab only once its Start buttons have moved (S8). The view is read-only and reads the factory files and agent status, nothing new:
+   - One card per seat: role, model (from `seatProfile`), and whether its agent is alive, dead, or none.
+   - The runnable slices drawn as their phases (spec, design, build, test, review, ship), with the current phase and its seat lit.
+   - The reviewer's review round and last verdict, in place of a call count.
+   - A factory log: the status steers sent to the manager and the phase changes, newest first.
+   - No progress percentages, because Paseo reports only running or idle. Parallel slices from step 6 are the only fan-out shown.
+
+Rig templates (saved seat arrangements plus culture) and a second machine are after step 6 has run on a real story.
 
 ## First finished path
 
