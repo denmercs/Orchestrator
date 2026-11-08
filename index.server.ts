@@ -44,7 +44,7 @@ import { readPlanUsage } from "./server/plan-usage";
 import { planUsageRpc } from "./shared/plan-usage";
 import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay";
 import { readArms, readCorpus, readCostCap, readRunName, realReplayPorts } from "./server/replay-start";
-import { askUnavailable } from "./server/ask";
+import { askUnavailable, defaultAsk } from "./server/ask";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { createTranscriber, realTranscribePorts } from "./server/voice-transcribe";
 import { createWakeModelLoader, realWakeModelPorts } from "./server/voice-wake-models";
@@ -76,7 +76,8 @@ import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createMicOffGate } from "./server/mic-off-gate";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
 import { applyFactoryManager, ensureManager, steerManager } from "./server/factory-manager";
-import { runFactoryTick, type TickPaseo } from "./server/factory-tick";
+import { isDead, runFactoryTick, type TickPaseo } from "./server/factory-tick";
+import { factoryStatus } from "./server/factory-status";
 import { commitStory } from "./server/story-git";
 import { MARK } from "./server/story-steps";
 import { namedStories } from "./server/factory-layout";
@@ -723,6 +724,8 @@ export default function contribute(
       readAgentConfig: async (step) => loadStepConfig(paseo, await readLoopConfig(), step, await readRunnerProfileId()),
     },
     commit: commitStory,
+    // A seat runs on its file's profile, else its role's tier; the tick falls back to the manager's models without one.
+    profiles: async () => ({ list: profilesFromConfigGet(await paseo.config.get()), runnerProfileId: await readRunnerProfileId() }),
     steer: (line) => steerManager(repo, line, paseo),
     send: (agentId, text) => paseo.agents.ref(agentId).send(text),
     worktrees: {
@@ -786,6 +789,16 @@ export default function contribute(
       if (!repo) return null;
       const id = await ensureManager(repo, jarvisPaseo());
       return id ? { id, name: "Factory manager" } : null;
+    },
+    // "Where are we": a cheap one-shot over the factory's files, so the manager isn't woken. Null when there is no factory.
+    factoryStatus: async () => {
+      const { repo } = await readHarness();
+      if (!repo) return null;
+      return factoryStatus(repo, {
+        ask: defaultAsk(),
+        unavailable: deps.askUnavailable ?? (() => askUnavailable()),
+        alive: async (id) => !isDead((await jarvisPaseo().agents.ref(id).refresh())?.agent),
+      });
     },
     // "Good morning, Jarvis": weather, the verse, your Jira stories and the priority initiative, one beat at a time.
     brief: createMorningBrief({

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isStatusAsk, statusLine, type StatusAgent } from "./voice-status";
+import { isFactoryStatusAsk, isStatusAsk, statusLine, type StatusAgent } from "./voice-status";
 
 const agent = (id: string, extra: Partial<StatusAgent> = {}): StatusAgent => ({ id, title: id, status: "idle", ...extra });
 
@@ -18,6 +18,18 @@ test("long requests and other words are not a status ask", () => {
   // Starts like a status ask but carries a request for the session.
   assert.equal(isStatusAsk("status check the logs"), false);
   assert.equal(isStatusAsk("status of the build is red"), false);
+});
+
+test("factory status phrases are a factory status ask, with or without the name", () => {
+  for (const said of ["Where are we?", "Jarvis, where are we", "what's the factory doing", "What is the factory doing?", "factory status", "Jarvis, how's the factory", "how is the factory going"]) {
+    assert.equal(isFactoryStatusAsk(said), true, said);
+  }
+});
+
+test("longer sentences and other words are not a factory status ask", () => {
+  for (const said of ["where are we going for lunch", "the factory status page is broken, fix it", "how's the factory floor layout", "status", "good morning"]) {
+    assert.equal(isFactoryStatusAsk(said), false, said);
+  }
 });
 
 test("with nothing running and nothing stuck it says so", () => {

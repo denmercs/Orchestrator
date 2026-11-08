@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { FALLBACK_AGENT_CONFIG } from "../shared/agent-runner";
+import { FALLBACK_AGENT_CONFIG, type AgentProfile } from "../shared/agent-runner";
 import { DEFAULT_PHASES } from "../shared/pipeline";
 import { runnableSlice } from "../shared/factory";
 import { namedStories, readFactory, sliceDir, storyKey } from "./factory-layout";
@@ -1046,6 +1046,75 @@ test("review round 3 nudge: a review that fails at review round 2 steers once, b
   later.steer = async (line: string) => (steers.push(line), true);
   for (let pass = 0; pass < 2; pass++) await runFactoryTick(second.ctx.root, later);
   assert.equal(steers.length, 1);
+});
+
+// Seat profiles: the seat's file, else its role's tier, else MANAGER_MODELS.
+const deep: AgentProfile = { id: "p_deep", name: "Deep", provider: "claude", model: "claude-opus-5-5" };
+const fast: AgentProfile = { id: "p_fast", name: "Fast", provider: "claude", model: "claude-sonnet-5-5" };
+const grok: AgentProfile = { id: "p_grok", name: "Grok", provider: "grok", model: "grok-code" };
+const runner: AgentProfile = { id: "p_runner", name: "Runner", provider: "claude", model: "claude-haiku-4-5" };
+
+const withProfiles = (paseo: TickPaseo, list: AgentProfile[]): TickPaseo => ({
+  ...paseo,
+  profiles: async () => ({ list, runnerProfileId: runner.id }),
+});
+
+const seatFile = (root: string, role: string, profile = "") =>
+  put(join(root, ".harness", "factory", "seats", `${role}.md`), `---\n${profile ? `profile: ${profile}\n` : ""}---\nNotes.\n`);
+
+test("a seat file's named profile is the profile its agent is created on, on any provider", async () => {
+  const { root } = setup("agent: dead-1", "on", "test");
+  seatFile(root, "qa", grok.id);
+  const { paseo, created } = fakePaseo({ "dead-1": { status: "error" } });
+  await runFactoryTick(root, withProfiles(paseo, [deep, fast, grok, runner]));
+  assert.deepEqual(created.map((item) => item.config), [{ provider: "grok/grok-code" }]);
+});
+
+test("a reviewer with no profile is created on the deep profile, and a QA seat on the fast one", async () => {
+  const review = setup("agent: dead-1", "on", "review");
+  const reviewing = fakePaseo({ "dead-1": { status: "error" } });
+  await runFactoryTick(review.root, withProfiles(reviewing.paseo, [fast, deep, runner]));
+  assert.deepEqual(reviewing.created.map((item) => item.config), [{ provider: "claude/claude-opus-5-5" }]);
+
+  const qaSlice = setup("agent: dead-1", "on", "test");
+  seatFile(qaSlice.root, "qa");
+  const testing = fakePaseo({ "dead-1": { status: "error" } });
+  await runFactoryTick(qaSlice.root, withProfiles(testing.paseo, [deep, fast, runner]));
+  assert.deepEqual(testing.created.map((item) => item.config), [{ provider: "claude/claude-sonnet-5-5" }]);
+});
+
+test("with no matching profile, or no profiles port, a seat is created on MANAGER_MODELS[0]", async () => {
+  const none = setup("agent: dead-1", "on", "test");
+  const noMatch = fakePaseo({ "dead-1": { status: "error" } });
+  await runFactoryTick(none.root, withProfiles(noMatch.paseo, [runner]));
+  assert.deepEqual(noMatch.created.map((item) => item.config), [MANAGER_MODELS[0]]);
+
+  const bare = setup("agent: dead-1", "on", "test");
+  const noPort = fakePaseo({ "dead-1": { status: "error" } });
+  await runFactoryTick(bare.root, noPort.paseo);
+  assert.deepEqual(noPort.created.map((item) => item.config), [MANAGER_MODELS[0]]);
+
+  const broken = setup("agent: dead-1", "on", "test");
+  const failing = fakePaseo({ "dead-1": { status: "error" } });
+  await runFactoryTick(broken.root, { ...failing.paseo, profiles: async () => { throw new Error("config unreachable"); } });
+  assert.deepEqual(failing.created.map((item) => item.config), [MANAGER_MODELS[0]]);
+});
+
+test("a failed create on the seat's profile falls back to MANAGER_MODELS, and the slice records that agent", async () => {
+  const { root, stateFile } = setup("agent: dead-1", "on", "test");
+  const { paseo, created } = fakePaseo({ "dead-1": { status: "error" } });
+  const create = paseo.agents.create;
+  const attempted: unknown[] = [];
+  paseo.agents.create = async (request) => {
+    attempted.push(request.config);
+    if (request.config.provider === "claude/claude-sonnet-5-5") throw new Error("model unavailable");
+    return create(request);
+  };
+  const result = await runFactoryTick(root, withProfiles(paseo, [deep, fast, runner]));
+  assert.deepEqual(result, { kind: "restarted", slice: "s1", agent: "new-1" });
+  assert.deepEqual(attempted, [{ provider: "claude/claude-sonnet-5-5" }, MANAGER_MODELS[0]]);
+  assert.deepEqual(created.map((item) => item.config), [MANAGER_MODELS[0]]);
+  assert.match(readFileSync(stateFile, "utf8"), /agent: new-1/);
 });
 
 test("review round 3 nudge: a steer that returns false or throws stays pending and the next tick steers again", async () => {
