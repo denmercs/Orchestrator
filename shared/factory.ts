@@ -19,6 +19,8 @@ export type SliceState = {
   ready: SliceReady;
   approve: "" | "plan";
   pr: string;
+  // The cause the manager was last told holds the slice (`blocked dependency X`, `unknown dependency Y`); empty when none.
+  held: string;
 };
 
 export type FactorySlice = { id: string; mission: string; state: SliceState; spec: string; design: string; proof: string };
@@ -51,6 +53,7 @@ export function parseSliceState(fields: Record<string, string>): SliceState {
     ready: fields.ready === "review" || fields.ready === "ci" || fields.ready === "blocked" ? fields.ready : "",
     approve: fields.approve === "plan" ? "plan" : "",
     pr: fields.pr ?? "",
+    held: fields.held ?? "",
   };
 }
 
@@ -76,4 +79,16 @@ export const runnableSlices = (factory: Factory): FactorySlice[] => {
     if (mission.slices.some((slice) => slice.state.run && !isDone(slice))) break;
   }
   return runnable;
+};
+
+// Why a run: on, not ready slice can't start until the manager acts: its first depends id that is a `ready: blocked` slice
+// or not a slice of its own mission. Null otherwise: a dependency still in progress is a normal wait.
+export const heldBy = (slice: FactorySlice, mission: FactoryMission): string | null => {
+  if (!slice.state.run || slice.state.ready) return null;
+  for (const id of slice.state.depends) {
+    const dependency = mission.slices.find((item) => item.id === id);
+    if (!dependency) return `unknown dependency ${id}`;
+    if (dependency.state.ready === "blocked") return `blocked dependency ${id}`;
+  }
+  return null;
 };

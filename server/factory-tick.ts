@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { FactoryPhase, FactorySeat, FactorySlice } from "../shared/factory";
+import { type FactoryPhase, type FactorySeat, type FactorySlice, heldBy } from "../shared/factory";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { type AgentCreateConfig, type AgentProfile, materializeProfile, seatProfile } from "../shared/agent-runner";
 import type { Phase, SkillSource } from "../shared/pipeline";
@@ -220,6 +220,11 @@ async function seatConfig(seat: FactorySeat | undefined, role: string, ports: Ti
 async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
   const results: TickResult[] = [];
   const failures: unknown[] = [];
+  try {
+    await noteHeld(root, ports);
+  } catch (error) {
+    failures.push(error);
+  }
   for (const slice of factoryTick(root)) {
     try {
       results.push(await passSlice(root, slice, ports));
@@ -231,6 +236,19 @@ async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
   if (failures.length > 1) throw new AggregateError(failures, failures.map(String).join("; "));
   if (results.length === 0) return { kind: "idle" };
   return results.length === 1 ? results[0] : { kind: "fan-out", results };
+}
+
+// A slice held by a blocked or unknown dependency would wait in silence: the manager hears once per cause, and `held` in
+// state.md remembers it across passes and restarts. It clears when the cause goes away, so a later cause steers again.
+async function noteHeld(root: string, ports: TickPaseo) {
+  for (const mission of readFactory(root).missions) {
+    for (const slice of mission.slices) {
+      const cause = heldBy(slice, mission);
+      if ((cause ?? "") === slice.state.held) continue;
+      if (cause) await ports.steer?.(`Slice ${slice.id} can't start: ${cause}.`);
+      writeSliceState(root, mission.id, slice.id, { held: cause });
+    }
+  }
 }
 
 async function passSlice(root: string, slice: FactorySlice, ports: TickPaseo): Promise<TickResult> {

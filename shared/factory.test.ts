@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Factory, type FactorySlice, parseSeat, parseSliceState, runnableSlices } from "./factory";
+import { type Factory, type FactorySlice, parseSeat, heldBy, parseSliceState, runnableSlices } from "./factory";
 
 test("parseSliceState reads an empty frontmatter as an idle scout at the spec phase", () => {
   assert.deepEqual(parseSliceState({}), {
@@ -17,6 +17,7 @@ test("parseSliceState reads an empty frontmatter as an idle scout at the spec ph
     ready: "",
     approve: "",
     pr: "",
+    held: "",
   });
 });
 
@@ -36,6 +37,7 @@ test("parseSliceState reads every field", () => {
       ready: "ci",
       approve: "plan",
       pr: "42",
+      held: "blocked dependency a",
     }),
     {
       phase: "build",
@@ -51,6 +53,7 @@ test("parseSliceState reads every field", () => {
       ready: "ci",
       approve: "plan",
       pr: "42",
+      held: "blocked dependency a",
     },
   );
 });
@@ -138,4 +141,17 @@ test("runnableSlices does not hold a later mission for an earlier mission that i
   const later = slice("c", "m2", { run: "on" });
   assert.deepEqual(ids(factoryOf(["m1", [finished("a", "m1")]], ["m2", [later]])), ["c"]);
   assert.deepEqual(ids(factoryOf(["m1", [slice("a", "m1")]], ["m2", [later]])), ["c"]);
+});
+
+test("heldBy names a blocked or unknown dependency, and nothing for one still in progress", () => {
+  const blocked = slice("a", "m1", { run: "on", ready: "blocked" });
+  const working = slice("w", "m1", { run: "on" });
+  const held = (fields: Record<string, string>, mission = { id: "m1", outcome: "", slices: [blocked, working] }) =>
+    heldBy(slice("b", "m1", fields), mission);
+  assert.equal(held({ run: "on", depends: "w, a" }), "blocked dependency a");
+  assert.equal(held({ run: "on", depends: "ghost" }), "unknown dependency ghost");
+  assert.equal(held({ run: "on", depends: "w" }), null);
+  // An idle or ready slice is not held, whatever it depends on.
+  assert.equal(held({ depends: "a" }), null);
+  assert.equal(held({ run: "on", ready: "blocked", depends: "a" }), null);
 });
