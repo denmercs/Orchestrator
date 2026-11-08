@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { namedStories } from "./factory-layout";
 import { promisify } from "node:util";
 import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
 import type { AgentCreateConfig } from "../shared/agent-runner";
@@ -1003,8 +1004,11 @@ export function createInitiativeLoop(
 
   // Everything the loop does for one initiative on a tick: PRs, in-flight steps, then free slots.
   async function sweep(api: PaseoApi, config: LoopConfig, init: Initiative) {
+    // A story a factory slice names belongs to the factory tick: one owner per story.
+    const adopted = namedStories(init.root);
     for (const phaseDir of phaseDirs(init)) {
       for (const story of readStoryFiles(phaseDir)) {
+        if (adopted.has(resolve(story.path))) continue;
         try {
           if (story.meta.status === "pr-open") await watchPr(api, config, init, phaseDir, story);
           else if (initiativeLoopState(init.dir) === "on") {

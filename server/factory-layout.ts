@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { type Factory, type FactoryMission, type FactorySlice, type SliceState, parseSeat, parseSliceState, runnableSlice } from "../shared/factory";
 import { dirsIn, frontmatter, writeFrontmatter } from "./harness-layout";
 
@@ -54,6 +54,16 @@ export function readFactory(root: string): Factory {
 
 // Read-only pass: the one slice that should run now, or null (no factory, or nothing set to run).
 export const factoryTick = (root: string): FactorySlice | null => runnableSlice(readFactory(root));
+
+// The story files the factory's slices name (resolved paths), so the initiative loop can leave them to the tick.
+export const namedStories = (root: string): Set<string> =>
+  new Set(
+    readFactory(root)
+      .missions.flatMap((mission) => mission.slices)
+      .map((slice) => slice.state.story)
+      .filter(Boolean)
+      .map((story) => resolve(story)),
+  );
 
 type SliceStatePatch = { [K in keyof SliceState]?: SliceState[K] | null };
 
