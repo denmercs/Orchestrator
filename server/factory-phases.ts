@@ -8,12 +8,14 @@ import { ciAction } from "./ci-watch";
 import { readFactory, writeSliceState } from "./factory-layout";
 import type { TickPaseo, TickResult } from "./factory-tick";
 import { APPROVE_MESSAGE } from "./gate-actions";
+import { storyCost } from "./context-telemetry";
 import { frontmatter, writeFrontmatter } from "./harness-layout";
+import { storyCap, type ReadCost } from "./initiative-loop";
 import { failureReport, prStatus } from "./pr-checks";
 import { repoMaxFixes, repoPipelineConfig } from "./repo-pipeline";
 import { commitStory, failureText, openStoryPr, pushStoryFix } from "./story-git";
 import { launchStep } from "./story-steps";
-import { ROUND_NUDGE_AT, roundNudgeLine } from "../shared/round-nudge";
+import { ROUND_NUDGE_AT, roundNudgeDue, roundNudgeLine } from "../shared/round-nudge";
 import { maybeRoundNudge } from "./round-nudge";
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
@@ -30,6 +32,15 @@ export const refocusLines = (mission: string, project: string) => [`Mission outc
 const isDead = (session: { status?: string; archivedAt?: string | null } | undefined | null) =>
   !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
 
+// What telemetry attributes a slice's spend to. A story that lives in an initiative keeps that initiative's slug and its own id,
+// so spend from before the factory adopted it adds up; any other story is the mission and the slice.
+export function sliceSpendKey(slice: FactorySlice): { initiative: string; story: string } {
+  const file = slice.state.story;
+  const slug = file ? /[\\/]\.harness[\\/]initiatives[\\/]([^\\/]+)[\\/]/.exec(file)?.[1] : undefined;
+  const id = slug && existsSync(file!) ? frontmatter(readText(file!)).id : undefined;
+  return slug && id ? { initiative: slug, story: id } : { initiative: slice.mission, story: slice.id };
+}
+
 // Starts one loop step in the slice's worktree, as the slice's builder (the reviewer for Review), and records the agent. `attempt` marks a restart
 // of a step whose session died: its prompt gets the refocus lines. `failing` is the checks a QA seat saw fail.
 function launcher(root: string, slice: FactorySlice, ports: TickPaseo, ctx: Parameters<typeof launchStep>[0]["ctx"]) {
@@ -37,6 +48,7 @@ function launcher(root: string, slice: FactorySlice, ports: TickPaseo, ctx: Para
   const steps = ports.steps!;
   const factory = readFactory(root);
   const outcome = factory.missions.find((item) => item.id === mission)?.outcome ?? "";
+  const spend = sliceSpendKey(slice);
   return async (step: LoopStep, round: number, extra: { cycle?: ReturnType<typeof readCycles>[number]; attempt?: number; failing?: string } = {}) => {
     const seat = step === "review" ? "reviewer" : "builder";
     const agent = await launchStep({
@@ -51,6 +63,8 @@ function launcher(root: string, slice: FactorySlice, ports: TickPaseo, ctx: Para
         seat,
         "factory-slice": id,
         "factory-mission": mission,
+        "loop-initiative": spend.initiative,
+        "loop-story": spend.story,
         "loop-step": step,
         "loop-round": String(round),
       },
@@ -95,13 +109,22 @@ async function block(root: string, slice: FactorySlice, ports: TickPaseo, why: s
 // The story's review rounds, counted apart from `round` (which a failed test run also advances).
 const reviewRoundOf = (meta: Record<string, string>) => Number(meta.review_round) || 1;
 
+const sliceSpend = async (slice: FactorySlice, meta: Record<string, string>, cost: ReadCost) => ({
+  spent: storyCost(await cost.rows(), sliceSpendKey(slice)),
+  cap: storyCap(meta, await cost.cap()),
+});
+
 // The round 3 nudge for a slice, as one steer to the manager. It counts as delivered only when `steer` exists and
 // resolves to something other than `false` (`steerManager` returns false with no manager); a throw is not delivered.
-// Slice agents carry no `loop-story` labels, so telemetry can't say what they spent and the line leaves spend out.
+// Its line shows the slice's spend against the story's cap when `cost` is wired; the cap is shown here, not enforced.
 async function sliceNudge(slice: FactorySlice, ports: TickPaseo, reviewRound: number): Promise<void> {
-  const { steer } = ports;
-  if (!steer || !slice.state.story) return;
-  await maybeRoundNudge(slice.state.story, reviewRound, roundNudgeLine(slice.id), async (line) => (await steer(line)) !== false);
+  const { steer, cost } = ports;
+  const file = slice.state.story;
+  if (!steer || !file) return;
+  const meta = frontmatter(readText(file));
+  if (!roundNudgeDue(meta, reviewRound)) return;
+  const spend = cost && (await sliceSpend(slice, meta, cost).catch(() => undefined));
+  await maybeRoundNudge(file, reviewRound, roundNudgeLine(slice.id, undefined, spend), async (line) => (await steer(line)) !== false);
 }
 
 // A nudge nobody received is still pending: each tick tries again while the slice's review round stays at 3 or more.

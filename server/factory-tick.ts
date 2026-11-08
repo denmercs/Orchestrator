@@ -11,6 +11,7 @@ import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from 
 import { REFOCUS, TEST_DONE, TEST_FAILED, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge } from "./factory-phases";
 import { frontmatter, slugOf, writeFrontmatter } from "./harness-layout";
 import type { FailingCheck, PrStatus } from "./pr-checks";
+import type { ReadCost } from "./initiative-loop";
 import type { OpenedPr } from "./story-git";
 
 // The seat that works each phase. The manager owns `spec`, which the tick doesn't deliver.
@@ -36,6 +37,8 @@ export type TickPaseo = {
     // The runner config for a step: the loop picks a per-step profile, so the step is passed.
     readAgentConfig: (step: LoopStep) => Promise<AgentCreateConfig>;
   };
+  // The telemetry rows and base cap the round 3 nudge reads a slice's spend from. Absent: the nudge leaves spend out.
+  cost?: ReadCost;
   // Commits a finished Implement's work (`commitStory` when absent).
   commit?: (cwd: string, message: string) => Promise<boolean>;
   // The ship phase's git and gh, each defaulting to the real one (`openStoryPr`, `prStatus`, `failureReport`, `pushStoryFix`). There is no merge port: the tick never merges.
