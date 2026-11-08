@@ -52,7 +52,7 @@ export function readFactory(root: string): Factory {
   };
 }
 
-// The one slice that should run now, or null (no factory, or nothing set to run).
+// Every slice that should run now (empty: no factory, or nothing runnable).
 export const factoryTick = (root: string): FactorySlice[] => runnableSlices(readFactory(root));
 
 // A story file's identity for the one-owner rule: resolved against `base`, then through symlinks when the file exists.

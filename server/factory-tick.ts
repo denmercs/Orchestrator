@@ -216,7 +216,7 @@ async function seatConfig(seat: FactorySeat | undefined, role: string, ports: Ti
 }
 
 // One pass over every runnable slice, one after another so the seat file and the slice files never get two writers.
-// Each slice has its own try: one slice's failure doesn't stop the others, and the first error is rethrown once all have run.
+// Each slice has its own try: one slice's failure doesn't stop the others, and once all have run a lone error is rethrown as is, several as one AggregateError.
 async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
   const results: TickResult[] = [];
   const failures: unknown[] = [];
@@ -227,7 +227,8 @@ async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
       failures.push(error);
     }
   }
-  if (failures.length) throw failures[0];
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, failures.map(String).join("; "));
   if (results.length === 0) return { kind: "idle" };
   return results.length === 1 ? results[0] : { kind: "fan-out", results };
 }

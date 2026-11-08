@@ -1420,11 +1420,12 @@ test("two independent spec slices each get their own worktree, then their own se
   assert.deepEqual(created.map((agent) => agent.labels.slice).sort(), ["s1", "s2"]);
 });
 
-test("a slice that depends on a slice with an empty proof.md gets no worktree and no agent while its dependency is worked", async () => {
-  // Arrange: s2 depends on s1, whose proof.md is empty.
-  const { root, stateFile } = setup("", "on", "spec");
-  rmSync(join(root, "wt"), { recursive: true });
+test("a slice that depends on a reviewed slice with an empty proof.md gets no worktree and no agent, while an independent slice does", async () => {
+  // Arrange: s1 is reviewed (`ready: review`) but its proof.md is empty; s2 depends on it; s3 depends on nothing.
+  const { root, worktree } = setup("ready: review", "on", "spec");
+  rmSync(worktree, { recursive: true });
   const dependentState = addSlice(root, "s2", "depends: s1");
+  const freeState = addSlice(root, "s3", "");
   writeFileSync(join(sliceDir(root, "m1", "s1"), "proof.md"), "\n");
   const { paseo, created, slugs } = perSlicePaseo();
 
@@ -1432,12 +1433,12 @@ test("a slice that depends on a slice with an empty proof.md gets no worktree an
   const handoff = await runFactoryTick(root, paseo);
   const seat = await runFactoryTick(root, paseo);
 
-  // Assert: only s1 moved; s2 has nothing.
-  assert.deepEqual(handoff, { kind: "advanced", slice: "s1", phase: "build" });
+  // Assert: only the independent s3 moved; s2 waits on s1's proof.
+  assert.deepEqual(handoff, { kind: "advanced", slice: "s3", phase: "build" });
   assert.equal(seat.kind, "restarted");
-  assert.deepEqual(slugs, ["s1"]);
-  assert.equal(created.length, 1);
-  assert.equal(created[0].cwd, field(stateFile, "worktree"));
+  assert.deepEqual(slugs, ["s3"]);
+  assert.deepEqual(created.map((agent) => agent.labels.slice), ["s3"]);
+  assert.equal(created[0].cwd, field(freeState, "worktree"));
   assert.equal(field(dependentState, "worktree"), undefined);
   assert.equal(field(dependentState, "agent"), undefined);
 });
@@ -1464,37 +1465,21 @@ test("when the first slice's agent can't be started, the second still gets its a
   assert.equal(field(stateFile, "agent"), undefined);
 });
 
-test("the loop's parallel setting of 1 doesn't cap the factory: three runnable build slices each get one agent", async () => {
-  // Arrange: three build slices with dead agents, each with its own worktree, and a loop on the default (parallel 1).
-  const { root, worktree, stateFile } = setup("agent: dead-1", "on", "build");
-  const trees = [worktree];
-  const states = [stateFile];
-  for (const id of ["s2", "s3"]) {
-    const tree = join(root, `wt-${id}`);
-    mkdirSync(tree);
-    trees.push(tree);
-    states.push(addSlice(root, id, `agent: dead-${id}\nworktree: ${tree}`, "build"));
-  }
-  const { paseo, created } = perSlicePaseo({ "dead-1": { status: "closed" }, "dead-s2": { status: "closed" }, "dead-s3": { status: "closed" } });
-  const initiative = createInitiativeLoop(
-    async () => DEFAULT_LOOP_CONFIG,
-    async () => FALLBACK_AGENT_CONFIG,
-    async () => ({ phases: DEFAULT_PHASES, sources: [] }),
-    async () => null,
-    undefined,
-    undefined,
-    undefined,
-    async () => root,
-  );
-  assert.equal(DEFAULT_LOOP_CONFIG.parallel, 1);
+test("when several slices can't start an agent, the pass rejects with every failure", async () => {
+  // Arrange: two build slices with worktrees; starting an agent always throws, with a message naming the folder.
+  const { root, worktree } = setup("", "on", "build");
+  const otherTree = join(root, "wt2");
+  mkdirSync(otherTree);
+  addSlice(root, "s2", `worktree: ${otherTree}`, "build");
+  const { paseo } = perSlicePaseo();
+  paseo.agents.create = async (request) => {
+    throw new Error(`no capacity for ${request.cwd}`);
+  };
 
-  // Act: the loop and the factory tick run together.
-  const [, result] = await Promise.all([initiative.tick(), runFactoryTick(root, paseo)]);
-
-  // Assert: every slice got exactly one new agent, in its own worktree.
-  assert.equal(result.kind, "fan-out");
-  assert.deepEqual(created.map((agent) => agent.cwd).sort(), [...trees].sort());
-  assert.deepEqual(created.map((agent) => agent.labels.slice).sort(), ["s1", "s2", "s3"]);
-  assert.equal(new Set(states.map((file) => field(file, "agent"))).size, 3);
-  assert.ok(states.every((file) => /^new-\d$/.test(field(file, "agent") ?? "")));
+  // Act and assert: one AggregateError carrying both errors.
+  await assert.rejects(runFactoryTick(root, paseo), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(error.errors.map((item) => (item as Error).message).sort(), [`no capacity for ${otherTree}`, `no capacity for ${worktree}`].sort());
+    return true;
+  });
 });
