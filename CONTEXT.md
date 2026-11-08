@@ -405,3 +405,23 @@ _Avoid_: mute (in the UI), voice mode (that is Paseo's).
 **Unreadable voice settings:** once the saved `voice` setting is invalid, or its read keeps failing (3 tries), the server fails open (speech goes through, as for a default user) and the events poll says so (`settingsUnreadable`); the runner's `repairSettings` re-saves the defaults. Since the Voice drawer went, no Mac control shows this or calls Repair or the Ignore me switch (`setMic`); "Jarvis, ignore me" only sleeps the loop and does not change the setting. The server is closed only until the first read resolves (`server/mic-off-gate.ts`). The "Voice on/off" guess decays to unknown after `JARVIS_ACTIVE_MS` of quiet.
 
 **Ignore me never turns itself off on a glitch:** the server (`server/mic-off-gate.ts`) and the Mac's runner both keep the last value actually read and use it through a rejected read, a loading state, or a later invalid one. With no value ever read they hold speech and keep the mic closed, retrying with a growing wait (`settingsChecking` on the events poll); they fail open (mic on) only for a stored value that is definitively invalid with nothing read before. Repair rewrites the last known value (false only if none was ever read). The "Voice on/off" guess holds for 2 hours after a Jarvis session was last seen.
+
+## Factory
+
+The `.harness/factory/` tree in a repo: the files a project's factory runs from. Machine fields live in frontmatter, prose stays markdown. A repo with no `.harness/factory/` reads as an empty factory (`project` and `culture` empty, no seats, no missions), not an error. Code: `shared/factory.ts` (types, parsing with defaults, the runnable rule; no Node imports), `server/factory-layout.ts` (reads and writes the tree). Nothing is wired into `index.server.ts` yet.
+
+**Project** (`project.md`): the prose describing what the factory builds. **Manager file** (`manager.md`): its frontmatter `agent` names the manager's session. **Culture** (`culture.md`): prose house rules every seat follows. A missing file reads as empty.
+
+**Mission** (`missions/<id>/mission.md`): one outcome, its body. Missions and their slices are read in directory order (numeric-aware, so `01-…` before `02-…`); folders starting with `.` are skipped.
+
+**Slice** (`missions/<id>/slices/<id>/`): one piece of a mission, with prose files `spec.md`, `design.md`, `proof.md` (each reads as empty when missing) and `state.md`, whose frontmatter is the slice state. A slice with no `state.md` has the default state.
+
+**Seat** (`seats/<role>.md`): a role the factory can fill. The role is the file name; frontmatter has `profile`, `skills` (comma list) and `agent`; the body is the seat's notes.
+
+**Slice state fields** (frontmatter of `state.md`): `phase` (`spec`, `design`, `build`, `test`, `review`, `ship`; absent or unknown reads as `spec`), `seat`, `agent`, `worktree`, `story` (empty when absent), `attempt` (number, 0 when absent or not a number), `kind` (`scout` or `ship`, `scout` when absent), `depends` (comma list of slice ids, empty when absent), `run` and `design` (true only for the exact value `on`, so absent is off). `writeSliceState` changes these keys in place: a list is written joined with `, `, a boolean as `on`/`off`, null removes the key, and every other line of the file stays as it was.
+
+**Runnable slice**: the first slice, in mission order and then slice order, with `run: on`. Absent `run` means idle. `depends` is parsed but ignored until the dependency story (S6), and at most one slice is returned.
+
+**`factoryTick`**: a read-only pass. It reads the factory and returns the one runnable slice, or null when nothing is runnable or there is no `.harness/factory/`. It never throws on a missing tree. It starts and changes nothing yet.
+
+_Avoid_: pipeline, job (for a slice).
