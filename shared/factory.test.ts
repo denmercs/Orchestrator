@@ -49,6 +49,8 @@ test("parseSliceState reads every field", () => {
 test("parseSliceState falls back on unknown values", () => {
   const state = parseSliceState({ phase: "nope", kind: "x", attempt: "many", run: "yes" });
   assert.deepEqual([state.phase, state.kind, state.attempt, state.run], ["spec", "scout", 0, false]);
+  assert.equal(parseSliceState({ attempt: "-1" }).attempt, 0);
+  assert.equal(parseSliceState({ attempt: "1.5" }).attempt, 0);
 });
 
 test("parseSeat reads profile, skills and agent from frontmatter and notes from the body", () => {

@@ -35,7 +35,7 @@ export function parseSliceState(fields: Record<string, string>): SliceState {
     phase: PHASES.find((phase) => phase === fields.phase) ?? "spec",
     seat: fields.seat ?? "",
     agent: fields.agent ?? "",
-    attempt: Number.isFinite(attempt) ? attempt : 0,
+    attempt: Number.isInteger(attempt) && attempt >= 0 ? attempt : 0,
     worktree: fields.worktree ?? "",
     story: fields.story ?? "",
     kind: fields.kind === "ship" ? "ship" : "scout",

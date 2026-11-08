@@ -63,6 +63,21 @@ test("a slice with only state.md reads empty prose; one with no state.md reads t
   }
 });
 
+test("a factory with no project, manager, culture or seats reads those as empty", () => {
+  const root = mkdtempSync(join(tmpdir(), "factory-layout-"));
+  try {
+    put(join(sliceDir(root, "01-m", "01-a"), "state.md"), "---\nrun: on\n---\n");
+    const factory = readFactory(root);
+    assert.equal(factory.project, "");
+    assert.equal(factory.culture, "");
+    assert.equal(factory.manager.agent, "");
+    assert.deepEqual(factory.seats, []);
+    assert.equal(factory.missions.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a repo with no .harness/factory reads as an empty factory and the tick returns null", () => {
   const root = mkdtempSync(join(tmpdir(), "factory-layout-"));
   try {
@@ -94,6 +109,19 @@ test("writeSliceState sets and removes machine fields and leaves every other lin
       readFileSync(file, "utf8"),
       "---\nphase: build\nagent: new\nrun: on\ndepends: a, b\ndesign: on\n---\n\nNotes stay.\n",
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("writeSliceState creates state.md in a slice folder that has none", () => {
+  const root = mkdtempSync(join(tmpdir(), "factory-layout-"));
+  try {
+    mkdirSync(sliceDir(root, "01-m", "01-a"), { recursive: true });
+    writeSliceState(root, "01-m", "01-a", { phase: "build", run: true });
+    const [slice] = readFactory(root).missions[0].slices;
+    assert.equal(slice.state.phase, "build");
+    assert.equal(slice.state.run, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
