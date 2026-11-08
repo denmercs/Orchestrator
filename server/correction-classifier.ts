@@ -1,5 +1,6 @@
-// The default cheap-model classifier: Claude Haiku through the Claude Code CLI (see claude-cli.ts).
-import { type Ask, claudeCli } from "./claude-cli";
+// The default cheap-model classifier: the one-shot model from ask.ts (Claude Haiku unless ~/.orchestrator/ask.json names another).
+import { defaultAsk } from "./ask";
+import type { Ask } from "./claude-cli";
 import type { Classify } from "./corrections";
 import { CORRECTION_CATEGORIES } from "./memory";
 
@@ -19,7 +20,7 @@ function systemPrompt(areas: string[], phrases: Record<string, string[]>): strin
 
 const unfence = (text: string) => text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
 
-export function haikuClassifier(ask: Ask = claudeCli()): Classify {
+export function haikuClassifier(ask: Ask = defaultAsk()): Classify {
   return async (batch, context) => {
     const { text, costUsd } = await ask(
       systemPrompt(context.areas, context.phrases),

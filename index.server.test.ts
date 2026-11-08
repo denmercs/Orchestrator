@@ -161,7 +161,7 @@ function wired(
       return () => noop;
     },
   });
-  const stop = contribute(server, { replay: runner, signedIn: async () => signedIn, replayStart, loopStart, voiceHelperCwd, speakerPorts: quietSpeaker, ...extra });
+  const stop = contribute(server, { replay: runner, askUnavailable: async () => (signedIn ? null : "Claude Code is not signed in."), replayStart, loopStart, voiceHelperCwd, speakerPorts: quietSpeaker, ...extra });
   return { handlers, listeners, providers, fake, stop };
 }
 
@@ -864,7 +864,7 @@ test("a Jarvis session opening warms the same helper the drawer's RPCs use", asy
       return () => noop;
     },
   });
-  const stop = contribute(server, { signedIn: async () => true, voiceHelperCwd: cwd, speakerPorts: quietSpeaker });
+  const stop = contribute(server, { askUnavailable: async () => null, voiceHelperCwd: cwd, speakerPorts: quietSpeaker });
   const { paseo, calls } = helperPaseo();
   // Providers get no Paseo handle; one RPC hands it over.
   await handlers.get(voiceHelperSwitch.name)!({}, { paseo });

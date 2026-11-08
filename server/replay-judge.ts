@@ -1,5 +1,6 @@
-// The replay judge: Claude Haiku decides which replayed Review findings match the recorded ones.
-import { type Ask, claudeCli } from "./claude-cli";
+// The replay judge: the one-shot model from ask.ts decides which replayed Review findings match the recorded ones.
+import { defaultAsk } from "./ask";
+import type { Ask } from "./claude-cli";
 import { type Match, parseJudge } from "./replay";
 
 // `reply` carries the raw text when it could not be read, so a run can show why a row has no outcome.
@@ -14,7 +15,7 @@ const SYSTEM = [
 
 const list = (title: string, items: string[]) => `${title}:\n${items.map((f, i) => `[${i}] ${f}`).join("\n") || "(none)"}`;
 
-export function haikuJudge(ask: Ask = claudeCli()): Judge {
+export function haikuJudge(ask: Ask = defaultAsk()): Judge {
   return async (recorded, replay) => {
     // An unusable reply was still billed: report the cost with no verdict.
     const { text, costUsd } = await ask(SYSTEM, `${list("RECORDED", recorded)}\n\n${list("REPLAY", replay)}`);

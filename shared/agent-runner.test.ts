@@ -112,6 +112,29 @@ test("profileForStep: another provider's Opus is ignored", () => {
   assert.equal(profileForStep(DEFAULT_LOOP_CONFIG, "plan", [opus, kiroOpus, kiro], kiro.id).profile, kiroOpus);
 });
 
+test("profileForStep: deep and fast pick profiles on a provider with no Claude model names", () => {
+  const cursor: AgentProfile = { id: "p_cursor", name: "Cursor", provider: "cursor", model: "composer-2.5" };
+  const grokDeep: AgentProfile = { id: "p_grok_deep", name: "Grok deep", provider: "cursor", model: "grok-4" };
+  const grokFast: AgentProfile = { id: "p_grok_fast", name: "Grok fast", provider: "cursor", model: "grok-code-fast" };
+  const all = [opus, sonnet, cursor, grokFast, grokDeep];
+  assert.equal(profileForStep(DEFAULT_LOOP_CONFIG, "plan", all, cursor.id).profile, grokDeep);
+  assert.equal(profileForStep(DEFAULT_LOOP_CONFIG, "review", all, cursor.id).profile, grokDeep);
+  assert.equal(profileForStep(DEFAULT_LOOP_CONFIG, "implement", all, cursor.id).profile, grokFast);
+  assert.equal(profileForStep(DEFAULT_LOOP_CONFIG, "fix", all, cursor.id).profile, grokFast);
+});
+
+test("profileForStep: a role word inside another word is no tier", () => {
+  const deepseek: AgentProfile = { id: "p_deepseek", name: "DeepSeek", provider: "opencode", model: "deepseek-chat" };
+  const fallback: AgentProfile = { id: "p_oc", name: "OpenCode", provider: "opencode", model: "qwen3-coder" };
+  assert.equal(profileForStep(DEFAULT_LOOP_CONFIG, "plan", [deepseek, fallback], fallback.id).profile, fallback);
+});
+
+test("profileForStep: a role word beats a Claude model name on the same provider", () => {
+  const plainOpus: AgentProfile = { id: "p_plain_opus", name: "Opus", provider: "claude", model: "claude-opus-5-5" };
+  const deepNamed: AgentProfile = { id: "p_deep", name: "Review deep", provider: "claude", model: "claude-sonnet-5-5" };
+  assert.equal(profileForStep(DEFAULT_LOOP_CONFIG, "plan", [plainOpus, deepNamed, runner], runner.id).profile, deepNamed);
+});
+
 test("profileForStep: pr runs on the runner profile", () => {
   assert.equal(profileForStep(DEFAULT_LOOP_CONFIG, "pr", [opus, sonnet, runner], runner.id).profile, runner);
 });

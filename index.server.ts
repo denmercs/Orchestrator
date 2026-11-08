@@ -43,7 +43,7 @@ import { readPlanUsage } from "./server/plan-usage";
 import { planUsageRpc } from "./shared/plan-usage";
 import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay";
 import { readArms, readCorpus, readCostCap, readRunName, realReplayPorts } from "./server/replay-start";
-import { claudeSignedIn } from "./server/claude-cli";
+import { askUnavailable } from "./server/ask";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { createTranscriber, realTranscribePorts } from "./server/voice-transcribe";
 import { createWakeModelLoader, realWakeModelPorts } from "./server/voice-wake-models";
@@ -151,13 +151,13 @@ import {
 
 type ReplayRunner = ReturnType<typeof createMemoryReplay>;
 
-// `deps.replay` and `deps.signedIn` let tests stand in for the memory replay runner and the Claude Code login check;
+// `deps.replay` and `deps.askUnavailable` let tests stand in for the memory replay runner and the one-shot model check;
 // `deps.replayStart` and `deps.loopStart` move the replay and initiative loop start files and their polls.
 export default function contribute(
   server: PluginServerContext,
   deps: {
     replay?: ReplayRunner;
-    signedIn?: () => Promise<boolean>;
+    askUnavailable?: () => Promise<string | null>;
     replayStart?: { file: string; everyMs: number };
     loopStart?: { file: string; everyMs: number };
     voiceHelperCwd?: string;
@@ -338,10 +338,9 @@ export default function contribute(
     contextPaseo = paseo;
     if (replaying || memoryReplay.pendingAgents().length > 0) throw new Error("A memory replay is already running.");
     const corpus = readCorpus(input.root, input.controls);
-    // The judge runs on the Claude Code CLI; signed out, every round would come back with no verdict.
-    if (!(await (deps.signedIn ?? claudeSignedIn)())) {
-      throw new Error("Claude Code is not signed in, so the replay judge can't run. Run `claude` and log in, then start the replay again.");
-    }
+    // The judge runs on the one-shot model (server/ask.ts); without one, every round would come back with no verdict.
+    const unavailable = await (deps.askUnavailable ?? (() => askUnavailable()))();
+    if (unavailable) throw new Error(`The replay judge can't run: ${unavailable} Then start the replay again.`);
     const costCap = input.costCap ?? readCostCap(input.root) ?? DEFAULT_COST_CAP_USD;
     const arms = readArms(input.root);
     const run = readRunName(input.root);
