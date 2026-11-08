@@ -1321,3 +1321,49 @@ test("cost cap: a ship slice over its cap is not blocked", async () => {
   assert.equal(field(ctx.stateFile, "ready"), undefined);
   assert.equal(field(story, "block_kind"), undefined);
 });
+
+test("cost cap: a review slice at its cap with its turn ended steers once, blocks and launches nothing", async () => {
+  const { ctx, story } = reviewSlice("review-done", { findings: OPEN });
+  const { paseo, created } = fakePaseo({ "r-1": { status: "idle" } });
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  paseo.cost = { cap: () => 5, rows: () => [costRow("r-1", 5)] };
+  const result = await runFactoryTick(ctx.root, paseo);
+  assert.equal(result.kind, "waiting");
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /cost cap \(\$5\.00 of \$5\)/);
+  assert.equal(field(ctx.stateFile, "ready"), "blocked");
+  assert.equal(field(story, "block_kind"), "cost-cap");
+  assert.equal(created.length, 0);
+});
+
+test("cost cap: a test slice entering QA at its cap blocks and launches no seat", async () => {
+  const { ctx, story } = testSlice("implement-done", "");
+  const { paseo, created } = fakePaseo({ "i-1": { status: "idle" } });
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  paseo.cost = { cap: () => 5, rows: () => [costRow("i-1", 5)] };
+  await runFactoryTick(ctx.root, paseo); // build hands over to test
+  await runFactoryTick(ctx.root, paseo);
+  assert.equal(steers.length, 1);
+  assert.equal(field(ctx.stateFile, "ready"), "blocked");
+  assert.equal(field(story, "block_kind"), "cost-cap");
+  assert.equal(created.length, 0);
+});
+
+test("cost cap: after ready is cleared, a cost reader that throws keeps the slice waiting and the raise happens once it reads", async () => {
+  const rows = [costRow("p-1", 5)];
+  let broken = false;
+  const { ctx, story, steers, created, again } = await cappedBuild({ cap: () => 5, rows: () => (broken ? Promise.reject(new Error("x")) : rows) });
+  writeFrontmatter(ctx.stateFile, { ready: null });
+  broken = true;
+  const waiting = await again();
+  assert.equal(waiting.kind, "waiting");
+  assert.equal(created.length, 0);
+  assert.equal(field(story, "block_kind"), "cost-cap");
+  broken = false;
+  await again();
+  assert.equal(field(story, "cost_cap_usd"), "10");
+  assert.equal(created.length, 1);
+  assert.equal(steers.length, 1);
+});

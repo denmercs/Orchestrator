@@ -141,13 +141,10 @@ export async function retryRoundNudge(slice: FactorySlice, ports: TickPaseo): Pr
   await sliceNudge(slice, ports, reviewRoundOf(frontmatter(readText(slice.state.story))));
 }
 
-// `build` runs the loop's steps in the slice's worktree: Plan (Diagnose on a diagnose track), then Implement a cycle at a
-// time, committed by the plugin. A step moves on only when its marker is written and the agent's turn has ended. Null
-// when this handle can't launch steps, the story isn't ours, or the agent is mid-turn: the pass falls through to seat
-// supervision. A Plan turn that ends with no marker is the plan gate: see below.
 // The cost cap for a slice in build, test or review, checked only once its agent's turn has ended (a dead or missing agent
 // counts), so nothing new starts over the cap. At or over it the story is marked `block_kind: cost-cap` and the slice blocks.
-// Null when under the cap, mid-turn, or when spend can't be read (no `cost` port, no rows, a reader that throws).
+// Null when under the cap, mid-turn, or when spend can't be read (no `cost` port, no rows, a reader that throws), except
+// that a story still marked `cost-cap` waits while spend can't be read, so the raise isn't lost when the step launches.
 export async function sliceCostCap(root: string, slice: FactorySlice, ports: TickPaseo): Promise<TickResult | null> {
   const { cost } = ports;
   const file = slice.state.story;
@@ -156,26 +153,36 @@ export async function sliceCostCap(root: string, slice: FactorySlice, ports: Tic
   if (session?.status === "running" || session?.status === "initializing") return null;
   const liveCost = session?.lastUsage?.totalCostUsd;
   const live = slice.state.agent && typeof liveCost === "number" ? { agentId: slice.state.agent, costUsd: liveCost } : undefined;
-  const spend = await sliceSpend(slice, frontmatter(readText(file)), cost, live).catch(() => undefined);
-  if (!spend || spend.spent === null) return null;
+  const meta = frontmatter(readText(file));
+  const marked = meta.block_kind === "cost-cap";
+  const read = await Promise.all([cost.rows(), cost.cap()]).catch(() => undefined);
+  if (!read) return marked ? { kind: "waiting", slice: slice.id, why: "its cost can't be read, so the cost cap can't be raised yet" } : null;
+  const [rows, base] = read;
+  const spent = storyCost(rows, sliceSpendKey(slice), live);
+  if (spent === null) return null;
+  const cap = storyCap(meta, base);
   // Continue: the manager cleared `ready` on a cost-cap block. The cap goes up by the base cap unless spend is already
   // under it (a cap raised by hand), then the marker is dropped and the step goes on.
-  if (frontmatter(readText(file)).block_kind === "cost-cap") {
-    if (spend.spent >= spend.cap) writeFrontmatter(file, { cost_cap_usd: spend.cap + (await cost.cap()) });
+  if (marked) {
+    if (spent >= cap) writeFrontmatter(file, { cost_cap_usd: cap + base });
     writeFrontmatter(file, { block_kind: null });
     return null;
   }
-  if (spend.spent < spend.cap) return null;
+  if (spent < cap) return null;
   writeFrontmatter(file, { block_kind: "cost-cap" });
   return block(
     root,
     slice,
     ports,
-    `cost cap (${roundNudgeDetail(spend)}).`,
-    `Clear \`ready\` in its state.md to continue with the cap raised by ${budgetMoney(await cost.cap())}, or leave it to stay stopped.`,
+    `cost cap (${roundNudgeDetail({ spent, cap })}).`,
+    `Clear \`ready\` in its state.md to continue with the cap raised by ${budgetMoney(base)}, or leave it to stay stopped.`,
   );
 }
 
+// `build` runs the loop's steps in the slice's worktree: Plan (Diagnose on a diagnose track), then Implement a cycle at a
+// time, committed by the plugin. A step moves on only when its marker is written and the agent's turn has ended. Null
+// when this handle can't launch steps, the story isn't ours, or the agent is mid-turn: the pass falls through to seat
+// supervision. A Plan turn that ends with no marker is the plan gate: see below.
 export async function leaveBuild(
   root: string,
   slice: FactorySlice,
