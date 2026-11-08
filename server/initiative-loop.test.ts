@@ -2326,42 +2326,97 @@ test("cost-cap block calls onCostCap(agentId), and a turn under the cap doesn't"
   assert.deepEqual(hit, ["a1"]);
 });
 
-test("review round 3 nudge: voice once on the new step agent, not at rounds 1 or 2 and not again", async () => {
-  const nudged: string[] = [];
-  const initiative = createInitiativeLoop(
-    async () => DEFAULT_LOOP_CONFIG,
-    async () => FALLBACK_AGENT_CONFIG,
-    noExtras,
-    async () => null,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    (id) => nudged.push(id),
-  );
-  const { story, worktree, labels } = fixture("a1");
-  const reviewLabels = { ...labels, "loop-step": "review" };
-  const findings = (body: string, marker = "review-done") =>
-    writeFileSync(join(worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\n${marker}\n\n## Review findings\n${body}\n`, "utf8");
-  const failed = async (round: number) => {
-    writeFrontmatter(story, { status: "reviewing", step: "review", round, agent: "a1" });
-    findings("- [ ] blocking: a.ts:1 — wrong — fix");
-    const { api, created } = fakePaseo([{ id: "a1", labels: { ...reviewLabels, "loop-round": String(round) } }]);
-    await initiative.onTurnEnded(api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as never);
-    return created;
+// The round 3 nudge: a review that fails at `round` ends the turn of agent a1; `onRoundNudge` sees `created` as it was then.
+function nudging(send: (agentId: string, line: string, createdSoFar: number) => boolean | Promise<boolean>, spent?: number) {
+  const fx = fixture("a1");
+  const nudges: { agentId: string; line: string; createdSoFar: number }[] = [];
+  let created: ReturnType<typeof fakePaseo>["created"] = [];
+  const rows = (spent === undefined
+    ? []
+    : [{ at: "2026-10-01T10:00:00.000Z", agentId: "p0", step: "plan", event: "turn", initiative: "demo", story: "S1", costUsd: spent }]) as unknown as TelemetryRow[];
+  const make = () =>
+    createInitiativeLoop(
+      async () => DEFAULT_LOOP_CONFIG,
+      async () => FALLBACK_AGENT_CONFIG,
+      noExtras,
+      async () => null,
+      spent === undefined ? undefined : { cap: async () => 5, rows: async () => rows },
+      undefined,
+      undefined,
+      undefined,
+      (agentId, line) => {
+        nudges.push({ agentId, line, createdSoFar: created.length });
+        return send(agentId, line, created.length);
+      },
+    );
+  const failed = async (initiative: ReturnType<typeof make>, round: number) => {
+    writeFrontmatter(fx.story, { status: "reviewing", step: "review", round, agent: "a1" });
+    writeFileSync(
+      join(fx.worktree, ".harness", "state.md"),
+      "# S1 — Demo story\n\n## Status\nreview-failed\n\n## Review findings\n- [ ] blocking: a.ts:1 — wrong — fix\n",
+      "utf8",
+    );
+    const fake = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "review", "loop-round": String(round) } }]);
+    created = fake.created;
+    await initiative.onTurnEnded(fake.api, { agent: { id: "a1" }, outcome: { kind: "completed" } } as never);
+    return { ...fake, tick: () => initiative.tick() };
   };
-  assert.deepEqual((await failed(1)).map((agent) => agent.labels["loop-round"]), ["2"]);
-  assert.equal(nudged.length, 0);
-  assert.equal(storyMeta(story).round_nudged, undefined);
-  assert.deepEqual((await failed(2)).map((agent) => agent.labels["loop-round"]), ["3"]);
-  assert.deepEqual(nudged, ["n1"]);
-  assert.equal(storyMeta(story).round_nudged, "3");
-  const before = nudged.length;
-  writeFrontmatter(story, { status: "implementing", step: "implement", round: 3, agent: "a2" });
-  writeFileSync(join(worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\nimplement-done\n`, "utf8");
-  const { api: again } = fakePaseo([{ id: "a2", labels: { ...labels, "loop-step": "implement", "loop-round": "3" } }]);
-  await initiative.onTurnEnded(again, { agent: { id: "a2" }, outcome: { kind: "completed" } } as never);
-  assert.equal(nudged.length, before);
+  return { ...fx, nudges, make, failed };
+}
+
+test("a review that fails at round 1 sends no nudge", async () => {
+  const fx = nudging(() => true);
+  const run = await fx.failed(fx.make(), 1);
+  assert.deepEqual(run.created.map((agent) => agent.labels["loop-round"]), ["2"]);
+  assert.deepEqual(fx.nudges, []);
+  assert.equal(storyMeta(fx.story).round_nudged, undefined);
+});
+
+test("a review that fails at round 2 nudges once with the reviewer's agent id before the round 3 agent starts", async () => {
+  const fx = nudging(() => true);
+  const loop = fx.make();
+  const run = await fx.failed(loop, 2);
+  assert.deepEqual(run.created.map((agent) => agent.labels["loop-round"]), ["3"]);
+  assert.equal(fx.nudges.length, 1);
+  assert.equal(fx.nudges[0].agentId, "a1");
+  assert.equal(fx.nudges[0].createdSoFar, 0);
+  assert.equal(fx.nudges[0].line, "S1 (Demo story) has reached review round 3; the cap on rounds and spend is near.");
+  assert.equal(storyMeta(fx.story).round_nudged, "3");
+  // A restart is a new loop instance on the same story: the recorded nudge isn't sent again.
+  await fx.failed(fx.make(), 2);
+  assert.equal(fx.nudges.length, 1);
+});
+
+test("the nudge line shows the story's spend against the cap when readCost knows it", async () => {
+  const fx = nudging(() => true, 4.2);
+  await fx.failed(fx.make(), 2);
+  assert.equal(
+    fx.nudges[0].line,
+    "S1 (Demo story) has reached review round 3, $4.20 of $5 spent; the cap on rounds and spend is near.",
+  );
+});
+
+test("a nudge nobody received stays pending: no round_nudged, and a later tick sends it once Voice is live", async () => {
+  let live = false;
+  const fx = nudging(() => live);
+  const initiative = fx.make();
+  await fx.failed(initiative, 2);
+  assert.equal(fx.nudges.length, 1);
+  assert.equal(storyMeta(fx.story).round_nudged, undefined);
+
+  // Voice is still off: the tick tries again on the round 3 agent and records nothing.
+  await initiative.tick();
+  assert.equal(fx.nudges.length, 2);
+  assert.equal(fx.nudges[1].agentId, "n1");
+  assert.equal(storyMeta(fx.story).round_nudged, undefined);
+
+  // Voice comes up: the next tick delivers it and records it, and a further tick stays quiet.
+  live = true;
+  await initiative.tick();
+  assert.equal(fx.nudges.length, 3);
+  assert.equal(storyMeta(fx.story).round_nudged, "3");
+  await initiative.tick();
+  assert.equal(fx.nudges.length, 3);
 });
 
 test("a failed turn at the cap blocks; a canceled one and one under the cap do not", async () => {

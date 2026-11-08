@@ -60,6 +60,7 @@ import { clockTime, providerName } from "../shared/plan-usage";
 import { readPlanUsage } from "./plan-usage";
 import { inHoldWindow, limitNotice, planLimitUntil, usageLimitResumeAt } from "./usage-limit";
 import { maybeRoundNudge } from "./round-nudge";
+import { ROUND_NUDGE_AT, roundNudgeLine } from "../shared/round-nudge";
 
 // How long a parent may sit waiting on a subagent before the tick counts it as stalled: a subagent that
 // died never wakes its parent.
@@ -260,8 +261,9 @@ export function createInitiativeLoop(
   readAdopted: (init: Initiative) => Set<string> | Promise<Set<string>> = (init) => namedStories(init.root),
   // The repo whose factory a slice agent's labels point into (the harness repo). Absent, slice agents' stories aren't found.
   readFactoryRoot: () => Promise<string | null> = async () => null,
-  // Told once when a story first enters review round 3, with the new step agent (Voice says so).
-  onRoundNudge?: (agentId: string) => void,
+  // Told when a story's review is about to start round 3 (and again each tick until it says it reached someone),
+  // with the agent whose turn it is and the line to say. Returns true once the line was delivered (Voice is live).
+  onRoundNudge?: (agentId: string, line: string) => boolean | Promise<boolean>,
 ) {
   let paseo: PaseoApi | null = null;
   // Providers at their plan limit, from the last read of live plan usage: since when the loop has seen
@@ -419,7 +421,6 @@ export function createInitiativeLoop(
         cycles: extra.cycles,
         attempt: extra.attempt,
       });
-      maybeRoundNudge(story.path, story.id, ctx.title, step, round, false, () => onRoundNudge?.(agentId));
       return agentId;
     } catch (error) {
       started.delete(key);
@@ -476,12 +477,29 @@ export function createInitiativeLoop(
   }
 
   // Moves an in-flight story to its next step from the marker its current step wrote.
+  // The round 3 nudge for a story whose review round is `round`: the line carries its spend against the cap when
+  // `readCost` knows it, and `round_nudged` is written only when `onRoundNudge` says the line was delivered.
+  async function roundNudge(init: Initiative, story: StoryFile, round: number, agentId: string) {
+    if (!onRoundNudge) return;
+    const spend = readCost
+      ? {
+          spent: storyCost(await readCost.rows(), { initiative: init.slug, story: story.id }),
+          cap: storyCap(story, await readCost.cap()),
+        }
+      : undefined;
+    await maybeRoundNudge(story.path, round, roundNudgeLine(story.id, story.meta.title, spend), (line) => onRoundNudge(agentId, line));
+  }
+
   async function reconcile(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, given: StoryFile, turnEnded: boolean) {
     const story = resumeLateAnswer(phaseDir, given);
     const { meta } = story;
     if (!meta.worktree || !ACTIVE.has(meta.status ?? "") || meta.status === "pr-open") return;
     const state = readText(stateFile(meta.worktree));
     if (!state) return;
+    // A round 3 nudge nobody received is still pending: each tick tries again while the review round stays at 3 or more.
+    if ((meta.step === "implement" || meta.step === "review") && meta.agent && Number(meta.round) >= ROUND_NUDGE_AT) {
+      await roundNudge(init, story, Number(meta.round), meta.agent);
+    }
     // The tick can see a marker an agent wrote mid-turn. Wait for its turn to end before committing
     // its work and moving on; the turn-end event does that.
     if (!turnEnded && meta.agent) {
@@ -532,7 +550,11 @@ export function createInitiativeLoop(
         if (after.kind !== "pr") {
           recordOutcome(story, { kind: "review-failed", round, findings: readSection(state, "Review findings").split("\n") });
         }
-        if (after.kind === "fix") await next("implement", round + 1);
+        if (after.kind === "fix") {
+          // Round 2 has ended and round 3 is about to start: tell the human before it spends anything.
+          if (on && meta.agent && round + 1 === ROUND_NUDGE_AT) await roundNudge(init, story, round + 1, meta.agent);
+          await next("implement", round + 1);
+        }
         else if (after.kind === "blocked") block(story, after.reason, "step");
         else if (on) await openPr(init, phaseDir, story, after.unfixed);
       }

@@ -1,23 +1,23 @@
 import { existsSync, readFileSync } from "node:fs";
-import { ROUND_NUDGE_AT, roundNudgeLine, shouldRoundNudge } from "../shared/round-nudge";
-import type { LoopStep } from "../shared/story-method";
+import { ROUND_NUDGE_AT, roundNudgeDue } from "../shared/round-nudge";
 import { frontmatter, writeFrontmatter } from "./harness-layout";
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
 
-/** Once per story when it first hits review round 3: record `round_nudged` and call `notify`. */
-export function maybeRoundNudge(
+/**
+ * Once per story from review round 3: send `line`, and record `round_nudged` only when `send` says it reached
+ * someone. A refusal or a throw leaves the nudge pending, so the next tick tries again.
+ */
+export async function maybeRoundNudge(
   storyFile: string,
-  storyId: string,
-  title: string | null | undefined,
-  step: LoopStep,
-  round: number,
-  factory: boolean,
-  notify?: (line: string) => void,
-): void {
+  reviewRound: number,
+  line: string,
+  send: (line: string) => boolean | Promise<boolean>,
+): Promise<void> {
   if (!existsSync(storyFile)) return;
-  const meta = frontmatter(readText(storyFile));
-  if (!shouldRoundNudge(step, round, meta, factory)) return;
-  writeFrontmatter(storyFile, { round_nudged: String(ROUND_NUDGE_AT) });
-  notify?.(roundNudgeLine(storyId, title));
+  if (!roundNudgeDue(frontmatter(readText(storyFile)), reviewRound)) return;
+  const delivered = await Promise.resolve()
+    .then(() => send(line))
+    .catch(() => false);
+  if (delivered === true) writeFrontmatter(storyFile, { round_nudged: String(ROUND_NUDGE_AT) });
 }

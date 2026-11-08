@@ -256,6 +256,11 @@ export default function contribute(
       .then(async () => publishVoice(await make()))
       .catch((error) => console.warn("orchestrator: voice publish failed", error));
   };
+  // Voice is live when a phone router is awake or the Mac's long poll was seen lately; a notice published to
+  // neither would be lost, so `voiceIsLive` is what lets a nudge count as delivered.
+  const MAC_POLL_LIVE_MS = 45_000;
+  let lastMacPoll = 0;
+  const voiceIsLive = () => jarvis.listening() || Date.now() - lastMacPoll < MAC_POLL_LIVE_MS;
   const loopSettings = server.registerSettings(initiativeLoopSettings);
   const readLoopConfig = async () => {
     const state = await loopSettings.read();
@@ -286,7 +291,13 @@ export default function contribute(
     },
     // A slice agent's labels name its slice; its factory is the harness repo's.
     async () => (await readHarness()).repo ?? null,
-    (sessionId) => publishVoice([{ type: "notice", kind: "roundCap", sessionId }]),
+    // The round 3 nudge: said through Voice only while someone is listening, else it stays pending and the loop tries again.
+    (sessionId, line) => {
+      if (!voiceIsLive()) return false;
+      const detail = /\$[\d.]+ of \$[\d.]+/.exec(line)?.[0];
+      publishVoice([{ type: "notice", kind: "roundCap", sessionId, ...(detail ? { detail } : {}) }]);
+      return true;
+    },
   );
   // The Initiatives tab and the loop start file both start the loop here.
   const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: Parameters<typeof initiativeLoop.start>[0]) =>
@@ -805,6 +816,7 @@ export default function contribute(
   // The long poll (and brief/status below) leave their Paseo handle too, so the router can list sessions before any
   // turn event arrives.
   server.handle(voiceEvents, async ({ after, target }, { paseo }) => {
+    lastMacPoll = Date.now();
     helperPaseo = paseo;
     macTarget = target ?? null;
     return { ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false, voice: jarvisConnection?.voiceState(Date.now()) ?? "unknown", settingsUnreadable: micOffGate.unreadable(), settingsChecking: micOffGate.checking() };
