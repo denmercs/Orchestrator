@@ -106,7 +106,7 @@ const CEREMONY_EXEMPT = new Set(["plan", "diagnose"]);
 
 // One completed turn's items against the story's carried counters: the next counters, and the
 // evidence the step is stuck (null when it is not). Idle turns count on Implement only and not for
-// subagent parents; the fail streak counts on every step. A failing test is named before idleness.
+// subagent parents; the fail streak counts on every step. A failing test is named before idleness, and ceremony turns before idleness (a `.harness`-only turn bumps both on Implement, and ceremony says what it did).
 // Two more signals run on every step but Plan and Diagnose: ceremony turns (`stuckTurns` completed
 // turns in a row that edit only `.harness/` files; a turn with no edits neither counts nor resets,
 // and an edit outside `.harness/` resets) and checks instead of a fix (the fail streak, whose turns
@@ -131,11 +131,11 @@ export function stuckCheck(
   if (edited.code || edited.test) ceremony_turns = 0;
   else if (edited.harness) ceremony_turns += 1;
   let evidence = failEvidence(fail_tests, fail_runs, fail_edits);
-  if (evidence === null && step === "implement" && !subagents && idle_turns >= stuckTurns) {
-    evidence = `no file edits in ${idle_turns} turns`;
-  }
   if (evidence === null && !CEREMONY_EXEMPT.has(step ?? "") && ceremony_turns >= stuckTurns) {
     evidence = `${ceremony_turns} turns in a row edited only .harness files`;
+  }
+  if (evidence === null && step === "implement" && !subagents && idle_turns >= stuckTurns) {
+    evidence = `no file edits in ${idle_turns} turns`;
   }
   return { counters: { idle_turns, fail_tests, fail_runs, ceremony_turns, fail_edits }, evidence };
 }

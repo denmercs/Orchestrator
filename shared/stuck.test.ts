@@ -104,6 +104,12 @@ test("stuckCheck names the failing test when both signals hold", () => {
   assert.equal(r.evidence, "a failed 3 test runs in a row");
 });
 
+test("stuckCheck names ceremony turns before idle turns when a .harness-only turn trips both on Implement", () => {
+  const r = stuckCheck({ ...zero, idle_turns: 2, ceremony_turns: 2 }, [edit("/w/.harness/state.md")], opts);
+  assert.equal(r.evidence, "3 turns in a row edited only .harness files");
+  assert.equal(stuckCheck({ ...zero, idle_turns: 2 }, [read], opts).evidence, "no file edits in 3 turns");
+});
+
 test("stuckCheck counts ceremony turns on .harness-only edits and blocks at stuckTurns", () => {
   const state = edit("/w/.harness/state.md");
   let r = stuckCheck(zero, [state], { ...opts, step: "review" });

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildContext } from "./factory-tick";
 import { namedStories, readFactory, storyKey, writeSliceState } from "./factory-layout";
-import { block as blockSlice } from "./factory-phases";
+import { TEST_DONE, TEST_FAILED, block as blockSlice } from "./factory-phases";
 import { steerManager } from "./factory-manager";
 import { promisify } from "node:util";
 import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
@@ -1011,7 +1011,7 @@ export function createInitiativeLoop(
 
   // A completed turn of a factory slice's seat (the loop never supervises these stories): the same stuck check as a loop
   // step, on the slice's story. It runs for the builder, QA and reviewer seats while the slice is in build, test, review
-  // or ship and not already stopped. The first evidence nudges the seat; evidence again, or a nudge that won't send, blocks
+  // or ship, not already stopped, and still working its step (its marker not yet done). The first evidence nudges the seat; evidence again, or a nudge that won't send, blocks
   // the slice and steers the manager. Seats started by the tick's own create carry `slice` and `mission` labels, the loop
   // steps `factory-slice` and `factory-mission`; the step is the `loop-step` label, none for a seat off the loop's steps.
   async function sliceTurnEnded(api: PaseoApi, event: { agent: PluginHookAgent; timeline?: readonly unknown[] }, labels: Record<string, string>) {
@@ -1020,8 +1020,14 @@ export function createInitiativeLoop(
     if (!found || found.slice.state.agent !== event.agent.id || found.slice.state.ready) return;
     if (!["build", "test", "review", "ship"].includes(found.slice.state.phase)) return;
     const { story } = found;
+    // Only while the step is still in progress, as the loop path: a turn that wrote its done or verdict marker has
+    // finished, and a nudge would wake it in a worktree the next seat is about to use.
+    const worktree = found.slice.state.worktree || story.meta.worktree;
+    const marker = worktree ? readMarker(readText(stateFile(worktree))).marker : null;
+    const step = labels["loop-step"];
+    if (step ? marker !== `${step}-running` : marker === TEST_DONE || marker === TEST_FAILED) return;
     const evidence = carryStuck(story.path, story.meta, turnItems(event.timeline), {
-      step: labels["loop-step"] ?? null,
+      step: step ?? null,
       subagents: story.meta.cycles === "subagents",
       stuckTurns: (await readConfig()).stuckTurns,
     });
