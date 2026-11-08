@@ -804,6 +804,7 @@ export function createInitiativeLoop(
   // gets a fresh one; a stalled one (a failed turn, or a turn that ended without the step's marker)
   // gets a nudge. Each counts as a retry; past maxRetries the story blocks for you.
   async function supervise(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile) {
+    if (namedStories(init.root).has(resolve(story.path))) return;
     const { meta } = story;
     const step = meta.step as LoopStep;
     if (!meta.worktree || !meta.agent || !SUPERVISED.has(meta.status ?? "") || !SUPERVISED_STEPS.has(step)) return;

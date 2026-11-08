@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { mock, test } from "node:test";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
@@ -1310,6 +1310,50 @@ test("a turn you cancel is left alone", async () => {
 
   assert.equal(storyMeta(story).stalled, undefined);
   assert.deepEqual([sent, created], [[], []]);
+});
+
+test("with the loop and the factory tick both running, an adopted story's dead builder is replaced once by the tick only", async () => {
+  const { root, story, worktree } = fixture("gone");
+  const factoryHome = join(root, ".harness", "factory");
+  const slice = join(factoryHome, "missions", "m1", "slices", "s1");
+  mkdirSync(slice, { recursive: true });
+  writeFileSync(join(factoryHome, "project.md"), "Ship.\n");
+  writeFileSync(join(factoryHome, "missions", "m1", "mission.md"), "Land one slice.\n");
+  writeFileSync(join(slice, "spec.md"), "Build it.\n");
+  writeFileSync(
+    join(slice, "state.md"),
+    `---\nphase: build\nrun: on\nseat: builder\nagent: gone\nattempt: 1\nworktree: ${worktree}\nstory: ${resolve(story)}\n---\n`,
+    "utf8",
+  );
+
+  const factoryCreated: { cwd: string; prompt: string }[] = [];
+  const known: Record<string, { status: string }> = {};
+  const { api, created } = fakePaseo([]);
+  const tickPaseo = {
+    agents: {
+      ref: (id: string) => ({
+        refresh: async () => (known[id] ? { agent: known[id] } : api.agents.ref(id).refresh()),
+      }),
+      create: async (request: { cwd: string; prompt: string }) => {
+        factoryCreated.push({ cwd: request.cwd, prompt: request.prompt });
+        const id = `builder-${factoryCreated.length}`;
+        known[id] = { status: "idle" };
+        return { id };
+      },
+    },
+  };
+  const initiative = loop();
+  initiative.rememberPaseo(api);
+  const { runFactoryTick } = await import("./factory-tick");
+
+  await Promise.all([initiative.tick(), runFactoryTick(root, tickPaseo)]);
+  await initiative.tick();
+  await runFactoryTick(root, tickPaseo);
+
+  assert.equal(created.length, 0, "the loop must not replace a story the factory owns");
+  assert.equal(factoryCreated.length, 1);
+  assert.equal(factoryCreated[0].cwd, worktree);
+  assert.match(factoryCreated[0].prompt, /Build it\./);
 });
 
 test("a closed session is replaced by a fresh one on the same step that resumes from state.md", async () => {

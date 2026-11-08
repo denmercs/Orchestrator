@@ -424,10 +424,14 @@ The `.harness/factory/` tree in a repo: the files a project's factory runs from.
 
 **Runnable slice**: the first slice, in mission order and then slice order, with `run: on`. Absent `run` means idle. `depends` is parsed but ignored until the dependency story (S6), and at most one slice is returned.
 
-**`factoryTick`**: a read-only pass. It reads the factory and returns the one runnable slice, or null when nothing is runnable or there is no `.harness/factory/`. It never throws on a missing tree. It starts and changes nothing yet.
+**`factoryTick` / `runFactoryTick`**: one background pass on the harness repo's factory. It picks the one runnable slice (`run: on`), and when that phase's seat agent is missing, archived, closed or in error it starts exactly one fresh agent in the slice's worktree (a concurrent pass returns idle instead of racing). A live agent is left alone, including one waiting on a permission. When the slice names a story file whose initiative-loop session is still live on a supervised step, the tick waits so only one side owns the story. The poll timer in `index.server.ts` runs it beside the initiative loop when Paseo and a harness repo are known; no repo or no Paseo means skip. Code: `server/factory-tick.ts`, `factoryTick` selector in `server/factory-layout.ts`.
+
+**One owner per story**: a slice's `story` field adopts that harness story for the factory tick. The loop's `sweep` and `supervise` skip adopted paths (`namedStories` in `server/factory-layout.ts`); the tick skips stories the loop still supervises. A dead builder on an adopted story is replaced once, by the tick, not again by the loop.
+
+**Seat prompt**: on restart the tick's `seatPrompt` sends the builder (or other seat) a first-turn `prompt` on `agents.create` (the same shape the initiative loop uses): shared seat instructions first, then the slice spec, mission outcome, project intent, builder-only `design.md` when present, and the refocus question.
 
 **Manager**: the model session in the factory home worktree (the harness `repo` setting) whose id is in `.harness/factory/manager.md`. It is created with the factory limits appended to its system prompt (an env marker on the create, picked up by the `agent.create` hook) and replaced lazily when dead (missing, archived, closed or `error`), only when a Jarvis route or a steer needs it; two callers at once share one create. A repo with no factory has no manager. Code: `server/factory-manager.ts`.
 
-**Status steer**: one status line sent as a steer to the manager id only, never to another session. It does nothing (returns false) when there is no factory. The first caller is the tick in a later story; nothing calls it yet.
+**Status steer**: one status line sent as a steer to the manager id only, never to another session. It does nothing (returns false) when there is no factory. The tick will call it when a slice is ready for the human; nothing in the tick yet.
 
 _Avoid_: pipeline, job (for a slice).

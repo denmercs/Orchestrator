@@ -75,6 +75,7 @@ import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createMicOffGate } from "./server/mic-off-gate";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
 import { applyFactoryManager, ensureManager } from "./server/factory-manager";
+import { runFactoryTick } from "./server/factory-tick";
 import { createJarvisRouter, MAC_ROUTER, voiceSessionCreator } from "./server/jarvis-router";
 import { createMorningBrief, fetchWeather } from "./server/morning-brief";
 import { splitSessions, type VoiceEvent } from "./shared/voice-loop";
@@ -167,6 +168,10 @@ export default function contribute(
     defaultReferenceClip?: string;
     // Where the per-repo loop trees are stored (tests use a temp file, never ~/.orchestrator).
     loopTreesFile?: string;
+    // Harness repo the poll timer's factory tick reads (tests only; production uses the harness setting).
+    harness?: { repo: string; epic: string };
+    // How often the PR poll runs factory tick and the initiative loop (tests use a short interval).
+    prPollMs?: number;
   } = {},
 ) {
   // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
@@ -186,6 +191,7 @@ export default function contribute(
   const pulseSettings = server.registerSettings(prodPulseSettings);
   const harness = server.registerSettings(harnessSettings);
   const readHarness = async () => {
+    if (deps.harness) return deps.harness;
     const state = await harness.read();
     return state.status === "ready" ? state.values : { repo: "", epic: "" };
   };
@@ -671,12 +677,19 @@ export default function contribute(
   const timer = setInterval(() => {
     void loop.pollMergedPrs();
     void initiativeLoop.tick();
-    if (pipelinePaseo) {
-      void watchPipelinePrs(pipelinePaseo, readPipeline, readAgentConfig).catch((error) => {
+    const paseo = pipelinePaseo;
+    if (paseo) {
+      void watchPipelinePrs(paseo, readPipeline, readAgentConfig).catch((error) => {
         console.warn("orchestrator: pipeline CI watch failed", error);
       });
+      void readHarness().then(({ repo }) => {
+        if (!repo) return;
+        return runFactoryTick(repo, paseo).catch((error) => {
+          console.warn("orchestrator: factory tick failed", error);
+        });
+      });
     }
-  }, PR_POLL_MS);
+  }, deps.prPollMs ?? PR_POLL_MS);
   timer.unref?.();
   // A Claude session starts the replay by writing the start file; any Paseo handle we have seen will do.
   const replayStart = deps.replayStart ?? { file: REPLAY_START_FILE, everyMs: REPLAY_START_POLL_MS };

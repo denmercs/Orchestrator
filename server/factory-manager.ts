@@ -47,6 +47,7 @@ export type ManagerPaseo = {
       env: Record<string, string>;
       title: string;
       labels: Record<string, string>;
+      prompt?: string;
     }): Promise<{ id: string }>;
   };
 };

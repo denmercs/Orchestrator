@@ -52,7 +52,7 @@ export function readFactory(root: string): Factory {
   };
 }
 
-// Read-only pass: the one slice that should run now, or null (no factory, or nothing set to run).
+// The one slice that should run now, or null (no factory, or nothing set to run).
 export const factoryTick = (root: string): FactorySlice | null => runnableSlice(readFactory(root));
 
 // The story files the factory's slices name (resolved paths), so the initiative loop can leave them to the tick.

@@ -290,6 +290,42 @@ test("a start file starts the replay with the same opts the RPC gives, once Pase
   }
 });
 
+test("the poll timer runs the factory tick on the harness repo once Paseo is known", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "factory-poll-"));
+  const worktree = join(repoRoot, "wt");
+  mkdirSync(worktree);
+  const slice = join(repoRoot, ".harness", "factory", "missions", "m1", "slices", "s1");
+  mkdirSync(slice, { recursive: true });
+  writeFileSync(join(repoRoot, ".harness", "factory", "project.md"), "Ship.\n");
+  writeFileSync(join(repoRoot, ".harness", "factory", "missions", "m1", "mission.md"), "Land one slice.\n");
+  writeFileSync(join(slice, "spec.md"), "Build it.\n");
+  writeFileSync(join(slice, "state.md"), `---\nphase: build\nrun: on\nworktree: ${worktree}\nagent: dead\nattempt: 1\n---\n`, "utf8");
+
+  const factoryCreated: string[] = [];
+  const paseo = {
+    agents: {
+      ref: () => ({ refresh: async () => null }),
+      create: async () => {
+        factoryCreated.push("create");
+        return { id: "b1" };
+      },
+    },
+  };
+  const { listeners, stop } = wired([], true, undefined, undefined, undefined, {
+    harness: { repo: repoRoot, epic: "" },
+    prPollMs: 5,
+  });
+  try {
+    const created = listeners.get("agent.created");
+    assert.ok(created);
+    created({ agent: { id: "a" } }, { paseo });
+    await until(() => factoryCreated.length > 0);
+    assert.equal(factoryCreated.length, 1);
+  } finally {
+    stop();
+  }
+});
+
 test("a loop start file starts the initiative loop with that input, once Paseo is known", async () => {
   const file = join(mkdtempSync(join(tmpdir(), "loop-start-")), "initiative-loop-start.json");
   const { listeners, stop } = wired([], true, undefined, { file, everyMs: 5 });
