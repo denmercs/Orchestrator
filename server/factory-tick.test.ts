@@ -9,6 +9,7 @@ import { runnableSlice } from "../shared/factory";
 import { namedStories, readFactory, sliceDir, storyKey } from "./factory-layout";
 import { MANAGER_MODELS } from "./factory-manager";
 import { buildContext, runFactoryTick, type TickPaseo } from "./factory-tick";
+import { writeFrontmatter } from "./harness-layout";
 import { APPROVE_MESSAGE } from "./gate-actions";
 import { createInitiativeLoop } from "./initiative-loop";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
@@ -1009,4 +1010,34 @@ test("test-failed rounds don't use up the review-round budget", async () => {
   assert.deepEqual(created[0].labels, sliceLabels("implement", "4"));
   assert.equal(field(ctx.stateFile, "phase"), "build");
   assert.equal(field(story, "review_round"), "2");
+});
+
+test("review round 3 nudge: manager steer once at review round 3, not on QA-only round 3 or a later tick", async () => {
+  const steers: string[] = [];
+  const steer = async (line: string) => void steers.push(line);
+  const failReview = async (reviewRound: number, round: number) => {
+    const { ctx, story } = reviewSlice("review-done", { reviewRound, round, findings: OPEN });
+    const { paseo } = fakePaseo({ "r-1": { status: "idle" } });
+    paseo.steer = steer;
+    await runFactoryTick(ctx.root, paseo);
+    return { ctx, story };
+  };
+  await failReview(1, 1);
+  assert.equal(steers.length, 0);
+  const second = await failReview(2, 2);
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /round 3/);
+  assert.equal(field(second.story, "review_round"), "3");
+  assert.equal(field(second.story, "round_nudged"), "3");
+  const qaOnly = reviewSlice("review-done", { round: 3, reviewRound: 1, findings: OPEN });
+  const { paseo: qaPaseo } = fakePaseo({ "r-1": { status: "idle" } });
+  qaPaseo.steer = steer;
+  await runFactoryTick(qaOnly.ctx.root, qaPaseo);
+  assert.equal(steers.length, 1);
+  const again = reviewSlice("review-done", { reviewRound: 2, round: 2, findings: OPEN });
+  writeFrontmatter(again.story, { round_nudged: "3" });
+  const { paseo: later } = fakePaseo({ "r-1": { status: "idle" } });
+  later.steer = steer;
+  for (let pass = 0; pass < 2; pass++) await runFactoryTick(again.ctx.root, later);
+  assert.equal(steers.length, 1);
 });

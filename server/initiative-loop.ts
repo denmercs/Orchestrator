@@ -59,6 +59,7 @@ import { activeBriefRuns, briefRuns, worktreeFingerprint } from "./turn-progress
 import { clockTime, providerName } from "../shared/plan-usage";
 import { readPlanUsage } from "./plan-usage";
 import { inHoldWindow, limitNotice, planLimitUntil, usageLimitResumeAt } from "./usage-limit";
+import { maybeRoundNudge } from "./round-nudge";
 
 // How long a parent may sit waiting on a subagent before the tick counts it as stalled: a subagent that
 // died never wakes its parent.
@@ -259,6 +260,8 @@ export function createInitiativeLoop(
   readAdopted: (init: Initiative) => Set<string> | Promise<Set<string>> = (init) => namedStories(init.root),
   // The repo whose factory a slice agent's labels point into (the harness repo). Absent, slice agents' stories aren't found.
   readFactoryRoot: () => Promise<string | null> = async () => null,
+  // Told once when a story first enters review round 3, with the new step agent (Voice says so).
+  onRoundNudge?: (agentId: string) => void,
 ) {
   let paseo: PaseoApi | null = null;
   // Providers at their plan limit, from the last read of live plan usage: since when the loop has seen
@@ -399,11 +402,12 @@ export function createInitiativeLoop(
     if (existing) return null;
     started.add(key);
     try {
-      return await launchStep({
+      const ctx = storyContext(init, phaseDir, story);
+      const agentId = await launchStep({
         api,
         storyFile: story.path,
         worktree,
-        ctx: storyContext(init, phaseDir, story),
+        ctx,
         step,
         round,
         labels,
@@ -415,6 +419,8 @@ export function createInitiativeLoop(
         cycles: extra.cycles,
         attempt: extra.attempt,
       });
+      maybeRoundNudge(story.path, story.id, ctx.title, step, round, false, () => onRoundNudge?.(agentId));
+      return agentId;
     } catch (error) {
       started.delete(key);
       throw error;

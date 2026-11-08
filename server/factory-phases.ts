@@ -13,6 +13,7 @@ import { failureReport, prStatus } from "./pr-checks";
 import { repoMaxFixes, repoPipelineConfig } from "./repo-pipeline";
 import { commitStory, failureText, openStoryPr, pushStoryFix } from "./story-git";
 import { launchStep } from "./story-steps";
+import { maybeRoundNudge } from "./round-nudge";
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
 
@@ -67,6 +68,7 @@ function launcher(root: string, slice: FactorySlice, ports: TickPaseo, ctx: Para
       failing: extra.failing,
       attempt: extra.attempt,
     });
+    maybeRoundNudge(state.story, ctx.id, ctx.title, step, round, true, (line) => void ports.steer?.(line));
     writeSliceState(root, mission, id, { seat, agent, attempt: state.attempt + (extra.attempt ? 1 : 0) });
     return { kind: "restarted", slice: id, agent } satisfies TickResult;
   };
