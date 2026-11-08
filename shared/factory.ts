@@ -1,8 +1,9 @@
 // The factory's files read into types. No Node imports here: server/factory-layout.ts does the file work.
 export type FactoryPhase = "spec" | "design" | "build" | "test" | "review" | "ship";
 export type FactoryKind = "scout" | "ship";
-// Set when the slice has gone as far as the factory takes it: after a clean review (scout) or green CI (ship).
-export type SliceReady = "" | "review" | "ci";
+// Set when the slice has gone as far as the factory takes it: after a clean review (scout) or green CI (ship), or `blocked`
+// when it cannot go on without the manager.
+export type SliceReady = "" | "review" | "ci" | "blocked";
 
 export type SliceState = {
   phase: FactoryPhase;
@@ -47,7 +48,7 @@ export function parseSliceState(fields: Record<string, string>): SliceState {
     depends: list(fields.depends),
     run: fields.run === "on",
     design: fields.design === "on",
-    ready: fields.ready === "review" || fields.ready === "ci" ? fields.ready : "",
+    ready: fields.ready === "review" || fields.ready === "ci" || fields.ready === "blocked" ? fields.ready : "",
     approve: fields.approve === "plan" ? "plan" : "",
     pr: fields.pr ?? "",
   };

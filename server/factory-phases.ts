@@ -82,6 +82,17 @@ const storedFailing = (saved: string | undefined) => {
   }
 };
 
+// A slice that cannot go on tells the manager once and leaves the runnable set (`ready: blocked`), so the next slice can run.
+// The manager clears `ready` in the slice's state.md to put it back.
+async function block(root: string, slice: FactorySlice, ports: TickPaseo, why: string): Promise<TickResult> {
+  await ports.steer?.(`Slice ${slice.id} is blocked: ${why} Clear \`ready\` in its state.md once it is sorted out.`);
+  writeSliceState(root, slice.mission, slice.id, { ready: "blocked" });
+  return { kind: "waiting", slice: slice.id, why };
+}
+
+// The story's review rounds, counted apart from `round` (which a failed test run also advances).
+const reviewRoundOf = (meta: Record<string, string>) => Number(meta.review_round) || 1;
+
 // `build` runs the loop's steps in the slice's worktree: Plan (Diagnose on a diagnose track), then Implement a cycle at a
 // time, committed by the plugin. A step moves on only when its marker is written and the agent's turn has ended. Null
 // when this handle can't launch steps, the story isn't ours, or the agent is mid-turn: the pass falls through to seat
@@ -115,7 +126,7 @@ export async function leaveBuild(
   if (step === "implement" && marker === MARKERS.implementDone) {
     const finished = meta.cycle ? Number(meta.cycle) : null;
     const after = afterImplement(worktreeState, finished);
-    if (after.kind === "blocked") return { kind: "waiting", slice: id, why: after.reason };
+    if (after.kind === "blocked") return block(root, slice, ports, after.reason);
     const cycle = finished === null ? null : readCycles(worktreeState).find((item) => item.number === finished);
     await (ports.commit ?? commitStory)(state.worktree, commitSubject(worktreeState, cycle?.name ?? ctx.title));
     if (after.kind === "cycle") return launch("implement", round, { cycle: after.cycle });
@@ -123,7 +134,7 @@ export async function leaveBuild(
     writeSliceState(root, mission, id, { phase: "test", seat: null, agent: null });
     return { kind: "advanced", slice: id, phase: "test" };
   }
-  if (marker === MARKERS.diagnoseBlocked || marker === MARKERS.implementBlocked) return { kind: "waiting", slice: id, why: `${step} is blocked` };
+  if (marker === MARKERS.diagnoseBlocked || marker === MARKERS.implementBlocked) return block(root, slice, ports, `${step} is blocked.`);
   // No marker and the agent is gone: the same step starts again, told that an earlier session stopped.
   if (isDead(session)) return launch(step, round, { attempt: state.attempt + 1, failing: storedFailing(meta.failing) });
   if (step !== "plan") return null;
@@ -197,9 +208,11 @@ export async function leaveReview(
     return isDead(session) ? launch("review", round, { attempt: state.attempt + 1 }) : null;
   }
   const maxRounds = repoPipelineConfig(pipelineSettings.schema.parse({}), state.worktree).reviewRounds;
-  const after = afterReview(worktreeState, marker, round, maxRounds);
-  if (after.kind === "blocked") return { kind: "waiting", slice: id, why: after.reason };
+  const reviewRound = reviewRoundOf(meta);
+  const after = afterReview(worktreeState, marker, reviewRound, maxRounds);
+  if (after.kind === "blocked") return block(root, slice, ports, after.reason);
   if (after.kind === "fix") {
+    writeFrontmatter(state.story, { review_round: reviewRound + 1 });
     writeSliceState(root, mission, id, { phase: "build" });
     return launch("implement", round + 1);
   }
@@ -233,7 +246,7 @@ export async function leaveShip(
 
   if (!state.pr) {
     const maxRounds = repoPipelineConfig(pipelineSettings.schema.parse({}), state.worktree).reviewRounds;
-    const after = marker ? afterReview(worktreeState, marker, Number(meta.round) || 1, maxRounds) : null;
+    const after = marker ? afterReview(worktreeState, marker, reviewRoundOf(meta), maxRounds) : null;
     try {
       const pr = await (ports.openPr ?? openStoryPr)(state.worktree, {
         id,
@@ -289,7 +302,7 @@ export async function leaveShip(
     writeFrontmatter(state.story, { fixed_sha: action.headSha, fix_attempts: action.attempt });
     return launch("fix", round, { failing: await failing() });
   }
-  if (action.kind === "closed") return { kind: "waiting", slice: id, why: `PR #${pr.number} was closed without merging` };
+  if (action.kind === "closed") return block(root, slice, ports, `PR #${pr.number} was closed without merging.`);
   if (action.kind === "merged") {
     writeSliceState(root, mission, id, { ready: "ci" });
     return { kind: "waiting", slice: id, why: `PR #${pr.number} is merged` };

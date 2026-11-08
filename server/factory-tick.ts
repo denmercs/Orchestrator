@@ -123,7 +123,7 @@ async function leaveDesign(root: string, slice: FactorySlice, ports: TickPaseo):
     const status = (await ports.agents.ref(state.agent).refresh())?.agent.status;
     if (status === "running" || status === "initializing") return null;
   }
-  writeSliceState(root, mission, id, { phase: "build" });
+  writeSliceState(root, mission, id, { phase: "build", seat: null, agent: null });
   return { kind: "advanced", slice: id, phase: "build" };
 }
 
@@ -159,7 +159,10 @@ function adoptStory(root: string, slice: FactorySlice): TickResult | null {
   const phase: FactoryPhase | null =
     meta.status === "pr-open" || meta.step === "pr-open" ? "ship" : meta.step === "review" ? "review" : ["plan", "diagnose", "implement"].includes(meta.step) ? "build" : null;
   if (!phase) return null;
-  writeSliceState(root, mission, id, { phase, ...(phase === "ship" && !state.pr && meta.pr ? { pr: meta.pr } : {}) });
+  // The story's live agent becomes the slice's, so the tick reads that agent's turn end instead of starting another.
+  const seat = phase === "review" ? "reviewer" : "builder";
+  writeSliceState(root, mission, id, { phase, ...(meta.agent ? { seat, agent: meta.agent } : {}), ...(phase === "ship" && !state.pr && meta.pr ? { pr: meta.pr } : {}) });
+  if (state.worktree && !meta.worktree) writeFrontmatter(state.story, { worktree: state.worktree });
   return { kind: "advanced", slice: id, phase };
 }
 
@@ -178,7 +181,7 @@ async function leaveSpec(root: string, slice: FactorySlice, ports: TickPaseo): P
   if (!state.story || !existsSync(state.story)) {
     const story = join(worktree, ".harness", "story.md");
     mkdirSync(join(worktree, ".harness"), { recursive: true });
-    writeFileSync(story, `---\ntitle: ${id}\nstatus: todo\n---\n\n${slice.spec}\n`);
+    writeFileSync(story, `---\ntitle: ${id}\nstatus: todo\nworktree: ${worktree}\n---\n\n${slice.spec}\n`);
     writeSliceState(root, mission, id, { story });
   }
   const phase = state.design ? "design" : "build";

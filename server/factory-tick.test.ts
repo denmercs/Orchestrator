@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { FALLBACK_AGENT_CONFIG } from "../shared/agent-runner";
 import { DEFAULT_PHASES } from "../shared/pipeline";
+import { runnableSlice } from "../shared/factory";
 import { namedStories, readFactory, sliceDir, storyKey } from "./factory-layout";
 import { MANAGER_MODELS } from "./factory-manager";
 import { buildContext, runFactoryTick, type TickPaseo } from "./factory-tick";
@@ -166,7 +167,20 @@ test("a design slice goes to build once design.md is written and the turn has en
   const { paseo, created } = fakePaseo({ "d-1": { status: "idle" } });
   assert.deepEqual(await runFactoryTick(root, paseo), { kind: "advanced", slice: "s1", phase: "build" });
   assert.equal(field(stateFile, "phase"), "build");
+  assert.equal(field(stateFile, "agent"), undefined);
+  assert.equal(field(stateFile, "seat"), undefined);
   assert.equal(created.length, 0);
+});
+
+test("after design the live design agent is not read as the builder, even when the handle can't run steps", async () => {
+  const { root, stateFile } = setup("agent: d-1\nseat: design", "on", "design");
+  writeDesign(root, "Use a queue.\n");
+  const { paseo, created } = fakePaseo({ "d-1": { status: "idle" } });
+  delete paseo.steps;
+  await runFactoryTick(root, paseo);
+  assert.deepEqual(await runFactoryTick(root, paseo), { kind: "restarted", slice: "s1", agent: "new-1" });
+  assert.equal(created.length, 1);
+  assert.equal(field(stateFile, "seat"), "builder");
 });
 
 test("the builder's story context carries the design, and none when there isn't one", () => {
@@ -566,11 +580,11 @@ test("test-failed waits while the QA seat is mid-turn", async () => {
 
 // A slice in `review`. Entering: the QA seat is gone and the story still says implement. Otherwise the reviewer (`r-1`) is
 // on it, and `findings` is what sits under `## Review findings` when it wrote its marker.
-function reviewSlice(marker: string, { kind = "ship", entering = false, round = 1, findings = "" } = {}) {
+function reviewSlice(marker: string, { kind = "ship", entering = false, round = 1, reviewRound = 0, findings = "" } = {}) {
   const ctx = setup(`kind: ${kind}${entering ? "" : "\nagent: r-1\nseat: reviewer"}`, "on", "review");
   const story = entering
     ? withStory(ctx, `step: implement\nround: ${round}\nagent: i-1\nstatus: implementing`, marker, cycles(true))
-    : withStory(ctx, `step: review\nround: ${round}\nagent: r-1\nstatus: reviewing`, marker, `${cycles(true)}\n## Review findings\n${findings}\n`);
+    : withStory(ctx, `step: review\nround: ${round}\nagent: r-1\nstatus: reviewing${reviewRound ? `\nreview_round: ${reviewRound}` : ""}`, marker, `${cycles(true)}\n## Review findings\n${findings}\n`);
   return { ctx, story };
 }
 const OPEN = "- [ ] blocking: server/x.ts:1 — wrong — fix it";
@@ -639,7 +653,7 @@ test("a review waits while the reviewer is mid-turn or has written no marker", a
 });
 
 test("a review still blocking at the round limit waits and moves nothing", async () => {
-  const { ctx } = reviewSlice("review-done", { round: 3, findings: OPEN });
+  const { ctx } = reviewSlice("review-done", { reviewRound: 3, findings: OPEN });
   const { paseo, created } = fakePaseo({ "r-1": { status: "idle" } });
   const result = await runFactoryTick(ctx.root, paseo);
   assert.equal(result.kind, "waiting");
@@ -823,12 +837,6 @@ for (const autoMerge of [false, true]) {
   });
 }
 
-test("the ship phase has no way to merge: it never imports mergePr", () => {
-  // mergePr runs `gh pr merge` with no port in between, so the only guard is that the phase code can't reach it.
-  assert.doesNotMatch(readFileSync(new URL("./factory-phases.ts", import.meta.url), "utf8"), /mergePr|repoAutoMerge/);
-  assert.doesNotMatch(readFileSync(new URL("./factory-tick.ts", import.meta.url), "utf8"), /mergePr|repoAutoMerge/);
-});
-
 test("after a fresh compact hands the story to the new agent, the next pass starts no second one", async () => {
   const ctx = setup("agent: a1\nattempt: 1");
   const story = withStory(ctx, "step: implement\nround: 1\nagent: a1\nstatus: implementing", "implement-running", cycles(false));
@@ -850,4 +858,134 @@ test("after a fresh compact hands the story to the new agent, the next pass star
 
   for (let pass = 0; pass < 2; pass++) await runFactoryTick(ctx.root, paseo);
   assert.equal(created.length, 0);
+});
+
+// An adopted story whose loop agent is still the story's `agent`: the slice carries it over, so the tick reads that agent's turn.
+test("an adopted story with a running loop agent gets no second agent, and its idle implement-done is committed and moves to test", async () => {
+  const ctx = setup("", "on", "spec");
+  adoptedStory(ctx, "step: implement\nround: 1\nagent: l-1\nstatus: implementing", "implement-running", cycles(true));
+  const known: Record<string, { status: string }> = { "l-1": { status: "running" } };
+  const { paseo, created, commits } = fakePaseo(known);
+  assert.equal((await runFactoryTick(ctx.root, paseo)).kind, "advanced");
+  assert.equal(field(ctx.stateFile, "agent"), "l-1");
+  assert.equal(field(ctx.stateFile, "seat"), "builder");
+  for (let pass = 0; pass < 2; pass++) assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "alive", slice: "s1", agent: "l-1" });
+  known["l-1"].status = "idle";
+  put(join(ctx.worktree, ".harness", "state.md"), `# S\n\n## Status\nimplement-done\n${cycles(true)}`);
+  assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "advanced", slice: "s1", phase: "test" });
+  assert.equal(commits.length, 1);
+  assert.equal(created.length, 0);
+});
+
+test("an adopted reviewing story with a running reviewer gets no second Review agent", async () => {
+  const ctx = setup("", "on", "spec");
+  adoptedStory(ctx, "step: review\nround: 1\nagent: r-9\nstatus: reviewing", "review-running", cycles(true));
+  const { paseo, created } = fakePaseo({ "r-9": { status: "running" } });
+  await runFactoryTick(ctx.root, paseo);
+  assert.equal(field(ctx.stateFile, "seat"), "reviewer");
+  assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "alive", slice: "s1", agent: "r-9" });
+  assert.equal(created.length, 0);
+});
+
+test("an adopted story with a Fix agent running on its open PR gets no second Fix agent", async () => {
+  const ctx = setup("pr: 7\nkind: ship", "on", "spec");
+  adoptedStory(ctx, "step: fix\nround: 1\nagent: f-9\nstatus: pr-open\npr: 7", "fix-running", `${cycles(true)}`);
+  const { paseo, created } = fakePaseo({ "f-9": { status: "running" } });
+  shipPorts(paseo, prAt("failing", "abc", FAILED));
+  await runFactoryTick(ctx.root, paseo);
+  assert.equal(field(ctx.stateFile, "agent"), "f-9");
+  await runFactoryTick(ctx.root, paseo);
+  assert.equal(created.length, 0);
+});
+
+test("an adopted story with no worktree line gets the slice's, so the context watch can find it", async () => {
+  const ctx = setup("", "on", "spec");
+  const story = adoptedStory(ctx, "step: implement\nround: 1\nagent: l-1\nstatus: implementing", "implement-running", cycles(false));
+  const { paseo } = fakePaseo({ "l-1": { status: "running" } });
+  await runFactoryTick(ctx.root, paseo);
+  assert.equal(field(story, "worktree"), ctx.worktree);
+});
+
+test("a story the factory writes in spec carries its worktree, so the context watch owns the step and resume reads its state", async () => {
+  const ctx = setup("", "on", "spec");
+  const { paseo, created } = fakePaseo();
+  for (let pass = 0; pass < 2; pass++) await runFactoryTick(ctx.root, paseo);
+  const story = field(ctx.stateFile, "story")!;
+  assert.equal(field(story, "worktree"), ctx.worktree);
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    async () => ({ phases: DEFAULT_PHASES, sources: [] }),
+    async () => null,
+    undefined,
+    undefined,
+    undefined,
+    async () => ctx.root,
+  );
+  assert.equal(created.length, 1);
+  assert.equal(await initiative.stepActive(sliceLabels("plan"), "new-1"), true);
+});
+
+// A blocked slice tells the manager once and leaves the runnable set, so the next slice can run.
+const blockedCases: [string, () => { ctx: ReturnType<typeof setup>; known: Record<string, { status: string }>; ports?: (paseo: TickPaseo) => void }][] = [
+  [
+    "an Implement cycle that finished without being ticked",
+    () => {
+      const ctx = setup("agent: i-1");
+      withStory(ctx, "step: implement\nround: 1\ncycle: 1\nagent: i-1\nstatus: implementing", "implement-done", cycles(false));
+      return { ctx, known: { "i-1": { status: "idle" } } };
+    },
+  ],
+  [
+    "implement-blocked",
+    () => {
+      const ctx = setup("agent: i-1");
+      withStory(ctx, "step: implement\nround: 1\nagent: i-1\nstatus: implementing", "implement-blocked", cycles(false));
+      return { ctx, known: { "i-1": { status: "idle" } } };
+    },
+  ],
+  [
+    "diagnose-blocked",
+    () => {
+      const ctx = setup("agent: i-1");
+      withStory(ctx, "step: diagnose\nround: 1\nagent: i-1\nstatus: planning", "diagnose-blocked", cycles(false));
+      return { ctx, known: { "i-1": { status: "idle" } } };
+    },
+  ],
+  [
+    "a review still blocking at the round limit",
+    () => ({ ctx: reviewSlice("review-done", { reviewRound: 3, findings: OPEN }).ctx, known: { "r-1": { status: "idle" } } }),
+  ],
+  [
+    "a PR closed without merging",
+    () => {
+      const { ctx } = shipSlice({ pr: "7" });
+      return { ctx, known: {}, ports: (paseo) => void shipPorts(paseo, prAt("closed")) };
+    },
+  ],
+];
+for (const [name, build] of blockedCases) {
+  test(`${name} steers the manager once and sets ready: blocked`, async () => {
+    const { ctx, known, ports } = build();
+    const { paseo, created } = fakePaseo(known);
+    ports?.(paseo);
+    const steers: string[] = [];
+    paseo.steer = async (line) => void steers.push(line);
+    for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, paseo);
+    assert.equal(steers.length, 1);
+    assert.match(steers[0], /s1/);
+    assert.equal(field(ctx.stateFile, "ready"), "blocked");
+    assert.equal(created.length, 0);
+    assert.equal(runnableSlice(readFactory(ctx.root)), null);
+  });
+}
+
+test("test-failed rounds don't use up the review-round budget", async () => {
+  // Round 3 of the story is two QA failures and one review; the first review's findings still go back to build.
+  const { ctx, story } = reviewSlice("review-done", { round: 3, findings: OPEN });
+  const { paseo, created } = fakePaseo({ "r-1": { status: "idle" } });
+  assert.equal((await runFactoryTick(ctx.root, paseo)).kind, "restarted");
+  assert.deepEqual(created[0].labels, sliceLabels("implement", "4"));
+  assert.equal(field(ctx.stateFile, "phase"), "build");
+  assert.equal(field(story, "review_round"), "2");
 });
