@@ -48,6 +48,7 @@ export type LoopHost = {
   // null when the session is gone; undefined when the host could not answer (try again later).
   refreshSession(agentId: string): Promise<LoopSession | null | undefined>;
   sendToStep(agentId: string, text: string, options?: SendToStepOptions): Promise<void>;
+  // null when the timeline could not be read.
   timelineTail(
     agentId: string,
     options: { limit: number },
@@ -55,6 +56,7 @@ export type LoopHost = {
   startStepAgent(workspaceId: string, input: StepAgentCreate): Promise<{ id: string }>;
   refreshStoryWorkspace(workspaceId: string): Promise<{ directory: string } | null>;
   createStoryWorkspace(input: StoryWorkspaceCreate): Promise<StoryWorkspace>;
+  // Never rejects: a host with no project list answers [].
   listProjects(): Promise<LoopProject[]>;
   archiveStoryWorkspace(workspaceId: string): Promise<void>;
   readPlanUsage(): Promise<PlanUsageResult>;

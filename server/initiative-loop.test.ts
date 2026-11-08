@@ -4,6 +4,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { mock, test } from "node:test";
+import type { PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
+import { loopTurnEnded } from "./loop-host-paseo";
 import type { LoopHost } from "../shared/loop-host";
 import { fakeLoopHost, type FakeAgent } from "../test-support/fake-loop-host";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
@@ -14,7 +16,7 @@ import { gatesOf } from "../shared/gates";
 import type { TelemetryRow } from "./context-telemetry";
 import { worktreeFingerprint } from "./turn-progress";
 import { frontmatter, readStories, writeFrontmatter } from "./harness-layout";
-import { STUCK_CLEAR } from "./story-steps";
+import { STUCK_CLEAR, nudgePrompt } from "./story-steps";
 import { sourceId } from "./skill-sources";
 
 // The loop's registry lives under the home folder, so each run gets its own.
@@ -38,7 +40,7 @@ const failedCheck = {
   detailsUrl: "https://gh/actions/runs/9/job/1",
   completedAt: "2026-10-08T12:00:00Z",
 };
-const { createInitiativeLoop, RESUME_LINE, RESTART_LINE, nudgePrompt } = await import("./initiative-loop");
+const { createInitiativeLoop, RESUME_LINE, RESTART_LINE } = await import("./initiative-loop");
 
 type Agent = FakeAgent;
 
@@ -655,11 +657,8 @@ test("an unreadable pipeline doesn't stop the step; its error goes on the story"
 
 type TurnEnded = Parameters<ReturnType<typeof loop>["onTurnEnded"]>[1];
 // Takes the outcome as Paseo words it (`error: { message }`) and hands the loop its own event.
-const ended = (id: string, outcome: Record<string, unknown>, timeline: unknown[] = []): TurnEnded => ({
-  agentId: id,
-  outcome: (outcome.kind === "failed" ? { kind: "failed", message: (outcome.error as { message: string }).message } : outcome) as TurnEnded["outcome"],
-  timeline,
-});
+const ended = (id: string, outcome: Record<string, unknown>, timeline: unknown[] = []): TurnEnded =>
+  loopTurnEnded({ agent: { id } as PluginHookAgent, outcome: outcome as unknown as PluginTurnOutcome, timeline });
 
 test("a failed turn marks the step stalled; the tick nudges that session once and counts a retry", async () => {
   const { story, labels } = fixture("a1");

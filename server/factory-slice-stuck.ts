@@ -7,9 +7,8 @@ import { steerManager } from "./factory-manager";
 import { TEST_DONE, TEST_FAILED, block as blockSlice } from "./factory-phases";
 import { sliceStory } from "./factory-slice-story";
 import { writeFrontmatter } from "./harness-layout";
-import { nudgePrompt } from "./initiative-loop";
 import { carryStuck, turnItems } from "./stuck-carry";
-import { STUCK_CLEAR } from "./story-steps";
+import { STUCK_CLEAR, nudgePrompt } from "./story-steps";
 
 type PaseoApi = PluginHandlerContext["paseo"];
 
@@ -33,6 +32,7 @@ export async function factorySeatTurnEnded(
   deps: FactorySeatDeps,
 ) {
   if (event.outcome.kind !== "completed") return;
+  // The hook agent carries no labels, so every completed turn is refreshed here to read them; the loop refreshes again.
   const refreshed = await paseo.agents.ref(event.agent.id).refresh().catch(() => null);
   const labels = refreshed?.agent.labels ?? {};
   if (labels.kind !== "factory-seat" || !["builder", "qa", "reviewer"].includes(labels.seat ?? "")) return;

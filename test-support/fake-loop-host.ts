@@ -39,7 +39,7 @@ export function fakeLoopHost(live: FakeAgent[], usage?: { providers: unknown[] |
     },
     timelineTail: async (id) => {
       const entries = live.find((agent) => agent.id === id)?.timeline ?? [];
-      if (entries === "fail") throw new Error("daemon unreachable");
+      if (entries === "fail") return null;
       return { entries, error: null };
     },
     startStepAgent: async (workspace, input: StepAgentCreate) => {

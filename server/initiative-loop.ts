@@ -51,8 +51,7 @@ import {
   type StoryContext,
 } from "../shared/story-method";
 import { carryStuck, turnItems } from "./stuck-carry";
-import { MARK, RESTART_LINE, STUCK_CLEAR, launchStep, planMissing, repoPhases } from "./story-steps";
-import { withMcpScope } from "./mcp-scope";
+import { MARK, RESTART_LINE, STUCK_CLEAR, launchStep, nudgePrompt, planMissing, repoPhases } from "./story-steps";
 import { skillPaths } from "./skill-sources";
 import { prepareTestingSkill } from "./testing-skill";
 import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
@@ -131,11 +130,6 @@ const execFileAsync = promisify(execFile);
 // Ends a loop agent's prompt when a fresh compact restarts its step in a new session.
 export const RESUME_LINE = "Resume from `.harness/state.md`. An earlier session for this step ran out of context.";
 export { RESTART_LINE };
-
-// The follow-up sent to a stalled step session.
-export function nudgePrompt(why: string) {
-  return `${why}\n\nCarry on with this step from \`.harness/state.md\`. When it is finished, write the step's marker under ## Status as your first prompt says.`;
-}
 
 // The runner helpers read profiles through the host, not a Paseo handle.
 const profilesOf = (host: LoopHost): RunnerProfiles => ({ config: { get: () => host.readRunnerProfiles() } });
@@ -419,7 +413,7 @@ export function createInitiativeLoop(
         labels,
         readPipeline,
         readAgentConfig: () => readAgentConfig(loopHost, step, config),
-        create: (spec) => withMcpScope(worktree, "none", () => loopHost.startStepAgent(workspace, spec)),
+        create: (spec) => loopHost.startStepAgent(workspace, spec),
         failing: extra.failing,
         cycle: extra.cycle,
         cycles: extra.cycles,
@@ -446,7 +440,7 @@ export function createInitiativeLoop(
     if (!reusable || !worktree || !existsSync(worktree)) {
       // Saved first: if Paseo makes the branch and then fails, the retry reuses it instead of adding -2.
       if (!story.meta.branch) writeFrontmatter(story.path, { branch });
-      const projects = await loopHost.listProjects().catch(() => [] as Awaited<ReturnType<LoopHost["listProjects"]>>);
+      const projects = await loopHost.listProjects();
       const project = projects.find((item) => resolve(item.projectRootPath) === init.root);
       const created = await loopHost.createStoryWorkspace({
         title,

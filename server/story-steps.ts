@@ -37,6 +37,11 @@ export const STATUS_FOR: Record<LoopStep, string> = {
   fix: "pr-open",
 };
 
+// The follow-up sent to a stalled step session.
+export function nudgePrompt(why: string) {
+  return `${why}\n\nCarry on with this step from \`.harness/state.md\`. When it is finished, write the step's marker under ## Status as your first prompt says.`;
+}
+
 // The stuck evidence a step carries in its frontmatter; a new step or a reopen starts it clean.
 export const STUCK_CLEAR = {
   idle_turns: null,

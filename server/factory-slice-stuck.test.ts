@@ -7,9 +7,8 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { frontmatter, writeFrontmatter } from "./harness-layout";
-import { STUCK_CLEAR } from "./story-steps";
+import { STUCK_CLEAR, nudgePrompt } from "./story-steps";
 import { factorySeatTurnEnded } from "./factory-slice-stuck";
-import { nudgePrompt } from "./initiative-loop";
 
 const storyMeta = (file: string) => frontmatter(readFileSync(file, "utf8"));
 const ended = (id: string, outcome: Record<string, unknown>, timeline: unknown[] = []) =>

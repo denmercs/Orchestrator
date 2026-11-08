@@ -669,9 +669,12 @@ export default function contribute(
     }).catch((error) => {
       console.warn("orchestrator: factory seat check failed", error);
     });
-    void initiativeLoop.onTurnEnded(paseoLoopHost(paseo), loopTurnEnded(event)).catch((error) => {
-      console.warn("orchestrator: initiative loop failed", error);
-    });
+    // Mapped inside the chain, so an event the loop can't read is a warning, not a throw in the hook.
+    void Promise.resolve()
+      .then(() => initiativeLoop.onTurnEnded(paseoLoopHost(paseo), loopTurnEnded(event)))
+      .catch((error) => {
+        console.warn("orchestrator: initiative loop failed", error);
+      });
     contextPaseo = paseo;
     void contextWatch.onTurnEnded(event).catch((error) => {
       console.warn("orchestrator: context watch failed", error);

@@ -96,8 +96,7 @@ export function paseoLoopHost(paseo: PaseoApi): LoopHost {
           worktreeSlug: input.worktreeSlug,
         },
       });
-      const directory =
-        created.directory ?? (await created.refresh())?.workspaceDirectory ?? (await paseo.workspaces.ref(created.id).refresh())?.workspaceDirectory ?? "";
+      const directory = created.directory ?? (await created.refresh())?.workspaceDirectory ?? "";
       if (!directory) throw new Error("Paseo created the workspace but did not report its folder.");
       return { id: created.id, directory };
     },
