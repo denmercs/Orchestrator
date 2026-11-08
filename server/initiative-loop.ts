@@ -2,12 +2,9 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { buildContext } from "./factory-tick";
-import { namedStories, readFactory, storyKey, writeSliceState } from "./factory-layout";
-import { TEST_DONE, TEST_FAILED, block as blockSlice } from "./factory-phases";
-import { steerManager } from "./factory-manager";
+import { sliceStory } from "./factory-slice-story";
+import { namedStories, storyKey, writeSliceState } from "./factory-layout";
 import { promisify } from "node:util";
-import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
 import type { AgentCreateConfig } from "../shared/agent-runner";
 import { LOOP_AGENT_KIND, type LoopConfig } from "../shared/initiative-loop";
 import { branchName } from "../shared/naming";
@@ -15,7 +12,7 @@ import { phaseLabel } from "../shared/orchestration";
 import { budgetMoney } from "../shared/stats-strip";
 import { storyCost, type TelemetryRow } from "./context-telemetry";
 import { DEFAULT_PHASES, STEP_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
-import { loadPhaseConfig } from "./agent-runner";
+import { loadPhaseConfig, type RunnerProfiles } from "./agent-runner";
 import { repoAutoMerge, repoMaxFixes, repoReviewMode } from "./repo-pipeline";
 import type { ToolItem } from "../shared/exploration";
 import { midTurnCheck, toolRunningSince, type TimelineEntry } from "../shared/stuck";
@@ -55,12 +52,13 @@ import {
 } from "../shared/story-method";
 import { carryStuck, turnItems } from "./stuck-carry";
 import { MARK, RESTART_LINE, STUCK_CLEAR, launchStep, planMissing, repoPhases } from "./story-steps";
+import { withMcpScope } from "./mcp-scope";
 import { skillPaths } from "./skill-sources";
 import { prepareTestingSkill } from "./testing-skill";
 import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
 import { activeBriefRuns, briefRuns, worktreeFingerprint } from "./turn-progress";
 import { clockTime, providerName } from "../shared/plan-usage";
-import { readPlanUsage } from "./plan-usage";
+import type { LoopHost, LoopPermissionRequested, LoopPermissionResolved, LoopTurnEnded } from "../shared/loop-host";
 import { inHoldWindow, limitNotice, planLimitUntil, usageLimitResumeAt } from "./usage-limit";
 import { maybeRoundNudge } from "./round-nudge";
 import { ROUND_NUDGE_AT, roundNudgeDetail, roundNudgeLine, roundNudgeDue } from "../shared/round-nudge";
@@ -103,8 +101,9 @@ const SUBAGENT_WAIT_MS = 30 * 60_000;
 // The story files are the state: the loop writes status, branch, workspace, agent, pr and ci into
 // their frontmatter, so it resumes from them after a restart. Paseo owns the worktrees and agents.
 
-type PaseoApi = PluginHandlerContext["paseo"];
 type StoryFile = ReturnType<typeof readStoryFiles>[number];
+
+export type { LoopHost } from "../shared/loop-host";
 type StoryRef = { repo: string; initiative: string; storyId: string };
 type Initiative = { root: string; slug: string; dir: string };
 
@@ -137,6 +136,9 @@ export { RESTART_LINE };
 export function nudgePrompt(why: string) {
   return `${why}\n\nCarry on with this step from \`.harness/state.md\`. When it is finished, write the step's marker under ## Status as your first prompt says.`;
 }
+
+// The runner helpers read profiles through the host, not a Paseo handle.
+const profilesOf = (host: LoopHost): RunnerProfiles => ({ config: { get: () => host.readRunnerProfiles() } });
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
 
@@ -250,7 +252,7 @@ function block(story: StoryFile, reason: string, kind?: BlockKind, record = true
 
 export function createInitiativeLoop(
   readConfig: () => Promise<LoopConfig>,
-  readAgentConfig: (api: PaseoApi, step: LoopStep, loop: LoopConfig) => Promise<AgentCreateConfig>,
+  readAgentConfig: (host: LoopHost, step: LoopStep, loop: LoopConfig) => Promise<AgentCreateConfig>,
   // The drawer's phases and skill sources: each step loads its phase's extras.
   readPipeline: () => Promise<{ phases: Phase[]; sources: SkillSource[] }>,
   // The branch prefix (`dm`), or null for none.
@@ -267,10 +269,8 @@ export function createInitiativeLoop(
   // Told when a story's review is about to start round 3 (and again each tick until it says it reached someone),
   // with the agent whose turn it is and the line to say. Returns true once the line was delivered (Voice is live).
   onRoundNudge?: (agentId: string, line: string, spend?: string) => boolean | Promise<boolean>,
-  // One line to the factory manager at `root` as a steer, for a slice whose seat looks stuck. Absent, `steerManager`.
-  steerFactory?: (root: string, line: string, api: PaseoApi) => Promise<unknown>,
 ) {
-  let paseo: PaseoApi | null = null;
+  let host: LoopHost | null = null;
   // Providers at their plan limit, from the last read of live plan usage: since when the loop has seen
   // it, and until when it holds. In memory only, so a restart forgets `since` until the next read.
   const limits = new Map<string, { since: number; until: number }>();
@@ -304,9 +304,9 @@ export function createInitiativeLoop(
 
   // Brings `limits` up to date from Paseo's live plan usage. A daemon that can't answer leaves it as it
   // was, except that a limit whose reset has passed is dropped: nothing can renew it.
-  async function refreshLimits(api: PaseoApi) {
+  async function refreshLimits(loopHost: LoopHost) {
     stepProviders.clear();
-    const { providers } = await readPlanUsage(api);
+    const { providers } = await loopHost.readPlanUsage();
     if (!providers) {
       for (const [id, limit] of [...limits]) if (limit.until <= Date.now()) limits.delete(id);
       return;
@@ -327,17 +327,17 @@ export function createInitiativeLoop(
   // `.orchestrator/pipeline.json` in `cwd` when that checkout exists), else the runner config `readAgentConfig`
   // returns. The same lookup `startStep` uses, so a Plan set to Cursor isn't gated by a Claude window.
   // Null when the runner config can't be read. A model-qualified provider ("cursor/grok-4.7") counts as its provider.
-  async function stepProviderId(api: PaseoApi, config: LoopConfig, step: LoopStep, cwd: string | null) {
+  async function stepProviderId(loopHost: LoopHost, config: LoopConfig, step: LoopStep, cwd: string | null) {
     let fallback: AgentCreateConfig;
     try {
-      fallback = await readAgentConfig(api, step, config);
+      fallback = await readAgentConfig(loopHost, step, config);
     } catch {
       return null;
     }
     const piped = await readPipeline().catch(() => ({ phases: DEFAULT_PHASES, sources: [] }));
     const phases = repoPhases(piped.phases, cwd);
     const agentConfig = await loadPhaseConfig(
-      api,
+      profilesOf(loopHost),
       phases.find((phase) => phase.id === STEP_PHASES[step])?.profile,
       fallback,
     );
@@ -347,19 +347,18 @@ export function createInitiativeLoop(
   // The plan limit the provider a step will start on is at, or null when it isn't (or its config can't be read).
   // `cwd` is the checkout whose pipeline file applies: the repo for a story that has no worktree yet, the
   // worktree once it does. A model-qualified provider ("claude/opus") is gated by its provider's limit.
-  async function limitFor(api: PaseoApi, config: LoopConfig, step: LoopStep, cwd: string | null = null) {
+  async function limitFor(loopHost: LoopHost, config: LoopConfig, step: LoopStep, cwd: string | null = null) {
     if (!limits.size) return null;
     const key = `${step}\0${cwd ?? ""}`;
-    if (!stepProviders.has(key)) stepProviders.set(key, await stepProviderId(api, config, step, cwd));
+    if (!stepProviders.has(key)) stepProviders.set(key, await stepProviderId(loopHost, config, step, cwd));
     const provider = stepProviders.get(key);
     const limit = provider ? limits.get(provider) : undefined;
     // A limit that has reset no longer gates, even if the usage read hasn't confirmed it yet.
     return provider && limit && limit.until > Date.now() ? { provider, since: limit.since, until: new Date(limit.until) } : null;
   }
 
-  async function loopAgents(api: PaseoApi) {
-    const listed = await api.agents.list({ filter: { includeArchived: false }, page: { limit: 200 } });
-    return listed.entries.map((entry) => entry.agent).filter((agent) => agent.labels?.kind === KIND);
+  async function loopAgents(loopHost: LoopHost) {
+    return (await loopHost.listStepAgents()).filter((agent) => agent.labels?.kind === KIND);
   }
 
   // A resumed agent's skills line: the first prompt's, saved as `step_skills`. A story started
@@ -375,7 +374,7 @@ export function createInitiativeLoop(
   }
 
   async function startStep(
-    api: PaseoApi,
+    loopHost: LoopHost,
     config: LoopConfig,
     init: Initiative,
     phaseDir: string,
@@ -403,7 +402,7 @@ export function createInitiativeLoop(
     };
     const key = Object.values(labels).join("|");
     if (started.has(key)) return null;
-    const existing = (await loopAgents(api)).some((agent) =>
+    const existing = (await loopAgents(loopHost)).some((agent) =>
       Object.entries(labels).every(([name, value]) => agent.labels?.[name] === value),
     );
     if (existing) return null;
@@ -411,7 +410,7 @@ export function createInitiativeLoop(
     try {
       const ctx = storyContext(init, phaseDir, story);
       const agentId = await launchStep({
-        api,
+        api: profilesOf(loopHost),
         storyFile: story.path,
         worktree,
         ctx,
@@ -419,8 +418,8 @@ export function createInitiativeLoop(
         round,
         labels,
         readPipeline,
-        readAgentConfig: () => readAgentConfig(api, step, config),
-        create: (spec) => api.workspaces.ref(workspace).agents.create(spec),
+        readAgentConfig: () => readAgentConfig(loopHost, step, config),
+        create: (spec) => withMcpScope(worktree, "none", () => loopHost.startStepAgent(workspace, spec)),
         failing: extra.failing,
         cycle: extra.cycle,
         cycles: extra.cycles,
@@ -434,7 +433,7 @@ export function createInitiativeLoop(
   }
 
   // Creates (or reuses) the story's worktree workspace and starts its first step: Diagnose on the diagnose track, else Plan.
-  async function startStory(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile) {
+  async function startStory(loopHost: LoopHost, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile) {
     const base = story.meta.base || (await baseBranch(init));
     const branch =
       story.meta.branch ||
@@ -443,27 +442,22 @@ export function createInitiativeLoop(
 
     let workspaceId = story.meta.workspace || "";
     let worktree = story.meta.worktree || "";
-    const reusable = workspaceId ? await api.workspaces.ref(workspaceId).refresh().catch(() => null) : null;
+    const reusable = workspaceId ? await loopHost.refreshStoryWorkspace(workspaceId) : null;
     if (!reusable || !worktree || !existsSync(worktree)) {
       // Saved first: if Paseo makes the branch and then fails, the retry reuses it instead of adding -2.
       if (!story.meta.branch) writeFrontmatter(story.path, { branch });
-      const { projects } = await api.projects.list().catch(() => ({ projects: [] as { projectId: string; projectRootPath: string }[] }));
+      const projects = await loopHost.listProjects().catch(() => [] as Awaited<ReturnType<LoopHost["listProjects"]>>);
       const project = projects.find((item) => resolve(item.projectRootPath) === init.root);
-      const created = await api.workspaces.create({
+      const created = await loopHost.createStoryWorkspace({
         title,
-        source: {
-          kind: "worktree",
-          cwd: init.root,
-          ...(project ? { projectId: project.projectId } : {}),
-          action: "branch-off",
-          baseBranch: base,
-          branchName: branch,
-          worktreeSlug: slugOf(`${init.slug}-${story.id}`),
-        },
+        repoRoot: init.root,
+        ...(project ? { projectId: project.projectId } : {}),
+        baseBranch: base,
+        branchName: branch,
+        worktreeSlug: slugOf(`${init.slug}-${story.id}`),
       });
       workspaceId = created.id;
-      worktree = created.directory ?? (await created.refresh())?.workspaceDirectory ?? "";
-      if (!worktree) throw new Error("Paseo created the workspace but did not report its folder.");
+      worktree = created.directory;
     }
     await excludeHarness(init.root);
     mkdirSync(join(worktree, ".harness"), { recursive: true });
@@ -473,12 +467,12 @@ export function createInitiativeLoop(
     const step = fresh.meta.track === "diagnose" ? "diagnose" : "plan";
     // The worktree's pipeline file is the one this step runs with. Recheck here: the gate in advance
     // ran before this checkout existed, against the repo root.
-    const limit = await limitFor(api, config, step, worktree);
+    const limit = await limitFor(loopHost, config, step, worktree);
     if (limit) {
       writeFrontmatter(story.path, { paused_until: limit.until.toISOString(), paused_for: limit.provider });
       return null;
     }
-    return startStep(api, config, init, phaseDir, fresh, step, 1);
+    return startStep(loopHost, config, init, phaseDir, fresh, step, 1);
   }
 
   // The round 3 nudge for a story whose review round is `round`: the line carries its spend against the cap when
@@ -495,7 +489,7 @@ export function createInitiativeLoop(
   }
 
   // Moves an in-flight story to its next step from the marker its current step wrote.
-  async function reconcile(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, given: StoryFile, turnEnded: boolean) {
+  async function reconcile(loopHost: LoopHost, config: LoopConfig, init: Initiative, phaseDir: string, given: StoryFile, turnEnded: boolean) {
     const story = resumeLateAnswer(phaseDir, given);
     const { meta } = story;
     if (!meta.worktree || !ACTIVE.has(meta.status ?? "") || meta.status === "pr-open") return;
@@ -508,7 +502,7 @@ export function createInitiativeLoop(
     // The tick can see a marker an agent wrote mid-turn. Wait for its turn to end before committing
     // its work and moving on; the turn-end event does that.
     if (!turnEnded && meta.agent) {
-      const status = (await api.agents.ref(meta.agent).refresh().catch(() => null))?.agent.status;
+      const status = (await loopHost.refreshSession(meta.agent))?.status;
       if (status === "running" || status === "initializing") return;
     }
     const { marker, detail } = readMarker(state);
@@ -516,13 +510,13 @@ export function createInitiativeLoop(
     const round = Number(meta.round) || 1;
     const on = initiativeLoopState(init.dir) === "on";
     const next = (to: LoopStep, nextRound: number, cycle?: Cycle) =>
-      on ? startStep(api, config, init, phaseDir, story, to, nextRound, { cycle }) : null;
+      on ? startStep(loopHost, config, init, phaseDir, story, to, nextRound, { cycle }) : null;
     // Round 1 with cycles left: one parent that runs them in subagents, or the next cycle's own agent
     // with `subagentCycles` off.
     const nextImplement = (cycle: Cycle | undefined) => {
       const open = readCycles(state).filter((item) => !item.done);
       if (!on || !config.subagentCycles || !open.length) return next("implement", 1, cycle);
-      return startStep(api, config, init, phaseDir, story, "implement", 1, { cycles: open });
+      return startStep(loopHost, config, init, phaseDir, story, "implement", 1, { cycles: open });
     };
 
     if (step === "plan") {
@@ -635,7 +629,7 @@ export function createInitiativeLoop(
   }
 
   // An open story PR: record merges and CI, and start a Fix CI agent for a new failure.
-  async function watchPr(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile) {
+  async function watchPr(loopHost: LoopHost, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile) {
     const { meta } = story;
     const cwd = meta.worktree && existsSync(meta.worktree) ? meta.worktree : init.root;
     const pr = await prStatus(cwd, meta.pr || meta.branch || "");
@@ -649,7 +643,7 @@ export function createInitiativeLoop(
     if (action.kind === "merged") {
       recordOutcome(story, { kind: "merged" });
       writeFrontmatter(story.path, { status: "merged", merged_at: pr.mergedAt || new Date().toISOString(), ci: null, agent: null });
-      if (meta.workspace) await api.workspaces.archive(meta.workspace).catch(() => undefined);
+      if (meta.workspace) await loopHost.archiveStoryWorkspace(meta.workspace);
       refreshInitiativeIndex(init.dir);
       return;
     }
@@ -683,11 +677,11 @@ export function createInitiativeLoop(
     recordOutcome(story, { kind: "fix", attempt: action.attempt, checks: pr.failing.map((check) => check.name) });
     writeFrontmatter(story.path, { fixed_sha: action.headSha });
     const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
-    await startStep(api, config, init, phaseDir, fresh, "fix", action.attempt, { failing: await failureReport(cwd, pr.failing) });
+    await startStep(loopHost, config, init, phaseDir, fresh, "fix", action.attempt, { failing: await failureReport(cwd, pr.failing) });
   }
 
   // Fills free slots in the active phase with ready stories.
-  async function advance(api: PaseoApi, config: LoopConfig, init: Initiative, owned?: Set<string>) {
+  async function advance(loopHost: LoopHost, config: LoopConfig, init: Initiative, owned?: Set<string>) {
     const startedNow: { story: string; agentId: string }[] = [];
     if (initiativeLoopState(init.dir) !== "on") return { started: startedNow, reason: "the loop is off" };
     const { phaseDir, reason, done } = activePhase(init);
@@ -723,13 +717,13 @@ export function createInitiativeLoop(
     for (const story of ready.slice(0, Math.max(0, config.parallel - inFlight))) {
       // Its first step's provider is at its plan limit: starting it would only hit the wall.
       // No worktree yet: the repo's pipeline file is the one this story will branch off with.
-      const limit = await limitFor(api, config, story.meta.track === "diagnose" ? "diagnose" : "plan", init.root);
+      const limit = await limitFor(loopHost, config, story.meta.track === "diagnose" ? "diagnose" : "plan", init.root);
       if (limit) {
         paused = `paused for the ${providerName(limit.provider)} limit until ${clockTime(limit.until)}`;
         continue;
       }
       try {
-        const agentId = await startStory(api, config, init, phaseDir, story);
+        const agentId = await startStory(loopHost, config, init, phaseDir, story);
         if (agentId) startedNow.push({ story: story.id, agentId });
         else {
           const held = readStoryFiles(phaseDir).find((item) => item.id === story.id);
@@ -754,13 +748,13 @@ export function createInitiativeLoop(
   // Keeps an in-flight step moving when its session can't. A session that is gone, closed or errored
   // gets a fresh one; a stalled one (a failed turn, or a turn that ended without the step's marker)
   // gets a nudge. Each counts as a retry; past maxRetries the story blocks for you.
-  async function supervise(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile, owned?: Set<string>) {
+  async function supervise(loopHost: LoopHost, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile, owned?: Set<string>) {
     if (await adopted(init, story, owned)) return;
     const { meta } = story;
     const step = meta.step as LoopStep;
     if (!meta.worktree || !meta.agent || !SUPERVISED.has(meta.status ?? "") || !SUPERVISED_STEPS.has(step)) return;
     if (!existsSync(meta.worktree)) {
-      await worktreeGone(api, config, init, phaseDir, story);
+      await worktreeGone(loopHost, config, init, phaseDir, story);
       return;
     }
     const state = readText(stateFile(meta.worktree));
@@ -770,14 +764,11 @@ export function createInitiativeLoop(
     const pausedUntil = Date.parse(meta.paused_until ?? "");
     const resuming = !Number.isNaN(pausedUntil);
     if (resuming && (Date.now() < pausedUntil || inHoldWindow(config.holdFrom, config.holdUntil, new Date()))) return;
-    const session = await api.agents
-      .ref(meta.agent)
-      .refresh()
-      .then((found) => found?.agent ?? null, () => undefined);
-    // Paseo didn't answer: that says nothing about the session, so try again next tick.
+    const session = await loopHost.refreshSession(meta.agent);
+    // The host didn't answer: that says nothing about the session, so try again next tick.
     if (session === undefined) return;
     if (session?.status === "running" && session.activeTurn) {
-      await midTurnWatch(api, story, step, session.activeTurn);
+      await midTurnWatch(loopHost, story, step, session.activeTurn);
       return;
     }
     if (session?.status === "running" || session?.status === "initializing") return;
@@ -787,7 +778,7 @@ export function createInitiativeLoop(
     if (!dead && !meta.stalled && !resuming && !waitedOut) return;
     // Its provider is at its plan limit (or still is, past an earlier pause): wait out the reset rather
     // than nudge or restart into it. Not a retry.
-    const limit = await limitFor(api, config, step, meta.worktree || null);
+    const limit = await limitFor(loopHost, config, step, meta.worktree || null);
     if (limit) {
       writeFrontmatter(story.path, { paused_until: limit.until.toISOString(), paused_for: limit.provider, stalled: null });
       return;
@@ -800,7 +791,7 @@ export function createInitiativeLoop(
         (resuming ? "The usage limit has reset." : `It waited on a subagent for over ${SUBAGENT_WAIT_MS / 60_000} minutes.`);
     if (resuming && !dead) {
       writeFrontmatter(story.path, { paused_until: null, paused_for: null, stalled: null });
-      await api.agents.ref(meta.agent).send(nudgePrompt(why));
+      await loopHost.sendToStep(meta.agent, nudgePrompt(why));
       return;
     }
     const retries = Number(meta.retries) || 0;
@@ -810,14 +801,14 @@ export function createInitiativeLoop(
     }
     writeFrontmatter(story.path, { retries: retries + 1, stalled: null, paused_until: null, paused_for: null, waiting_subagent_since: null });
     if (!dead) {
-      await api.agents.ref(meta.agent).send(nudgePrompt(why));
+      await loopHost.sendToStep(meta.agent, nudgePrompt(why));
       return;
     }
     const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
     const cycle = meta.cycle ? readCycles(state).find((item) => String(item.number) === meta.cycle) : undefined;
     // A subagent-cycles parent comes back as a parent, with the cycles still open.
     const cycles = meta.cycles === "subagents" ? readCycles(state).filter((item) => !item.done) : undefined;
-    await startStep(api, config, init, phaseDir, fresh, step, Number(meta.round) || 1, {
+    await startStep(loopHost, config, init, phaseDir, fresh, step, Number(meta.round) || 1, {
       cycle,
       cycles,
       attempt: retries + 1,
@@ -832,7 +823,7 @@ export function createInitiativeLoop(
   // interrupted; the nudge is shared with the turn-end check (`stuck_nudged`). A send that fails still
   // records the nudge, so the next evidence blocks rather than retrying the nudge every tick.
   async function midTurnWatch(
-    api: PaseoApi,
+    loopHost: LoopHost,
     story: StoryFile,
     step: LoopStep,
     turn: { turnId: string; startedAt: string | null },
@@ -859,7 +850,7 @@ export function createInitiativeLoop(
     const idleWatch = step === "implement" && !subagents;
     const fingerprint = idleWatch ? worktreeFingerprint(meta.worktree) : null;
     const testRunning = idleWatch && activeBriefRuns(meta.worktree, step, now).length > 0;
-    const toolRunningSinceMs = idleWatch ? await runningToolSince(api, meta.agent, turn.turnId) : null;
+    const toolRunningSinceMs = idleWatch ? await runningToolSince(loopHost, meta.agent, turn.turnId) : null;
     const lastRunMs = logged.length > 0 ? logged[logged.length - 1].mtimeMs : null;
     const stored = { fingerprint: carried ? meta.mid_fingerprint || null : null, changed: carried ? meta.mid_changed || null : null };
     const { mid, evidence, progressed, interrupt } = midTurnCheck({
@@ -878,14 +869,13 @@ export function createInitiativeLoop(
     // stop the running turn.
     if (interrupt || meta.stuck_nudged || (carried && meta.mid_nudged)) {
       block(story, `stuck: ${evidence}`, "stuck");
-      await api.agents
-        .ref(meta.agent)
-        .send(`The loop blocked this story as stuck: ${evidence}; stop and wait.`, { activeTurnBehavior: "interrupt" })
+      await loopHost
+        .sendToStep(meta.agent, `The loop blocked this story as stuck: ${evidence}; stop and wait.`, { activeTurnBehavior: "interrupt" })
         .catch(() => undefined);
       return;
     }
     const text = nudgePrompt(`You look stuck: ${evidence}.`);
-    await api.agents.ref(meta.agent).send(text, { activeTurnBehavior: "steer" }).catch(() => undefined);
+    await loopHost.sendToStep(meta.agent, text, { activeTurnBehavior: "steer" }).catch(() => undefined);
     // Idleness is judged again from the nudge, not from the stale edit time.
     const nudgedAt = new Date().toISOString();
     writeFrontmatter(story.path, { stuck_nudged: 1, mid_nudged: nudgedAt, mid_changed: nudgedAt });
@@ -893,10 +883,11 @@ export function createInitiativeLoop(
 
   // When the oldest tool call running in the agent's turn started, from the timeline's tail. Null when
   // none is running, or Paseo didn't answer, so missing data never counts against the step.
-  async function runningToolSince(api: PaseoApi, agent: string, turnId: string): Promise<number | null> {
+  async function runningToolSince(loopHost: LoopHost, agent: string, turnId: string): Promise<number | null> {
     try {
-      const page = await api.agents.ref(agent).timeline.refetch({ direction: "tail", limit: 50, projection: "projected" });
-      return page.error ? null : toolRunningSince(page.entries as readonly TimelineEntry[], turnId);
+      const page = await loopHost.timelineTail(agent, { limit: 50 });
+      if (!page || page.error) return null;
+      return toolRunningSince(page.entries as readonly TimelineEntry[], turnId);
     } catch {
       return null;
     }
@@ -906,7 +897,7 @@ export function createInitiativeLoop(
   // usually a PR opened and merged outside the loop: hand an open or merged PR to the PR watcher so
   // the story stops holding a slot. A closed PR blocks it for you. No PR counts as a retry, since gh
   // being down looks the same, and blocks it past maxRetries.
-  async function worktreeGone(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile) {
+  async function worktreeGone(loopHost: LoopHost, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile) {
     const { meta } = story;
     const pr = meta.branch ? await prStatus(init.root, meta.branch) : null;
     if (pr?.state === "closed") {
@@ -921,7 +912,7 @@ export function createInitiativeLoop(
     }
     writeFrontmatter(story.path, { status: "pr-open", step: "pr", round: 1, cycle: null, agent: null, retries: null, pr: pr.number, ci: "pending" });
     const fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id) ?? story;
-    await watchPr(api, config, init, phaseDir, fresh);
+    await watchPr(loopHost, config, init, phaseDir, fresh);
   }
 
   // A story the loop gave up on while its step's provider was hitting its plan limit: those retries
@@ -929,12 +920,12 @@ export function createInitiativeLoop(
   // from well before the limit began (30 minutes' grace) had another cause and stays. `since` is when
   // this process first saw the limit, so after a restart only blocks from then on are recovered. Each
   // story is recovered once per limit (limit_recovered), so a long weekly limit can't loop it.
-  async function recoverLimitBlock(api: PaseoApi, config: LoopConfig, story: StoryFile) {
+  async function recoverLimitBlock(loopHost: LoopHost, config: LoopConfig, story: StoryFile) {
     const { meta } = story;
     const step = meta.step as LoopStep;
     if (meta.status !== "blocked" || meta.block_kind !== "retry-limit" || !SUPERVISED_STEPS.has(step)) return false;
     const blockedAt = Date.parse(meta.blocked_at ?? "");
-    const limit = Number.isNaN(blockedAt) ? null : await limitFor(api, config, step, meta.worktree || null);
+    const limit = Number.isNaN(blockedAt) ? null : await limitFor(loopHost, config, step, meta.worktree || null);
     if (!limit || blockedAt < limit.since - LIMIT_GRACE_MS) return false;
     // Once per limit episode: a story that blocks again in the same one is broken, not caught by it.
     const episode = new Date(limit.since).toISOString();
@@ -955,28 +946,28 @@ export function createInitiativeLoop(
   }
 
   // Everything the loop does for one initiative on a tick: PRs, in-flight steps, then free slots.
-  async function sweep(api: PaseoApi, config: LoopConfig, init: Initiative) {
+  async function sweep(loopHost: LoopHost, config: LoopConfig, init: Initiative) {
     // A story a factory slice names belongs to the factory tick: one owner per story.
     const owned = await adoptedSet(init);
     for (const phaseDir of phaseDirs(init)) {
       for (const story of readStoryFiles(phaseDir)) {
         if (owned.has(storyKey(story.path))) continue;
         try {
-          if (story.meta.status === "pr-open") await watchPr(api, config, init, phaseDir, story);
+          if (story.meta.status === "pr-open") await watchPr(loopHost, config, init, phaseDir, story);
           else if (initiativeLoopState(init.dir) === "on") {
-            await reconcile(api, config, init, phaseDir, story, false);
+            await reconcile(loopHost, config, init, phaseDir, story, false);
             let fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id);
-            if (fresh && (await recoverLimitBlock(api, config, fresh))) {
+            if (fresh && (await recoverLimitBlock(loopHost, config, fresh))) {
               fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id);
             }
-            if (fresh) await supervise(api, config, init, phaseDir, fresh, owned);
+            if (fresh) await supervise(loopHost, config, init, phaseDir, fresh, owned);
           }
         } catch (error) {
           console.warn("orchestrator: initiative loop", init.slug, story.id, error);
         }
       }
     }
-    return advance(api, config, init, owned);
+    return advance(loopHost, config, init, owned);
   }
 
   // The story a loop agent's labels point at, or null when it is gone.
@@ -991,57 +982,6 @@ export function createInitiativeLoop(
     const phaseDir = join(init.dir, PHASES_DIR, labels["loop-phase"] ?? "");
     const story = readStoryFiles(phaseDir).find((item) => item.id === labels["loop-story"]);
     return story ? { init, phaseDir, story } : null;
-  }
-
-  // The story a factory slice agent's labels point at, found through the slice's state.md and the factory root;
-  // null when the loop has no factory, or the slice or its story is gone. No initiative is involved.
-  async function sliceStory(labels: Record<string, string>) {
-    const [slice, mission] = [labels["factory-slice"], labels["factory-mission"]];
-    if (labels.kind !== "factory-seat" || !slice || !mission) return null;
-    const root = await readFactoryRoot();
-    const state = root ? readFactory(root).missions.find((item) => item.id === mission)?.slices.find((item) => item.id === slice) : null;
-    if (!root || !state?.state.story) return null;
-    const path = resolve(root, state.state.story);
-    if (!existsSync(path)) return null;
-    const text = readText(path);
-    const meta = frontmatter(text);
-    const story = { path, id: meta.id || slice, meta, body: text.replace(/^---\n[\s\S]*?\n---\n?/, "") };
-    return { root, mission, slice: state, story, ctx: buildContext(state) };
-  }
-
-  // A completed turn of a factory slice's seat (the loop never supervises these stories): the same stuck check as a loop
-  // step, on the slice's story. It runs for the builder, QA and reviewer seats while the slice is in build, test, review
-  // or ship, not already stopped, and still working its step (its marker not yet done). The first evidence nudges the seat; evidence again, or a nudge that won't send, blocks
-  // the slice and steers the manager. Seats started by the tick's own create carry `slice` and `mission` labels, the loop
-  // steps `factory-slice` and `factory-mission`; the step is the `loop-step` label, none for a seat off the loop's steps.
-  async function sliceTurnEnded(api: PaseoApi, event: { agent: PluginHookAgent; timeline?: readonly unknown[] }, labels: Record<string, string>) {
-    if (!["builder", "qa", "reviewer"].includes(labels.seat ?? "")) return;
-    const found = await sliceStory({ ...labels, "factory-slice": labels["factory-slice"] ?? labels.slice, "factory-mission": labels["factory-mission"] ?? labels.mission });
-    if (!found || found.slice.state.agent !== event.agent.id || found.slice.state.ready) return;
-    if (!["build", "test", "review", "ship"].includes(found.slice.state.phase)) return;
-    const { story } = found;
-    // Only while the step is still in progress, as the loop path: a turn that wrote its done or verdict marker has
-    // finished, and a nudge would wake it in a worktree the next seat is about to use.
-    const worktree = found.slice.state.worktree || story.meta.worktree;
-    const marker = worktree ? readMarker(readText(stateFile(worktree))).marker : null;
-    const step = labels["loop-step"];
-    if (step ? marker !== `${step}-running` : marker === TEST_DONE || marker === TEST_FAILED) return;
-    const evidence = carryStuck(story.path, story.meta, turnItems(event.timeline), {
-      step: step ?? null,
-      subagents: story.meta.cycles === "subagents",
-      stuckTurns: (await readConfig()).stuckTurns,
-    });
-    if (!evidence) return;
-    const why = `You look stuck: ${evidence}.`;
-    // A nudge that doesn't send leaves the seat idle with nothing for the tick to act on: block instead.
-    if (!story.meta.stuck_nudged && (await api.agents.ref(event.agent.id).send(nudgePrompt(why)).then(() => true, () => false))) {
-      writeFrontmatter(story.path, { stuck_nudged: 1 });
-      return;
-    }
-    // A reopen starts the counters clean, as a reopened loop story does.
-    writeFrontmatter(story.path, STUCK_CLEAR);
-    const steer = (line: string) => (steerFactory ?? steerManager)(found.root, line, api);
-    await blockSlice(found.root, found.slice, { steer }, `stuck: ${evidence}.`);
   }
 
   // A story by its id in any phase of the initiative, with both, or null when either isn't there.
@@ -1062,19 +1002,19 @@ export function createInitiativeLoop(
   const findStory = (input: StoryRef) => locateStory(input)?.story ?? null;
 
   return {
-    rememberPaseo(next: PaseoApi) {
-      paseo = next;
+    rememberHost(next: LoopHost) {
+      host = next;
     },
 
-    start(api: PaseoApi, input: { repo: string; initiative: string }) {
-      paseo = api;
+    start(loopHost: LoopHost, input: { repo: string; initiative: string }) {
+      host = loopHost;
       return serial(async () => {
         try {
           const init = initiativeAt(input.repo, input.initiative);
           register(init.root);
           writeFrontmatter(join(init.dir, "initiative.md"), { loop: "on" });
-          await refreshLimits(api);
-          const result = await sweep(api, await readConfig(), init);
+          await refreshLimits(loopHost);
+          const result = await sweep(loopHost, await readConfig(), init);
           return { ok: true, error: null, ...result };
         } catch (cause) {
           return { ok: false, error: cause instanceof Error ? cause.message : String(cause), started: [], reason: "" };
@@ -1101,7 +1041,7 @@ export function createInitiativeLoop(
       const loopStory = labelledStory(labels);
       const found = loopStory
         ? { story: loopStory.story, ctx: storyContext(loopStory.init, loopStory.phaseDir, loopStory.story) }
-        : await sliceStory(labels);
+        : await sliceStory(readFactoryRoot, labels);
       const step = labels["loop-step"] as LoopStep | undefined;
       if (!found || !step || !(step in STEP_LABELS)) return null;
       const { ctx } = found;
@@ -1139,7 +1079,7 @@ export function createInitiativeLoop(
           return;
         }
         // A slice agent: its state.md and its story each follow the new session.
-        const slice = await sliceStory(labels);
+        const slice = await sliceStory(readFactoryRoot, labels);
         if (!slice) return;
         if (slice.story.meta.agent === fromId) writeFrontmatter(slice.story.path, { agent: toId });
         if (slice.slice.state.agent === fromId) writeSliceState(slice.root, slice.mission, slice.slice.id, { agent: toId });
@@ -1150,7 +1090,7 @@ export function createInitiativeLoop(
     // `<step>-running`. A step that wrote `-done` or moved on is not, so the context watch leaves it alone.
     stepActive(labels: Record<string, string>, agentId: string): Promise<boolean> {
       return serial(async () => {
-        const found = labelledStory(labels) ?? (await sliceStory(labels));
+        const found = labelledStory(labels) ?? (await sliceStory(readFactoryRoot, labels));
         const step = labels["loop-step"];
         const worktree = found?.story.meta.worktree;
         if (!found || !step || !worktree || found.story.meta.agent !== agentId) return false;
@@ -1263,8 +1203,8 @@ export function createInitiativeLoop(
     // Retry on a blocked step whose session ended or is gone: the step starts again in a fresh session,
     // same step, round and cycle, as supervise does for a dead session. startStep clears the block.
     // Anything but a blocked agent step is refused and left alone; startStep's own error comes back as is.
-    retryStep(api: PaseoApi, input: StoryRef): Promise<{ ok: boolean; error: string | null; agentId: string | null }> {
-      paseo = api;
+    retryStep(loopHost: LoopHost, input: StoryRef): Promise<{ ok: boolean; error: string | null; agentId: string | null }> {
+      host = loopHost;
       return serial(async () => {
         const found = locateStory(input);
         if (!found) return { ok: false, error: `${input.storyId} isn't on that board.`, agentId: null };
@@ -1285,7 +1225,7 @@ export function createInitiativeLoop(
           const state = meta.worktree ? readText(stateFile(meta.worktree)) : "";
           const cycle = meta.cycle ? readCycles(state).find((item) => String(item.number) === meta.cycle) : undefined;
           const cycles = meta.cycles === "subagents" ? readCycles(state).filter((item) => !item.done) : undefined;
-          const agentId = await startStep(api, await readConfig(), init, phaseDir, story, step, Number(meta.round) || 1, {
+          const agentId = await startStep(loopHost, await readConfig(), init, phaseDir, story, step, Number(meta.round) || 1, {
             cycle,
             cycles,
             retry: new Date().toISOString(),
@@ -1308,18 +1248,16 @@ export function createInitiativeLoop(
       return pr?.state === "closed" ? pr.number : null;
     },
 
-    onTurnEnded(api: PaseoApi, event: { agent: PluginHookAgent; outcome: PluginTurnOutcome; timeline?: readonly unknown[] }) {
-      paseo = api;
+    onTurnEnded(loopHost: LoopHost, event: LoopTurnEnded) {
+      host = loopHost;
       // You stopped it: the loop leaves it to you.
       if (event.outcome.kind === "canceled") return Promise.resolve();
       const outcome = event.outcome;
       return serial(async () => {
-        const refreshed = (await api.agents.ref(event.agent.id).refresh())?.agent;
+        const refreshed = (await loopHost.refreshSession(event.agentId)) ?? null;
         const labels = refreshed?.labels ?? {};
-        if (labels.kind === "factory-seat") {
-          if (outcome.kind === "completed") await sliceTurnEnded(api, event, labels);
-          return;
-        }
+        // A factory slice's seat is the factory's: index.server.ts hands its turn to factorySeatTurnEnded first.
+        if (labels.kind === "factory-seat") return;
         if (labels.kind !== KIND || !labels["loop-repo"] || !labels["loop-initiative"]) return;
         const init = initiativeAt(labels["loop-repo"], labels["loop-initiative"]);
         const phaseDir = join(init.dir, PHASES_DIR, labels["loop-phase"] ?? "");
@@ -1342,35 +1280,35 @@ export function createInitiativeLoop(
           const spent = storyCost(
             await readCost.rows(),
             { initiative: labels["loop-initiative"], story: story.id },
-            typeof live === "number" ? { agentId: event.agent.id, costUsd: live } : undefined,
+            typeof live === "number" ? { agentId: event.agentId, costUsd: live } : undefined,
           );
           const cap = storyCap(story.meta, await readCost.cap());
           if (spent !== null && cap > 0 && spent >= cap) {
             block(story, `cost cap ($${spent.toFixed(2)} of ${budgetMoney(cap)})`, "cost-cap");
-            onCostCap?.(event.agent.id);
+            onCostCap?.(event.agentId);
             return;
           }
         }
         // A failed turn is retried by the tick, which gives a rate limit or outage time to clear. One
         // that hit the plan's usage limit waits for the reset instead, and isn't a retry.
         if (outcome.kind === "failed") {
-          if (story.meta.agent === event.agent.id && SUPERVISED.has(story.meta.status ?? "")) {
-            const resumeAt = usageLimitResumeAt(outcome.error.message, new Date());
+          if (story.meta.agent === event.agentId && SUPERVISED.has(story.meta.status ?? "")) {
+            const resumeAt = usageLimitResumeAt(outcome.message, new Date());
             writeFrontmatter(
               story.path,
               resumeAt
                 ? { paused_until: resumeAt.toISOString(), stalled: null }
-                : { stalled: `Its last turn failed: ${outcome.error.message}` },
+                : { stalled: `Its last turn failed: ${outcome.message}` },
             );
           }
           return;
         }
-        await reconcile(api, await readConfig(), init, phaseDir, story, true);
+        await reconcile(loopHost, await readConfig(), init, phaseDir, story, true);
         // Still running its step after the turn: the session stopped without its marker.
         const after = readStoryFiles(phaseDir).find((item) => item.id === story.id);
         const state = after?.meta.worktree ? readText(stateFile(after.meta.worktree)) : "";
         if (
-          after?.meta.agent === event.agent.id &&
+          after?.meta.agent === event.agentId &&
           after.meta.worktree &&
           SUPERVISED.has(after.meta.status ?? "") &&
           SUPERVISED_STEPS.has(after.meta.step ?? "") &&
@@ -1411,23 +1349,24 @@ export function createInitiativeLoop(
           } else if (evidence) {
             const why = `You look stuck: ${evidence}.`;
             // Unsent, the session would sit idle with nothing for the tick to act on: stall it instead.
-            const sent = await api.agents.ref(event.agent.id).send(nudgePrompt(why)).then(() => true, () => false);
+            const sent = await loopHost.sendToStep(event.agentId, nudgePrompt(why)).then(() => true, () => false);
             writeFrontmatter(after.path, sent ? { stuck_nudged: 1 } : { stalled: why });
           } else if (!waiting) {
             writeFrontmatter(after.path, { stalled: "It ended its turn without writing the step's marker." });
           }
         }
-        await advance(api, await readConfig(), init);
+        await advance(loopHost, await readConfig(), init);
       });
     },
 
     // A step session asked for permission: the story blocks until it's answered, so it shows as
     // needing you. It keeps its slot, since its session is still open.
-    onPermissionRequested(api: PaseoApi, event: { agent: PluginHookAgent; request: { name: string; title?: string } }) {
-      paseo = api;
+    onPermissionRequested(loopHost: LoopHost, event: LoopPermissionRequested) {
+      host = loopHost;
       return serial(async () => {
-        const found = labelledStory((await api.agents.ref(event.agent.id).refresh())?.agent.labels ?? {});
-        if (!found || found.story.meta.agent !== event.agent.id || !SUPERVISED.has(found.story.meta.status ?? "")) return;
+        const session = await loopHost.refreshSession(event.agentId);
+        const found = labelledStory(session?.labels ?? {});
+        if (!found || found.story.meta.agent !== event.agentId || !SUPERVISED.has(found.story.meta.status ?? "")) return;
         if (await adopted(found.init, found.story)) return;
         block(found.story, `Waiting on permission: ${event.request.title || event.request.name}. Answer it in the session.`, undefined, false);
         writeFrontmatter(found.story.path, { waiting_on: PERMISSION });
@@ -1435,12 +1374,13 @@ export function createInitiativeLoop(
     },
 
     // The permission was answered: the story goes back to the step it was on.
-    onPermissionResolved(api: PaseoApi, event: { agent: PluginHookAgent }) {
-      paseo = api;
+    onPermissionResolved(loopHost: LoopHost, event: LoopPermissionResolved) {
+      host = loopHost;
       return serial(async () => {
-        const found = labelledStory((await api.agents.ref(event.agent.id).refresh())?.agent.labels ?? {});
+        const session = await loopHost.refreshSession(event.agentId);
+        const found = labelledStory(session?.labels ?? {});
         const meta = found?.story.meta;
-        if (!found || !meta || meta.waiting_on !== PERMISSION || meta.agent !== event.agent.id) return;
+        if (!found || !meta || meta.waiting_on !== PERMISSION || meta.agent !== event.agentId) return;
         if (await adopted(found.init, found.story)) return;
         writeFrontmatter(found.story.path, {
           status: meta.blocked_from || "todo",
@@ -1453,17 +1393,17 @@ export function createInitiativeLoop(
     },
 
     tick() {
-      const api = paseo;
-      if (!api) return Promise.resolve();
+      const loopHost = host;
+      if (!loopHost) return Promise.resolve();
       return serial(async () => {
         const config = await readConfig();
-        await refreshLimits(api);
+        await refreshLimits(loopHost);
         for (const root of readRegistry()) {
           for (const slug of dirsIn(initiativesDir(root))) {
             try {
               const init = initiativeAt(root, slug);
               if (initiativeLoopState(init.dir) === "off" && !hasOpenPr(init)) continue;
-              await sweep(api, config, init);
+              await sweep(loopHost, config, init);
             } catch (error) {
               console.warn("orchestrator: initiative loop tick", root, slug, error);
             }

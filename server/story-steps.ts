@@ -1,6 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { AgentCreateConfig } from "../shared/agent-runner";
 import { DEFAULT_PHASES, STEP_PHASES, pipelineSettings, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import {
@@ -14,7 +13,7 @@ import {
   type LoopStep,
   type StoryContext,
 } from "../shared/story-method";
-import { loadPhaseConfig } from "./agent-runner";
+import { loadPhaseConfig, type RunnerProfiles } from "./agent-runner";
 import { briefTag, installBrief } from "./brief-install";
 import { writeFrontmatter } from "./harness-layout";
 import { withMcpScope } from "./mcp-scope";
@@ -22,8 +21,6 @@ import { missingPaths, planPaths } from "./plan-paths";
 import { repoPipelineConfig, repoReviewMode } from "./repo-pipeline";
 import { installSkills, skillPaths } from "./skill-sources";
 import { prepareTestingSkill } from "./testing-skill";
-
-type PaseoApi = PluginHandlerContext["paseo"];
 
 // Marks loop workspaces and sessions, like 📐 marks architecture sessions.
 export const MARK = "🔁";
@@ -71,7 +68,7 @@ export function planMissing(step: LoopStep, state: string, worktree: string) {
 }
 
 export type LaunchInput = {
-  api: PaseoApi;
+  api: RunnerProfiles;
   storyFile: string;
   worktree: string;
   ctx: StoryContext;

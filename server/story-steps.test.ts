@@ -3,11 +3,12 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { FALLBACK_AGENT_CONFIG } from "../shared/agent-runner";
+import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { DEFAULT_PHASES } from "../shared/pipeline";
 import { readMarker, type StoryContext } from "../shared/story-method";
 import { frontmatter } from "./harness-layout";
+import { loadPhaseConfig, loadStepConfig } from "./agent-runner";
 import { launchStep } from "./story-steps";
 
 type Spec = { title: string; config: unknown; prompt: string; labels: Record<string, string> };
@@ -46,7 +47,7 @@ test("launchStep marks the step running, starts the agent with its labels and pr
   const created: Spec[] = [];
   // Act
   const id = await launchStep({
-    api: {} as PluginHandlerContext["paseo"],
+    api: { config: { get: async () => ({}) } },
     storyFile,
     worktree,
     ctx,
@@ -80,7 +81,7 @@ test("launchStep leaves the story untouched when the agent fails to start", asyn
   // Act + assert: the error comes back, and no agent is recorded.
   await assert.rejects(
     launchStep({
-      api: {} as PluginHandlerContext["paseo"],
+      api: { config: { get: async () => ({}) } },
       storyFile,
       worktree,
       ctx,
@@ -98,4 +99,18 @@ test("launchStep leaves the story untouched when the agent fails to start", asyn
   const meta = frontmatter(readFileSync(storyFile, "utf8"));
   assert.equal(meta.status, "ready");
   assert.equal(meta.agent, undefined);
+});
+
+test("loadPhaseConfig and loadStepConfig read profiles from a plain { config: { get } } object", async () => {
+  // Arrange: no Paseo handle, only the one call the runner helpers make.
+  const profiles = {
+    config: { get: async () => ({ daemon: { agentProfiles: [{ id: "p1", name: "fast", provider: "claude", model: "haiku" }] } }) },
+  };
+  const fallback = { provider: "claude", modeId: "auto" };
+
+  // Act and assert: a named profile is found, an unknown one falls back, and a step reads its default.
+  assert.deepEqual(await loadPhaseConfig(profiles, "fast", fallback), { provider: "claude/haiku" });
+  assert.deepEqual(await loadPhaseConfig(profiles, "missing", fallback), fallback);
+  const step = await loadStepConfig(profiles, DEFAULT_LOOP_CONFIG, "implement", "");
+  assert.equal(typeof step.provider, "string");
 });
