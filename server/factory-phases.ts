@@ -100,11 +100,11 @@ const storedFailing = (saved: string | undefined) => {
 };
 
 // A slice that cannot go on tells the manager once and leaves the runnable set (`ready: blocked`), so the next slice can run.
-// The manager clears `ready` in the slice's state.md to put it back.
-async function block(
+// The manager clears `ready` in the slice's state.md to put it back. Also the block for a seat that looks stuck at its turn end.
+export async function block(
   root: string,
   slice: FactorySlice,
-  ports: TickPaseo,
+  ports: Pick<TickPaseo, "steer">,
   why: string,
   how = "Clear `ready` in its state.md once it is sorted out.",
 ): Promise<TickResult> {
