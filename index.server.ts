@@ -74,6 +74,7 @@ import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createMicOffGate } from "./server/mic-off-gate";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
+import { applyFactoryManager, ensureManager } from "./server/factory-manager";
 import { createJarvisRouter, MAC_ROUTER, voiceSessionCreator } from "./server/jarvis-router";
 import { createMorningBrief, fetchWeather } from "./server/morning-brief";
 import { splitSessions, type VoiceEvent } from "./shared/voice-loop";
@@ -468,7 +469,8 @@ export default function contribute(
           };
     // Only voice-marked creates need the profile; a failed config read never blocks the create.
     if (request.env?.[VOICE_SESSION_ENV] !== "1") {
-      return withServers === request ? undefined : withServers;
+      const managed = applyFactoryManager(withServers);
+      return managed === request ? undefined : managed;
     }
     let profile = null;
     try {
@@ -480,7 +482,7 @@ export default function contribute(
     } catch (error) {
       console.warn("orchestrator: voice profile lookup failed", error);
     }
-    return applyVoiceSession(withServers, profile);
+    return applyFactoryManager(applyVoiceSession(withServers, profile));
   });
   const offWorkspaceCreated = server.on("workspace.created", ({ workspace }) => {
     scopeWorkerWorkspace(workspace);
@@ -711,6 +713,13 @@ export default function contribute(
     send: (sessionId, text) => jarvisPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
     interpreter: voiceInterpretService,
     create: voiceSessionCreator(jarvisPaseo),
+    // The factory manager of the harness repo's factory; no repo setting, or no factory there, means none.
+    manager: async () => {
+      const { repo } = await readHarness();
+      if (!repo) return null;
+      const id = await ensureManager(repo, jarvisPaseo());
+      return id ? { id, name: "Factory manager" } : null;
+    },
     // "Good morning, Jarvis": weather, the verse, your Jira stories and the priority initiative, one beat at a time.
     brief: createMorningBrief({
       weather: () => fetchWeather(),
