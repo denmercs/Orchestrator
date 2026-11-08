@@ -41,7 +41,7 @@ function setup(state: string, run = "on", phase = "build") {
   return { root, worktree, stateFile: join(dir, "state.md") };
 }
 
-function fakePaseo(known: Record<string, { status: string; archivedAt?: string | null }> = {}) {
+function fakePaseo(known: Record<string, { status: string; archivedAt?: string | null; lastUsage?: { totalCostUsd?: number } | null }> = {}) {
   const created: { cwd: string; prompt: string; title: string; labels: Record<string, string>; config: unknown }[] = [];
   const commits: { cwd: string; message: string }[] = [];
   const worktrees: { cwd: string; branch: string; base: string }[] = [];
@@ -1197,4 +1197,127 @@ test("review round 3 nudge: a steer that returns false or throws stays pending a
     await runFactoryTick(ctx.root, paseo);
     assert.equal(attempts.length, 3);
   }
+});
+
+// A build slice whose planner finished (plan-done, idle), with `cost` as the telemetry port and `planner` its session.
+async function cappedBuild(cost: TickPaseo["cost"], planner: { status: string; lastUsage?: { totalCostUsd?: number } } = { status: "idle" }) {
+  const ctx = setup("agent: p-1");
+  const story = withStory(ctx, "step: plan\nround: 1\nagent: p-1\nstatus: planning", "plan-done", cycles(false));
+  const fake = fakePaseo({ "p-1": planner });
+  const steers: string[] = [];
+  fake.paseo.steer = async (line) => void steers.push(line);
+  fake.paseo.cost = cost;
+  const result = await runFactoryTick(ctx.root, fake.paseo);
+  const again = () => runFactoryTick(ctx.root, fake.paseo);
+  return { ctx, story, steers, result, created: fake.created, again };
+}
+
+test("cost cap: a build slice at its cap with its turn ended steers once, blocks with block_kind cost-cap and launches nothing", async () => {
+  const { ctx, story, steers, result, created } = await cappedBuild({ cap: () => 5, rows: () => [costRow("p-1", 5)] });
+  assert.equal(result.kind, "waiting");
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /cost cap \(\$5\.00 of \$5\)/);
+  assert.equal(field(ctx.stateFile, "ready"), "blocked");
+  assert.equal(field(story, "block_kind"), "cost-cap");
+  assert.equal(created.length, 0);
+});
+
+test("cost cap: a build slice just under its cap launches Implement as before", async () => {
+  const { ctx, steers, created } = await cappedBuild({ cap: () => 5, rows: () => [costRow("p-1", 4.99)] });
+  assert.equal(created.length, 1);
+  assert.equal(steers.length, 0);
+  assert.equal(field(ctx.stateFile, "ready"), undefined);
+});
+
+test("cost cap: a running planner is not blocked even over the cap", async () => {
+  const { ctx, steers, result } = await cappedBuild({ cap: () => 5, rows: () => [costRow("p-1", 9)] }, { status: "running" });
+  assert.equal(steers.length, 0);
+  assert.equal(result.kind, "alive");
+  assert.equal(field(ctx.stateFile, "ready"), undefined);
+});
+
+test("cost cap: with no cost port the slice is not capped", async () => {
+  const { ctx, steers, created } = await cappedBuild(undefined);
+  assert.equal(created.length, 1);
+  assert.equal(steers.length, 0);
+  assert.equal(field(ctx.stateFile, "ready"), undefined);
+});
+
+test("cost cap: the slice agent's live cost counts with rows, even when that agent has no row yet", async () => {
+  // $3 on another agent's row plus $2.50 live on the planner reaches the $5 cap.
+  const { ctx, story, steers, created } = await cappedBuild(
+    { cap: () => 5, rows: () => [costRow("a-0", 3)] },
+    { status: "idle", lastUsage: { totalCostUsd: 2.5 } },
+  );
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /cost cap \(\$5\.50 of \$5\)/);
+  assert.equal(field(ctx.stateFile, "ready"), "blocked");
+  assert.equal(field(story, "block_kind"), "cost-cap");
+  assert.equal(created.length, 0);
+});
+
+test("cost cap: a cost reader that throws skips the check and the step launches", async () => {
+  const { ctx, steers, created } = await cappedBuild(
+    { cap: () => 5, rows: () => Promise.reject(new Error("x")) },
+    { status: "idle", lastUsage: { totalCostUsd: 9 } },
+  );
+  assert.equal(created.length, 1);
+  assert.equal(steers.length, 0);
+  assert.equal(field(ctx.stateFile, "ready"), undefined);
+});
+
+test("cost cap: a slice left at ready blocked stays idle over two passes, with no steer and nothing launched", async () => {
+  const { ctx, steers, created, again } = await cappedBuild({ cap: () => 5, rows: () => [costRow("p-1", 5)] });
+  // The first pass blocked it with one steer; two more passes must neither steer nor launch.
+  const second = await again();
+  const third = await again();
+  assert.equal(second.kind, "idle");
+  assert.equal(third.kind, "idle");
+  assert.equal(steers.length, 1);
+  assert.equal(created.length, 0);
+  assert.equal(field(ctx.stateFile, "ready"), "blocked");
+});
+
+test("cost cap: clearing ready raises the cap by the base cap, removes block_kind and launches the step", async () => {
+  const { ctx, story, steers, created, again } = await cappedBuild({ cap: () => 5, rows: () => [costRow("p-1", 5)] });
+  writeFrontmatter(ctx.stateFile, { ready: null });
+  await again();
+  assert.equal(field(story, "cost_cap_usd"), "10");
+  assert.equal(field(story, "block_kind"), undefined);
+  assert.equal(created.length, 1);
+  assert.equal(steers.length, 1);
+});
+
+test("cost cap: a cap the manager raised by hand is kept when ready is cleared, and the step launches", async () => {
+  const { ctx, story, created, again } = await cappedBuild({ cap: () => 5, rows: () => [costRow("p-1", 5)] });
+  writeFrontmatter(ctx.stateFile, { ready: null });
+  writeFrontmatter(story, { cost_cap_usd: 20 });
+  await again();
+  assert.equal(field(story, "cost_cap_usd"), "20");
+  assert.equal(field(story, "block_kind"), undefined);
+  assert.equal(created.length, 1);
+});
+
+test("cost cap: the QA seat carries the slice's spend labels, so its spend counts toward the cap", async () => {
+  const { ctx } = testSlice("implement-done", "");
+  const { paseo, created } = fakePaseo({ "i-1": { status: "idle" } });
+  await runFactoryTick(ctx.root, paseo);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].labels.seat, "qa");
+  assert.equal(created[0].labels["loop-initiative"], "m1");
+  assert.equal(created[0].labels["loop-story"], "s1");
+});
+
+test("cost cap: a ship slice over its cap is not blocked", async () => {
+  const { ctx, story } = shipSlice();
+  const { paseo } = fakePaseo();
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  paseo.cost = { cap: () => 5, rows: () => [costRow("p-1", 9)] };
+  const ship = shipPorts(paseo, prAt("pending"));
+  await runFactoryTick(ctx.root, paseo);
+  assert.equal(ship.opened.length, 1);
+  assert.equal(steers.length, 0);
+  assert.equal(field(ctx.stateFile, "ready"), undefined);
+  assert.equal(field(story, "block_kind"), undefined);
 });
