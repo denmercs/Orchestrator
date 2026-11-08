@@ -51,7 +51,7 @@ export type TelemetryRow = {
   preTokens?: number;
   // Absent on rows written before S6. `model` is null when the agent runs its provider's default.
   model?: string | null;
-  // From the `loop-cycle`, `loop-story` and `loop-initiative` labels; null outside the loop.
+  // From the `loop-cycle`, `loop-story` and `loop-initiative` labels, which the loop and factory slices set; null otherwise.
   cycle?: number | null;
   story?: string | null;
   // Absent on rows written before S18. Story ids repeat across initiatives, so this tells them apart.

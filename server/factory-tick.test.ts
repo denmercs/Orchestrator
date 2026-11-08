@@ -324,6 +324,15 @@ test("a slice whose story lives in an initiative is labelled with that initiativ
   assert.equal(created[0].labels["loop-story"], "S7");
 });
 
+test("a slice whose initiative story has no id is labelled with the mission and the slice", async () => {
+  const ctx = setup("");
+  withStory(ctx, "", "todo", "", join(ctx.root, ".harness", "initiatives", "init-a", "phases", "1-x", "stories", "01-y.md"));
+  const { paseo, created } = fakePaseo();
+  await runFactoryTick(ctx.root, paseo);
+  assert.equal(created[0].labels["loop-initiative"], "m1");
+  assert.equal(created[0].labels["loop-story"], "s1");
+});
+
 test("a diagnose-track story starts with Diagnose, not Plan", async () => {
   const ctx = setup("");
   withStory(ctx, "track: diagnose", "todo");
@@ -1059,9 +1068,9 @@ test("review round 3 nudge: a review that fails at review round 2 steers once, b
 });
 
 // The slice's round 3 steer when its review fails at review round 2, with `cost` as the telemetry port and `story` as extra frontmatter.
-async function nudgeWith(cost: TickPaseo["cost"], story = "") {
+async function nudgeWith(cost: TickPaseo["cost"], story: Record<string, string> = {}) {
   const { ctx } = reviewSlice("review-done", { reviewRound: 2, round: 2, findings: OPEN });
-  if (story) writeFrontmatter(join(ctx.root, "story.md"), Object.fromEntries([story.split(": ")]));
+  if (Object.keys(story).length) writeFrontmatter(join(ctx.root, "story.md"), story);
   const { paseo } = fakePaseo({ "r-1": { status: "idle" } });
   const steers: string[] = [];
   paseo.steer = async (line: string) => (steers.push(line), true);
@@ -1078,7 +1087,7 @@ test("review round 3 nudge: the slice's steer shows its spend against the cap, c
 });
 
 test("review round 3 nudge: the slice's own cost_cap_usd replaces the base cap", async () => {
-  const [line] = await nudgeWith({ cap: () => 5, rows: () => [costRow("a-1", 4.2)] }, "cost_cap_usd: 10");
+  const [line] = await nudgeWith({ cap: () => 5, rows: () => [costRow("a-1", 4.2)] }, { cost_cap_usd: "10" });
   assert.match(line, /\$4\.20 of \$10 spent/);
 });
 
@@ -1086,6 +1095,13 @@ test("review round 3 nudge: no matching cost rows leave the steer without spend"
   const [line] = await nudgeWith({ cap: () => 5, rows: () => [costRow("a-1", 4.2, "s2")] });
   assert.match(line, /has reached review round 3/);
   assert.doesNotMatch(line, /\$/);
+});
+
+test("review round 3 nudge: cost rows that fail to load still send the steer, without spend", async () => {
+  const steers = await nudgeWith({ cap: () => 5, rows: () => Promise.reject(new Error("x")) });
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /has reached review round 3/);
+  assert.doesNotMatch(steers[0], /\$/);
 });
 
 test("review round 3 nudge: a steer that returns false or throws stays pending and the next tick steers again", async () => {
