@@ -21,3 +21,14 @@ export async function maybeRoundNudge(
     .catch(() => false);
   if (delivered === true) writeFrontmatter(storyFile, { round_nudged: String(ROUND_NUDGE_AT) });
 }
+
+/** A Mac poll this recent, from a runner whose loop was awake, means the Mac can still speak a notice. */
+export const MAC_POLL_LIVE_MS = 45_000;
+
+/**
+ * Whether a voice notice published now would be heard: a phone router is awake, or the Mac's loop was awake at a
+ * poll in the last 45 s. A Mac whose loop is asleep queues the notice without speaking it, so its polls don't count.
+ */
+export function voiceNudgeLive(now: number, phoneListening: boolean, lastAwakeMacPoll: number): boolean {
+  return phoneListening || now - lastAwakeMacPoll < MAC_POLL_LIVE_MS;
+}

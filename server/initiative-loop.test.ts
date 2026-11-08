@@ -2329,7 +2329,7 @@ test("cost-cap block calls onCostCap(agentId), and a turn under the cap doesn't"
 // The round 3 nudge: a review that fails at `round` ends the turn of agent a1; `onRoundNudge` sees `created` as it was then.
 function nudging(send: (agentId: string, line: string, createdSoFar: number) => boolean | Promise<boolean>, spent?: number) {
   const fx = fixture("a1");
-  const nudges: { agentId: string; line: string; createdSoFar: number }[] = [];
+  const nudges: { agentId: string; line: string; spend?: string; createdSoFar: number }[] = [];
   let created: ReturnType<typeof fakePaseo>["created"] = [];
   const rows = (spent === undefined
     ? []
@@ -2344,8 +2344,8 @@ function nudging(send: (agentId: string, line: string, createdSoFar: number) => 
       undefined,
       undefined,
       undefined,
-      (agentId, line) => {
-        nudges.push({ agentId, line, createdSoFar: created.length });
+      (agentId, line, spend) => {
+        nudges.push({ agentId, line, spend, createdSoFar: created.length });
         return send(agentId, line, created.length);
       },
     );
@@ -2394,6 +2394,17 @@ test("the nudge line shows the story's spend against the cap when readCost knows
     fx.nudges[0].line,
     "S1 (Demo story) has reached review round 3, $4.20 of $5 spent; the cap on rounds and spend is near.",
   );
+  // The spend goes to the channel as its own value, so Voice needn't parse it out of the line.
+  assert.equal(fx.nudges[0].spend, "$4.20 of $5");
+});
+
+test("a story already nudged is not sent again, and unknown spend passes no spend detail", async () => {
+  const fx = nudging(() => true);
+  const loop = fx.make();
+  await fx.failed(loop, 2);
+  assert.equal(fx.nudges[0].spend, undefined);
+  await loop.tick();
+  assert.equal(fx.nudges.length, 1);
 });
 
 test("a nudge nobody received stays pending: no round_nudged, and a later tick sends it once Voice is live", async () => {

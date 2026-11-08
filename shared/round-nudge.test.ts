@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ROUND_NUDGE_AT, roundNudgeDue, roundNudgeLine } from "./round-nudge";
+import { ROUND_NUDGE_AT, roundNudgeDetail, roundNudgeDue, roundNudgeLine } from "./round-nudge";
 
 test("roundNudgeDue: review rounds 1 and 2 are quiet; round 3 and later are due until nudged", () => {
   assert.equal(roundNudgeDue({}, 1), false);
@@ -27,4 +27,10 @@ test("roundNudgeLine shows spend against the cap when known and no money when no
   assert.equal(known, "S10 (Nudge) has reached review round 3, $4.20 of $5 spent; the cap on rounds and spend is near.");
   assert.doesNotMatch(roundNudgeLine("S10", "Nudge", { spent: null, cap: 5 }), /\$/);
   assert.doesNotMatch(roundNudgeLine("S10", "Nudge"), /\$/);
+});
+
+test("roundNudgeDetail is the spend against the cap, and nothing when spend is unknown", () => {
+  assert.equal(roundNudgeDetail({ spent: 4.2, cap: 5 }), "$4.20 of $5");
+  assert.equal(roundNudgeDetail({ spent: null, cap: 5 }), undefined);
+  assert.equal(roundNudgeDetail(), undefined);
 });

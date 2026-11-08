@@ -11,8 +11,14 @@ export function roundNudgeDue(meta: Record<string, string | undefined>, reviewRo
 /** The story's spend against its cost cap; `spent` is null when telemetry can't say. */
 export type NudgeSpend = { spent: number | null; cap: number };
 
+/** "$4.20 of $5", or undefined when spend is unknown. */
+export function roundNudgeDetail(spend?: NudgeSpend): string | undefined {
+  return spend && spend.spent !== null ? `${money(spend.spent)} of ${budgetMoney(spend.cap)}` : undefined;
+}
+
 export function roundNudgeLine(storyId: string, title?: string | null, spend?: NudgeSpend): string {
   const label = title?.trim() ? `${storyId} (${title.trim()})` : storyId;
-  const spent = spend && spend.spent !== null ? `, ${money(spend.spent)} of ${budgetMoney(spend.cap)} spent` : "";
+  const detail = roundNudgeDetail(spend);
+  const spent = detail ? `, ${detail} spent` : "";
   return `${label} has reached review round ${ROUND_NUDGE_AT}${spent}; the cap on rounds and spend is near.`;
 }

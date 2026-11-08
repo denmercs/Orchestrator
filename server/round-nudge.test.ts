@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { frontmatter } from "./harness-layout";
-import { maybeRoundNudge } from "./round-nudge";
+import { MAC_POLL_LIVE_MS, maybeRoundNudge, voiceNudgeLive } from "./round-nudge";
 
 const story = (extra = "") => {
   const file = join(mkdtempSync(join(tmpdir(), "nudge-")), "01-story.md");
@@ -46,4 +46,16 @@ test("maybeRoundNudge does not send before round 3 or once recorded", async () =
   // The same send does fire when due, so the zero above is the rule and not a dead mock.
   await maybeRoundNudge(story(), 4, "line", send);
   assert.equal(calls, 1);
+});
+
+test("voiceNudgeLive: a live phone or a recent awake Mac poll counts; a stale or never-awake Mac does not", () => {
+  const now = 1_000_000;
+  // A phone router is awake, whatever the Mac did.
+  assert.equal(voiceNudgeLive(now, true, 0), true);
+  // The Mac's loop was awake at a poll just now.
+  assert.equal(voiceNudgeLive(now, false, now - 1_000), true);
+  // The last awake poll is older than the window.
+  assert.equal(voiceNudgeLive(now, false, now - MAC_POLL_LIVE_MS), false);
+  // An asleep Mac stamps no awake poll, so its last awake poll stays at 0.
+  assert.equal(voiceNudgeLive(now, false, 0), false);
 });

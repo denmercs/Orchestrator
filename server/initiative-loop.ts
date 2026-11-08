@@ -60,7 +60,7 @@ import { clockTime, providerName } from "../shared/plan-usage";
 import { readPlanUsage } from "./plan-usage";
 import { inHoldWindow, limitNotice, planLimitUntil, usageLimitResumeAt } from "./usage-limit";
 import { maybeRoundNudge } from "./round-nudge";
-import { ROUND_NUDGE_AT, roundNudgeLine } from "../shared/round-nudge";
+import { ROUND_NUDGE_AT, roundNudgeDetail, roundNudgeLine, roundNudgeDue } from "../shared/round-nudge";
 
 // How long a parent may sit waiting on a subagent before the tick counts it as stalled: a subagent that
 // died never wakes its parent.
@@ -263,7 +263,7 @@ export function createInitiativeLoop(
   readFactoryRoot: () => Promise<string | null> = async () => null,
   // Told when a story's review is about to start round 3 (and again each tick until it says it reached someone),
   // with the agent whose turn it is and the line to say. Returns true once the line was delivered (Voice is live).
-  onRoundNudge?: (agentId: string, line: string) => boolean | Promise<boolean>,
+  onRoundNudge?: (agentId: string, line: string, spend?: string) => boolean | Promise<boolean>,
 ) {
   let paseo: PaseoApi | null = null;
   // Providers at their plan limit, from the last read of live plan usage: since when the loop has seen
@@ -476,20 +476,20 @@ export function createInitiativeLoop(
     return startStep(api, config, init, phaseDir, fresh, step, 1);
   }
 
-  // Moves an in-flight story to its next step from the marker its current step wrote.
   // The round 3 nudge for a story whose review round is `round`: the line carries its spend against the cap when
   // `readCost` knows it, and `round_nudged` is written only when `onRoundNudge` says the line was delivered.
   async function roundNudge(init: Initiative, story: StoryFile, round: number, agentId: string) {
-    if (!onRoundNudge) return;
+    if (!onRoundNudge || !roundNudgeDue(story.meta, round)) return;
     const spend = readCost
       ? {
           spent: storyCost(await readCost.rows(), { initiative: init.slug, story: story.id }),
           cap: storyCap(story, await readCost.cap()),
         }
       : undefined;
-    await maybeRoundNudge(story.path, round, roundNudgeLine(story.id, story.meta.title, spend), (line) => onRoundNudge(agentId, line));
+    await maybeRoundNudge(story.path, round, roundNudgeLine(story.id, story.meta.title, spend), (line) => onRoundNudge(agentId, line, roundNudgeDetail(spend)));
   }
 
+  // Moves an in-flight story to its next step from the marker its current step wrote.
   async function reconcile(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, given: StoryFile, turnEnded: boolean) {
     const story = resumeLateAnswer(phaseDir, given);
     const { meta } = story;
