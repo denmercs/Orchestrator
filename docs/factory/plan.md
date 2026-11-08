@@ -140,6 +140,17 @@ Tmux, the terminal UI, and a separate daemon are OpenRig's transport. The factor
 
 The design seat is part of the factory. The manager sets `design: on` when the slice is a screen or a visual, and the tick runs the design phase after spec and before build. The design seat writes `design.md` and does not edit product code. A slice without `design: on` skips that phase. A second independent reviewer and a saved rig template still wait until one builder and one reviewer have finished a slice.
 
+## One provider
+
+A factory runs on one provider's models: all Cursor or all Claude, never a mix. The manager, every seat, the builder's cheap helpers, the one-shot calls and every fallback take their model from that provider. When no model of that provider fits, the create fails and the manager is told. It never falls through to the other provider. The provider is the Paseo provider, so `cursor/claude-haiku-5-5` counts as Cursor.
+
+The code mixes today, and these must change before the rule holds:
+
+- `MANAGER_MODELS` falls back from `claude` to `cursor`.
+- A seat with no profile of the runner's provider falls back to `MANAGER_MODELS`.
+- The one-shot calls (status reporter, correction classifier, replay judge) always use the Claude CLI.
+- The voice helper, the reply summariser and the Prod Pulse schedule are pinned to `claude/claude-haiku-4-5`.
+
 ## Tick
 
 One pass, owned by the factory. Do not leave the initiative loop's own supervisor running as a peer. A slice with no `run: on` is idle, even when its spec exists and its dependencies are done.
@@ -187,7 +198,14 @@ Each step is done when its check passes. Do not start the next step first.
 4. **Phases.** Spec, design when `design: on`, build, test, review, and ship for `kind: ship` advance only on the evidence in the files and the turn outcome, through the loop steps in the phase table, and each advance hands the packet to the next seat. A slice without `design: on` never starts the design seat. A scout slice never opens a PR. Ready for the human produces one manager steer and does not merge. An in-flight story can be adopted as a slice. The start paths move to S8: the morning brief (`startInitiative` in `server/morning-brief.ts` and its "do it" in the Jarvis router), ticket start (`startTicket`, `startLocalTicket`), promote, the loop start file (`tickLoopStart`), the Start input (`routeStart`), and the Initiatives Start buttons.
 5. **Health.** The ceremony block fires on the two signals above, on every seat phase, and does not fire on a turn that edits product code or turns a failing test green.
 6. **Fan-out.** Honor `depends`. Two slices with no dependency both run, each in its own worktree. A slice whose dependency has an empty proof does not start.
-Rig templates (saved seat arrangements plus culture), a health panel, and a second machine are after step 6 has run on a real story.
+7. **Factory view.** A Factory tab replaces the Initiatives tab and opens by default when the repo has a factory. Today, Todos, Board and Pulse stay. Start only after step 6 has run on a real story, and remove the Initiatives tab only once its Start buttons have moved (S8). The view is read-only and reads the factory files and agent status, nothing new:
+   - One card per seat: role, model (from `seatProfile`), and whether its agent is alive, dead, or none.
+   - The runnable slices drawn as their phases (spec, design, build, test, review, ship), with the current phase and its seat lit.
+   - The reviewer's review round and last verdict, in place of a call count.
+   - A factory log: the status steers sent to the manager and the phase changes, newest first.
+   - No progress percentages, because Paseo reports only running or idle. Parallel slices from step 6 are the only fan-out shown.
+
+Rig templates (saved seat arrangements plus culture) and a second machine are after step 6 has run on a real story.
 
 ## First finished path
 
