@@ -183,6 +183,9 @@ async function leaveSpec(root: string, slice: FactorySlice, ports: TickPaseo): P
     mkdirSync(join(worktree, ".harness"), { recursive: true });
     writeFileSync(story, `---\ntitle: ${id}\nstatus: todo\nworktree: ${worktree}\n---\n\n${slice.spec}\n`);
     writeSliceState(root, mission, id, { story });
+  } else if (!frontmatter(readFileSync(state.story, "utf8")).worktree) {
+    // A story the manager named carries the worktree too, or the context watch and resume can't find its state.
+    writeFrontmatter(state.story, { worktree });
   }
   const phase = state.design ? "design" : "build";
   writeSliceState(root, mission, id, { phase });

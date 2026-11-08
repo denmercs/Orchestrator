@@ -134,7 +134,7 @@ test("a spec slice that already has a story keeps it", async () => {
   writeFileSync(stateFile, readFileSync(stateFile, "utf8").replace("run: on", `run: on\nstory: ${story}`));
   await runFactoryTick(root, fakePaseo().paseo);
   assert.equal(field(stateFile, "story"), story);
-  assert.equal(readFileSync(story, "utf8"), "---\nstatus: todo\n---\nMine.\n");
+  assert.match(readFileSync(story, "utf8"), /Mine\.\n$/);
   assert.equal(field(stateFile, "phase"), "build");
 });
 
@@ -911,6 +911,27 @@ test("a story the factory writes in spec carries its worktree, so the context wa
   const { paseo, created } = fakePaseo();
   for (let pass = 0; pass < 2; pass++) await runFactoryTick(ctx.root, paseo);
   const story = field(ctx.stateFile, "story")!;
+  assert.equal(field(story, "worktree"), ctx.worktree);
+  const initiative = createInitiativeLoop(
+    async () => DEFAULT_LOOP_CONFIG,
+    async () => FALLBACK_AGENT_CONFIG,
+    async () => ({ phases: DEFAULT_PHASES, sources: [] }),
+    async () => null,
+    undefined,
+    undefined,
+    undefined,
+    async () => ctx.root,
+  );
+  assert.equal(created.length, 1);
+  assert.equal(await initiative.stepActive(sliceLabels("plan"), "new-1"), true);
+});
+
+test("a slice naming an existing todo story with no worktree line gets the slice's, so the context watch owns its Plan agent", async () => {
+  const ctx = setup("", "on", "spec");
+  const story = withStory(ctx, "", "todo");
+  const { paseo, created } = fakePaseo();
+  for (let pass = 0; pass < 2; pass++) await runFactoryTick(ctx.root, paseo);
+  assert.equal(field(ctx.stateFile, "phase"), "build");
   assert.equal(field(story, "worktree"), ctx.worktree);
   const initiative = createInitiativeLoop(
     async () => DEFAULT_LOOP_CONFIG,
