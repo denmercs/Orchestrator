@@ -228,9 +228,9 @@ function recordOutcome(story: StoryFile, event: OutcomeEvent) {
 export type BlockKind = "start" | "pr" | "ci" | "retry-limit" | "step" | "stuck" | "cost-cap" | "cost-cap-left";
 // What the cost cap needs: the base cap in dollars and the telemetry rows to total a story's spend from.
 export type ReadCost = { cap: () => number | Promise<number>; rows: () => TelemetryRow[] | Promise<TelemetryRow[]> };
-// A story's cost cap: its own `cost_cap_usd` once Continue has raised it, else the base cap.
-function storyCap(story: StoryFile, base: number) {
-  const own = Number(story.meta.cost_cap_usd);
+// A story's cost cap, from its frontmatter: its own `cost_cap_usd` once Continue has raised it, else the base cap.
+export function storyCap(meta: Record<string, string>, base: number) {
+  const own = Number(meta.cost_cap_usd);
   return own > 0 ? own : base;
 }
 // A permission wait is answered in the session, so it passes `record = false` and stays out of ## Outcome.
@@ -483,7 +483,7 @@ export function createInitiativeLoop(
     const spend = readCost
       ? {
           spent: storyCost(await readCost.rows(), { initiative: init.slug, story: story.id }),
-          cap: storyCap(story, await readCost.cap()),
+          cap: storyCap(story.meta, await readCost.cap()),
         }
       : undefined;
     await maybeRoundNudge(story.path, round, roundNudgeLine(story.id, story.meta.title, spend), (line) => onRoundNudge(agentId, line, roundNudgeDetail(spend)));
@@ -1195,7 +1195,7 @@ export function createInitiativeLoop(
         if (await adopted(found.init, story)) return;
         const base = await readCost.cap();
         writeFrontmatter(story.path, {
-          cost_cap_usd: storyCap(story, base) + base,
+          cost_cap_usd: storyCap(story.meta, base) + base,
           status: story.meta.blocked_from,
           blocked_reason: null,
           blocked_from: null,
@@ -1239,7 +1239,7 @@ export function createInitiativeLoop(
         // A cost-cap block raises its cap first, so the fresh step isn't blocked again on its first turn end.
         if (readCost && (meta.block_kind === "cost-cap" || meta.block_kind === "cost-cap-left")) {
           const base = await readCost.cap();
-          writeFrontmatter(story.path, { cost_cap_usd: storyCap(story, base) + base });
+          writeFrontmatter(story.path, { cost_cap_usd: storyCap(story.meta, base) + base });
         }
         try {
           const state = meta.worktree ? readText(stateFile(meta.worktree)) : "";
@@ -1300,7 +1300,7 @@ export function createInitiativeLoop(
             { initiative: labels["loop-initiative"], story: story.id },
             typeof live === "number" ? { agentId: event.agent.id, costUsd: live } : undefined,
           );
-          const cap = storyCap(story, await readCost.cap());
+          const cap = storyCap(story.meta, await readCost.cap());
           if (spent !== null && cap > 0 && spent >= cap) {
             block(story, `cost cap ($${spent.toFixed(2)} of ${budgetMoney(cap)})`, "cost-cap");
             onCostCap?.(event.agent.id);

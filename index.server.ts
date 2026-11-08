@@ -21,7 +21,7 @@ import { stopPlanServer } from "./server/plan-server";
 import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { advancePipeline, closeMergedStories, startStory, watchPipelinePrs } from "./server/pipeline-advance";
 import { createLoopAdvance } from "./server/loop-advance";
-import { createInitiativeLoop } from "./server/initiative-loop";
+import { createInitiativeLoop, type ReadCost } from "./server/initiative-loop";
 import { startLocalTicket, startTicket } from "./server/ticket-start";
 import { promoteSessionToStory } from "./shared/promote";
 import { readBranchInitials } from "./server/git-identity";
@@ -271,18 +271,20 @@ export default function contribute(
     const values = await readPipelineValues();
     return values ? { phases: values.phases, sources: values.sources } : { phases: DEFAULT_PHASES, sources: [] };
   };
+  // What the cost cap and the round 3 nudge read: the base cap and the telemetry rows. The loop and the factory share it.
+  const readCost: ReadCost = {
+    cap: async () => {
+      const state = await budget.read();
+      return (state.status === "ready" ? state.values : budgetSettings.schema.parse({})).storyCapUsd;
+    },
+    rows: () => readTelemetry(),
+  };
   const initiativeLoop = createInitiativeLoop(
     readLoopConfig,
     async (paseo, step, loop) => loadStepConfig(paseo, loop, step, await readRunnerProfileId()),
     readLoopPipeline,
     readInitials,
-    {
-      cap: async () => {
-        const state = await budget.read();
-        return (state.status === "ready" ? state.values : budgetSettings.schema.parse({})).storyCapUsd;
-      },
-      rows: () => readTelemetry(),
-    },
+    readCost,
     (sessionId) => publishVoice([{ type: "notice", kind: "costCap", sessionId }]),
     // The loop leaves a story to the factory tick when a slice of the harness repo's factory names it.
     async () => {
@@ -724,6 +726,7 @@ export default function contribute(
       readAgentConfig: async (step) => loadStepConfig(paseo, await readLoopConfig(), step, await readRunnerProfileId()),
     },
     commit: commitStory,
+    cost: readCost,
     // A seat runs on its file's profile, else its role's tier; the tick falls back to the manager's models without one.
     profiles: async () => ({ list: profilesFromConfigGet(await paseo.config.get()), runnerProfileId: await readRunnerProfileId() }),
     steer: (line) => steerManager(repo, line, paseo),

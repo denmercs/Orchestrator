@@ -282,8 +282,7 @@ test("namedStories matches relative and symlinked story paths under any root", (
 });
 
 // A build slice's story file and the worktree's state.md, as the loop steps leave them.
-function withStory(ctx: { root: string; worktree: string; stateFile: string }, story: string, marker: string, extra = "") {
-  const file = join(ctx.root, "story.md");
+function withStory(ctx: { root: string; worktree: string; stateFile: string }, story: string, marker: string, extra = "", file = join(ctx.root, "story.md")) {
   put(file, `---\ntitle: Widget\nstatus: todo\n${story}\n---\n\nAdd the widget.\n`);
   put(join(ctx.worktree, ".harness", "state.md"), `# S\n\n## Status\n${marker}\n${extra}`);
   writeFileSync(ctx.stateFile, readFileSync(ctx.stateFile, "utf8").replace("---\n", `---\nstory: ${file}\n`));
@@ -294,6 +293,8 @@ const sliceLabels = (step: string, round = "1") => ({
   seat: "builder",
   "factory-slice": "s1",
   "factory-mission": "m1",
+  "loop-initiative": "m1",
+  "loop-story": "s1",
   "loop-step": step,
   "loop-round": round,
 });
@@ -312,6 +313,24 @@ test("entering build launches Plan in the worktree with the slice's labels and r
   assert.equal(field(story, "agent"), "new-1");
   assert.equal(field(ctx.stateFile, "agent"), "new-1");
   assert.equal(field(ctx.stateFile, "phase"), "build");
+});
+
+test("a slice whose story lives in an initiative is labelled with that initiative and the story's id", async () => {
+  const ctx = setup("");
+  withStory(ctx, "id: S7", "todo", "", join(ctx.root, ".harness", "initiatives", "init-a", "phases", "1-x", "stories", "01-y.md"));
+  const { paseo, created } = fakePaseo();
+  await runFactoryTick(ctx.root, paseo);
+  assert.equal(created[0].labels["loop-initiative"], "init-a");
+  assert.equal(created[0].labels["loop-story"], "S7");
+});
+
+test("a slice whose initiative story has no id is labelled with the mission and the slice", async () => {
+  const ctx = setup("");
+  withStory(ctx, "", "todo", "", join(ctx.root, ".harness", "initiatives", "init-a", "phases", "1-x", "stories", "01-y.md"));
+  const { paseo, created } = fakePaseo();
+  await runFactoryTick(ctx.root, paseo);
+  assert.equal(created[0].labels["loop-initiative"], "m1");
+  assert.equal(created[0].labels["loop-story"], "s1");
 });
 
 test("a diagnose-track story starts with Diagnose, not Plan", async () => {
@@ -1046,6 +1065,43 @@ test("review round 3 nudge: a review that fails at review round 2 steers once, b
   later.steer = async (line: string) => (steers.push(line), true);
   for (let pass = 0; pass < 2; pass++) await runFactoryTick(second.ctx.root, later);
   assert.equal(steers.length, 1);
+});
+
+// The slice's round 3 steer when its review fails at review round 2, with `cost` as the telemetry port and `story` as extra frontmatter.
+async function nudgeWith(cost: TickPaseo["cost"], story: Record<string, string> = {}) {
+  const { ctx } = reviewSlice("review-done", { reviewRound: 2, round: 2, findings: OPEN });
+  if (Object.keys(story).length) writeFrontmatter(join(ctx.root, "story.md"), story);
+  const { paseo } = fakePaseo({ "r-1": { status: "idle" } });
+  const steers: string[] = [];
+  paseo.steer = async (line: string) => (steers.push(line), true);
+  paseo.cost = cost;
+  await runFactoryTick(ctx.root, paseo);
+  return steers;
+}
+const costRow = (agentId: string, costUsd: number, story = "s1") => ({ at: "2026-01-01T00:00:00Z", agentId, provider: "claude", step: "implement", used: null, max: null, event: "turn" as const, initiative: "m1", story, costUsd });
+
+test("review round 3 nudge: the slice's steer shows its spend against the cap, counting each agent's last cost", async () => {
+  const rows = [costRow("a-1", 1), costRow("a-1", 1.2), costRow("a-2", 3), costRow("other", 9, "s2")];
+  const [line] = await nudgeWith({ cap: () => 5, rows: () => rows });
+  assert.match(line, /has reached review round 3, \$4\.20 of \$5 spent;/);
+});
+
+test("review round 3 nudge: the slice's own cost_cap_usd replaces the base cap", async () => {
+  const [line] = await nudgeWith({ cap: () => 5, rows: () => [costRow("a-1", 4.2)] }, { cost_cap_usd: "10" });
+  assert.match(line, /\$4\.20 of \$10 spent/);
+});
+
+test("review round 3 nudge: no matching cost rows leave the steer without spend", async () => {
+  const [line] = await nudgeWith({ cap: () => 5, rows: () => [costRow("a-1", 4.2, "s2")] });
+  assert.match(line, /has reached review round 3/);
+  assert.doesNotMatch(line, /\$/);
+});
+
+test("review round 3 nudge: cost rows that fail to load still send the steer, without spend", async () => {
+  const steers = await nudgeWith({ cap: () => 5, rows: () => Promise.reject(new Error("x")) });
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /has reached review round 3/);
+  assert.doesNotMatch(steers[0], /\$/);
 });
 
 // Seat profiles: the seat's file, else its role's tier, else MANAGER_MODELS.
