@@ -76,6 +76,7 @@ import { createMicOffGate } from "./server/mic-off-gate";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
 import { applyFactoryManager, ensureManager } from "./server/factory-manager";
 import { runFactoryTick } from "./server/factory-tick";
+import { namedStories } from "./server/factory-layout";
 import { createJarvisRouter, MAC_ROUTER, voiceSessionCreator } from "./server/jarvis-router";
 import { createMorningBrief, fetchWeather } from "./server/morning-brief";
 import { splitSessions, type VoiceEvent } from "./shared/voice-loop";
@@ -274,6 +275,11 @@ export default function contribute(
       rows: () => readTelemetry(),
     },
     (sessionId) => publishVoice([{ type: "notice", kind: "costCap", sessionId }]),
+    // The loop leaves a story to the factory tick when a slice of the harness repo's factory names it.
+    async () => {
+      const { repo } = await readHarness();
+      return repo ? namedStories(repo) : new Set<string>();
+    },
   );
   // The Initiatives tab and the loop start file both start the loop here.
   const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: Parameters<typeof initiativeLoop.start>[0]) =>

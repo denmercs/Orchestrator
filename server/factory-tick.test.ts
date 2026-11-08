@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { namedStories, sliceDir } from "./factory-layout";
+import { namedStories, sliceDir, storyKey } from "./factory-layout";
 import { runFactoryTick, type TickPaseo } from "./factory-tick";
 
 const roots: string[] = [];
@@ -119,4 +119,17 @@ test("the tick leaves a story the loop's live session still supervises", async (
 test("namedStories lists the story files slices name, so the loop skips them", () => {
   const { root } = setup("story: /x/y/story.md");
   assert.deepEqual([...namedStories(root)], ["/x/y/story.md"]);
+});
+
+test("namedStories matches relative and symlinked story paths under any root", () => {
+  const { root } = setup("story: stories/story.md");
+  const real = join(root, "stories", "story.md");
+  put(real, "---\nstatus: todo\n---\n");
+  const link = join(mkdtempSync(join(tmpdir(), "link-")), "story.md");
+  symlinkSync(real, link);
+  const named = namedStories(root);
+  assert.ok(named.has(storyKey(real)));
+  assert.ok(named.has(storyKey(link)));
+  assert.ok(named.has(storyKey("stories/story.md", root)));
+  assert.ok(!named.has(storyKey("stories/story.md", tmpdir())));
 });

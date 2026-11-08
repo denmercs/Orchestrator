@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { namedStories } from "./factory-layout";
+import { namedStories, storyKey } from "./factory-layout";
 import { promisify } from "node:util";
 import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
 import type { AgentCreateConfig } from "../shared/agent-runner";
@@ -281,6 +281,9 @@ export function createInitiativeLoop(
   readCost?: ReadCost,
   // Told when a story blocks on the cost cap, with the agent whose turn hit it (Voice says so).
   onCostCap?: (agentId: string) => void,
+  // The stories a factory slice names (as `namedStories` gives them), read from the factory the tick
+  // reads. Absent, the initiative's own repo is the factory.
+  readAdopted: (init: Initiative) => Set<string> | Promise<Set<string>> = (init) => namedStories(init.root),
 ) {
   let paseo: PaseoApi | null = null;
   // Providers at their plan limit, from the last read of live plan usage: since when the loop has seen
@@ -298,6 +301,21 @@ export function createInitiativeLoop(
     chain = run.catch(() => undefined);
     return run;
   };
+
+  // One owner per story: a story a factory slice names belongs to the factory tick, and the loop never acts on it.
+  // A factory that can't be read adopts nothing, so it can't fail a sweep.
+  async function adoptedSet(init: Initiative) {
+    try {
+      return await readAdopted(init);
+    } catch (error) {
+      console.warn("orchestrator: initiative loop couldn't read the factory", init.slug, error);
+      return new Set<string>();
+    }
+  }
+  async function adopted(init: Initiative, story: StoryFile, set?: Set<string>) {
+    return (set ?? (await adoptedSet(init))).has(storyKey(story.path));
+  }
+  const FACTORY_OWNS = (story: StoryFile) => `${story.id} belongs to a factory slice.`;
 
   // Brings `limits` up to date from Paseo's live plan usage. A daemon that can't answer leaves it as it
   // was, except that a limit whose reset has passed is dropped: nothing can renew it.
@@ -739,7 +757,7 @@ export function createInitiativeLoop(
   }
 
   // Fills free slots in the active phase with ready stories.
-  async function advance(api: PaseoApi, config: LoopConfig, init: Initiative) {
+  async function advance(api: PaseoApi, config: LoopConfig, init: Initiative, owned?: Set<string>) {
     const startedNow: { story: string; agentId: string }[] = [];
     if (initiativeLoopState(init.dir) !== "on") return { started: startedNow, reason: "the loop is off" };
     const { phaseDir, reason, done } = activePhase(init);
@@ -758,11 +776,14 @@ export function createInitiativeLoop(
     if (stories.some((story) => !story.meta.paused_for && Date.parse(story.meta.paused_until ?? "") > Date.now())) {
       return { started: startedNow, reason: "paused until the usage limit resets" };
     }
+    // Adopted stories belong to the factory tick: they neither start nor take a parallel slot.
+    const mine = owned ?? (await adoptedSet(init));
+    const ours = stories.filter((story) => !mine.has(storyKey(story.path)));
     // A story blocked on a permission request still has its session open, so it keeps its slot.
-    const inFlight = stories.filter(
+    const inFlight = ours.filter(
       (story) => ACTIVE.has(story.meta.status ?? "") || story.meta.waiting_on === PERMISSION,
     ).length;
-    const ready = stories.filter(
+    const ready = ours.filter(
       (story) =>
         (story.meta.status || "todo") === "todo" &&
         !story.meta.blocked_by &&
@@ -803,8 +824,8 @@ export function createInitiativeLoop(
   // Keeps an in-flight step moving when its session can't. A session that is gone, closed or errored
   // gets a fresh one; a stalled one (a failed turn, or a turn that ended without the step's marker)
   // gets a nudge. Each counts as a retry; past maxRetries the story blocks for you.
-  async function supervise(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile) {
-    if (namedStories(init.root).has(resolve(story.path))) return;
+  async function supervise(api: PaseoApi, config: LoopConfig, init: Initiative, phaseDir: string, story: StoryFile, owned?: Set<string>) {
+    if (await adopted(init, story, owned)) return;
     const { meta } = story;
     const step = meta.step as LoopStep;
     if (!meta.worktree || !meta.agent || !SUPERVISED.has(meta.status ?? "") || !SUPERVISED_STEPS.has(step)) return;
@@ -1006,10 +1027,10 @@ export function createInitiativeLoop(
   // Everything the loop does for one initiative on a tick: PRs, in-flight steps, then free slots.
   async function sweep(api: PaseoApi, config: LoopConfig, init: Initiative) {
     // A story a factory slice names belongs to the factory tick: one owner per story.
-    const adopted = namedStories(init.root);
+    const owned = await adoptedSet(init);
     for (const phaseDir of phaseDirs(init)) {
       for (const story of readStoryFiles(phaseDir)) {
-        if (adopted.has(resolve(story.path))) continue;
+        if (owned.has(storyKey(story.path))) continue;
         try {
           if (story.meta.status === "pr-open") await watchPr(api, config, init, phaseDir, story);
           else if (initiativeLoopState(init.dir) === "on") {
@@ -1018,14 +1039,14 @@ export function createInitiativeLoop(
             if (fresh && (await recoverLimitBlock(api, config, fresh))) {
               fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id);
             }
-            if (fresh) await supervise(api, config, init, phaseDir, fresh);
+            if (fresh) await supervise(api, config, init, phaseDir, fresh, owned);
           }
         } catch (error) {
           console.warn("orchestrator: initiative loop", init.slug, story.id, error);
         }
       }
     }
-    return advance(api, config, init);
+    return advance(api, config, init, owned);
   }
 
   // The story a loop agent's labels point at, or null when it is gone.
@@ -1174,8 +1195,10 @@ export function createInitiativeLoop(
     // Only a blocked story that knows where it came from moves; anything else is left alone.
     reopen(input: StoryRef): Promise<void> {
       return serial(async () => {
-        const story = findStory(input);
-        if (story?.meta.status !== "blocked" || !story.meta.blocked_from) return;
+        const found = locateStory(input);
+        const story = found?.story;
+        if (!found || story?.meta.status !== "blocked" || !story.meta.blocked_from) return;
+        if (await adopted(found.init, story)) return;
         const kind = story.meta.block_kind;
         if (kind === "step" && story.meta.step && story.meta.worktree) {
           const state = readText(stateFile(story.meta.worktree));
@@ -1204,10 +1227,12 @@ export function createInitiativeLoop(
     // the caller decides whether anything needs waking. Any other block is refused and left alone.
     raiseCap(input: StoryRef): Promise<void> {
       return serial(async () => {
-        const story = findStory(input);
+        const found = locateStory(input);
+        const story = found?.story;
         const kind = story?.meta.block_kind;
-        if (!story || !readCost || story.meta.status !== "blocked" || (kind !== "cost-cap" && kind !== "cost-cap-left")) return;
+        if (!found || !story || !readCost || story.meta.status !== "blocked" || (kind !== "cost-cap" && kind !== "cost-cap-left")) return;
         if (!story.meta.blocked_from) return;
+        if (await adopted(found.init, story)) return;
         const base = await readCost.cap();
         writeFrontmatter(story.path, {
           cost_cap_usd: storyCap(story, base) + base,
@@ -1245,6 +1270,7 @@ export function createInitiativeLoop(
         if (!found) return { ok: false, error: `${input.storyId} isn't on that board.`, agentId: null };
         const { init, phaseDir, story } = found;
         const { meta } = story;
+        if (await adopted(init, story)) return { ok: false, error: FACTORY_OWNS(story), agentId: null };
         if (meta.status !== "blocked") return { ok: false, error: `${story.id} isn't blocked.`, agentId: null };
         const step = meta.step as LoopStep | undefined;
         if (!step || !SUPERVISED_STEPS.has(step)) {
@@ -1295,6 +1321,7 @@ export function createInitiativeLoop(
         const phaseDir = join(init.dir, PHASES_DIR, labels["loop-phase"] ?? "");
         const story = readStoryFiles(phaseDir).find((item) => item.id === labels["loop-story"]);
         if (!story) return;
+        if (await adopted(init, story)) return;
         if (labels["loop-step"] === "fix") {
           if (outcome.kind === "completed") await finishFix(story);
           return;
@@ -1420,6 +1447,7 @@ export function createInitiativeLoop(
       return serial(async () => {
         const found = labelledStory((await api.agents.ref(event.agent.id).refresh())?.agent.labels ?? {});
         if (!found || found.story.meta.agent !== event.agent.id || !SUPERVISED.has(found.story.meta.status ?? "")) return;
+        if (await adopted(found.init, found.story)) return;
         block(found.story, `Waiting on permission: ${event.request.title || event.request.name}. Answer it in the session.`, undefined, false);
         writeFrontmatter(found.story.path, { waiting_on: PERMISSION });
       });
@@ -1432,6 +1460,7 @@ export function createInitiativeLoop(
         const found = labelledStory((await api.agents.ref(event.agent.id).refresh())?.agent.labels ?? {});
         const meta = found?.story.meta;
         if (!found || !meta || meta.waiting_on !== PERMISSION || meta.agent !== event.agent.id) return;
+        if (await adopted(found.init, found.story)) return;
         writeFrontmatter(found.story.path, {
           status: meta.blocked_from || "todo",
           blocked_reason: null,

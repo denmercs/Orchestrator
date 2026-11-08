@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type Factory, type FactoryMission, type FactorySlice, type SliceState, parseSeat, parseSliceState, runnableSlice } from "../shared/factory";
 import { dirsIn, frontmatter, writeFrontmatter } from "./harness-layout";
@@ -55,14 +55,24 @@ export function readFactory(root: string): Factory {
 // The one slice that should run now, or null (no factory, or nothing set to run).
 export const factoryTick = (root: string): FactorySlice | null => runnableSlice(readFactory(root));
 
-// The story files the factory's slices name (resolved paths), so the initiative loop can leave them to the tick.
-export const namedStories = (root: string): Set<string> =>
+// A story file's identity for the one-owner rule: resolved against `base`, then through symlinks when the file exists.
+export function storyKey(file: string, base = "") {
+  const path = resolve(base, file);
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+// The story files the factory's slices name (real paths, relative ones taken from the factory root), so the initiative loop can leave them to the tick.
+export const namedStories = (factoryRoot: string): Set<string> =>
   new Set(
-    readFactory(root)
+    readFactory(factoryRoot)
       .missions.flatMap((mission) => mission.slices)
       .map((slice) => slice.state.story)
       .filter(Boolean)
-      .map((story) => resolve(story)),
+      .map((story) => storyKey(story, factoryRoot)),
   );
 
 type SliceStatePatch = { [K in keyof SliceState]?: SliceState[K] | null };
