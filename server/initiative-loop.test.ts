@@ -4,7 +4,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { mock, test } from "node:test";
-import type { PluginHandlerContext } from "@getpaseo/plugin/server";
+import type { LoopHost } from "./loop-host";
+import { fakeLoopHost, type FakeAgent } from "../test-support/fake-loop-host";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { FALLBACK_AGENT_CONFIG } from "../shared/agent-runner";
 import { DEFAULT_PHASES, type SkillSource } from "../shared/pipeline";
@@ -38,18 +39,7 @@ const failedCheck = {
 };
 const { createInitiativeLoop, RESUME_LINE, RESTART_LINE, nudgePrompt } = await import("./initiative-loop");
 
-type PaseoApi = PluginHandlerContext["paseo"];
-type Agent = {
-  id: string;
-  labels: Record<string, string>;
-  status?: string;
-  lastError?: string;
-  archivedAt?: string;
-  lastUsage?: { totalCostUsd?: number };
-  activeTurn?: { turnId: string; startedAt: string | null } | null;
-  // Timeline entries the tail refetch returns; "fail" makes the read throw.
-  timeline?: unknown[] | "fail";
-};
+type Agent = FakeAgent;
 
 // A repo with one initiative (loop on), one phase and one story mid-Implement in a worktree.
 function fixture(agent = "a1") {
@@ -84,77 +74,17 @@ function fixture(agent = "a1") {
   return { root, worktree, story, labels };
 }
 
-// A fake Paseo: live agents by id; workspace creates are recorded and become live agents, and
-// follow-ups are recorded in `sent`. With `usage`, `providers.listUsage` answers its providers (read on
-// each call, so a test can change them), or rejects while they are null.
+// A fake LoopHost: `api` is an alias of `host` so tests can pass either name into the loop.
 function fakePaseo(live: Agent[], usage?: { providers: unknown[] | null }) {
-  const sent: { id: string; text: string; options?: { activeTurnBehavior?: string } }[] = [];
-  const archived: string[] = [];
-  const created: {
-    workspace: string;
-    title: string;
-    labels: Record<string, string>;
-    config?: unknown;
-    prompt?: string;
-  }[] = [];
-  const api = {
-    agents: {
-      ref: (id: string) => ({
-        refresh: async () => {
-          const found = live.find((agent) => agent.id === id);
-          return found ? { agent: { status: "idle", ...found } } : null;
-        },
-        send: async (text: string, options?: { activeTurnBehavior?: string }) => {
-          sent.push(options ? { id, text, options } : { id, text });
-        },
-        timeline: {
-          refetch: async () => {
-            const entries = live.find((agent) => agent.id === id)?.timeline ?? [];
-            if (entries === "fail") throw new Error("daemon unreachable");
-            return { entries, error: null };
-          },
-        },
-      }),
-      list: async () => ({ entries: live.map((agent) => ({ agent })) }),
-    },
-    ...(usage
-      ? {
-          providers: {
-            listUsage: async () => {
-              if (!usage.providers) throw new Error("daemon down");
-              return { providers: usage.providers };
-            },
-          },
-        }
-      : {}),
-    workspaces: {
-      archive: async (workspace: string) => {
-        archived.push(workspace);
-      },
-      ref: (workspace: string) => ({
-        agents: {
-          create: async (options: {
-            title: string;
-            labels: Record<string, string>;
-            config?: unknown;
-            prompt?: string;
-          }) => {
-            const id = `n${created.length + 1}`;
-            created.push({
-              workspace,
-              title: options.title,
-              labels: options.labels,
-              config: options.config,
-              prompt: options.prompt,
-            });
-            live.push({ id, labels: options.labels });
-            return { id };
-          },
-        },
-      }),
+  const bag = fakeLoopHost(live, usage);
+  const host: LoopHost = {
+    ...bag.host,
+    refreshSession: async (id) => {
+      const found = await bag.host.refreshSession(id);
+      return found ? { ...found, status: found.status ?? "idle" } : found;
     },
   };
-  return { api: api as unknown as PaseoApi, created, sent, archived };
+  return { host, api: host, created: bag.created, sent: bag.sent, archived: bag.archived, live: bag.live };
 }
 
 const noExtras = async () => ({ phases: DEFAULT_PHASES, sources: [] });
@@ -829,7 +759,7 @@ test("once the reset has passed, the tick nudges the paused session without coun
   writeFrontmatter(story, { retries: 1, paused_until: new Date(Date.now() - 1000).toISOString() });
   const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
   await initiative.tick();
@@ -845,7 +775,7 @@ test("a paused story at maxRetries still resumes: the pause isn't a retry", asyn
   writeFrontmatter(story, { retries: 2, paused_until: new Date(Date.now() - 1000).toISOString() });
   const { api, sent } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -863,7 +793,7 @@ test("a pause that ended inside the hold window waits for the window to close", 
     async () => FALLBACK_AGENT_CONFIG,
     noExtras,
   );
-  holding.rememberPaseo(api);
+  holding.rememberHost(api);
 
   await holding.tick();
   assert.deepEqual(sent, []);
@@ -874,7 +804,7 @@ test("a pause that ended inside the hold window waits for the window to close", 
     async () => FALLBACK_AGENT_CONFIG,
     noExtras,
   );
-  open.rememberPaseo(api);
+  open.rememberHost(api);
   await open.tick();
   assert.equal(sent.length, 1);
 });
@@ -889,7 +819,7 @@ test("a stalled step whose provider is at its plan limit is paused, not nudged: 
   writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker.", retries: 1 });
   const { api, created, sent } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100) });
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
   await initiative.tick();
@@ -907,7 +837,7 @@ test("a dead session whose provider is at its plan limit isn't restarted into it
   const { story } = fixture("a1");
   const { api, created } = fakePaseo([], { providers: claudeAt(99.5) });
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -922,7 +852,7 @@ test("a pause whose reset passed while the limit still holds is paused again, no
   const weekly = new Date(Date.now() + 3 * 86_400_000);
   const { api, sent } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100, weekly) });
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -935,7 +865,7 @@ test("only the step's own provider gates it: a Claude limit leaves a Cursor step
   writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker." });
   const { api, sent } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100) });
   const initiative = createInitiativeLoop(async () => DEFAULT_LOOP_CONFIG, async () => ({ provider: "cursor" }), noExtras);
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -948,7 +878,7 @@ test("a model-qualified provider (claude/opus) is gated by its provider's limit"
   writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker." });
   const { api, sent } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100) });
   const initiative = createInitiativeLoop(async () => DEFAULT_LOOP_CONFIG, async () => ({ provider: "claude/opus" }), noExtras);
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -961,7 +891,7 @@ test("a daemon that can't answer leaves the last known limit in place", async ()
   const usage: { providers: unknown[] | null } = { providers: claudeAt(100) };
   const { api, sent } = fakePaseo([{ id: "a1", labels }], usage);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
   await initiative.tick();
 
   usage.providers = null;
@@ -982,7 +912,7 @@ test("a retry-limit block makes the block time and the step's provider at its li
   const usage: { providers: unknown[] | null } = { providers: claudeAt(10) };
   const { api, sent } = fakePaseo([{ id: "a1", labels }], usage);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
   assert.equal(storyMeta(story).block_kind, "retry-limit");
@@ -1012,12 +942,11 @@ test("a limit whose reset passed while the daemon can't answer is dropped: the s
   writeFileSync(next, "---\nid: S2\ntitle: Next\nstatus: todo\n---\n\n## Goal\n\nLater.\n", "utf8");
   const usage: { providers: unknown[] | null } = { providers: claudeAt(100) };
   const { api, created, sent } = fakePaseo([{ id: "a1", labels }], usage);
-  const git = api as unknown as { projects: unknown; workspaces: Record<string, unknown> };
-  git.projects = { list: async () => ({ projects: [] }) };
-  git.workspaces.create = async () => ({ id: "ws-new", directory: join(root, "wt2") });
+  api.listProjects = async () => [];
+  api.createStoryWorkspace = async () => ({ id: "ws-new", directory: join(root, "wt2") });
   mkdirSync(join(root, "wt2"), { recursive: true });
   const initiative = createInitiativeLoop(async () => ({ ...DEFAULT_LOOP_CONFIG, parallel: 2 }), async () => FALLBACK_AGENT_CONFIG, noExtras, async () => "dm");
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
   writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker." });
   await initiative.tick();
   assert.deepEqual([sent, created], [[], []]);
@@ -1043,7 +972,7 @@ test("a story recovered from a retry-limit block once stays blocked when it bloc
   const usage: { providers: unknown[] | null } = { providers: claudeAt(10) };
   const { api } = fakePaseo([{ id: "a1", labels }], usage);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
   await initiative.tick();
   assert.equal(storyMeta(story).block_kind, "retry-limit");
 
@@ -1069,7 +998,7 @@ test("a retry-limit block from well before the limit started stays blocked", asy
   });
   const { api } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100) });
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -1088,7 +1017,7 @@ test("inside the hold window no new story starts, while a step already running i
     async () => FALLBACK_AGENT_CONFIG,
     noExtras,
   );
-  holding.rememberPaseo(api);
+  holding.rememberHost(api);
 
   await holding.tick();
 
@@ -1157,7 +1086,7 @@ test("a subagent wait over 30 minutes is nudged as a stall; a fresh one is left 
   const { story, labels } = fixture("a1");
   const { api, sent } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   writeFrontmatter(story, { waiting_subagent_since: new Date(Date.now() - 5 * 60_000).toISOString() });
   await initiative.tick();
@@ -1230,16 +1159,10 @@ test("a stuck nudge that can't be sent leaves the step stalled for the tick", as
   const { story, labels } = fixture("a1");
   writeFrontmatter(story, { idle_turns: 2 });
   const { api } = fakePaseo([{ id: "a1", labels }]);
-  const failing = {
+  const failing: LoopHost = {
     ...api,
-    agents: {
-      ...api.agents,
-      ref: (id: string) => ({
-        ...api.agents.ref(id),
-        send: async () => {
-          throw new Error("daemon gone");
-        },
-      }),
+    sendToStep: async () => {
+      throw new Error("daemon gone");
     },
   };
 
@@ -1332,7 +1255,11 @@ test("with the loop and the factory tick both running, an adopted story's dead b
   const tickPaseo = {
     agents: {
       ref: (id: string) => ({
-        refresh: async () => (known[id] ? { agent: known[id] } : api.agents.ref(id).refresh()),
+        refresh: async () => {
+          if (known[id]) return { agent: known[id] };
+          const session = await api.refreshSession(id);
+          return session ? { agent: session } : null;
+        },
       }),
       create: async (request: { cwd: string; prompt: string }) => {
         factoryCreated.push({ cwd: request.cwd, prompt: request.prompt });
@@ -1343,7 +1270,7 @@ test("with the loop and the factory tick both running, an adopted story's dead b
     },
   };
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
   const { runFactoryTick } = await import("./factory-tick");
 
   await Promise.all([initiative.tick(), runFactoryTick(root, tickPaseo)]);
@@ -1360,7 +1287,7 @@ test("a closed session is replaced by a fresh one on the same step that resumes 
   const { story, labels } = fixture("a1");
   const { api, created, sent } = fakePaseo([{ id: "a1", labels, status: "closed" }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
   await initiative.tick();
@@ -1379,7 +1306,7 @@ test("a session Paseo no longer knows is replaced too", async () => {
   const { story } = fixture("gone");
   const { api, created } = fakePaseo([]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -1392,7 +1319,7 @@ test("past maxRetries the story blocks with the reason instead of retrying", asy
   writeFrontmatter(story, { retries: 2 });
   const { api, created, sent } = fakePaseo([{ id: "a1", labels, status: "error", lastError: "provider crashed" }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -1407,7 +1334,7 @@ test("a step blocked by the retry limit that then writes implement-done is resum
   writeFrontmatter(story, { retries: 2, stalled: "Its last turn failed: rate limited" });
   const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
   assert.deepEqual([sent, created], [[], []]);
@@ -1437,7 +1364,7 @@ test("a retry-limit block stays blocked when state.md holds no answer from the s
   writeFrontmatter(story, { retries: 2, stalled: "Its last turn failed: rate limited" });
   const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
   const reason = storyMeta(story).blocked_reason;
@@ -1456,7 +1383,7 @@ test("a permission block with implement-done in state.md stays blocked through a
   writeFrontmatter(story, { retries: 2, stalled: "Its last turn failed: rate limited" });
   const { api, created, sent } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   // First a retry-limit block, then reset by hand with its kind left behind.
   await initiative.tick();
@@ -1489,16 +1416,14 @@ test("a running session, or a Paseo that doesn't answer, is left alone", async (
   writeFrontmatter(story, { stalled: "Its last turn failed: boom" });
   const { api, created, sent } = fakePaseo([{ id: "a1", labels, status: "running" }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
   await initiative.tick();
 
   const silent = fakePaseo([]);
-  (silent.api.agents as unknown as { ref: unknown }).ref = () => ({
-    refresh: async () => {
-      throw new Error("daemon unreachable");
-    },
-  });
-  initiative.rememberPaseo(silent.api);
+  silent.api.refreshSession = async () => {
+    throw new Error("daemon unreachable");
+  };
+  initiative.rememberHost(silent.api);
   await initiative.tick();
 
   assert.deepEqual([sent, created, silent.sent, silent.created], [[], [], [], []]);
@@ -1541,7 +1466,7 @@ test("a dead subagent-cycles parent comes back as a parent with only the open cy
   );
   const { api, created } = fakePaseo([{ id: "a1", labels: { ...labels, "loop-cycles": "subagents" }, status: "closed" }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -1587,7 +1512,7 @@ test("an open PR's failing head gets one Fix CI agent; a new failing head gets t
   writeFrontmatter(story, { status: "pr-open", step: "pr", agent: null, pr: 45, ci: "pending" });
   const { api, created } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   ghPr("OPEN", [failedCheck], undefined, "abc");
   await initiative.tick();
@@ -1617,7 +1542,7 @@ test("a repo pipeline maxFixes of 0 overrides the host's 3: a failing PR starts 
   writeFrontmatter(story, { status: "pr-open", step: "pr", agent: null, pr: 45, ci: "pending" });
   const { api, created } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
   assert.equal(DEFAULT_LOOP_CONFIG.maxFixes, 3);
 
   ghPr("OPEN", [failedCheck], undefined, "abc");
@@ -1642,7 +1567,7 @@ test("a repo pipeline without maxFixes keeps the host limit: a failing PR gets a
   writeFrontmatter(story, { status: "pr-open", step: "pr", agent: null, pr: 45, ci: "pending" });
   const { api, created } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   ghPr("OPEN", [failedCheck], undefined, "abc");
   await initiative.tick();
@@ -1657,7 +1582,7 @@ test("a step whose worktree is gone and whose PR merged is recorded merged and i
   ghPr("MERGED");
   const { api, created, sent, archived } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
   const before = Date.now();
 
   await initiative.tick();
@@ -1677,7 +1602,7 @@ test("a merged PR stamps the merge time GitHub reports, not the time the loop no
   ghPr("MERGED", [], "2026-09-01T12:00:00Z");
   const { api } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -1691,7 +1616,7 @@ test("a step whose worktree is gone with an open PR is handed to the PR watcher"
   ghPr("OPEN");
   const { api, created } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -1707,7 +1632,7 @@ test("a step whose worktree is gone with a closed PR blocks", async (t) => {
   ghPr("CLOSED");
   const { api } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -1721,7 +1646,7 @@ test("a step whose worktree is gone with no PR retries, then blocks past maxRetr
   rmSync(worktree, { recursive: true });
   const { api, created } = fakePaseo([{ id: "a1", labels }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   for (let tick = 0; tick < DEFAULT_LOOP_CONFIG.maxRetries; tick++) await initiative.tick();
   assert.equal(storyMeta(story).status, "implementing");
@@ -1756,7 +1681,7 @@ test("each block site writes its kind: step for a blocked or failed step, ci for
     writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", headRefOid: "abc", ...reply }), "utf8");
     const { api } = fakePaseo([]);
     const initiative = loop();
-    initiative.rememberPaseo(api);
+    initiative.rememberHost(api);
     await initiative.tick();
     return storyMeta(fx.story);
   };
@@ -1805,10 +1730,10 @@ async function startNewStory(
   }
   const fake = fakePaseo([], options.usage ? { providers: options.usage } : undefined);
   const requested: string[] = [];
-  const api = fake.api as unknown as Record<string, unknown> & { workspaces: Record<string, unknown> };
-  api.projects = { list: async () => ({ projects: [] }) };
-  api.workspaces.create = async (input: { source: { branchName: string } }) => {
-    requested.push(input.source.branchName);
+  const api = fake.api;
+  api.listProjects = async () => [];
+  api.createStoryWorkspace = async (input) => {
+    requested.push(input.branchName);
     const directory = join(root, "wt");
     mkdirSync(directory, { recursive: true });
     // A real worktree checks out the repo's pipeline file; the fake has to copy it.
@@ -1820,7 +1745,8 @@ async function startNewStory(
     return { id: "ws-new", directory };
   };
   if (options.profiles) {
-    api.config = { get: async () => ({ daemon: { agentProfiles: options.profiles } }) };
+    api.readRunnerProfiles = async () =>
+      ({ daemon: { agentProfiles: options.profiles } }) as unknown as Awaited<ReturnType<LoopHost["readRunnerProfiles"]>>;
   }
   const initiative = createInitiativeLoop(
     async () => DEFAULT_LOOP_CONFIG,
@@ -1981,13 +1907,13 @@ test("a start that fails after Paseo made the branch keeps that branch for the r
   writeFileSync(story, "---\nid: S1\ntitle: Add search\nstatus: todo\n---\n\n## Goal\n\nShip it.\n", "utf8");
   const fake = fakePaseo([]);
   const requested: string[] = [];
-  const api = fake.api as unknown as Record<string, unknown> & { workspaces: Record<string, unknown> };
-  api.projects = { list: async () => ({ projects: [] }) };
-  api.workspaces.create = async (input: { source: { branchName: string } }) => {
-    requested.push(input.source.branchName);
+  const api = fake.api;
+  api.listProjects = async () => [];
+  api.createStoryWorkspace = async (input) => {
+    requested.push(input.branchName);
     if (requested.length === 1) {
       // Paseo branched off, then failed before reporting the workspace.
-      git("branch", input.source.branchName);
+      git("branch", input.branchName);
       throw new Error("Paseo created the workspace but did not report its folder.");
     }
     const directory = join(root, "wt");
@@ -2102,7 +2028,7 @@ test("a PR with a failing check starts Fix CI and records the attempt and the ch
   ghPr("OPEN", [failingTest]);
   const { api, created } = fakePaseo([]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -2132,7 +2058,7 @@ test("after merge and archive, the story file alone shows the rounds, findings, 
   const fx = fixture("a1");
   const { api, created, archived } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "review" } }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
   writeFrontmatter(fx.story, { step: "review" });
   reviewFailed(fx.worktree);
   await initiative.onTurnEnded(api, completed);
@@ -2451,7 +2377,7 @@ test("a running step whose turn has 3 failing test runs gets one steered nudge, 
   for (const stamp of ["01", "02", "03"]) failingLog(worktree, `implement-2026-10-11T10-00-${stamp}.log`, "parses a turn");
   const { api, sent } = fakePaseo([{ id: "a1", labels, status: "running", activeTurn: { turnId: "t1", startedAt } }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
   await initiative.tick();
@@ -2497,7 +2423,7 @@ test("a running Implement turn with no file edits for 21 minutes gets one steere
   writeFrontmatter(fx.story, { mid_nudged: null });
   const { api, sent } = fakePaseo(runningTurn(fx.labels));
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -2513,7 +2439,7 @@ test("a new turn id resets the mid-turn fields and sends no nudge, however old t
   const fx = idleFixture("t0", 60);
   const { api, sent } = fakePaseo(runningTurn(fx.labels));
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -2532,7 +2458,7 @@ test("a fingerprint change within a turn records a new mid_changed without a nud
   writeFrontmatter(fx.story, { mid_nudged: null });
   const { api, sent } = fakePaseo(runningTurn(fx.labels));
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -2552,7 +2478,7 @@ test("evidence again after the mid-turn nudge blocks the story as stuck and inte
   for (const stamp of ["01", "02", "03"]) failingLog(worktree, `implement-2026-10-11T10-00-${stamp}.log`, "parses a turn");
   const { api, sent } = fakePaseo(runningTurn(labels));
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -2571,7 +2497,7 @@ test("runs from before the mid-turn nudge are not evidence again", async () => {
   writeFrontmatter(story, { mid_turn: "t1", mid_nudged: new Date(Date.now() + 60_000).toISOString(), stuck_nudged: 1 });
   const { api, sent } = fakePaseo(runningTurn(labels));
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -2586,7 +2512,7 @@ test("a passing test run after the mid-turn nudge clears both nudge fields and s
   writeFileSync(join(worktree, ".harness", "logs", "implement-2026-10-11T10-00-01.log"), "brief: exit 0\n# tests 3\n# pass 3\n# fail 0\n", "utf8");
   const { api, sent } = fakePaseo(runningTurn(labels));
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -2600,7 +2526,7 @@ test("a fingerprint change after the mid-turn nudge clears both nudge fields and
   writeFrontmatter(fx.story, { stuck_nudged: 1 });
   const { api, sent } = fakePaseo(runningTurn(fx.labels));
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -2614,7 +2540,7 @@ test("idle evidence after a mid-turn nudge counts from the nudge, so it does not
   writeFrontmatter(fx.story, { mid_nudged: null });
   const { api, sent } = fakePaseo(runningTurn(fx.labels));
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
   await initiative.tick();
@@ -2634,7 +2560,7 @@ test("a turn with no start time counts runs from when the tick first saw it", as
   }
   const { api, sent } = fakePaseo([{ id: "a1", labels, status: "running", activeTurn: { turnId: "t1", startedAt: null } }]);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
   assert.equal(sent.length, 0);
@@ -2649,16 +2575,16 @@ test("a steered nudge that fails to send is still recorded, so the next evidence
   const fx = idleFixture("t1", 21);
   writeFrontmatter(fx.story, { mid_nudged: null });
   const { api, sent } = fakePaseo(runningTurn(fx.labels));
-  const ref = api.agents.ref;
-  api.agents.ref = (id: string) => ({
-    ...ref(id),
-    send: async (text: string, options?: { activeTurnBehavior?: string }) => {
+  const baseSend = api.sendToStep.bind(api);
+  api.sendToStep = async (id, text, options) => {
+    if (options?.activeTurnBehavior === "steer") {
       sent.push({ id, text, options });
-      if (options?.activeTurnBehavior === "steer") throw new Error("agent busy");
-    },
-  });
+      throw new Error("agent busy");
+    }
+    return baseSend(id, text, options);
+  };
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -2684,7 +2610,7 @@ test("a brief run still going keeps a 21-minute idle Implement turn from being n
   writeFileSync(marker, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 21 * 60_000).toISOString() }), "utf8");
   const { api, sent } = fakePaseo(runningTurn(fx.labels));
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
   assert.equal(sent.length, 0);
@@ -2715,7 +2641,7 @@ test("a tool call still running, without brief, keeps a 21-minute idle Implement
   writeFrontmatter(fx.story, { mid_nudged: null });
   const { api, sent } = fakePaseo(runningCall(fx.labels, 21));
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -2728,7 +2654,7 @@ test("a tool call running over an hour skips the nudge and blocks and interrupts
   writeFrontmatter(fx.story, { mid_nudged: null });
   const { api, sent } = fakePaseo(runningCall(fx.labels, 61));
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
 
@@ -2748,7 +2674,7 @@ test("a timeline that can't be read falls back to the brief marker and never blo
   const agents = runningTurn(fx.labels).map((agent) => ({ ...agent, timeline: "fail" as const }));
   const { api, sent } = fakePaseo(agents);
   const initiative = loop();
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
 
   await initiative.tick();
   assert.equal(sent.length, 0);
@@ -2835,7 +2761,7 @@ test("a marker written mid-turn is ignored by the tick until the turn ends, then
   const fx = implementEnded("# S1 — Demo story\n\n## Status\nimplement-done\n", {}, {});
   const running = fakePaseo([{ id: "a1", labels: fx.labels, status: "running" }]);
   const initiative = loop();
-  initiative.rememberPaseo(running.api);
+  initiative.rememberHost(running.api);
 
   await initiative.tick();
 
@@ -3047,12 +2973,8 @@ const adoptingLoop = (...stories: string[]) =>
 function workspaceSpy() {
   const { api, created } = fakePaseo([]);
   const requests: unknown[] = [];
-  const spied = api as unknown as {
-    projects: unknown;
-    workspaces: { create: (request: unknown) => Promise<never> };
-  };
-  spied.projects = { list: async () => ({ projects: [] }) };
-  spied.workspaces.create = async (request) => {
+  api.listProjects = async () => [];
+  api.createStoryWorkspace = async (request) => {
     requests.push(request);
     throw new Error("stop");
   };
@@ -3069,14 +2991,14 @@ test("a todo story starts unless the factory adopted it, then the loop leaves it
   const free = todo();
   const open = workspaceSpy();
   const plain = loop();
-  plain.rememberPaseo(open.api);
+  plain.rememberHost(open.api);
   await plain.tick();
   assert.equal(open.requests.length, 1, "a story nobody adopted starts");
 
   const owned = todo();
   const held = workspaceSpy();
   const initiative = adoptingLoop(owned.story);
-  initiative.rememberPaseo(held.api);
+  initiative.rememberHost(held.api);
   await initiative.tick();
   warn.mock.restore();
   assert.equal(held.requests.length, 0);
@@ -3118,7 +3040,7 @@ test("a failing factory read adopts nothing and doesn't fail the sweep", async (
       throw new Error("unreadable");
     },
   );
-  initiative.rememberPaseo(api);
+  initiative.rememberHost(api);
   await initiative.tick();
   warn.mock.restore();
   assert.equal(requests.length, 1);

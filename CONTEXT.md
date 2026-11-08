@@ -216,6 +216,12 @@ There is no gate. `reconcile` hands `diagnose-done` straight to Implement, as it
 
 _Avoid_: bugfix track, triage (for the track); diagnosing (as a status).
 
+## LoopHost
+
+The host port the initiative loop uses for agents and workspaces instead of calling Paseo types directly. Code: `LoopHost` and `paseoLoopHost` in `server/loop-host.ts`. The loop names what it needs (list step agents, refresh a session, send a nudge, create a story worktree, read plan usage and runner profiles). Paseo is the default: `paseoLoopHost` wraps the plugin's `paseo` handle and is wired in `index.server.ts`. Tests use `fakeLoopHost` in `test-support/fake-loop-host.ts`.
+
+_Avoid_: Paseo adapter (for the interface name alone; say LoopHost or host port in loop code).
+
 ## Loop supervision
 
 How the initiative loop keeps a step moving with no agent watching it. Code: `supervise` and the turn-end and permission handlers in `server/initiative-loop.ts`. It covers the `plan`, `diagnose`, `implement` and `review` steps while the story is `planning`, `implementing` or `reviewing` and its `.harness/state.md` marker is still `<step>-running` (or its worktree is gone). `awaiting-approval` waits on you and `pr-open` has its own watcher, so neither is supervised.

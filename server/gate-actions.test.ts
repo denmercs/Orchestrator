@@ -387,10 +387,13 @@ test("loopGatePort: the board key is split into repo and initiative for the loop
   assert.deepEqual(reopened, [ref]);
 });
 
-test("loopGatePort: retryStep hands the loop the Paseo handle and the split board key", async () => {
-  const { port, retried, paseo } = realPort({});
+test("loopGatePort: retryStep hands the loop a host port and the split board key", async () => {
+  const { port, retried } = realPort({});
   assert.deepEqual(await port.retryStep({ board: BOARD, storyId: "S12" }), { ok: true, error: null, agentId: "r1" });
-  assert.deepEqual(retried, [[paseo, { repo: "/repo", initiative: "orchestration-redesign", storyId: "S12" }]]);
+  assert.equal(retried.length, 1);
+  const retriedRef = retried[0] as [host: { listStepAgents: unknown }, ref: { repo: string; initiative: string; storyId: string }];
+  assert.deepEqual(retriedRef[1], { repo: "/repo", initiative: "orchestration-redesign", storyId: "S12" });
+  assert.equal(typeof retriedRef[0].listStepAgents, "function");
   assert.deepEqual(await port.retryStep({ board: "no-newline", storyId: "S12" }), {
     ok: false,
     error: "S12 is not on that board.",
