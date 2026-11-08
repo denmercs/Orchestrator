@@ -14,7 +14,7 @@ export type Budget = { dailyBudgetUsd: number; storyCapUsd: number };
 // An agent is mid-step; awaiting-approval and pr-open are waits, not work.
 const RUNNING = new Set(["planning", "implementing", "reviewing"]);
 
-const money = (usd: number) => `$${usd.toFixed(2)}`;
+export const money = (usd: number) => `$${usd.toFixed(2)}`;
 // Whole-dollar budgets read as "$25", others with cents.
 export const budgetMoney = (usd: number) => (Number.isInteger(usd) ? `$${usd}` : money(usd));
 

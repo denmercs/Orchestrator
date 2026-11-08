@@ -8,7 +8,7 @@ import { choiceNumber, exactSessions, matchSessions, shortName } from "./voice-n
 export type VoiceMode = "asleep" | "listening" | "confirming" | "waiting" | "speaking";
 export type VoiceSession = { id: string; name: string };
 export type NoticeKind = "finished" | "needsYou" | "error" | "costCap" | "roundCap";
-export type Notice = { kind: NoticeKind; sessionId: string; name: string };
+export type Notice = { kind: NoticeKind; sessionId: string; name: string; detail?: string };
 
 export type VoiceState = {
   mode: VoiceMode;
@@ -54,7 +54,7 @@ export type VoiceEvent =
   | { type: "sessions"; list: VoiceSession[]; blocked?: VoiceSession[] }
   /** A numbered list unanswered for `CONFIRM_TIMEOUT_MS` (the runner's timer, or Jarvis on the next words) is forgotten. */
   | { type: "choicesExpired" }
-  | { type: "notice"; kind: string; sessionId: string }
+  | { type: "notice"; kind: string; sessionId: string; detail?: string }
   | { type: "interrupt" }
   /** Sleep from the drawer (the runner's off switch): same as "Jarvis, ignore me". */
   | { type: "sleep" };
@@ -337,7 +337,7 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
       if (!NOTICE_ORDER.includes(kind) || (kind === "finished" && event.sessionId === state.session?.id)) return out(state);
       const found = state.sessions.find((s) => s.id === event.sessionId);
       const name = found ? shortName(found.name) : "A session";
-      return out({ ...state, queue: [...state.queue, { kind, sessionId: event.sessionId, name }] });
+      return out({ ...state, queue: [...state.queue, { kind, sessionId: event.sessionId, name, detail: event.detail }] });
     }
   }
 }
@@ -356,8 +356,10 @@ function flush(r: VoiceStep): VoiceStep {
 function mergeNotices(queue: Notice[]): string {
   const parts: string[] = [];
   for (const kind of NOTICE_ORDER) {
-    const names = [...new Map(queue.filter((n) => n.kind === kind).map((n) => [n.sessionId, n.name])).values()];
-    if (names.length === 1) parts.push(`${names[0]} ${NOTICE_ONE[kind]}`);
+    const of = [...new Map(queue.filter((n) => n.kind === kind).map((n) => [n.sessionId, n])).values()];
+    const names = of.map((n) => n.name);
+    // A detail (the spend) belongs to one session, so only a lone name speaks it.
+    if (names.length === 1) parts.push(`${names[0]} ${NOTICE_ONE[kind]}${of[0].detail ? ` (${of[0].detail})` : ""}`);
     else if (names.length > 1) parts.push(`${NUMBER_WORDS[names.length] ?? names.length} sessions ${NOTICE_MANY[kind]}`);
   }
   return parts.map((p, i) => (i === 0 ? p[0].toUpperCase() + p.slice(1) : p)).join(". ") + ".";

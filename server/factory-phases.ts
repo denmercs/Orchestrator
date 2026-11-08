@@ -13,6 +13,7 @@ import { failureReport, prStatus } from "./pr-checks";
 import { repoMaxFixes, repoPipelineConfig } from "./repo-pipeline";
 import { commitStory, failureText, openStoryPr, pushStoryFix } from "./story-git";
 import { launchStep } from "./story-steps";
+import { ROUND_NUDGE_AT, roundNudgeLine } from "../shared/round-nudge";
 import { maybeRoundNudge } from "./round-nudge";
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
@@ -68,7 +69,6 @@ function launcher(root: string, slice: FactorySlice, ports: TickPaseo, ctx: Para
       failing: extra.failing,
       attempt: extra.attempt,
     });
-    maybeRoundNudge(state.story, ctx.id, ctx.title, step, round, true, (line) => void ports.steer?.(line));
     writeSliceState(root, mission, id, { seat, agent, attempt: state.attempt + (extra.attempt ? 1 : 0) });
     return { kind: "restarted", slice: id, agent } satisfies TickResult;
   };
@@ -94,6 +94,21 @@ async function block(root: string, slice: FactorySlice, ports: TickPaseo, why: s
 
 // The story's review rounds, counted apart from `round` (which a failed test run also advances).
 const reviewRoundOf = (meta: Record<string, string>) => Number(meta.review_round) || 1;
+
+// The round 3 nudge for a slice, as one steer to the manager. It counts as delivered only when `steer` exists and
+// resolves to something other than `false` (`steerManager` returns false with no manager); a throw is not delivered.
+// Slice agents carry no `loop-story` labels, so telemetry can't say what they spent and the line leaves spend out.
+async function sliceNudge(slice: FactorySlice, ports: TickPaseo, reviewRound: number): Promise<void> {
+  const { steer } = ports;
+  if (!steer || !slice.state.story) return;
+  await maybeRoundNudge(slice.state.story, reviewRound, roundNudgeLine(slice.id), async (line) => (await steer(line)) !== false);
+}
+
+// A nudge nobody received is still pending: each tick tries again while the slice's review round stays at 3 or more.
+export async function retryRoundNudge(slice: FactorySlice, ports: TickPaseo): Promise<void> {
+  if (!slice.state.story || !existsSync(slice.state.story)) return;
+  await sliceNudge(slice, ports, reviewRoundOf(frontmatter(readText(slice.state.story))));
+}
 
 // `build` runs the loop's steps in the slice's worktree: Plan (Diagnose on a diagnose track), then Implement a cycle at a
 // time, committed by the plugin. A step moves on only when its marker is written and the agent's turn has ended. Null
@@ -214,6 +229,8 @@ export async function leaveReview(
   const after = afterReview(worktreeState, marker, reviewRound, maxRounds);
   if (after.kind === "blocked") return block(root, slice, ports, after.reason);
   if (after.kind === "fix") {
+    // Review round 2 has ended and round 3 is about to start: tell the manager before it spends anything.
+    if (reviewRound + 1 === ROUND_NUDGE_AT) await sliceNudge(slice, ports, reviewRound + 1);
     writeFrontmatter(state.story, { review_round: reviewRound + 1 });
     writeSliceState(root, mission, id, { phase: "build" });
     return launch("implement", round + 1);

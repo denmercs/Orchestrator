@@ -85,7 +85,8 @@ export const voiceSpeak = defineRpc({
 export const voiceEvents = defineRpc({
   name: "orchestration.voice.events",
   // `target`: the Mac's current voice target (the pill's pick), so the server knows its replies get a spoken summary.
-  input: z.object({ after: z.number().int().min(0), target: z.string().max(200).optional() }),
+  // `awake`: the Mac's loop isn't asleep, so a notice published now gets spoken; absent counts as asleep.
+  input: z.object({ after: z.number().int().min(0), target: z.string().max(200).optional(), awake: z.boolean().optional() }),
   output: z.object({
     cursor: z.number().int().min(0),
     events: z.array(z.custom<VoiceEvent>((v) => v !== null && typeof v === "object" && typeof (v as { type?: unknown }).type === "string")),

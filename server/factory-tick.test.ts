@@ -994,8 +994,10 @@ for (const [name, build] of blockedCases) {
     const steers: string[] = [];
     paseo.steer = async (line) => void steers.push(line);
     for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, paseo);
-    assert.equal(steers.length, 1);
-    assert.match(steers[0], /s1/);
+    // A slice already at review round 3 also gets its one pending round 3 nudge; that isn't the block steer.
+    const blocked = steers.filter((line) => !/reached review round 3/.test(line));
+    assert.equal(blocked.length, 1);
+    assert.match(blocked[0], /s1/);
     assert.equal(field(ctx.stateFile, "ready"), "blocked");
     assert.equal(created.length, 0);
     assert.equal(runnableSlice(readFactory(ctx.root)), null);
@@ -1012,32 +1014,62 @@ test("test-failed rounds don't use up the review-round budget", async () => {
   assert.equal(field(story, "review_round"), "2");
 });
 
-test("review round 3 nudge: manager steer once at review round 3, not on QA-only round 3 or a later tick", async () => {
+test("review round 3 nudge: a review that fails at review round 2 steers once, before the implement launch", async () => {
+  const log: string[] = [];
   const steers: string[] = [];
-  const steer = async (line: string) => void steers.push(line);
   const failReview = async (reviewRound: number, round: number) => {
     const { ctx, story } = reviewSlice("review-done", { reviewRound, round, findings: OPEN });
-    const { paseo } = fakePaseo({ "r-1": { status: "idle" } });
-    paseo.steer = steer;
+    const { paseo, created } = fakePaseo({ "r-1": { status: "idle" } });
+    const create = paseo.agents.create.bind(paseo.agents);
+    paseo.agents.create = async (spec) => (log.push("launch"), create(spec));
+    paseo.steer = async (line: string) => (steers.push(line), log.push("steer"), true);
     await runFactoryTick(ctx.root, paseo);
-    return { ctx, story };
+    return { ctx, story, created };
   };
   await failReview(1, 1);
   assert.equal(steers.length, 0);
+  assert.deepEqual(log, ["launch"], "round 1's fail launches round 2 and says nothing");
+  log.length = 0;
   const second = await failReview(2, 2);
   assert.equal(steers.length, 1);
-  assert.match(steers[0], /round 3/);
+  assert.match(steers[0], /has reached review round 3/);
+  assert.doesNotMatch(steers[0], /\$/);
+  assert.deepEqual(log, ["steer", "launch"]);
   assert.equal(field(second.story, "review_round"), "3");
   assert.equal(field(second.story, "round_nudged"), "3");
-  const qaOnly = reviewSlice("review-done", { round: 3, reviewRound: 1, findings: OPEN });
-  const { paseo: qaPaseo } = fakePaseo({ "r-1": { status: "idle" } });
-  qaPaseo.steer = steer;
-  await runFactoryTick(qaOnly.ctx.root, qaPaseo);
+  // QA failures raise the story's round without raising its review round, so a QA-only round 3 is quiet.
+  const qaOnly = await failReview(1, 3);
   assert.equal(steers.length, 1);
-  const again = reviewSlice("review-done", { reviewRound: 2, round: 2, findings: OPEN });
-  writeFrontmatter(again.story, { round_nudged: "3" });
+  assert.equal(field(qaOnly.story, "round_nudged"), undefined);
+  // Later ticks on a nudged story stay quiet.
   const { paseo: later } = fakePaseo({ "r-1": { status: "idle" } });
-  later.steer = steer;
-  for (let pass = 0; pass < 2; pass++) await runFactoryTick(again.ctx.root, later);
+  later.steer = async (line: string) => (steers.push(line), true);
+  for (let pass = 0; pass < 2; pass++) await runFactoryTick(second.ctx.root, later);
   assert.equal(steers.length, 1);
+});
+
+test("review round 3 nudge: a steer that returns false or throws stays pending and the next tick steers again", async () => {
+  for (const failing of [async () => false, async () => Promise.reject(new Error("no manager"))]) {
+    const { ctx, story } = reviewSlice("review-done", { reviewRound: 2, round: 2, findings: OPEN });
+    const attempts: string[] = [];
+    const { paseo } = fakePaseo({ "r-1": { status: "idle" } });
+    paseo.steer = async (line: string) => {
+      attempts.push(line);
+      return failing();
+    };
+    await runFactoryTick(ctx.root, paseo);
+    assert.equal(attempts.length, 1);
+    assert.equal(field(story, "round_nudged"), undefined);
+    // Round 3's build is under way; the tick retries the nudge and it is still not delivered.
+    await runFactoryTick(ctx.root, paseo);
+    assert.equal(attempts.length, 2);
+    assert.equal(field(story, "round_nudged"), undefined);
+    // The manager is back: the next tick delivers it, records it, and later ticks stay quiet.
+    paseo.steer = async (line: string) => (attempts.push(line), true);
+    await runFactoryTick(ctx.root, paseo);
+    assert.equal(attempts.length, 3);
+    assert.equal(field(story, "round_nudged"), "3");
+    await runFactoryTick(ctx.root, paseo);
+    assert.equal(attempts.length, 3);
+  }
 });

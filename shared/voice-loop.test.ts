@@ -734,3 +734,21 @@ test("jarvisSessions lists the most recently active Jarvis session first", () =>
   ];
   assert.deepEqual(jarvisSessions(agents).map((s) => s.id), ["new", "old", "none"]);
 });
+
+test("a lone roundCap notice speaks its spend detail; merged roundCap notices drop it", () => {
+  const detail = "$4.20 of $5";
+  assert.deepEqual(step(awake(), { type: "notice", kind: "roundCap", sessionId: "s2", detail }).effects, [
+    { type: "speak", line: "Docs is on round 3, near the cap on rounds and spend ($4.20 of $5)." },
+  ]);
+  // Two sessions on round 3 merge into one line that doesn't pick one session's spend.
+  const talking = awake({ talking: true, sessions: [api, docs, apiTwo] });
+  const queued = step(step(talking, { type: "notice", kind: "roundCap", sessionId: "s2", detail }).state, {
+    type: "notice",
+    kind: "roundCap",
+    sessionId: "s3",
+    detail: "$1 of $5",
+  }).state;
+  const [speak] = say(queued, "uh").effects.filter((e) => e.type === "speak");
+  assert.match(JSON.stringify(speak), /two sessions are on round 3, near the cap on rounds and spend\./i);
+  assert.doesNotMatch(JSON.stringify(speak), /\$/);
+});
