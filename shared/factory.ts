@@ -1,6 +1,8 @@
 // The factory's files read into types. No Node imports here: server/factory-layout.ts does the file work.
 export type FactoryPhase = "spec" | "design" | "build" | "test" | "review" | "ship";
 export type FactoryKind = "scout" | "ship";
+// Set when the slice has gone as far as the factory takes it: after a clean review (scout) or green CI (ship).
+export type SliceReady = "" | "review" | "ci";
 
 export type SliceState = {
   phase: FactoryPhase;
@@ -13,6 +15,9 @@ export type SliceState = {
   depends: string[];
   run: boolean;
   design: boolean;
+  ready: SliceReady;
+  approve: "" | "plan";
+  pr: string;
 };
 
 export type FactorySlice = { id: string; mission: string; state: SliceState; spec: string; design: string; proof: string };
@@ -42,6 +47,9 @@ export function parseSliceState(fields: Record<string, string>): SliceState {
     depends: list(fields.depends),
     run: fields.run === "on",
     design: fields.design === "on",
+    ready: fields.ready === "review" || fields.ready === "ci" ? fields.ready : "",
+    approve: fields.approve === "plan" ? "plan" : "",
+    pr: fields.pr ?? "",
   };
 }
 
@@ -53,6 +61,6 @@ export const parseSeat = (role: string, fields: Record<string, string>, body: st
   notes: body,
 });
 
-// Until S6: the first slice in mission order, then slice order, with run on. depends is ignored; at most one runs.
+// Until S6: the first slice in mission order, then slice order, with run on and not ready. depends is ignored; at most one runs.
 export const runnableSlice = (factory: Factory): FactorySlice | null =>
-  factory.missions.flatMap((mission) => mission.slices).find((slice) => slice.state.run) ?? null;
+  factory.missions.flatMap((mission) => mission.slices).find((slice) => slice.state.run && !slice.state.ready) ?? null;

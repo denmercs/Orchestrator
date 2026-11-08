@@ -14,6 +14,9 @@ test("parseSliceState reads an empty frontmatter as an idle scout at the spec ph
     depends: [],
     run: false,
     design: false,
+    ready: "",
+    approve: "",
+    pr: "",
   });
 });
 
@@ -30,6 +33,9 @@ test("parseSliceState reads every field", () => {
       depends: "a, b",
       run: "on",
       design: "on",
+      ready: "ci",
+      approve: "plan",
+      pr: "42",
     }),
     {
       phase: "build",
@@ -42,6 +48,9 @@ test("parseSliceState reads every field", () => {
       depends: ["a", "b"],
       run: true,
       design: true,
+      ready: "ci",
+      approve: "plan",
+      pr: "42",
     },
   );
 });
@@ -51,6 +60,9 @@ test("parseSliceState falls back on unknown values", () => {
   assert.deepEqual([state.phase, state.kind, state.attempt, state.run], ["spec", "scout", 0, false]);
   assert.equal(parseSliceState({ attempt: "-1" }).attempt, 0);
   assert.equal(parseSliceState({ attempt: "1.5" }).attempt, 0);
+  const odd = parseSliceState({ ready: "soon", approve: "yes" });
+  assert.deepEqual([odd.ready, odd.approve], ["", ""]);
+  assert.equal(parseSliceState({ ready: "review" }).ready, "review");
 });
 
 test("parseSeat reads profile, skills and agent from frontmatter and notes from the body", () => {
@@ -92,4 +104,11 @@ test("runnableSlice returns only the first run: on slice, in mission then slice 
   const first = slice("a", "m1", { run: "on" });
   const second = slice("b", "m2", { run: "on" });
   assert.equal(runnableSlice(factoryOf(["m1", [slice("x", "m1"), first]], ["m2", [second]])), first);
+});
+
+test("runnableSlice skips a ready slice and runs the next run: on slice", () => {
+  const done = slice("a", "m1", { run: "on", ready: "review" });
+  const next = slice("b", "m1", { run: "on" });
+  assert.equal(runnableSlice(factoryOf(["m1", [done, next]])), next);
+  assert.equal(runnableSlice(factoryOf(["m1", [done]])), null);
 });

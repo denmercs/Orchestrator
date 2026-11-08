@@ -93,6 +93,8 @@ The Initiatives, Today, Todos, Board, and Pulse tabs can show work already on di
 
 Adopting a story means the manager writes a slice whose `state.md` names the story file and its worktree. From then on the tick owns it. The loop's own supervisor (`supervise` and `sweep`) skips any story a slice names, and the tick skips any story the loop still supervises. One owner per story at a time, so a dead agent gets exactly one replacement.
 
+The fresh compact is a second path that replaces an agent. When a slice agent's context is full, the loop and the compactor start a fresh agent on the slice's story and update the slice's `state.md` to the new agent id, so the tick sees a live agent and does not also replace it.
+
 ### Phases and loop steps
 
 The factory phase in the slice's `state.md` is the truth. The loop's `.harness/state.md` in the slice worktree only holds the step marker inside the current phase. The tick writes that marker when it enters a phase, and reads it to know the step is done.
@@ -102,7 +104,7 @@ The factory phase in the slice's `state.md` is the truth. The loop's `.harness/s
 | `spec` | Manager | none | The manager writes `spec.md`. The tick then writes the story file in the slice worktree from the spec and records it as `story`. |
 | `design` | Design | none | Only with `design: on`. Writes `design.md`. |
 | `build` | Builder | plan, diagnose when the story is a bug, implement | Done on the implement marker and a commit. |
-| `test` | QA | none | QA runs the checks the spec names and fills `proof.md`. A failing check sends the slice back to `build`, where the builder runs the loop's `fix` step. |
+| `test` | QA | none | QA runs the checks the spec names and fills `proof.md`. A failing check sends the slice back to `build` as a fresh Implement round carrying the failing checks, not the `fix` step. `fix` stays for CI failures in `ship`. |
 | `review` | Reviewer | review | Review-fix rounds go to the builder seat, as the loop does today. |
 | `ship` | Builder | pr, then the PR and CI watch | `kind: ship` only, after review is clean. A scout slice ends at review. |
 
@@ -147,7 +149,7 @@ Each pass:
 1. Read missions and slices. A slice is runnable when the manager has set `run: on`, every slice it `depends` on has a finished proof and a clean review, and no earlier phase is still open.
 2. Deliver the packet to the seat for this phase: manager for `spec`, design for `design` when `design: on`, builder for `build` and `ship`, QA for `test`, reviewer for `review`. If that seat's agent is missing, archived, closed, or in error, start a fresh agent in the slice's worktree and point `state.md` at the new id. Leave an agent that is waiting on a permission. Prompt from the spec, the current phase, and refocus. The builder prompt also includes `design.md` when that file has content.
 3. Advance the phase only from evidence: spec written, `design.md` written when `design: on`, build committed, tests green, proof filled, review clean, PR open and CI green. Skip `design` when `design` is not `on`. Advancing hands the packet to the next seat. It does not send a chat from the old seat.
-4. On review clean for a scout slice, or green CI for a ship slice, steer the manager: which slice, and that it is ready for the human. Merge stays on the existing permission and PR path. The tick does not merge.
+4. On review clean for a scout slice, or green CI for a ship slice, steer the manager: which slice, and that it is ready for the human. Merge stays on the existing permission and PR path. The tick does not merge, and a repo's `autoMerge` does not apply to slices.
 
 Parallel slices wait until step 6 below. Until then the tick runs one runnable slice.
 
@@ -182,7 +184,7 @@ Each step is done when its check passes. Do not start the next step first.
 1. **Files and names.** Read and write the tree above. A missing factory directory is an idle tick, not an error. Unit-test the parser and the runnable-slice rule (`depends` ignored until step 6; one slice at a time). Until step 6 the manager is responsible for not setting `run: on` on a slice before the slices it depends on are done.
 2. **Manager session.** Create the manager as a model session in the home worktree and record its id in `manager.md`. Its create path appends the factory limits to the system prompt. Jarvis routes factory talk to that id. A test shows a worker session does not get that prompt, a status steer from the tick is sent only to the id in `manager.md`, and a voice on/off reopen of Jarvis does not change it.
 3. **Tick restart and one owner.** A slice without `run: on` stays idle. Given a slice in `build` whose agent id is dead, the tick creates one builder agent in the slice's worktree, stores the new id, and the prompt contains the spec and the refocus lines. A live agent is left alone, including one waiting on a permission. The loop's `supervise` and `sweep` skip a story a slice names, and the tick skips a story the loop still supervises. A test with both running shows a dead builder gets exactly one replacement.
-4. **Phases.** Spec, design when `design: on`, build, test, review, and ship for `kind: ship` advance only on the evidence in the files and the turn outcome, through the loop steps in the phase table, and each advance hands the packet to the next seat. A slice without `design: on` never starts the design seat. A scout slice never opens a PR. Ready for the human produces one manager steer and does not merge. The morning brief's start path (`startInitiative` in `server/morning-brief.ts` and its "do it" in the Jarvis router) is removed in this step, and an in-flight story can be adopted as a slice.
+4. **Phases.** Spec, design when `design: on`, build, test, review, and ship for `kind: ship` advance only on the evidence in the files and the turn outcome, through the loop steps in the phase table, and each advance hands the packet to the next seat. A slice without `design: on` never starts the design seat. A scout slice never opens a PR. Ready for the human produces one manager steer and does not merge. An in-flight story can be adopted as a slice. The start paths move to S8: the morning brief (`startInitiative` in `server/morning-brief.ts` and its "do it" in the Jarvis router), ticket start (`startTicket`, `startLocalTicket`), promote, the loop start file (`tickLoopStart`), the Start input (`routeStart`), and the Initiatives Start buttons.
 5. **Health.** The ceremony block fires on the two signals above, on every seat phase, and does not fire on a turn that edits product code or turns a failing test green.
 6. **Fan-out.** Honor `depends`. Two slices with no dependency both run, each in its own worktree. A slice whose dependency has an empty proof does not start.
 Rig templates (saved seat arrangements plus culture), a health panel, and a second machine are after step 6 has run on a real story.
