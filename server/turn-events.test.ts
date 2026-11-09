@@ -42,7 +42,7 @@ test("a permission request is a needsYou notice", () => {
   assert.deepEqual(permissionEvents(event), [{ type: "notice", kind: "needsYou", sessionId: "a1" }]);
 });
 
-test("Voice's own sessions (Sulti, a legacy sulti session, the Voice helper) say nothing", () => {
+test("Voice's own sessions (Sulti, a legacy jarvis session, the Voice helper) say nothing", () => {
   const sulti = { ...AGENT, id: "s1", provider: "sulti" };
   const legacy = { ...AGENT, id: "j1", provider: "jarvis" };
   const helper = { ...AGENT, id: "h1", labels: { kind: "voice-helper" } } as TurnEnded["agent"];
