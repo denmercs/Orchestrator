@@ -1,1 +1,1 @@
-export const PR_POLL_MS = 2 * 60 * 1000;
+export const PR_POLL_MS = 30 * 1000;
