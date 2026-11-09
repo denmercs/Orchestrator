@@ -39,6 +39,8 @@ import {
   afterImplement,
   afterReview,
   commitSubject,
+  finishedCycles,
+  implementStart,
   parseSkills,
   readCycles,
   readMarker,
@@ -507,24 +509,25 @@ export function createInitiativeLoop(
       on ? startStep(loopHost, config, init, phaseDir, story, to, nextRound, { cycle }) : null;
     // Round 1 with cycles left: one parent that runs them in subagents, or the next cycle's own agent
     // with `subagentCycles` off.
-    const nextImplement = (cycle: Cycle | undefined) => {
-      const open = readCycles(state).filter((item) => !item.done);
-      if (!on || !config.subagentCycles || !open.length) return next("implement", 1, cycle);
-      return startStep(loopHost, config, init, phaseDir, story, "implement", 1, { cycles: open });
+    const nextImplement = (round: number) => {
+      const start = implementStart(state, round, config.subagentCycles && on);
+      return "cycles" in start
+        ? startStep(loopHost, config, init, phaseDir, story, "implement", 1, { cycles: start.cycles })
+        : next("implement", round, start.cycle);
     };
 
     if (step === "plan") {
-      if (marker === MARKERS.planDone) await nextImplement(readCycles(state).find((cycle) => !cycle.done));
+      if (marker === MARKERS.planDone) await nextImplement(1);
       // The planner ended its turn without approval: it is asking you.
       else if (turnEnded && meta.status === "planning") writeFrontmatter(story.path, { status: "awaiting-approval" });
     } else if (step === "diagnose") {
       // No gate: Diagnose hands its plan straight to Implement. A turn end without a marker is a stall.
-      if (marker === MARKERS.diagnoseDone) await nextImplement(readCycles(state).find((cycle) => !cycle.done));
+      if (marker === MARKERS.diagnoseDone) await nextImplement(1);
       else if (marker === MARKERS.diagnoseBlocked) block(story, detail || "Diagnose is blocked; open its session.", "step");
     } else if (step === "implement") {
       if (marker === MARKERS.implementDone) {
         // A parent that ran the cycles in subagents must have ticked them all.
-        const finished = meta.cycles === "subagents" ? "all" : meta.cycle ? Number(meta.cycle) : null;
+        const finished = finishedCycles(meta);
         const after = afterImplement(state, finished);
         if (after.kind === "blocked") {
           block(story, after.reason, "step");
@@ -533,7 +536,7 @@ export function createInitiativeLoop(
         const cycle = typeof finished === "number" ? (readCycles(state).find((item) => item.number === finished) ?? null) : null;
         const fallback = cycle ? cycle.name : round > 1 ? "Fix review findings" : story.meta.title || story.id;
         await commitStory(meta.worktree, commitSubject(state, fallback));
-        if (after.kind === "cycle") await (round === 1 ? nextImplement(after.cycle) : next("implement", round, after.cycle));
+        if (after.kind === "cycle") await nextImplement(round);
         else await next("review", round);
       } else if (marker === MARKERS.implementBlocked) block(story, detail || "Implement is blocked; open its session.", "step");
     } else if (step === "review") {

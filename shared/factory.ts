@@ -11,6 +11,8 @@ export type SliceState = {
   agent: string;
   attempt: number;
   worktree: string;
+  // The Paseo workspace holding the worktree; empty when none is on record.
+  workspace: string;
   story: string;
   kind: FactoryKind;
   depends: string[];
@@ -21,6 +23,14 @@ export type SliceState = {
   pr: string;
   // The cause the manager was last told holds the slice (`blocked dependency X`, `unknown dependency Y`); empty when none.
   held: string;
+  // `plan` once the manager was told this slice's plan awaits approval; cleared when the approval is relayed.
+  steered: "" | "plan";
+  // The manager's word that a slice is finished (a scout slice has no merge to wait for): the close pass archives its workspace.
+  close: boolean;
+  // The close pass archived the slice's workspace.
+  archived: boolean;
+  // The manager was told the archive is held back by a running agent.
+  archive_held: boolean;
 };
 
 export type FactorySlice = { id: string; mission: string; state: SliceState; spec: string; design: string; proof: string };
@@ -45,6 +55,7 @@ export function parseSliceState(fields: Record<string, string>): SliceState {
     agent: fields.agent ?? "",
     attempt: Number.isInteger(attempt) && attempt >= 0 ? attempt : 0,
     worktree: fields.worktree ?? "",
+    workspace: fields.workspace ?? "",
     story: fields.story ?? "",
     kind: fields.kind === "ship" ? "ship" : "scout",
     depends: list(fields.depends),
@@ -54,6 +65,10 @@ export function parseSliceState(fields: Record<string, string>): SliceState {
     approve: fields.approve === "plan" ? "plan" : "",
     pr: fields.pr ?? "",
     held: fields.held ?? "",
+    steered: fields.steered === "plan" ? "plan" : "",
+    close: fields.close === "on",
+    archived: fields.archived === "on",
+    archive_held: fields.archive_held === "on",
   };
 }
 

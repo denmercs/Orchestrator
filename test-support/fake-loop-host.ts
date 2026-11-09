@@ -7,6 +7,7 @@ import type {
   StepAgentCreate,
   StoryWorkspace,
   StoryWorkspaceCreate,
+  LoopWorkspace,
 } from "../shared/loop-host";
 
 export type FakeAgent = LoopSession & {
@@ -15,6 +16,7 @@ export type FakeAgent = LoopSession & {
 
 // A fake LoopHost: live agents by id; workspace creates are recorded and become live agents; follow-ups in `sent`.
 export function fakeLoopHost(live: FakeAgent[], usage?: { providers: unknown[] | null }) {
+  const workspaces: LoopWorkspace[] = [];
   const sent: { id: string; text: string; options?: SendToStepOptions }[] = [];
   const archived: string[] = [];
   const created: {
@@ -59,9 +61,11 @@ export function fakeLoopHost(live: FakeAgent[], usage?: { providers: unknown[] |
       workspacesCreated += 1;
       const id = `ws${workspacesCreated}`;
       const directory = input.repoRoot;
+      workspaces.push({ id, directory, projectRootPath: input.repoRoot, busy: false });
       return { id, directory };
     },
     listProjects: async () => [],
+    listWorkspaces: async () => workspaces.map((workspace) => ({ ...workspace })),
     archiveStoryWorkspace: async (workspace) => {
       archived.push(workspace);
     },
@@ -77,5 +81,5 @@ export function fakeLoopHost(live: FakeAgent[], usage?: { providers: unknown[] |
     readRunnerProfiles: async () => ({ requestId: "fake", config: {} as never }),
   };
 
-  return { host, created, sent, archived, live };
+  return { host, created, sent, archived, live, workspaces };
 }

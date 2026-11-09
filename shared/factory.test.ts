@@ -18,6 +18,11 @@ test("parseSliceState reads an empty frontmatter as an idle scout at the spec ph
     approve: "",
     pr: "",
     held: "",
+    workspace: "",
+    steered: "",
+    close: false,
+    archived: false,
+    archive_held: false,
   });
 });
 
@@ -38,6 +43,11 @@ test("parseSliceState reads every field", () => {
       approve: "plan",
       pr: "42",
       held: "blocked dependency a",
+      workspace: "wks_1",
+      steered: "plan",
+      close: "on",
+      archived: "on",
+      archive_held: "on",
     }),
     {
       phase: "build",
@@ -54,6 +64,11 @@ test("parseSliceState reads every field", () => {
       approve: "plan",
       pr: "42",
       held: "blocked dependency a",
+      workspace: "wks_1",
+      steered: "plan",
+      close: true,
+      archived: true,
+      archive_held: true,
     },
   );
 });

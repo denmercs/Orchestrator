@@ -21,6 +21,50 @@ test("listProjects is empty when the list call rejects, and passes the projects 
   assert.deepEqual(await hostOver({ projects: { list: async () => ({ projects }) } }).listProjects(), projects);
 });
 
+test("listWorkspaces maps each workspace to its folder and project root, and marks busy the ones with a running or initializing agent", async () => {
+  // Arrange: three workspaces; agents running in w1, initializing in w3, idle or archived-free elsewhere.
+  const host = hostOver({
+    workspaces: {
+      list: async () => ({
+        entries: [
+          { id: "w1", projectId: "p1", workspaceDirectory: "/wt/one", projectRootPath: "/repo" },
+          { id: "w2", projectId: "p1", workspaceDirectory: "/wt/two", projectRootPath: "/repo" },
+          { id: "w3", projectId: "p2", workspaceDirectory: undefined, projectRootPath: "/other" },
+          { id: "w4", projectId: "p3", workspaceDirectory: "/wt/four" },
+        ],
+      }),
+    },
+    projects: { list: async () => ({ projects: [{ projectId: "p3", projectRootPath: "/third" }] }) },
+    agents: {
+      list: async () => ({
+        entries: [
+          { agent: { id: "a1", status: "running", workspaceId: "w1" } },
+          { agent: { id: "a2", status: "idle", workspaceId: "w2" } },
+          { agent: { id: "a3", status: "initializing", workspaceId: "w3" } },
+          { agent: { id: "a4", status: "running", workspaceId: undefined } },
+        ],
+      }),
+    },
+  });
+
+  // Act
+  const listed = await host.listWorkspaces();
+
+  // Assert: busy only for running or initializing; a missing folder is "", a missing root comes from the project list.
+  assert.deepEqual(listed, [
+    { id: "w1", directory: "/wt/one", projectRootPath: "/repo", busy: true },
+    { id: "w2", directory: "/wt/two", projectRootPath: "/repo", busy: false },
+    { id: "w3", directory: "", projectRootPath: "/other", busy: true },
+    { id: "w4", directory: "/wt/four", projectRootPath: "/third", busy: false },
+  ]);
+});
+
+test("listWorkspaces is empty when the handle has no workspaces API or the list call rejects", async () => {
+  assert.deepEqual(await hostOver({}).listWorkspaces(), []);
+  const failing = { workspaces: { list: async () => Promise.reject(new Error("daemon down")) }, agents: { list: async () => ({ entries: [] }) } };
+  assert.deepEqual(await hostOver(failing).listWorkspaces(), []);
+});
+
 test("sendToStep passes the steer option through to the agent's send", async () => {
   const calls: { id: string; text: string; options: unknown }[] = [];
   const host = hostOver({
