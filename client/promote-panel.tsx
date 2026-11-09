@@ -23,7 +23,7 @@ const PAGE_LIMIT = 100;
 
 // The screen opens via openScreen; its params carry the pre-filled title (from /promote <args>) and
 // the workspace to default to. The pill passes `workspaceId`; the slash command passes both.
-export function PromotePanel({ theme, layout, params, navigation }: PluginScreenProps) {
+export function PromotePanel({ theme, layout, params }: PluginScreenProps) {
   const styles = useMemo(() => createStyles(theme, layout.compact), [theme, layout.compact]);
   const paseo = usePaseo();
   const promote = useRpc(promoteSessionToStory);
@@ -34,6 +34,7 @@ export function PromotePanel({ theme, layout, params, navigation }: PluginScreen
   );
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+  const [filed, setFiled] = useState<string | null>(null);
 
   // Live-load the workspace list so the dropdown stays current. Shallow release on unmount.
   useEffect(() => {
@@ -68,24 +69,15 @@ export function PromotePanel({ theme, layout, params, navigation }: PluginScreen
     if (!validation.ok || submitting) return;
     setSubmitting(true);
     setServerError(null);
+    setFiled(null);
     try {
       const result = await promote(promoteInput(form));
       if (!result.ok) {
         setServerError(result.error ?? "Could not promote this session.");
         return;
       }
-      // Success: navigate to the planning agent. Switching screens tears this one down, so this is
-      // our close-on-success. If the loop started without an agentId (unexpected), stay put and
-      // show a note so the user can open it from the dashboard.
-      if (result.agentId && navigation?.openAgent) {
-        navigation.openAgent({ agentId: result.agentId });
-        return;
-      }
-      setServerError(
-        result.ticketKey
-          ? `Started ${result.ticketKey}, but no planning agent came back. Open it from the dashboard.`
-          : "Started the story, but no planning agent came back. Open it from the dashboard.",
-      );
+      // Success: the slice is filed and the manager runs it, so there is no agent to open; say so and stay put.
+      setFiled(`Filed ${result.ticketKey ?? "the story"} for the manager.`);
     } catch (cause) {
       setServerError(cause instanceof Error ? cause.message : "Could not promote this session.");
     } finally {
@@ -142,6 +134,7 @@ export function PromotePanel({ theme, layout, params, navigation }: PluginScreen
 
         {!validation.ok ? <Text style={[styles.muted, styles.danger]}>{validation.message}</Text> : null}
         {serverError ? <Text style={[styles.muted, styles.danger]}>{serverError}</Text> : null}
+        {filed ? <Text style={styles.muted}>{filed}</Text> : null}
 
         <View style={styles.actions}>
           <Pressable

@@ -38,7 +38,7 @@ function keyInUrl(text: string): string | null {
 export function detectLabel(route: StartRoute): StartLine {
   return route.kind === "jira"
     ? { text: "Jira ticket · track from issue type", color: "statusSuccess" }
-    : { text: "New initiative → Architecture", color: "accent" };
+    : { text: "New initiative → Manager", color: "accent" };
 }
 
 export const START_HINTS: readonly StartLine[] = [

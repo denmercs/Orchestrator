@@ -10,10 +10,8 @@ const board = (stories: { status: string }[]) =>
     state: { initiative: "Redesign", epic: { id: "phase-1", title: "P", dir: "" }, repoUrl: "", loop: "off", plan: null, stories: stories.map((s, i) => ({ id: `s${i}`, ready: false, ...s })) },
   }) as never;
 
-function ports(patch: Partial<BriefPorts> = {}): BriefPorts & { started: unknown[] } {
-  const started: unknown[] = [];
+function ports(patch: Partial<BriefPorts> = {}): BriefPorts {
   return {
-    started,
     verse: async () => ({ reference: "Psalm 118:24", text: "This is the day." }),
     stories: async () => ({
       items: [
@@ -25,7 +23,6 @@ function ports(patch: Partial<BriefPorts> = {}): BriefPorts & { started: unknown
     }),
     boards: async () => [board([{ status: "awaiting-approval" }])],
     weather: async () => ({ temperature: 41, code: 0, high: 55, rainChance: 10 }),
-    startLoop: async (target) => (started.push(target), { ok: true, error: null }),
     now: () => 1_000,
     ...patch,
   };
@@ -48,22 +45,6 @@ test("a dead source leaves its part out and keeps the rest", async () => {
   assert.equal(data.verse?.reference, "Psalm 118:24");
 });
 
-test("starting runs the loop on the initiative the briefing offered", async () => {
-  const p = ports();
-  const brief = createMorningBrief(p);
-  assert.equal(await brief.startInitiative(), "there is nothing to start.");
-  await brief.gather();
-  assert.equal(await brief.startInitiative(), null);
-  assert.deepEqual(p.started, [{ repo: "/r", initiative: "redesign" }]);
-});
-
-test("a loop that won't start hands back its reason", async () => {
-  const p = ports({ startLoop: async () => ({ ok: false, error: "Pick a repo first." }) });
-  const brief = createMorningBrief(p);
-  await brief.gather();
-  assert.equal(await brief.startInitiative(), "Pick a repo first.");
-});
-
 test("weather reads Open-Meteo's current reading and today's high and rain chance", async () => {
   let asked = "";
   const fake = (async (url: string) => {
@@ -73,4 +54,8 @@ test("weather reads Open-Meteo's current reading and today's high and rain chanc
   assert.deepEqual(await fetchWeather(fake), { temperature: 40.6, code: 3, high: 55.2, rainChance: 20 });
   assert.match(asked, /latitude=43\.5391&longitude=-89\.4632/);
   await assert.rejects(fetchWeather((async () => Response.json({})) as never), /no current reading/);
+});
+
+test("the brief has no way to start an initiative", () => {
+  assert.equal("startInitiative" in createMorningBrief(ports()), false);
 });

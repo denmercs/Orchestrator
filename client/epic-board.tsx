@@ -22,7 +22,8 @@ import { contextSessionsRpc, type ContextStatus } from "../shared/context";
 import { gateAct, needsYou } from "../shared/gates";
 import { initiativeStatus, stepBar, type InitiativeBadge, type Segment as StepSegment } from "../shared/story-steps";
 import { harnessSettings } from "../shared/settings";
-import { startInitiativeLoop, stopInitiativeLoop } from "../shared/initiative-loop";
+import { fileInitiativeRpc } from "../shared/factory-file";
+import { stopInitiativeLoop } from "../shared/initiative-loop";
 import { LoadingState } from "./loading-state";
 import { SelectedStoryPanel } from "./selected-story-panel";
 import { SessionLog } from "./session-log";
@@ -565,7 +566,7 @@ function InitiativePanel({
   const openPlan = useRpc(openPhasePlanRpc);
   const paseo = usePaseo();
   const refreshPlan = useRpc(refreshPhasePlanRpc);
-  const startLoop = useRpc(startInitiativeLoop);
+  const fileInitiative = useRpc(fileInitiativeRpc);
   const stopLoop = useRpc(stopInitiativeLoop);
   const planArchitecture = useRpc(planHarnessPhaseRpc);
   const loadContext = useRpc(contextSessionsRpc);
@@ -668,15 +669,13 @@ function InitiativePanel({
         else toast.show("Loop stopped. Running agents keep going; nothing new starts.");
         return;
       }
-      const result = await startLoop(ref);
+      const result = await fileInitiative(ref);
       if (!result.ok) {
-        toast.error(result.error ?? "Could not start the loop.");
+        toast.error(result.error ?? "Could not file the stories.");
         return;
       }
-      const ids = result.started.map((item) => item.story).join(", ");
-      toast.show(ids ? `Loop started: planning ${ids}.` : `Loop on. ${result.reason}.`, { variant: "success" });
-      const first = result.started[0];
-      if (first && navigation) navigation.openAgent({ agentId: first.agentId });
+      if (result.warning) toast.error(`Filed, but the manager wasn't told: ${result.warning}`);
+      toast.show(result.slices.length ? `Filed ${result.slices.length} for the manager: ${result.slices.join(", ")}.` : "Nothing new to file: every story is already started or filed.", { variant: "success" });
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : "Could not change the loop.");
     } finally {
@@ -1200,7 +1199,7 @@ function HarnessPicker({
   const list = useRpc(listHarnessInitiatives);
   const create = useRpc(createHarnessEpicRpc);
   const plan = useRpc(planHarnessPhaseRpc);
-  const startLoop = useRpc(startInitiativeLoop);
+  const fileInitiative = useRpc(fileInitiativeRpc);
   const stopLoop = useRpc(stopInitiativeLoop);
   const toast = useToast();
   const [repos, setRepos] = useState<HarnessRepo[] | null>(null);
@@ -1226,7 +1225,7 @@ function HarnessPicker({
     };
   }, [paseo, list, reload]);
 
-  // Start runs the initiative's stories phase by phase in Paseo worktrees; Stop stops new work.
+  // Start files the initiative's not-yet-started stories for the manager; Stop stops new work.
   async function toggleLoop(repo: string, initiative: string, on: boolean) {
     if (busy) return;
     setBusy(true);
@@ -1237,14 +1236,13 @@ function HarnessPicker({
         else toast.show("Loop stopped. Running agents keep going; nothing new starts.");
         return;
       }
-      const result = await startLoop({ repo, initiative });
+      const result = await fileInitiative({ repo, initiative });
       if (!result.ok) {
-        toast.error(result.error ?? "Could not start the loop.");
+        toast.error(result.error ?? "Could not file the stories.");
         return;
       }
-      const ids = result.started.map((item) => item.story).join(", ");
-      toast.show(ids ? `Loop started: planning ${ids}.` : `Loop on. ${result.reason}.`, { variant: "success" });
-      if (result.started[0]) onOpenAgent?.(result.started[0].agentId);
+      if (result.warning) toast.error(`Filed, but the manager wasn't told: ${result.warning}`);
+      toast.show(result.slices.length ? `Filed ${result.slices.length} for the manager: ${result.slices.join(", ")}.` : "Nothing new to file: every story is already started or filed.", { variant: "success" });
     } finally {
       setBusy(false);
       setReload((n) => n + 1);
