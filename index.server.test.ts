@@ -386,7 +386,7 @@ test("the voice helper RPCs start and stop one helper agent, and interpret falls
     via: "passThrough",
     reason: "starting",
   });
-  await new Promise((r) => setTimeout(r, 20));
+  await until(() => calls.filter((c) => c === "create").length >= 2);
   assert.equal(calls.filter((c) => c === "create").length, 2, "the fallback warmed the helper and the reply summariser in the background");
   assert.deepEqual(await start({}, { paseo }), { ok: true });
   assert.equal(existsSync(cwd), true, "the helper's folder is made before the agent is created");
