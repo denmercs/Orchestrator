@@ -1,5 +1,6 @@
 // Speaks on the Mac itself, for Speak replies and Jarvis: sentence by sentence through the one Speaker, so it is the same
-// voice as the drawer's. Players are ports (afplay and `say` in real life), so tests need neither audio nor a Mac.
+// voice as the drawer's. Players are ports (afplay in real life), so tests need neither audio nor a Mac. There is no
+// fallback voice: macOS `say` sounded robotic, so a Speaker that is loading or failed says nothing and `speak` reports it.
 import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,11 +14,10 @@ export type LocalPorts = {
   render: (input: { text: string; replyId: string }) => Promise<SpeakResult>;
   /** Plays a base64 WAV file. */
   play: (audio: string) => Playing;
-  /** macOS `say`, for when neither voice can render. */
-  say: (text: string) => Playing;
 };
 
-export type LocalSpeakResult = "ended" | "stopped";
+/** "unavailable": the Speaker could not render the first sentence, so nothing was said and the caller may use another voice. */
+export type LocalSpeakResult = "ended" | "stopped" | "unavailable";
 
 export function createLocalVoice(ports: LocalPorts) {
   // `hush` bumps the epoch: anything queued or rendered under an older one is dropped, never played.
@@ -43,8 +43,9 @@ export function createLocalVoice(ports: LocalPorts) {
       const answer = await next!;
       next = i + 1 < sentences.length ? render(i + 1) : undefined;
       if (hushed(mine)) return "stopped";
-      // Both voices still loading or failed: macOS `say`, so a reply is never silent.
-      await playOne(answer.engine === "loading" ? ports.say(sentences[i]) : ports.play(answer.audio), mine);
+      // Still loading or failed: say nothing more. Nothing played yet means the caller can try another voice.
+      if (answer.engine === "loading") return i === 0 ? "unavailable" : "ended";
+      await playOne(ports.play(answer.audio), mine);
       if (hushed(mine)) return "stopped";
     }
     return "ended";
@@ -78,7 +79,6 @@ export function realLocalPorts(render: LocalPorts["render"]): LocalPorts {
   };
   return {
     render,
-    say: (text) => exec("say", [text]),
     play(audio) {
       let killed = false;
       let child: Playing | undefined;

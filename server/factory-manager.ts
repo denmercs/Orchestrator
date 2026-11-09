@@ -28,9 +28,10 @@ export function applyFactoryManager<T extends VoiceRequest>(request: T): T {
 }
 
 // The models the manager runs on, in order: the create falls through to the next when one fails (provider missing or
-// signed out). The client wants config.provider as "provider/model", like `materializeProfile` builds it.
+// signed out). The client wants config.provider as "provider/model", like `materializeProfile` builds it. The Claude
+// one runs in auto mode, so the router's default target never stops to ask permission on a voice steer.
 export const MANAGER_MODELS = [
-  { provider: "claude/claude-opus-5-5" },
+  { provider: "claude/claude-opus-5-5", modeId: "auto" },
   { provider: "cursor/grok-4.7" },
 ];
 

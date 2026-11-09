@@ -884,8 +884,8 @@ export default function contribute(
     // voice.micOff: what Paseo voice mode heard is dropped before the router; the Mac shows what got through.
     muted: () => micOffGate.muted(),
     heard: (_routerId, text) => voiceHub.publish({ type: "heard", text }),
-    // On the Mac Jarvis speaks through the same Speaker; false (an empty line) lets Paseo's `speak` take it.
-    localSpeak: async (text) => (text.trim() ? (await localVoice.speak(text)) !== undefined : false),
+    // On the Mac Jarvis speaks through the same Speaker; false (an empty line, or a Speaker still loading) lets Paseo's `speak` take it.
+    localSpeak: async (text) => (text.trim() ? (await localVoice.speak(text)) !== "unavailable" : false),
   });
   server.registerProvider?.({
     ...jarvisProvider,
