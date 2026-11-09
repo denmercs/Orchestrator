@@ -783,10 +783,10 @@ export default function contribute(
     );
   }, replayStart.everyMs);
   replayStartTimer.unref?.();
-  // The same for the initiative loop.
+  // The same, filing the initiative's stories for the manager.
   const loopStart = deps.loopStart ?? { file: LOOP_START_FILE, everyMs: LOOP_START_POLL_MS };
   const loopStartTimer = setInterval(() => {
-    void tickLoopStart(loopStart.file, () => paseoNow() !== null, (input) => startLoop(input, paseoNow()!)).catch(
+    void tickLoopStart(loopStart.file, () => paseoNow() !== null, (input) => fileForManager(paseoNow()!)(input)).catch(
       (error) => console.warn("orchestrator: initiative loop start file failed", error),
     );
   }, loopStart.everyMs);
