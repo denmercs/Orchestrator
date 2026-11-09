@@ -22,6 +22,10 @@ test("latestReply is null when there is no assistant message", () => {
   assert.equal(latestReply([]), null);
 });
 
+test("latestReply gives a null time for a reply with no timestamp", () => {
+  assert.deepEqual(latestReply([{ item: { type: "assistant_message", text: "Hi." } }]), { text: "Hi.", at: null });
+});
+
 test("read gives the Sulti id with its latest reply and when", async () => {
   const strip = createSultiStrip({
     sulti: async () => "sulti-1",

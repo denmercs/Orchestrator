@@ -3,7 +3,7 @@ import { DASHBOARD_ROUTER, type RouteResult } from "./sulti-router";
 
 export type StripEntry = { item?: { type?: string; text?: unknown }; timestamp?: string };
 
-export type LatestReply = { text: string; at: string };
+export type LatestReply = { text: string; at: string | null };
 
 // The last assistant message in a page of timeline entries (oldest first), with its timestamp.
 // Tool calls and user messages are skipped. Null when the page holds no reply.
@@ -11,7 +11,7 @@ export function latestReply(entries: readonly StripEntry[]): LatestReply | null 
   for (let i = entries.length - 1; i >= 0; i--) {
     const { item, timestamp } = entries[i];
     if (item?.type === "assistant_message" && typeof item.text === "string") {
-      return { text: item.text, at: timestamp ?? "" };
+      return { text: item.text, at: timestamp ?? null };
     }
   }
   return null;

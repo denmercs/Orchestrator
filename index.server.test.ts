@@ -937,7 +937,7 @@ test("sultiStripSend steers the Sulti session with the typed text", async () => 
   try {
     const sent: [string, string][] = [];
     const paseo = stripPaseo(sent);
-    await handlers.get(sultiStripSend.name)!({ text: "Sulti, what is next on the board" }, { paseo });
+    await handlers.get(sultiStripSend.name)!({ text: "what is next on the board" }, { paseo });
     assert.deepEqual(sent.map(([id]) => id), ["sulti-1"]);
     assert.match(sent[0][1], /what is next on the board/);
   } finally {

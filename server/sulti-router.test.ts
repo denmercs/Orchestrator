@@ -562,6 +562,16 @@ test("the dashboard router steers Sulti but stays quiet: not listening, not spea
   assert.equal(router.speaks(sultiId), true);
 });
 
+test("the dashboard router still steers Sulti on a second typed send after a reply, and stays not listening", async () => {
+  const { router, sent } = setup({ sulti: async () => sultiId });
+  await router.route(DASHBOARD_ROUTER, "how is the factory doing", undefined, { typed: true });
+  await router.event({ type: "reply", sessionId: sultiId, text: "All quiet." });
+  // The reply never moves the dashboard router out of waiting, yet the next typed send must still go through.
+  await router.route(DASHBOARD_ROUTER, "and the next slice", undefined, { typed: true });
+  assert.deepEqual(sent, [[sultiId, "how is the factory doing"], [sultiId, "and the next slice"]]);
+  assert.equal(router.listening(), false);
+});
+
 test("after a reopen (router id changes) talk still goes to the same Sulti id", async () => {
   const { router, sent } = setup({ sulti: async () => sultiId });
   await router.route("r1", "status of the slice");
