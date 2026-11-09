@@ -78,6 +78,8 @@ import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createMicOffGate } from "./server/mic-off-gate";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
+import { type Filed, fileInitiative, fileSlice } from "./server/factory-file";
+import { fileInitiativeRpc, fileSliceRpc } from "./shared/factory-file";
 import { applyFactoryManager, ensureManager, steerManager } from "./server/factory-manager";
 import { isDead, runFactoryTick, type TickPaseo } from "./server/factory-tick";
 import { factoryStatus } from "./server/factory-status";
@@ -309,10 +311,36 @@ export default function contribute(
     initiativeLoop.start(paseoLoopHost(paseo), input);
   server.handle(startInitiativeLoop, (input, { paseo }) => startLoop(input, paseo));
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
+  // Ticket start and promote file slices into the harness repo's factory; the manager decides when they run.
+  const fileForManager = (paseo: PluginHandlerContext["paseo"]) => async (input: { repo: string; initiative: string }) => {
+    const { repo } = await readHarness();
+    if (!repo) throw new Error("Pick a harness repo in settings first.");
+    const { ids, warning } = await fileInitiative(repo, input, { paseo });
+    if (warning) console.warn("orchestrator: filed slices but the manager wasn't told:", warning);
+    return ids;
+  };
+  // The Initiatives tab's Start buttons and the Start input's typed text. Files that land stay `ok` when only the
+  // steer fails: the slice waits in the inbox for the manager's next read.
+  const filing = async (file: (root: string) => Promise<Filed>) => {
+    const { repo } = await readHarness();
+    if (!repo) return { ok: false, error: "Pick a harness repo in settings first.", slices: [], warning: null };
+    try {
+      const { ids, warning } = await file(repo);
+      return { ok: true, error: null, slices: ids, warning };
+    } catch (cause) {
+      return { ok: false, error: cause instanceof Error ? cause.message : String(cause), slices: [], warning: null };
+    }
+  };
+  server.handle(fileInitiativeRpc, (input, { paseo }) =>
+    filing((root) => fileInitiative(root, input, { paseo })),
+  );
+  server.handle(fileSliceRpc, (input, { paseo }) =>
+    filing((root) => fileSlice(root, { title: input.title }, { paseo })),
+  );
   server.handle(startTicketRpc, (input, { paseo }) =>
     startTicket(input, {
       readIssue: async (key) => (await readIssueStatuses([key])).get(key),
-      startLoop: (loop) => initiativeLoop.start(paseoLoopHost(paseo), loop),
+      file: fileForManager(paseo),
     }),
   );
   server.handle(promoteSessionToStory, async (input, { paseo }) => {
@@ -323,7 +351,7 @@ export default function contribute(
       if (!repo) return fail("That workspace has no directory on disk.");
       const result = await startLocalTicket(
         { repo, title: input.title, kind: input.kind },
-        { startLoop: (loop) => initiativeLoop.start(paseoLoopHost(paseo), loop) },
+        { file: fileForManager(paseo) },
       );
       return { ok: result.ok, error: result.error, ticketKey: result.key, agentId: result.agentId };
     } catch (cause) {
@@ -751,27 +779,7 @@ export default function contribute(
     closeTicket: closeIssue,
     closeOnMerge: async (cwd) => repoPipelineConfig((await readPipelineValues()) ?? pipelineSettings.schema.parse({}), cwd).closeOnMerge,
     send: (agentId, text) => paseo.agents.ref(agentId).send(text),
-    worktrees: {
-      create: async ({ cwd, branch, base, slug }) => {
-        const { projects } = await paseo.projects.list().catch(() => ({ projects: [] as { projectId: string; projectRootPath: string }[] }));
-        const project = projects.find((item) => resolve(item.projectRootPath) === cwd);
-        const created = await paseo.workspaces.create({
-          title: `${MARK} ${slug}`.slice(0, 60),
-          source: {
-            kind: "worktree",
-            cwd,
-            ...(project ? { projectId: project.projectId } : {}),
-            action: "branch-off",
-            baseBranch: base,
-            branchName: branch,
-            worktreeSlug: slug,
-          },
-        });
-        const directory = created.directory ?? (await created.refresh())?.workspaceDirectory ?? "";
-        if (!directory) throw new Error("Paseo created the workspace but did not report its folder.");
-        return { directory };
-      },
-    },
+    host: paseoLoopHost(paseo),
   });
   const paseoNow = () => contextPaseo ?? pipelinePaseo;
   const replayStartTimer = setInterval(() => {
@@ -780,10 +788,10 @@ export default function contribute(
     );
   }, replayStart.everyMs);
   replayStartTimer.unref?.();
-  // The same for the initiative loop.
+  // The same, filing the initiative's stories for the manager.
   const loopStart = deps.loopStart ?? { file: LOOP_START_FILE, everyMs: LOOP_START_POLL_MS };
   const loopStartTimer = setInterval(() => {
-    void tickLoopStart(loopStart.file, () => paseoNow() !== null, (input) => startLoop(input, paseoNow()!)).catch(
+    void tickLoopStart(loopStart.file, () => paseoNow() !== null, (input) => fileForManager(paseoNow()!)(input)).catch(
       (error) => console.warn("orchestrator: initiative loop start file failed", error),
     );
   }, loopStart.everyMs);
@@ -832,7 +840,6 @@ export default function contribute(
         const { repo } = await readHarness();
         return repo ? (await loadHarnessBoards([repo], await readHarness())).boards : [];
       },
-      startLoop: (target) => startLoop(target, jarvisPaseo()),
     }),
   });
   // What each event says to the phone: the router steps it into every router's loop, and the open voice-mode
@@ -844,7 +851,7 @@ export default function contribute(
       void jarvis
         .event(event)
         .then((byRouter) => Promise.all(Object.entries(byRouter).map(([routerId, lines]) => jarvisConnection?.say(routerId, lines))))
-        .catch((error) => console.warn("orchestrator: Jarvis event failed", error));
+        .catch((error) => console.warn("orchestrator: Sulti event failed", error));
     }
   };
   // The long poll (and brief/status below) leave their Paseo handle too, so the router can list sessions before any

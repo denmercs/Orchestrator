@@ -28,7 +28,7 @@ function fakeHelper(answer: () => Promise<InterpretResult>, started = true) {
 }
 
 const cleaned: InterpretResult = { type: "send", text: "run the tests" };
-const ask = (svc: ReturnType<typeof createVoiceInterpret>, text = "Jarvis, run the tests") =>
+const ask = (svc: ReturnType<typeof createVoiceInterpret>, text = "Sulti, run the tests") =>
   svc.interpret(text, { sessionId: "s1", sessions });
 
 test("switch defaults to HELPER_DEFAULT_ON and can be flipped", () => {

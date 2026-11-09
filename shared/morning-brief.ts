@@ -1,10 +1,10 @@
-// The Jarvis morning briefing, paced like the movie: one short beat at a time, then it waits for you.
+// The Sulti morning briefing, paced like the movie: one short beat at a time, then it waits for you.
 // Greeting, weather and the verse come together; then the Jira stories (titles only), the priority initiative,
 // and a joke to sign off. Pure: the data is gathered elsewhere (server/morning-brief.ts) and handed in.
 import { gatesOf } from "./gates";
 import type { EpicBoard } from "./orchestration";
 import { initiativeStatus } from "./story-steps";
-import { withoutName } from "./voice-loop";
+import { AWAKE_NAMES, withoutName } from "./voice-loop";
 
 export type BriefInitiative = {
   title: string;
@@ -25,15 +25,11 @@ export type BriefData = {
   initiative: BriefInitiative | null;
 };
 
-export type BriefStage = "stories" | "initiative";
-export type BriefState = { data: BriefData; stage: BriefStage; shown: number };
+export type BriefState = { data: BriefData; shown: number };
 
 export type BriefReply = {
   state: BriefState | null;
   lines: string[];
-  /** Said after the effect has run (the joke), so a failed start can replace `lines` without losing it. */
-  rest: string[];
-  effect: "startInitiative" | null;
   /** Not a briefing answer: the briefing is over and the words go to the normal router. */
   passThrough: boolean;
 };
@@ -55,7 +51,6 @@ const jokeFor = (at: number): string => JOKES[Math.floor(at / 86_400_000) % JOKE
 
 const GREETING = /^(?:good (?:morning|day)|morning briefing|brief me|give me (?:the|my) (?:morning )?(?:brief|briefing)|morning)\b/;
 const GO = /^(?:yes|yeah|yep|yup|sure|ok|okay|please|go on|go ahead|continue|more|next|what else|and|keep going|read (?:them|more))\b/;
-const START = /^(?:yes|yeah|yep|yup|sure|ok|okay|please|do it|start|start it|go ahead|go|kick it off|make it so)\b/;
 const SKIP = /^(?:skip|no|nope|not now|not yet|later|pass|next one|move on)\b/;
 const STOP = /^(?:stop|that s all|that will be all|that is all|enough|thanks|thank you|cancel|never mind|nevermind|dismissed|i m good|that s enough)\b/;
 const REPEAT = /^(?:repeat|say that again|again|what was that|come again)\b/;
@@ -65,13 +60,13 @@ const norm = (text: string): string =>
 
 const plain = (text: string): string => text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
 
-/** "Good morning" starts the briefing: said short, or in one sentence with the name ("Hey Jarvis, good morning"). */
+/** "Good morning" starts the briefing: said short, or in one sentence with the name ("Hey Sulti, good morning"). */
 export const isBriefGreeting = (text: string): boolean => {
   // "Hey, good morning" has no name for withoutName to strip.
   const said = norm(text).replace(/^(?:hey|hi|hello) /, "");
   // Short only: "good morning team, standup is at nine" is for someone else.
   if (GREETING.test(said) && said.split(" ").length <= 4) return true;
-  return text.split(/[.!?\n]+/).some((part) => /\bgood morning\b/.test(plain(part)) && /\bjarvis\b/.test(plain(part)));
+  return text.split(/[.!?\n]+/).some((part) => /\bgood morning\b/.test(plain(part)) && new RegExp(`\\b(?:${AWAKE_NAMES})\\b`).test(plain(part)));
 };
 
 const hourOf = (at: number): number => new Date(at).getHours();
@@ -150,7 +145,7 @@ export function priorityInitiative(boards: EpicBoard[]): (BriefInitiative & { ta
   return best?.value ?? null;
 }
 
-const reply = (patch: Partial<BriefReply>): BriefReply => ({ state: null, lines: [], rest: [], effect: null, passThrough: false, ...patch });
+const reply = (patch: Partial<BriefReply>): BriefReply => ({ state: null, lines: [], passThrough: false, ...patch });
 
 function storiesBeat(data: BriefData, shown: number): string {
   const next = data.stories.slice(shown, shown + STORIES_PER_BEAT);
@@ -165,18 +160,16 @@ function storiesBeat(data: BriefData, shown: number): string {
 
 const capital = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
-function initiativeBeat(data: BriefData): { line: string; offer: boolean } | null {
+const initiativeBeat = (data: BriefData): string | null => {
   const i = data.initiative;
   if (!i) return null;
-  if (i.running) return { line: `Your priority initiative is ${i.title}: ${i.detail}. The loop is already running.`, offer: false };
-  return { line: `Your priority initiative is ${i.title}: ${i.detail}. Shall I start the loop?`, offer: true };
-}
+  return `Your priority initiative is ${i.title}: ${i.detail}.${i.running ? " The loop is already running." : ""}`;
+};
 
-/** Where the briefing goes after the stories: the initiative offer if there is one, else the sign-off. */
+/** Where the briefing goes after the stories: the initiative line if there is one, then the sign-off. It offers nothing. */
 function toInitiative(data: BriefData, lines: string[]): BriefReply {
   const beat = initiativeBeat(data);
-  if (beat?.offer) return reply({ state: { data, stage: "initiative", shown: 0 }, lines: [...lines, beat.line] });
-  return reply({ lines: [...lines, ...(beat ? [beat.line] : []), ...signOff(data)] });
+  return reply({ lines: [...lines, ...(beat ? [beat] : []), ...signOff(data)] });
 }
 
 const signOff = (data: BriefData): string[] => [jokeFor(data.at), "Will that be all?"];
@@ -192,7 +185,7 @@ export function startBrief(data: BriefData): BriefReply {
   if (data.stories.length === 0) return toInitiative(data, [...lines, "Your board is clear."]);
   const shown = Math.min(data.stories.length, STORIES_PER_BEAT);
   lines.push(storiesBeat(data, 0));
-  if (shown < data.stories.length) return reply({ state: { data, stage: "stories", shown }, lines });
+  if (shown < data.stories.length) return reply({ state: { data, shown }, lines });
   return toInitiative(data, lines);
 }
 
@@ -202,21 +195,13 @@ export function replyBrief(state: BriefState, text: string): BriefReply {
   const { data } = state;
   if (STOP.test(said)) return reply({ lines: ["Very good."] });
   if (REPEAT.test(said)) {
-    const last = state.stage === "stories" ? storiesBeat(data, Math.max(0, state.shown - STORIES_PER_BEAT)) : (initiativeBeat(data)?.line ?? "");
-    return reply({ state, lines: [last] });
+    return reply({ state, lines: [storiesBeat(data, Math.max(0, state.shown - STORIES_PER_BEAT))] });
   }
-  if (state.stage === "stories") {
-    if (GO.test(said)) {
-      const shown = Math.min(data.stories.length, state.shown + STORIES_PER_BEAT);
-      const line = storiesBeat(data, state.shown);
-      return shown < data.stories.length ? reply({ state: { data, stage: "stories", shown }, lines: [line] }) : toInitiative(data, [line]);
-    }
-    if (SKIP.test(said)) return toInitiative(data, []);
-    return reply({ passThrough: true });
+  if (GO.test(said)) {
+    const shown = Math.min(data.stories.length, state.shown + STORIES_PER_BEAT);
+    const line = storiesBeat(data, state.shown);
+    return shown < data.stories.length ? reply({ state: { data, shown }, lines: [line] }) : toInitiative(data, [line]);
   }
-  if (START.test(said)) {
-    return reply({ lines: [`Starting ${data.initiative?.title ?? "it"}.`], rest: signOff(data), effect: "startInitiative" });
-  }
-  if (SKIP.test(said)) return reply({ lines: signOff(data) });
+  if (SKIP.test(said)) return toInitiative(data, []);
   return reply({ passThrough: true });
 }

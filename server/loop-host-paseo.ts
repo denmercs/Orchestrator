@@ -1,5 +1,5 @@
 import type { PluginHandlerContext, PluginHookAgent, PluginTurnOutcome } from "@getpaseo/plugin/server";
-import type { LoopHost, LoopPermissionRequested, LoopPermissionResolved, LoopProject, LoopTurnEnded } from "../shared/loop-host";
+import type { LoopHost, LoopPermissionRequested, LoopPermissionResolved, LoopProject, LoopTurnEnded, LoopWorkspace } from "../shared/loop-host";
 import { readPlanUsage } from "./plan-usage";
 
 type PaseoApi = PluginHandlerContext["paseo"];
@@ -107,6 +107,31 @@ export function paseoLoopHost(paseo: PaseoApi): LoopHost {
         return projects;
       } catch {
         return [] as LoopProject[];
+      }
+    },
+    async listWorkspaces() {
+      // Like listProjects, this never rejects: a handle that cannot list answers [].
+      try {
+        const [{ entries }, agents, projects] = await Promise.all([
+          paseo.workspaces.list(),
+          paseo.agents.list({ filter: { includeArchived: false }, page: { limit: 200 } }),
+          this.listProjects(),
+        ]);
+        const busy = new Set<string>();
+        for (const { agent } of agents.entries) {
+          if (agent.workspaceId && (agent.status === "running" || agent.status === "initializing")) busy.add(agent.workspaceId);
+        }
+        const roots = new Map(projects.map((project) => [project.projectId, project.projectRootPath]));
+        return entries.map(
+          (workspace): LoopWorkspace => ({
+            id: workspace.id,
+            directory: workspace.workspaceDirectory ?? "",
+            projectRootPath: workspace.projectRootPath ?? roots.get(workspace.projectId) ?? "",
+            busy: busy.has(workspace.id),
+          }),
+        );
+      } catch {
+        return [];
       }
     },
     async archiveStoryWorkspace(workspaceId) {

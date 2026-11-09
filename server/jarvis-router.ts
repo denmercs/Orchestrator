@@ -32,8 +32,6 @@ export type JarvisRouterPorts = {
   /** The morning briefing: "good morning" gathers the data and walks through it, one beat per reply. */
   brief?: {
     gather(): Promise<BriefData>;
-    /** Starts the priority initiative's loop; resolves to an error to say, or null when it started. */
-    startInitiative(): Promise<string | null>;
   };
   /** "Status": the live agents to summarise, from the same list as `sessions`. See `statusLine`. */
   status?(): Promise<StatusAgent[]>;
@@ -121,12 +119,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     }
     if (next.state) briefs.set(routerId, { state: next.state, at: now() });
     else briefs.delete(routerId);
-    let spoken = next.lines;
-    if (next.effect === "startInitiative") {
-      const error = await brief.startInitiative().catch(errorText);
-      if (error) spoken = [`I couldn't start it: ${error}`];
-    }
-    return { spoken: [...spoken, ...next.rest], note: null };
+    return { spoken: next.lines, note: null };
   }
 
   // "Status" is handled ahead of the loop, like the briefing: the loop only knows names, not what each session is doing.

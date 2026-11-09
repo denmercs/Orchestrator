@@ -49,7 +49,7 @@ test("detectLabel: names the route and its colour key", () => {
     color: "statusSuccess",
   });
   assert.deepEqual(detectLabel({ kind: "initiative", title: "Dark mode" }), {
-    text: "New initiative → Architecture",
+    text: "New initiative → Manager",
     color: "accent",
   });
 });

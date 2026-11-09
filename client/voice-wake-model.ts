@@ -1,10 +1,10 @@
 // The openWakeWord frame pipeline: 80 ms audio frames -> melspectrogram -> a sliding window of mel frames ->
-// embedding -> a sliding window of embeddings -> hey_jarvis score. Pure: the three ONNX runs are injected so this
+// embedding -> a sliding window of embeddings -> hey_sulti score. Pure: the three ONNX runs are injected so this
 // tests without onnxruntime-web; client/voice-ears.ts binds them to the real models. The runs are async since a
 // real onnxruntime-web `session.run()` is a Promise.
 export const SAMPLES_PER_FRAME = 1280; // 80 ms @ 16 kHz
 export const MEL_WINDOW = 76; // mel frames the embedding model consumes
-export const EMBEDDING_WINDOW = 16; // embeddings the hey_jarvis classifier consumes
+export const EMBEDDING_WINDOW = 16; // embeddings the hey_sulti classifier consumes
 export const WAKE_THRESHOLD = 0.5;
 export const WAKE_COOLDOWN_MS = 2000;
 

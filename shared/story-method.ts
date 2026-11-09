@@ -523,6 +523,21 @@ export function readCycles(state: string): Cycle[] {
   return cycles;
 }
 
+// How Implement starts. Round 1 with cycles open and `subagentCycles` on is one parent that runs every open cycle in
+// subagents; anything else (a later round, subagents off, nothing open) is one agent on the next open cycle, if any.
+export type ImplementStart = { cycles: Cycle[] } | { cycle: Cycle | undefined };
+
+export function implementStart(state: string, round: number, subagentCycles: boolean): ImplementStart {
+  const open = readCycles(state).filter((cycle) => !cycle.done);
+  if (round === 1 && subagentCycles && open.length) return { cycles: open };
+  return { cycle: open[0] };
+}
+
+// What an Implement agent was given, from its story's frontmatter: "all" for a subagents parent, its cycle number, or null.
+export function finishedCycles(meta: Record<string, string>): "all" | number | null {
+  return meta.cycles === "subagents" ? "all" : meta.cycle ? Number(meta.cycle) : null;
+}
+
 export type AfterImplement =
   | { kind: "cycle"; cycle: Cycle }
   | { kind: "review" }

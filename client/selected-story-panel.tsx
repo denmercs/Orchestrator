@@ -6,7 +6,8 @@ import { useToast } from "@getpaseo/plugin/client/react-native";
 import { agentRunnerSettings } from "../shared/agent-runner";
 import { contextAct, storyContextRpc, type StoryContext } from "../shared/context";
 import { boardKey, gateAct } from "../shared/gates";
-import { DEFAULT_LOOP_CONFIG, initiativeLoopSettings, startInitiativeLoop } from "../shared/initiative-loop";
+import { fileInitiativeRpc } from "../shared/factory-file";
+import { DEFAULT_LOOP_CONFIG, initiativeLoopSettings } from "../shared/initiative-loop";
 import type { EpicBoardState, EpicStory } from "../shared/orchestration";
 import { budgetSettings } from "../shared/settings";
 import { stepBar, type Segment } from "../shared/story-steps";
@@ -80,7 +81,7 @@ export function SelectedStoryPanel({
   const toast = useToast();
   const act = useRpc(contextAct);
   const gate = useRpc(gateAct);
-  const startLoop = useRpc(startInitiativeLoop);
+  const fileInitiative = useRpc(fileInitiativeRpc);
   const loop = useSettings(initiativeLoopSettings);
   const runner = useSettings(agentRunnerSettings);
   const budget = useSettings(budgetSettings);
@@ -120,11 +121,14 @@ export function SelectedStoryPanel({
     if (busy !== null) return;
     setBusy("start");
     try {
-      const result = await startLoop({ repo, initiative: state.initiativeSlug });
-      if (!result.ok) toast.error(result.error ?? "Could not start the loop.");
-      else toast.show(result.started.length ? `Loop started: planning ${result.started.map((item) => item.story).join(", ")}.` : `Loop on. ${result.reason}.`, { variant: "success" });
+      const result = await fileInitiative({ repo, initiative: state.initiativeSlug });
+      if (!result.ok) toast.error(result.error ?? "Could not file the stories.");
+      else {
+        if (result.warning) toast.error(`Filed, but the manager wasn't told: ${result.warning}`);
+        toast.show(result.slices.length ? `Filed ${result.slices.length} for the manager: ${result.slices.join(", ")}.` : "Nothing new to file: every story is already started or filed.", { variant: "success" });
+      }
     } catch (cause) {
-      toast.error(cause instanceof Error ? cause.message : "Could not start the loop.");
+      toast.error(cause instanceof Error ? cause.message : "Could not file the stories.");
     } finally {
       setBusy(null);
       onChanged();

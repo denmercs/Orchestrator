@@ -81,7 +81,8 @@ test("the prompt carries the transcript, title, vocabulary and session names", (
   assert.ok(prompt.includes("merge England"));
   assert.ok(prompt.includes("Fix the login bug"));
   for (const word of VOICE_VOCABULARY) assert.ok(prompt.includes(word), word);
-  for (const word of ["merge", "Orchestrator", "Paseo", "Jarvis", "S1", "S3"]) assert.ok(prompt.includes(word), word);
+  for (const word of ["merge", "Orchestrator", "Paseo", "Sulti", "S1", "S3"]) assert.ok(prompt.includes(word), word);
+  assert.ok(!VOICE_VOCABULARY.includes("Jarvis"));
   assert.ok(prompt.includes("api-refactor"));
   assert.ok(prompt.includes("Docs"));
 });

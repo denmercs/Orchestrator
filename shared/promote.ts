@@ -1,8 +1,9 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
-// Starts a Story-pipeline run for a chat-promoted scratch ticket. The server mints the key as
-// `PROMOTE-<n>` for the workspace's repo and starts the initiative loop. No Jira is involved.
+// Files a chat-promoted scratch ticket for the factory manager. The server mints the key as
+// `PROMOTE-<n>` for the workspace's repo, creates its one-story initiative and files a slice in the
+// harness repo's factory inbox. No agent is started and no Jira is involved, so `agentId` is always null.
 export const promoteSessionToStory = defineRpc({
   name: "orchestration.promote.session-to-story",
   input: z.object({

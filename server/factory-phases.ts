@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { type FactorySlice, TICKET_KEY } from "../shared/factory";
 import { pipelineSettings } from "../shared/pipeline";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
-import { MARKERS, afterImplement, afterReview, commitSubject, readCycles, readMarker, statusSection, writeMarker, type LoopStep } from "../shared/story-method";
+import { MARKERS, afterImplement, afterReview, commitSubject, finishedCycles, implementStart, readCycles, readMarker, statusSection, writeMarker, type LoopStep } from "../shared/story-method";
 import { ciAction } from "./ci-watch";
 import { readFactory, writeSliceState } from "./factory-layout";
 import type { TickPaseo, TickResult } from "./factory-tick";
@@ -42,6 +42,17 @@ export function sliceSpendKey(slice: FactorySlice): { initiative: string; story:
   return slug && id ? { initiative: slug, story: id } : { initiative: slice.mission, story: slice.id };
 }
 
+// Starts a seat's agent: through the host in the slice's workspace when it has one, else by `agents.create` in its worktree.
+export async function startSeat(
+  slice: FactorySlice,
+  ports: TickPaseo,
+  spec: { config: Parameters<TickPaseo["agents"]["create"]>[0]["config"]; prompt: string; title: string; labels: Record<string, string> },
+): Promise<{ id: string }> {
+  const { workspace, worktree } = slice.state;
+  if (workspace && ports.host) return ports.host.startStepAgent(workspace, spec);
+  return ports.agents.create({ cwd: worktree, env: {}, ...spec });
+}
+
 // Starts one loop step in the slice's worktree, as the slice's builder (the reviewer for Review), and records the agent. `attempt` marks a restart
 // of a step whose session died: its prompt gets the refocus lines. `failing` is the checks a QA seat saw fail.
 function launcher(root: string, slice: FactorySlice, ports: TickPaseo, ctx: Parameters<typeof launchStep>[0]["ctx"]) {
@@ -50,7 +61,7 @@ function launcher(root: string, slice: FactorySlice, ports: TickPaseo, ctx: Para
   const factory = readFactory(root);
   const outcome = factory.missions.find((item) => item.id === mission)?.outcome ?? "";
   const spend = sliceSpendKey(slice);
-  return async (step: LoopStep, round: number, extra: { cycle?: ReturnType<typeof readCycles>[number]; attempt?: number; failing?: string } = {}) => {
+  return async (step: LoopStep, round: number, extra: { cycle?: ReturnType<typeof readCycles>[number]; cycles?: ReturnType<typeof readCycles>; attempt?: number; failing?: string } = {}) => {
     const seat = step === "review" ? "reviewer" : "builder";
     const agent = await launchStep({
       api: steps.api,
@@ -68,19 +79,19 @@ function launcher(root: string, slice: FactorySlice, ports: TickPaseo, ctx: Para
         "loop-story": spend.story,
         "loop-step": step,
         "loop-round": String(round),
+        ...(extra.cycles ? { "loop-cycles": "subagents" } : {}),
       },
       readPipeline: steps.readPipeline,
       readAgentConfig: () => steps.readAgentConfig(step),
       create: (spec) =>
-        ports.agents.create({
-          cwd: state.worktree,
+        startSeat(slice, ports, {
           config: spec.config,
           prompt: extra.attempt ? [spec.prompt, ...refocusLines(outcome, factory.project)].join("\n") : spec.prompt,
-          env: {},
           title: spec.title,
           labels: spec.labels,
         }),
       cycle: extra.cycle,
+      cycles: extra.cycles,
       failing: extra.failing,
       attempt: extra.attempt,
     });
@@ -216,13 +227,13 @@ export async function leaveBuild(
   if (session?.status === "running" || session?.status === "initializing") return null;
   const worktreeState = readText(join(state.worktree, ".harness", "state.md"));
   const { marker } = readMarker(worktreeState);
-  const open = () => readCycles(worktreeState).find((cycle) => !cycle.done);
-  if (step !== "implement" && (marker === MARKERS.planDone || marker === MARKERS.diagnoseDone)) return launch("implement", 1, { cycle: open() });
+  // The factory has no `subagentCycles` setting, so it acts as if it were on: round 1 is one parent for the open cycles.
+  if (step !== "implement" && (marker === MARKERS.planDone || marker === MARKERS.diagnoseDone)) return launch("implement", 1, implementStart(worktreeState, 1, true));
   if (step === "implement" && marker === MARKERS.implementDone) {
-    const finished = meta.cycle ? Number(meta.cycle) : null;
+    const finished = finishedCycles(meta);
     const after = afterImplement(worktreeState, finished);
     if (after.kind === "blocked") return block(root, slice, ports, after.reason);
-    const cycle = finished === null ? null : readCycles(worktreeState).find((item) => item.number === finished);
+    const cycle = typeof finished !== "number" ? null : readCycles(worktreeState).find((item) => item.number === finished);
     await (ports.commit ?? commitStory)(state.worktree, commitSubject(worktreeState, cycle?.name ?? ctx.title));
     if (after.kind === "cycle") return launch("implement", round, { cycle: after.cycle });
     // The seat that worked build is done; the QA seat gets a fresh agent.
@@ -231,18 +242,29 @@ export async function leaveBuild(
   }
   if (marker === MARKERS.diagnoseBlocked || marker === MARKERS.implementBlocked) return block(root, slice, ports, `${step} is blocked.`);
   // No marker and the agent is gone: the same step starts again, told that an earlier session stopped.
-  if (isDead(session)) return launch(step, round, { attempt: state.attempt + 1, failing: storedFailing(meta.failing) });
+  // A subagents parent comes back as a parent, with the cycles still open.
+  if (isDead(session)) {
+    const cycles = meta.cycles === "subagents" ? readCycles(worktreeState).filter((item) => !item.done) : undefined;
+    return launch(step, round, { cycles, attempt: state.attempt + 1, failing: storedFailing(meta.failing) });
+  }
   if (step !== "plan") return null;
   // The plan gate: a Plan turn that ended without `plan-done` is the planner asking. The story waits as awaiting-approval
-  // and the manager gets one steer; it approves by writing `approve: plan` in the slice's state.md, which is relayed once.
+  // and the manager gets one steer, whatever status the story already had (the loop may have parked it); it approves by
+  // writing `approve: plan` in the slice's state.md, which is relayed once. `steered: plan` is saved only when the steer was
+  // delivered (the `noteHeld` rule), so an undelivered one is tried again on the next pass.
+  if (state.steered !== "plan") {
+    const line = `Slice ${id} has a plan waiting for approval. Write \`approve: plan\` in its state.md to approve it.`;
+    const steer = ports.steer;
+    const delivered = steer && (await Promise.resolve().then(() => steer(line)).catch(() => false)) !== false;
+    if (delivered) writeSliceState(root, mission, id, { steered: "plan" });
+  }
   if (meta.status !== "awaiting-approval") {
-    await ports.steer?.(`Slice ${id} has a plan waiting for approval. Write \`approve: plan\` in its state.md to approve it.`);
     writeFrontmatter(state.story, { status: "awaiting-approval" });
     return { kind: "waiting", slice: id, why: "its plan awaits approval" };
   }
   if (state.approve !== "plan" || !state.agent || !ports.send) return { kind: "waiting", slice: id, why: "its plan awaits approval" };
   await ports.send(state.agent, APPROVE_MESSAGE);
-  writeSliceState(root, mission, id, { approve: null });
+  writeSliceState(root, mission, id, { approve: null, steered: null });
   writeFrontmatter(state.story, { status: "planning" });
   return { kind: "alive", slice: id, agent: state.agent };
 }

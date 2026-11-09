@@ -20,6 +20,11 @@ test("parseSliceState reads an empty frontmatter as an idle scout at the spec ph
     held: "",
     jira: "",
     merged: "",
+    workspace: "",
+    steered: "",
+    close: false,
+    archived: false,
+    archive_held: false,
   });
 });
 
@@ -42,6 +47,11 @@ test("parseSliceState reads every field", () => {
       held: "blocked dependency a",
       jira: "ABC-12",
       merged: "2026-11-08T10:00:00Z",
+      workspace: "wks_1",
+      steered: "plan",
+      close: "on",
+      archived: "on",
+      archive_held: "on",
     }),
     {
       phase: "build",
@@ -60,6 +70,11 @@ test("parseSliceState reads every field", () => {
       held: "blocked dependency a",
       jira: "ABC-12",
       merged: "2026-11-08T10:00:00Z",
+      workspace: "wks_1",
+      steered: "plan",
+      close: true,
+      archived: true,
+      archive_held: true,
     },
   );
 });

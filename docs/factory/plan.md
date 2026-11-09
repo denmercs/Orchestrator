@@ -2,13 +2,13 @@
 
 One agent the human talks to. Seats do the work. A tick walks the plan. The human approves anything that merges.
 
-This is the software-factory shape discussed for Orchestrator: a manager session in the role of a persistent front door, and a work tree (project, mission, slice) with spec, proof, refocus, and a ceremony check. The initiative loop becomes the machinery inside a slice. Jarvis stays the voice door onto the manager. It does not add a second harness, a second daemon, or agents that message each other.
+This is the software-factory shape discussed for Orchestrator: a manager session in the role of a persistent front door, and a work tree (project, mission, slice) with spec, proof, refocus, and a ceremony check. The initiative loop becomes the machinery inside a slice. Sulti stays the voice door onto the manager. It does not add a second harness, a second daemon, or agents that message each other.
 
 Later work should reuse the names in this file. When code adds one of these concepts, update `CONTEXT.md` in the same change.
 
 ## Names
 
-- **Manager.** The only session the human converses with about the factory. It is a model session, not Jarvis. Chat lands here, and Jarvis routes voice here. It writes the factory files and reports status. It does not edit product code.
+- **Manager.** The only session the human converses with about the factory. It is a model session, not Sulti. Chat lands here, and Sulti routes voice here. It writes the factory files and reports status. It does not edit product code.
 - **Seat.** A stable role: builder, design, QA, reviewer. The Paseo agent sitting in it is replaceable. The seat file and its notes survive compact, a dead session, and a fresh agent.
 - **Project.** The goal, in `project.md`. One factory per repo worktree.
 - **Mission.** An outcome and an ordered set of slices. Merge management lives here.
@@ -27,6 +27,14 @@ Later work should reuse the names in this file. When code adds one of these conc
 ## Files
 
 All under the factory's home worktree, kept out of git the same way `.harness/` already is. The home worktree holds the plan only. No seat builds in it. Each slice runs in its own worktree, named in its `state.md`, so two slices never share a checkout.
+
+### Slice workspace
+
+A fresh slice gets its workspace from the loop's `createStoryWorkspace`, under the repo's project (found through `listProjects`, as `startStory` does). The tick records it as `workspace` (with `worktree`) in the slice's `state.md` and in the story's frontmatter. Adopting a story copies the story's `workspace` into a slice that has none. A slice with a `workspace` starts every seat inside it through `startStepAgent`; with none on record, seats start by cwd as before. Sessions are named the loop's way: `🔁 S8 · Plan — Factory start paths` for a slice that names a story, the slice id when it has none. Implement runs as one parent session with a subagent per cycle (`loop-cycles: subagents`), not one top-level session per cycle. Later rounds (a test failure, review fixes) are one agent each.
+
+A slice is closed when its PR is merged, when the manager writes `close: on`, or when it is `ready: ci` with no PR (the work is already on base). Closing archives its workspace and records `archived: on`. While an agent is running there, the archive is skipped and the manager gets one `archive_held` steer. The repo root is never archived, and a failed archive is ignored.
+
+The sweep is a one-off the manager starts with `sweep: on` in `manager.md`. The tick archives idle stray `factory-sN` and `factory-<slug>` workspaces that no slice names (by `workspace` or `worktree`), clears the field, and steers the count.
 
 Because the tree is not in git, archiving or cleaning up the home worktree deletes the factory. The home worktree is pinned: job cleanup skips it, and archiving it asks the human first.
 
@@ -71,13 +79,13 @@ Do not move this store to SQLite for token savings. Add a queryable index later 
 
 ## Manager
 
-The manager is an ordinary model session in the home worktree. Jarvis cannot be it: Jarvis has no model behind it (`server/jarvis-provider.ts`). It only routes each utterance to a target session (`server/jarvis-router.ts`). So Jarvis stays the voice door, and its target for factory talk is the manager.
+The manager is an ordinary model session in the home worktree. Sulti cannot be it: Sulti has no model behind it (`server/jarvis-provider.ts`). It only routes each utterance to a target session (`server/jarvis-router.ts`). So Sulti stays the voice door, and its target for factory talk is the manager.
 
-The manager's create path records its agent id in `manager.md`. Paseo reopens the Jarvis session when voice mode turns on or off, so nothing keys on the Jarvis session id. If the manager session dies, a fresh one is created from the same prompt and `manager.md` gets the new id. The factory files carry what it needs.
+The manager's create path records its agent id in `manager.md`. Paseo reopens the Sulti session when voice mode turns on or off, so nothing keys on the Sulti session id. If the manager session dies, a fresh one is created from the same prompt and `manager.md` gets the new id. The factory files carry what it needs.
 
 The human's words go to the manager. The manager updates factory files and, when it must speak to a worker, the tick or an explicit steer does that send.
 
-When a slice needs the human, the tick steers one short status line into the manager id in `manager.md`. The manager says it, in chat or through Jarvis. The human does not open the builder to restate the goal.
+When a slice needs the human, the tick steers one short status line into the manager id in `manager.md`. The manager says it, in chat or through Sulti. The human does not open the builder to restate the goal.
 
 The manager prompt states three limits: it does not edit product code, it does not tell a worker to rewrite `culture.md` or seat notes, and it does not treat another agent's approval as permission to merge.
 
@@ -124,7 +132,7 @@ Remove or do not build: any path where a seat messages or approves another seat;
 
 ## Parity
 
-Tmux, the terminal UI, and a separate daemon are OpenRig's transport. The factory still has to do the same jobs inside Orchestrator. A Paseo session is a seat. The sidebar is the view of who is alive. The tick is the workflow. `.harness` is both the scope (what the work is) and the queue (who acts next). The manager is the operator, and Jarvis is the voice door onto it.
+Tmux, the terminal UI, and a separate daemon are OpenRig's transport. The factory still has to do the same jobs inside Orchestrator. A Paseo session is a seat. The sidebar is the view of who is alive. The tick is the workflow. `.harness` is both the scope (what the work is) and the queue (who acts next). The manager is the operator, and Sulti is the voice door onto it.
 
 | OpenRig behavior | Orchestrator |
 |---|---|
@@ -193,9 +201,9 @@ Workers have no tool to clear that block. The manager tells the human, and the h
 Each step is done when its check passes. Do not start the next step first.
 
 1. **Files and names.** Read and write the tree above. A missing factory directory is an idle tick, not an error. Unit-test the parser and the runnable-slice rule (`depends` ignored until step 6; one slice at a time). Until step 6 the manager is responsible for not setting `run: on` on a slice before the slices it depends on are done.
-2. **Manager session.** Create the manager as a model session in the home worktree and record its id in `manager.md`. Its create path appends the factory limits to the system prompt. Jarvis routes factory talk to that id. A test shows a worker session does not get that prompt, a status steer from the tick is sent only to the id in `manager.md`, and a voice on/off reopen of Jarvis does not change it.
+2. **Manager session.** Create the manager as a model session in the home worktree and record its id in `manager.md`. Its create path appends the factory limits to the system prompt. Sulti routes factory talk to that id. A test shows a worker session does not get that prompt, a status steer from the tick is sent only to the id in `manager.md`, and a voice on/off reopen of Sulti does not change it.
 3. **Tick restart and one owner.** A slice without `run: on` stays idle. Given a slice in `build` whose agent id is dead, the tick creates one builder agent in the slice's worktree, stores the new id, and the prompt contains the spec and the refocus lines. A live agent is left alone, including one waiting on a permission. The loop's `supervise` and `sweep` skip a story a slice names, and the tick skips a story the loop still supervises. A test with both running shows a dead builder gets exactly one replacement.
-4. **Phases.** Spec, design when `design: on`, build, test, review, and ship for `kind: ship` advance only on the evidence in the files and the turn outcome, through the loop steps in the phase table, and each advance hands the packet to the next seat. A slice without `design: on` never starts the design seat. A scout slice never opens a PR. Ready for the human produces one manager steer and does not merge. An in-flight story can be adopted as a slice. The start paths move to S8: the morning brief (`startInitiative` in `server/morning-brief.ts` and its "do it" in the Jarvis router), ticket start (`startTicket`, `startLocalTicket`), promote, the loop start file (`tickLoopStart`), the Start input (`routeStart`), and the Initiatives Start buttons.
+4. **Phases.** Spec, design when `design: on`, build, test, review, and ship for `kind: ship` advance only on the evidence in the files and the turn outcome, through the loop steps in the phase table, and each advance hands the packet to the next seat. A slice without `design: on` never starts the design seat. A scout slice never opens a PR. Ready for the human produces one manager steer and does not merge. An in-flight story can be adopted as a slice. S8 removed the start paths that started an initiative on their own; each now files a slice in mission `inbox` for the manager instead (`server/factory-file.ts`): the morning brief (`startInitiative` in `server/morning-brief.ts` and its "do it" in the Sulti router), ticket start (`startTicket`, `startLocalTicket`), promote, the loop start file (`tickLoopStart`), the Start input (`routeStart`), and the Initiatives Start buttons.
 5. **Health.** The ceremony block fires on the two signals above, on every seat phase, and does not fire on a turn that edits product code or turns a failing test green.
 6. **Fan-out.** Honor `depends`. Two slices with no dependency both run, each in its own worktree. A slice whose dependency has an empty proof does not start.
 7. **Factory view.** A Factory tab replaces the Initiatives tab and opens by default when the repo has a factory. Today, Todos, Board and Pulse stay. Start only after step 6 has run on a real story, and remove the Initiatives tab only once its Start buttons have moved (S8). The view is read-only and reads the factory files and agent status, nothing new:

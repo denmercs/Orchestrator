@@ -3,7 +3,8 @@ import { Pressable, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { TextInput, useToast } from "@getpaseo/plugin/client/react-native";
-import { createHarnessEpicRpc, startTicketRpc } from "../shared/orchestration";
+import { fileSliceRpc } from "../shared/factory-file";
+import { startTicketRpc } from "../shared/orchestration";
 import { harnessSettings } from "../shared/settings";
 import { detectLabel, routeStart, START_HINTS, type StartRoute } from "../shared/start-route";
 import { repoForKey } from "./start-jira-session";
@@ -12,8 +13,8 @@ type Theme = PluginSurfaceProps["theme"];
 
 // The start input at the top of the Initiatives tab (see CONTEXT.md, "Start input"). A bare Jira
 // key or a URL holding one starts that ticket's one-story initiative in the repo its prefix maps
-// to (else the harness repo); anything else starts a new initiative's architecture session in the
-// harness repo. On success the input clears, the started agent opens and the boards re-read.
+// to (else the harness repo); anything else is filed as a slice for the manager. On success the
+// input clears, any started agent opens and the boards re-read.
 export function StartInput({
   theme,
   compact,
@@ -29,7 +30,7 @@ export function StartInput({
   const paseo = usePaseo();
   const settings = useSettings(harnessSettings);
   const startTicket = useRpc(startTicketRpc);
-  const createEpic = useRpc(createHarnessEpicRpc);
+  const fileSlice = useRpc(fileSliceRpc);
   const toast = useToast();
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -75,23 +76,14 @@ export function StartInput({
       toast.error("Pick a harness repo for the initiative.");
       return undefined;
     }
-    const result = await createEpic({
-      repo: harnessRepo,
-      initiative: "",
-      initiativeTitle: next.title,
-      epicTitle: next.title,
-      tracker: "local",
-    });
+    const result = await fileSlice({ title: next.title });
     if (!result.ok) {
-      toast.error(result.error ?? "Could not create the initiative.");
+      toast.error(result.error ?? "Could not file the initiative.");
       return undefined;
     }
-    if (result.warning) {
-      toast.error(`Created ${result.epic}, but the architecture session didn't start: ${result.warning}`);
-    } else {
-      toast.show(`Created ${result.epic}. Architecture session started.`, { variant: "success" });
-    }
-    return result.agentId;
+    if (result.warning) toast.error(`Filed, but the manager wasn't told: ${result.warning}`);
+    else toast.show("Filed for the manager.", { variant: "success" });
+    return null;
   }
 
   return (

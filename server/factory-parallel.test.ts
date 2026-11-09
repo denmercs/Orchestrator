@@ -13,6 +13,7 @@ import type { TickPaseo } from "./factory-tick";
 const home = mkdtempSync(join(tmpdir(), "parallel-home-"));
 process.env.HOME = home;
 const { createInitiativeLoop } = await import("./initiative-loop");
+const { paseoLoopHost } = await import("./loop-host-paseo");
 const { runFactoryTick } = await import("./factory-tick");
 const { sliceDir } = await import("./factory-layout");
 
@@ -71,7 +72,6 @@ test("a loop at its parallel cap of 1 starts nothing, and the factory still star
   } as unknown as PaseoApi;
   const factoryPaseo: TickPaseo = {
     commit: async () => true,
-    worktrees: { create: async () => ({ directory: root }) },
     agents: {
       ref: (id) => ({ refresh: async () => (known[id] ? { agent: known[id] } : null) }),
       create: async (request) => {
@@ -88,7 +88,7 @@ test("a loop at its parallel cap of 1 starts nothing, and the factory still star
     async () => ({ phases: DEFAULT_PHASES, sources: [] }),
     async () => null,
   );
-  initiative.rememberPaseo(loopApi);
+  initiative.rememberHost(paseoLoopHost(loopApi));
   assert.equal(DEFAULT_LOOP_CONFIG.parallel, 1);
 
   // Act: the loop and the factory tick run together.
