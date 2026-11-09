@@ -1208,6 +1208,8 @@ function HarnessPicker({
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
   const [menu, setMenu] = useState<{ title: string; items: MenuEntry[] } | null>(null);
+  // One repo's initiatives, or every repo's when null.
+  const [repoFilter, setRepoFilter] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1341,12 +1343,30 @@ function HarnessPicker({
       </View>
     ) : null;
 
+  const filtered = repos?.find((repo) => repo.repo === repoFilter) ?? null;
+  const shown = filtered ? [filtered] : (repos ?? []);
+  const repoChoices: MenuEntry[] = [
+    { label: "All repos", icon: filtered ? "Folder" : "Check", onPress: () => setRepoFilter(null) },
+    ...(repos ?? []).map((repo) => ({
+      label: repo.name,
+      icon: filtered?.repo === repo.repo ? "Check" : "Folder",
+      onPress: () => setRepoFilter(repo.repo),
+    })),
+  ];
+
   return (
     <View style={styles.repoForm}>
       <View style={styles.headRow}>
         <Text style={[styles.panelTitle, styles.flex]} numberOfLines={1}>
           Initiatives
         </Text>
+        {(repos?.length ?? 0) > 1 ? (
+          <Button
+            label={`${filtered ? filtered.name : "All repos"} ▾`}
+            styles={styles}
+            onPress={() => setMenu({ title: "Show initiatives from", items: repoChoices })}
+          />
+        ) : null}
         <Button
           label="New initiative"
           primary
@@ -1369,7 +1389,7 @@ function HarnessPicker({
       {error ? <Text style={styles.danger}>{error}</Text> : null}
       {!repos && !error ? <Text style={styles.muted}>Looking through your repos…</Text> : null}
       {repos?.length === 0 ? <Text style={styles.muted}>No git repos in Paseo yet. Add one as a project first.</Text> : null}
-      {repos?.map((repo) => (
+      {shown.map((repo) => (
         <View key={repo.repo} style={styles.step}>
           <Text style={styles.stepLabel}>{repo.name.toUpperCase()}</Text>
           {repo.initiatives.length === 0 ? <Text style={styles.hint}>No initiatives yet.</Text> : null}
