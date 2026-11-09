@@ -87,6 +87,8 @@ import { factoryStatus } from "./server/factory-status";
 import { commitStory } from "./server/story-git";
 import { MARK } from "./server/story-steps";
 import { namedStories } from "./server/factory-layout";
+import { createSultiStrip } from "./server/sulti-strip";
+import { sultiStripRead, sultiStripSend } from "./shared/sulti-strip";
 import { createSultiRouter, MAC_ROUTER, voiceSessionCreator } from "./server/sulti-router";
 import { createMorningBrief, fetchWeather } from "./server/morning-brief";
 import { splitSessions, type VoiceEvent } from "./shared/voice-loop";
@@ -878,6 +880,21 @@ export default function contribute(
       return null;
     });
     return { ...(await voiceHub.read(after)), sultiSession, phoneActive: sultiConnection?.isActive(Date.now()) ?? false, voice: sultiConnection?.voiceState(Date.now()) ?? "unknown", settingsUnreadable: micOffGate.unreadable(), settingsChecking: micOffGate.checking() };
+  });
+  // The dashboard's Sulti strip: the Sulti session's latest reply, and typed text routed to it.
+  const strip = createSultiStrip({
+    sulti: () => ensureSulti(sultiPaseo(), deps.sultiHome),
+    timeline: async (id) =>
+      (await sultiPaseo().agents.ref(id).timeline.refetch({ direction: "tail", limit: 50, projection: "projected" })).entries,
+    route: sulti.route,
+  });
+  server.handle(sultiStripRead, async (_input, { paseo }) => {
+    helperPaseo = paseo;
+    return strip.read();
+  });
+  server.handle(sultiStripSend, async ({ text }, { paseo }) => {
+    helperPaseo = paseo;
+    return strip.send(text);
   });
   // The Mac's "good morning": the same briefing as Sulti, under its own router id so its open briefing is the Mac's.
   server.handle(voiceBrief, async ({ text }, { paseo }) => {

@@ -6,7 +6,7 @@ import { DIDNT_CATCH_NOTE, NOTHING_TO_CONFIRM, notTargetLine, pickFirstLine, SEN
 import type { BriefData } from "../shared/morning-brief";
 import type { StatusAgent } from "../shared/voice-status";
 import { VOICE_ROUTING_PREAMBLE, VOICE_SESSION_ENV } from "../shared/voice-session";
-import { createSultiRouter, MAC_ROUTER, voiceSessionCreator, type SultiInterpreter } from "./sulti-router";
+import { createSultiRouter, DASHBOARD_ROUTER, MAC_ROUTER, voiceSessionCreator, type SultiInterpreter } from "./sulti-router";
 
 const api: VoiceSession = { id: "s1", name: "api-refactor" };
 const docs: VoiceSession = { id: "s2", name: "docs" };
@@ -541,6 +541,35 @@ test("Sulti's reply is read aloud under its own name, not as a finished notice",
   const lines = await router.event({ type: "reply", sessionId: sultiId, text: "Two slices are building and none are blocked." });
   assert.deepEqual(lines.r1, ["Sulti: Two slices are building and none are blocked."]);
   assert.deepEqual((await router.event({ type: "notice", kind: "finished", sessionId: sultiId })).r1, []);
+});
+
+test("the dashboard router steers Sulti but stays quiet: not listening, not speaking, nothing owed", async () => {
+  const { router, sent } = setup({ sulti: async () => sultiId });
+  // A typed route wakes the dashboard router and sends the words to Sulti.
+  await router.route(DASHBOARD_ROUTER, "how is the factory doing", undefined, { typed: true });
+  assert.deepEqual(sent, [[sultiId, "how is the factory doing"]]);
+  assert.equal(router.stateOf(DASHBOARD_ROUTER)?.session?.id, sultiId);
+  assert.notEqual(router.stateOf(DASHBOARD_ROUTER)?.mode, "asleep");
+  // The strip has no phone: it must not count as listening or as the target's speaker.
+  assert.equal(router.listening(), false);
+  assert.equal(router.speaks(sultiId), false);
+  // A Sulti reply gives it no lines, leaves it not speaking, and a phone router still hears it.
+  await router.route("r1", "hello there");
+  const lines = await router.event({ type: "reply", sessionId: sultiId, text: "All quiet." });
+  assert.deepEqual(lines[DASHBOARD_ROUTER] ?? [], []);
+  assert.deepEqual(lines.r1, ["Sulti: All quiet."]);
+  assert.notEqual(router.stateOf(DASHBOARD_ROUTER)?.mode, "speaking");
+  assert.equal(router.speaks(sultiId), true);
+});
+
+test("the dashboard router still steers Sulti on a second typed send after a reply, and stays not listening", async () => {
+  const { router, sent } = setup({ sulti: async () => sultiId });
+  await router.route(DASHBOARD_ROUTER, "how is the factory doing", undefined, { typed: true });
+  await router.event({ type: "reply", sessionId: sultiId, text: "All quiet." });
+  // The reply never moves the dashboard router out of waiting, yet the next typed send must still go through.
+  await router.route(DASHBOARD_ROUTER, "and the next slice", undefined, { typed: true });
+  assert.deepEqual(sent, [[sultiId, "how is the factory doing"], [sultiId, "and the next slice"]]);
+  assert.equal(router.listening(), false);
 });
 
 test("after a reopen (router id changes) talk still goes to the same Sulti id", async () => {

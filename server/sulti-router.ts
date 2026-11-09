@@ -62,6 +62,9 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 // The router id the Mac's "good morning" and "status" run under, kept apart from the phone routers.
 export const MAC_ROUTER = "mac";
 
+// The router id the dashboard's Sulti strip types under. The strip doesn't speak, so it is left out of listening, speaks and event.
+export const DASHBOARD_ROUTER = "dashboard";
+
 // The name the Sulti session answers to in the session list ("switch to Sulti").
 const SULTI_SESSION_NAME = "Sulti";
 
@@ -310,7 +313,7 @@ export function createSultiRouter(ports: SultiRouterPorts) {
       const split = await refresh();
       const lines: Record<string, string[]> = {};
       await Promise.all(
-        [...entries.keys()].map((routerId) => {
+        [...entries.keys()].filter((routerId) => routerId !== DASHBOARD_ROUTER).map((routerId) => {
           const run = (chains.get(routerId) ?? Promise.resolve()).then(() => {
             const entry = entryFor(routerId);
             const state = split ? step(entry.state, { type: "sessions", ...split }).state : entry.state;
@@ -326,11 +329,11 @@ export function createSultiRouter(ports: SultiRouterPorts) {
     },
     /** Whether any phone router's loop is awake: a watched reply is dropped by a sleeping loop, so the Mac must say it. The Mac's own briefing entry doesn't count. */
     listening(): boolean {
-      return [...entries].some(([routerId, entry]) => routerId !== MAC_ROUTER && entry.state.mode !== "asleep");
+      return [...entries].some(([routerId, entry]) => routerId !== MAC_ROUTER && routerId !== DASHBOARD_ROUTER && entry.state.mode !== "asleep");
     },
     /** Whether a reply from this session can be said as the target's: it is some router's own target. */
     speaks(sessionId: string): boolean {
-      return [...entries.values()].some((entry) => entry.state.session?.id === sessionId);
+      return [...entries].some(([routerId, entry]) => routerId !== DASHBOARD_ROUTER && entry.state.session?.id === sessionId);
     },
     /** What Sulti said has finished playing (or failed to), so the loop is no longer `speaking`. */
     playbackEnded(routerId: string): void {

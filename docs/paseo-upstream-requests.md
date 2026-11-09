@@ -23,3 +23,12 @@ Follow-ups:
 1. Re-probe through the SDK (`paseo.agents.create` with the real `VOICE_HELPER_SYSTEM_PROMPT` and `cwd`); the Paseo MCP `create_agent` takes no system prompt, options or cwd, so the first probe could not.
 2. Ask for a way to start a Cursor agent with no tools (a tool allow-list, or a mode that blocks reads and shell).
 3. Time Composer 2.5 against the 8 s `INTERPRET_TIMEOUT_MS` and the summariser's 3 s `SUMMARY_FALLBACK_MS` once that holds, and time Sonnet 5.5 on both.
+
+## Embedding Paseo's chat
+
+Checked against `@getpaseo/plugin` 0.11.1 (`dist/client/contracts.d.ts`): the client API has `navigation.openAgent`, `openWorkspace` and `openBrowser`, screens, panels, composer pills and timeline transformers, but no component or surface that renders an agent's live chat inside a plugin view. So the dashboard's Sulti strip shows the latest reply, sends typed text through the Sulti router, and links out with "Open in Paseo chat".
+
+Asks, so the strip could host the chat itself:
+
+1. A `PluginAgentChat` client component that renders an agent's live chat (timeline plus composer) for a given `agentId`.
+2. Or an agent-chat panel that a screen can host, with the same props.

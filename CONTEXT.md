@@ -277,6 +277,12 @@ The bell in the header that lists the current gates, one row per Gate, with a ba
 
 _Avoid_: notifications, inbox, alert (for a context-meter warning).
 
+## Sulti strip
+
+The strip under the dashboard header, on every tab. It shows Sulti's latest reply (the last `assistant_message` in the Sulti session's timeline tail, plain text clipped to 3 lines, "No reply from Sulti yet" when there is none), a text box, Send, and **Open in Paseo chat** (`navigation.openAgent` on the Sulti id; hidden without `navigation`). Typed text goes through the Sulti router as typed text under `DASHBOARD_ROUTER`, the same path as Paseo's typed Sulti chat; the router's spoken lines (else its note) show under the box. `DASHBOARD_ROUTER` never counts as listening, speaking or owed, because the strip speaks nothing. The strip reads on mount, every 10 s and right after a send; read errors show inline, send errors toast. Paseo's live chat can't be embedded (see `docs/paseo-upstream-requests.md`). Code: `SultiStrip` in `client/sulti-strip.tsx`, `previewText`/`statusLine`/`canSend` in `client/sulti-strip-model.ts`, `createSultiStrip`/`latestReply` in `server/sulti-strip.ts`, RPCs in `shared/sulti-strip.ts`.
+
+_Avoid_: chat panel, Sulti chat (that is Paseo's own view).
+
 ## Start input
 
 The input at the top of the Initiatives tab. As you type, `routeStart` decides the route and a pill shows it: a bare Jira key (any case) or a URL holding one is **Jira ticket · track from issue type** (green); anything else is **New initiative → Manager** (blue); blank shows no pill and disables Start. The hint line under it is always shown. Start (or Enter) on a Jira key picks the repo from the key's prefix (`repoForKey`, else the harness repo; neither toasts "No repo for <PREFIX>") and calls `orchestration.start-ticket`, which writes or reuses a one-story `<key>-<slug>` initiative and files a **Filed slice** for it. Anything else calls `orchestration.factory.file-slice` with the text as the title. On success the input clears and the boards re-read; failures toast, and a steer that could not be sent toasts as a warning. Nothing here starts the loop. Code: `StartInput` in `client/start-input.tsx`, `routeStart`/`detectLabel`/`START_HINTS` in `shared/start-route.ts`, `startTicket` in `server/ticket-start.ts`.
