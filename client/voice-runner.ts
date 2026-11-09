@@ -412,13 +412,19 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     const events = ports.events;
     if (!events) return;
     let cursor = 0;
+    let lastSulti: string | null = null; // the Sulti session the last poll named
     while (polling === run) {
       try {
         const batch = await events.read(cursor);
         if (polling !== run) return;
         cursor = batch.cursor;
-        // With no target, the server's Sulti session is the default; a target already picked (or switched to) wins.
-        if (batch.sultiSession && !snapshot.session) dispatch({ type: "pick", session: { id: batch.sultiSession, name: "Sulti" } });
+        // With no target, the server's Sulti session is the default; a target already picked (or switched to) wins,
+        // unless it is the Sulti session that was just replaced.
+        if (batch.sultiSession) {
+          const replaced = !!lastSulti && lastSulti !== batch.sultiSession && snapshot.session?.id === lastSulti;
+          if (!snapshot.session || replaced) dispatch({ type: "pick", session: { id: batch.sultiSession, name: "Sulti" } });
+          lastSulti = batch.sultiSession;
+        }
         if (batch.phoneActive !== snapshot.phoneActive) publish({ phoneActive: batch.phoneActive });
         if (batch.voice && batch.voice !== snapshot.voiceGuess) publish({ voiceGuess: batch.voice });
         if (batch.settingsUnreadable !== serverUnreadable || batch.settingsChecking !== serverChecking) {

@@ -578,7 +578,7 @@ test("on() polls events with the cursor and dispatches them; off() stops the pol
   assert.equal(reads.length, 2);
 });
 
-test("with no target, a poll's sultiSession becomes the target, and a later poll with another one does not replace it", async () => {
+test("with no target, a poll's sultiSession becomes the target, and a replaced Sulti session is re-picked", async () => {
   // Arrange: voice on, nothing picked yet.
   const { runner, reads } = eventsSetup("ended", false);
   runner.on();
@@ -592,8 +592,20 @@ test("with no target, a poll's sultiSession becomes the target, and a later poll
   // Act: a later poll names a different Sulti session (it was re-created).
   reads[1].resolve({ cursor: 2, events: [], phoneActive: false, sultiSession: "s2" });
   await flush();
-  // Assert: the target already picked stays.
-  assert.equal(runner.getState().session?.id, "s1");
+  // Assert: the target was the dead Sulti, so it follows to the new one.
+  assert.deepEqual(runner.getState().session, { id: "s2", name: "Sulti" });
+});
+
+test("a target switched to by hand is kept when the Sulti session is replaced", async () => {
+  const { runner, reads } = eventsSetup("ended", false);
+  runner.on();
+  await flush();
+  reads[0].resolve({ cursor: 1, events: [], phoneActive: false, sultiSession: "s1" });
+  await flush();
+  runner.pick(alpha);
+  reads[1].resolve({ cursor: 2, events: [], phoneActive: false, sultiSession: "s2" });
+  await flush();
+  assert.equal(runner.getState().session?.id, "a1");
 });
 
 test("a target picked before the poll is kept when the poll carries a sultiSession", async () => {
