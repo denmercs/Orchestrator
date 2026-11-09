@@ -64,7 +64,7 @@ export const voiceInterpret = defineRpc({
 // the client cannot fetch GitHub directly (S0 lesson 4).
 export const voiceWakeModel = defineRpc({
   name: "orchestration.voice.wake-model",
-  input: z.object({ model: z.enum(["melspectrogram", "embedding", "hey_jarvis"]) }),
+  input: z.object({ model: z.enum(["melspectrogram", "embedding", "hey_sulti"]) }),
   output: z.object({ bytes: z.string() }),
 });
 

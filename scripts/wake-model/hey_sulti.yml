@@ -1,0 +1,55 @@
+# openWakeWord training config for the "hey sulti" wake word (openWakeWord v0.6.0, openwakeword/train.py).
+# Keys follow that release's examples/custom_model.yml.
+#
+# train.sh copies this file to the work dir with every $HOME replaced by the real home folder before training,
+# because the YAML loader does not expand environment variables. Run train.py on the rendered copy, not this one.
+
+model_name: "hey_sulti"
+
+# Both phrases are positives of one binary model; train.py splits the clip count between them.
+target_phrase:
+  - "hey sulti"
+  - "sulti"
+
+custom_negative_phrases: []
+
+# Clips: the brief asks for ~20k positives; the same number of adversarial negatives is generated automatically.
+n_samples: 20000
+n_samples_val: 2000
+tts_batch_size: 50
+augmentation_batch_size: 16
+
+# Piper voice en_US-libritts_r-medium.pt lives in this checkout (train.sh fetches it).
+piper_sample_generator_path: "$HOME/.orchestrator/voice/wake-train/src/piper-sample-generator"
+
+output_dir: "$HOME/.orchestrator/voice/wake-train/out"
+
+rir_paths:
+  - "$HOME/.orchestrator/voice/wake-train/data/mit_rirs"
+
+background_paths:
+  - "$HOME/.orchestrator/voice/wake-train/data/audioset_16k"
+  - "$HOME/.orchestrator/voice/wake-train/data/fma"
+background_paths_duplication_rate:
+  - 1
+  - 1
+
+false_positive_validation_data_path: "$HOME/.orchestrator/voice/wake-train/data/validation_set_features.npy"
+
+augmentation_rounds: 1
+
+feature_data_files:
+  "ACAV100M_sample": "$HOME/.orchestrator/voice/wake-train/data/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+
+batch_n_per_class:
+  "ACAV100M_sample": 1024
+  "adversarial_negative": 50
+  "positive": 50
+
+# The default classifier: 16 embeddings in, one score out, the shape client/voice-wake-model.ts feeds.
+model_type: "dnn"
+layer_size: 32
+
+steps: 25000
+max_negative_weight: 1500
+target_false_positives_per_hour: 0.2

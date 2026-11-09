@@ -99,7 +99,7 @@ test("still loads on a host without registerUsageSource", () => {
   assert.deepEqual(usageSourceIds({}), []);
 });
 
-test("registers the Jarvis provider", () => {
+test("registers the Sulti provider", () => {
   const ids: string[] = [];
   const noop = () => undefined;
   const server = new Proxy({} as PluginServerContext, {
@@ -112,7 +112,7 @@ test("registers the Jarvis provider", () => {
     },
   });
   contribute(server, { speakerPorts: quietSpeaker });
-  assert.deepEqual(ids, ["jarvis:Jarvis"]);
+  assert.deepEqual(ids, ["jarvis:Sulti"]);
 });
 
 type Fake = {
@@ -407,7 +407,7 @@ test("the Mac's status RPC says who needs you, hit an error or is running, and l
   ];
   const paseo = { agents: { ref: () => ({ refresh: async () => null }), list: async () => ({ entries: agents.map((agent) => ({ agent })) }) } };
   const status = handlers.get(voiceStatus.name)!;
-  assert.deepEqual(await status({ text: "Jarvis, status" }, { paseo }), { spoken: ["docs needs you. web hit an error. api is running."] });
+  assert.deepEqual(await status({ text: "Sulti, status" }, { paseo }), { spoken: ["docs needs you. web hit an error. api is running."] });
   assert.equal(await status({ text: "run the tests" }, { paseo }), null);
   stop();
 });
@@ -571,7 +571,7 @@ test("turn_ended / permission_requested reach the hub and the router; orchestrat
     await jarvis.send({
       type: "session.prompt",
       sessionId: "p1",
-      prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Jarvis, switch to api" }] } },
+      prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Sulti, switch to api" }] } },
     });
     await until(() => seen.some((e) => e.type === "session.turn" && e.state === "completed"));
     spoken.length = 0;
@@ -623,14 +623,14 @@ for (const [phoneAudio, asleep] of [[true, false], [false, false], [true, true]]
       await jarvis.send({
         type: "session.prompt",
         sessionId: "p1",
-        prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Jarvis, switch to api" }] } },
+        prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Sulti, switch to api" }] } },
       });
       await until(() => seen.some((e) => e.type === "session.turn" && e.state === "completed"));
       if (asleep) {
         await jarvis.send({
           type: "session.prompt",
           sessionId: "p1",
-          prompt: { clientMessageId: "m2", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Jarvis, ignore me" }] } },
+          prompt: { clientMessageId: "m2", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Sulti, ignore me" }] } },
         });
         await until(() => seen.filter((e) => e.type === "session.turn" && e.state === "completed").length >= 2);
       }
@@ -937,7 +937,7 @@ async function pickByPhone(providers: { connect(): Promise<unknown> }[], name: s
   await phone.send({
     type: "session.prompt",
     sessionId: "p1",
-    prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: `Jarvis, switch to ${name}` }] } },
+    prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: `Sulti, switch to ${name}` }] } },
   });
   await until(() => done);
 }

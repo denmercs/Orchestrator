@@ -8,6 +8,7 @@ import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { DEFAULT_PHASES } from "../shared/pipeline";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { TickPaseo } from "./factory-tick";
+import { paseoLoopHost } from "./loop-host-paseo";
 
 // The loop's registry lives under the home folder, so this file gets its own.
 const home = mkdtempSync(join(tmpdir(), "parallel-home-"));
@@ -88,7 +89,7 @@ test("a loop at its parallel cap of 1 starts nothing, and the factory still star
     async () => ({ phases: DEFAULT_PHASES, sources: [] }),
     async () => null,
   );
-  initiative.rememberPaseo(loopApi);
+  initiative.rememberHost(paseoLoopHost(loopApi));
   assert.equal(DEFAULT_LOOP_CONFIG.parallel, 1);
 
   // Act: the loop and the factory tick run together.

@@ -16,20 +16,21 @@ const data = (patch: Partial<BriefData> = {}): BriefData => ({
 
 test("a greeting, with or without the name, starts the briefing", () => {
   assert.equal(isBriefGreeting("Good morning"), true);
-  assert.equal(isBriefGreeting("Jarvis, good morning."), true);
+  assert.equal(isBriefGreeting("Sulti, good morning."), true);
   assert.equal(isBriefGreeting("brief me"), true);
   assert.equal(isBriefGreeting("good morning team, standup is at nine"), false);
   assert.equal(isBriefGreeting("start the loop"), false);
 });
 
 test("good morning plus the name in one sentence starts the briefing, in any order", () => {
-  assert.equal(isBriefGreeting("Good morning, Jarvis. Jarvis, good morning."), true);
-  assert.equal(isBriefGreeting("Hey Jarvis, good morning"), true);
-  assert.equal(isBriefGreeting("Jarvis, good morning to you"), true);
+  assert.equal(isBriefGreeting("Good morning, Sulti. Sulti, good morning."), true);
+  assert.equal(isBriefGreeting("Hey Sulti, good morning"), true);
+  assert.equal(isBriefGreeting("Hey Jarvis, good morning"), false);
+  assert.equal(isBriefGreeting("Sulti, good morning to you"), true);
   assert.equal(isBriefGreeting("Hey, good morning"), true);
   assert.equal(isBriefGreeting("hello good morning"), true);
   assert.equal(isBriefGreeting("Good morning team, standup is at nine"), false);
-  assert.equal(isBriefGreeting("Good morning team. Jarvis, start the loop"), false);
+  assert.equal(isBriefGreeting("Good morning team. Sulti, start the loop"), false);
 });
 
 test("the opening says greeting, weather, verse, then the first two stories and waits", () => {
@@ -55,7 +56,7 @@ test("more titles remain: it says how many are left and keeps waiting", () => {
 });
 
 test("skip jumps from the stories to the initiative", () => {
-  const r = replyBrief(startBrief(data()).state!, "Jarvis, skip");
+  const r = replyBrief(startBrief(data()).state!, "Sulti, skip");
   assert.equal(r.lines[0], "Your priority initiative is Orchestration Redesign: one story needs you.");
   assert.equal(r.state, null);
 });
