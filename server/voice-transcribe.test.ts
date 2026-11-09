@@ -28,7 +28,7 @@ function fake(over: { present?: string[]; stdout?: string; failOn?: string } = {
 
 test("converts with ffmpeg, runs whisper with the model and hints, returns cleaned text", async () => {
   const f = fake();
-  const out = await createTranscriber(f.ports)({ audio: Buffer.from("abc").toString("base64"), hints: ["merge", "Jarvis"] });
+  const out = await createTranscriber(f.ports)({ audio: Buffer.from("abc").toString("base64"), hints: ["merge", "Sulti"] });
   assert.deepEqual(out, { text: "hello world" });
   assert.equal(f.written[0]!.bytes.toString(), "abc");
   const [ff, wh] = f.calls;
@@ -36,7 +36,7 @@ test("converts with ffmpeg, runs whisper with the model and hints, returns clean
   assert.ok(ff!.args.includes("16000") && ff!.args.includes("1") && ff!.args.includes(f.written[0]!.path));
   assert.equal(wh!.cmd, "/opt/homebrew/bin/whisper-cli");
   assert.deepEqual(wh!.args.slice(0, 2), ["-m", MODEL]);
-  assert.equal(wh!.args[wh!.args.indexOf("--prompt") + 1], "merge, Jarvis");
+  assert.equal(wh!.args[wh!.args.indexOf("--prompt") + 1], "merge, Sulti");
   assert.ok(wh!.args.includes("-nt") && wh!.args.includes("-f"));
 });
 

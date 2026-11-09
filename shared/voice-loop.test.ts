@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { ASLEEP_NOTE, PASEO_VOICE_LINE, SLEEP_LINE } from "./voice-lines";
 import { ROUTER_PROVIDER_ID } from "./voice-loop";
-import { addressed, initialVoiceState, jarvisSessions, step, withoutName, type VoiceEffect, type VoiceEvent, type VoiceMode, type VoiceSession, type VoiceState } from "./voice-loop";
+import { addressed, canTarget, initialVoiceState, sultiSessions, step, withoutName, type VoiceEffect, type VoiceEvent, type VoiceMode, type VoiceSession, type VoiceState } from "./voice-loop";
 
 const api: VoiceSession = { id: "s1", name: "api-refactor" };
 const docs: VoiceSession = { id: "s2", name: "docs" };
@@ -743,22 +743,30 @@ test("typed text skips the helper: no interpret effect, so a helper drop cannot 
   assert.deepEqual(types(say(awake(), "please run the tests").effects), ["interpret"]);
 });
 
-test("jarvisSessions picks only the Sulti provider's sessions", () => {
-  const agents = [
-    { id: "a1", title: "Alpha", provider: "claude" },
-    { id: "j1", title: "Sulti", provider: ROUTER_PROVIDER_ID },
-  ];
-  assert.deepEqual(jarvisSessions(agents), [{ id: "j1", name: "Sulti" }]);
-  assert.deepEqual(jarvisSessions([agents[0]]), []);
+test("canTarget is false for a sulti session and for a legacy jarvis session, true for a normal one", () => {
+  assert.equal(canTarget({ provider: "sulti" }), false);
+  // Sessions made before the rename keep the old id: still Voice's own, never a target.
+  assert.equal(canTarget({ provider: "jarvis" }), false);
+  assert.equal(canTarget({ provider: "claude" }), true);
 });
 
-test("jarvisSessions lists the most recently active Sulti session first", () => {
+test("sultiSessions picks only the sulti provider's sessions and ignores legacy jarvis ones", () => {
+  const agents = [
+    { id: "a1", title: "Alpha", provider: "claude" },
+    { id: "old", title: "Old", provider: "jarvis" },
+    { id: "j1", title: "Sulti", provider: "sulti" },
+  ];
+  assert.deepEqual(sultiSessions(agents), [{ id: "j1", name: "Sulti" }]);
+  assert.deepEqual(sultiSessions([agents[0]]), []);
+});
+
+test("sultiSessions lists the most recently active Sulti session first", () => {
   const agents = [
     { id: "old", title: "Sulti", provider: ROUTER_PROVIDER_ID, lastActivityAt: "2026-10-14T10:00:00Z" },
     { id: "new", title: "Sulti", provider: ROUTER_PROVIDER_ID, lastActivityAt: "2026-10-14T12:00:00Z" },
     { id: "none", title: "Sulti", provider: ROUTER_PROVIDER_ID },
   ];
-  assert.deepEqual(jarvisSessions(agents).map((s) => s.id), ["new", "old", "none"]);
+  assert.deepEqual(sultiSessions(agents).map((s) => s.id), ["new", "old", "none"]);
 });
 
 test("the going-to-sleep and asleep lines name Sulti, never Jarvis", () => {

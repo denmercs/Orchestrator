@@ -1,4 +1,4 @@
-// The Jarvis router: the Voice loop (shared/voice-loop.ts) run on the server for the Jarvis provider, the same
+// The Sulti router: the Voice loop (shared/voice-loop.ts) run on the server for the Sulti provider, the same
 // loop the Mac's voice runner runs, so the phone and the Mac follow one set of rules and one wording
 // (shared/voice-lines.ts). Each utterance is stepped through the loop and its effects become steers to the
 // target plus lines to say back. The state is kept here, keyed by the router id in the session's persistence
@@ -16,19 +16,19 @@ export function voiceSessionCreator(paseo: () => VoiceCreatePaseo): (target: Voi
 }
 
 /** The interpret service's surface (server/voice-interpret.ts): `sessionId` is the target, whose recent messages the helper reads. */
-export type JarvisInterpreter = {
+export type SultiInterpreter = {
   interpret(text: string, req: { sessionId: string; sessions: VoiceSession[] }): Promise<InterpretOutcome>;
 };
 
-export type JarvisRouterPorts = {
-  /** Live sessions: `list` may be targets, `blocked` are Voice's own (Jarvis, the Voice helper). See `splitSessions`. */
+export type SultiRouterPorts = {
+  /** Live sessions: `list` may be targets, `blocked` are Voice's own (Sulti, the Voice helper). See `splitSessions`. */
   sessions(): Promise<{ list: VoiceSession[]; blocked: VoiceSession[] }>;
   /** Sends text to a session as a steer. */
   send(sessionId: string, text: string): Promise<unknown>;
   /** Starts a marked voice session beside `target` and returns its id. See `voiceSessionCreator`. */
   create(target: VoiceSession): Promise<string>;
-  /** Turns an utterance into a loop result plus how it got there. Defaults to the words as heard, minus a leading "Jarvis,". */
-  interpreter?: JarvisInterpreter;
+  /** Turns an utterance into a loop result plus how it got there. Defaults to the words as heard, minus a leading "Sulti,". */
+  interpreter?: SultiInterpreter;
   /** The morning briefing: "good morning" gathers the data and walks through it, one beat per reply. */
   brief?: {
     gather(): Promise<BriefData>;
@@ -37,7 +37,7 @@ export type JarvisRouterPorts = {
   status?(): Promise<StatusAgent[]>;
   /**
    * The factory manager as a session, or null when there is no factory. It shows in the list as "Factory manager" and is the
-   * target of a router that has none. Asked on every route, never keyed on the Jarvis session id; a rejection is said, then routing is as with null.
+   * target of a router that has none. Asked on every route, never keyed on the Sulti session id; a rejection is said, then routing is as with null.
    */
   manager?(): Promise<VoiceSession | null>;
   /**
@@ -64,9 +64,9 @@ export const MAC_ROUTER = "mac";
 // The name the factory manager answers to in the session list ("switch to factory manager").
 const FACTORY_MANAGER_NAME = "Factory manager";
 
-export function createJarvisRouter(ports: JarvisRouterPorts) {
+export function createSultiRouter(ports: SultiRouterPorts) {
   const now = ports.now ?? Date.now;
-  const interpreter: JarvisInterpreter = ports.interpreter ?? {
+  const interpreter: SultiInterpreter = ports.interpreter ?? {
     interpret: async (text) => ({ result: await namelessPassThrough.interpret(text), via: "passThrough" }),
   };
   const entries = new Map<string, Entry>();
@@ -97,7 +97,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
       briefs.delete(routerId);
       if (!isBriefGreeting(text)) return null;
       const entry = entryFor(routerId);
-      // Asleep, only the name wakes it: a "good morning" to someone else in the room is not for Jarvis.
+      // Asleep, only the name wakes it: a "good morning" to someone else in the room is not for Sulti.
       if (entry.state.mode === "asleep") {
         if (!addressed(text)) return null;
         entry.state = step(entry.state, { type: "wake" }).state;
@@ -147,7 +147,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     if (!report || !(isFactoryStatusAsk(text) || isStatusAsk(text))) return null;
     const entry = entryFor(routerId);
     if (entry.state.mode === "asleep" && !addressed(text)) return null;
-    let reply: Awaited<ReturnType<NonNullable<JarvisRouterPorts["factoryStatus"]>>>;
+    let reply: Awaited<ReturnType<NonNullable<SultiRouterPorts["factoryStatus"]>>>;
     try {
       reply = await report();
     } catch (error) {
@@ -201,7 +201,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     if (state.choices && now() - entry.choicesAt > CONFIRM_TIMEOUT_MS) state = step(state, { type: "choicesExpired" }).state;
     const choicesBefore = state.choices;
     const wasConfirming = state.mode === "confirming";
-    // Lines Jarvis couldn't say out of turn come first, once.
+    // Lines Sulti couldn't say out of turn come first, once.
     const spoken: string[] = entry.owed.splice(0);
     if (managerError) spoken.push(`I couldn't start the factory manager: ${managerError}`);
     if (landedOnManager && hadTarget) spoken.push(`Now on ${FACTORY_MANAGER_NAME}.`);
@@ -329,7 +329,7 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
     speaks(sessionId: string): boolean {
       return [...entries.values()].some((entry) => entry.state.session?.id === sessionId);
     },
-    /** What Jarvis said has finished playing (or failed to), so the loop is no longer `speaking`. */
+    /** What Sulti said has finished playing (or failed to), so the loop is no longer `speaking`. */
     playbackEnded(routerId: string): void {
       const entry = entries.get(routerId);
       if (entry) entry.state = step(entry.state, { type: "playbackEnded" }).state;
@@ -344,4 +344,4 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
   };
 }
 
-export type JarvisRouter = ReturnType<typeof createJarvisRouter>;
+export type SultiRouter = ReturnType<typeof createSultiRouter>;

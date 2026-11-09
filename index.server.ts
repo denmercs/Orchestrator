@@ -77,7 +77,7 @@ import { createVoiceInterpret } from "./server/voice-interpret";
 import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createMicOffGate } from "./server/mic-off-gate";
-import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
+import { createSultiProvider, type SultiConnection } from "./server/sulti-provider";
 import { type Filed, fileInitiative, fileSlice } from "./server/factory-file";
 import { fileInitiativeRpc, fileSliceRpc } from "./shared/factory-file";
 import { applyFactoryManager, ensureManager, steerManager } from "./server/factory-manager";
@@ -86,7 +86,7 @@ import { factoryStatus } from "./server/factory-status";
 import { commitStory } from "./server/story-git";
 import { MARK } from "./server/story-steps";
 import { namedStories } from "./server/factory-layout";
-import { createJarvisRouter, MAC_ROUTER, voiceSessionCreator } from "./server/jarvis-router";
+import { createSultiRouter, MAC_ROUTER, voiceSessionCreator } from "./server/sulti-router";
 import { createMorningBrief, fetchWeather } from "./server/morning-brief";
 import { splitSessions, type VoiceEvent } from "./shared/voice-loop";
 
@@ -172,7 +172,7 @@ export default function contribute(
     voiceHelperCwd?: string;
     // The Speaker's workers (tests stand in for the Python ones).
     speakerPorts?: (readClip: () => string | undefined) => SpeakerPorts & { start: () => void; stop: () => void };
-    // Plays the Speaker's sentences on the Mac for Speak replies and Jarvis (tests stand in for afplay and `say`).
+    // Plays the Speaker's sentences on the Mac for Speak replies and Sulti (tests stand in for afplay and `say`).
     localPorts?: (render: LocalPorts["render"]) => LocalPorts;
     // Where the cloned voice's reference clip lives when the voice setting is empty.
     defaultReferenceClip?: string;
@@ -253,7 +253,7 @@ export default function contribute(
   server.handle(exportLoopTree, ({ repo }) => loopTrees.exportTree(repo));
   server.handle(importLoopTree, ({ repo, text }) => loopTrees.importTree(repo, text));
   server.handle(copyLoopTree, ({ from, to }) => loopTrees.copyTree(from, to));
-  // Turn events, one source: the hub feeds the Mac's long poll and the Jarvis router (see publishVoice).
+  // Turn events, one source: the hub feeds the Mac's long poll and the Sulti router (see publishVoice).
   const voiceHub = createVoiceHub(realHubPorts());
   let publishVoice: (events: VoiceEvent[]) => void = () => undefined;
   // Events go out in the order they came, even when a reply waits (up to ~3 s) on its summary.
@@ -301,7 +301,7 @@ export default function contribute(
     async () => (await readHarness()).repo ?? null,
     // The round 3 nudge: said through Voice only while someone is listening, else it stays pending and the loop tries again.
     (sessionId, _line, detail) => {
-      if (!voiceNudgeLive(Date.now(), jarvis.listening(), lastAwakeMacPoll)) return false;
+      if (!voiceNudgeLive(Date.now(), sulti.listening(), lastAwakeMacPoll)) return false;
       publishVoice([{ type: "notice", kind: "roundCap", sessionId, ...(detail ? { detail } : {}) }]);
       return true;
     },
@@ -572,7 +572,7 @@ export default function contribute(
   // after voice turns off (the id already forgotten) must still stay telemetry only.
   const isVoiceHelper = (agent: { id: string; cwd: string }) =>
     agent.id === voiceHelper.agentId() || resolve(agent.cwd) === resolve(helperCwd);
-  // One interpret service for the Mac's RPCs and Jarvis: it owns the switch, the helper's lifecycle and the fallback.
+  // One interpret service for the Mac's RPCs and Sulti: it owns the switch, the helper's lifecycle and the fallback.
   const voiceInterpretService = createVoiceInterpret({
     start: async () => {
       await mkdir(helperCwd, { recursive: true });
@@ -619,7 +619,7 @@ export default function contribute(
   const offVoiceSettings = voice.subscribe(syncVoice);
   void voice.read().then(syncVoice, () => undefined);
   void micOffGate.start();
-  // The Speaker: the one voice for the Mac (voice runner, Speak replies, Jarvis) and the phone. Its workers start now, so the cloned voice is
+  // The Speaker: the one voice for the Mac (voice runner, Speak replies, Sulti) and the phone. Its workers start now, so the cloned voice is
   // warm at launch, and stop on cleanup. Until they are up it answers "loading" and the Mac falls back to `say`.
   const speakerPorts = (deps.speakerPorts ?? realSpeakerPorts)(() =>
     resolveReferenceClip(referenceClip, existsSync, deps.defaultReferenceClip ?? DEFAULT_REFERENCE_CLIP),
@@ -665,21 +665,21 @@ export default function contribute(
     }
     // A session set to speak replies is heard on one device only. Phone active with voice.phoneAudio on: its reply goes through the
     // router as a watched reply (a `voice-line`), and the Mac stays quiet. Otherwise the Speaker plays it on the Mac and its reply is
-    // kept from the Mac and Jarvis, so it is never said twice.
+    // kept from the Mac and Sulti, so it is never said twice.
     // A reply is never heard nowhere: if every phone loop is asleep it would drop the watched reply, so the Mac plays it instead.
     const picked = speakRoute({
       pill: speakReplies.has(event.agent.id),
-      phoneActive: jarvisConnection?.isActive(Date.now()) ?? false,
+      phoneActive: sultiConnection?.isActive(Date.now()) ?? false,
       phoneAudio,
     });
-    const route = picked === "phone" && !jarvis.listening() ? "mac" : picked;
+    const route = picked === "phone" && !sulti.listening() ? "mac" : picked;
     if (route !== "phone") speakReplies.onTurnEnded(event);
     const events = turnEvents(event, { watched: route === "phone" }).filter((e) => !(e.type === "reply" && route === "mac"));
     // Only a reply a loop will say gets a summary: watched, or from a phone router's or the Mac's target (a Mac-route reply is filtered above). Off or late, it goes without.
     publishInOrder(async () =>
       Promise.all(
         events.map(async (e) => {
-          if (e.type !== "reply" || !(e.watched || jarvis.speaks(e.sessionId) || e.sessionId === macTarget) || !voiceInterpretService.enabled()) return e;
+          if (e.type !== "reply" || !(e.watched || sulti.speaks(e.sessionId) || e.sessionId === macTarget) || !voiceInterpretService.enabled()) return e;
           const summary = await replySummary.summarize(e.text).catch(() => null);
           return summary ? { ...e, summary } : e;
         }),
@@ -796,29 +796,29 @@ export default function contribute(
     );
   }, loopStart.everyMs);
   loopStartTimer.unref?.();
-  // Jarvis: a provider whose sessions route what you say (Paseo voice mode) to the target each router picks by voice.
+  // Sulti: a provider whose sessions route what you say (Paseo voice mode) to the target each router picks by voice.
   // Providers get no Paseo handle, so it uses the last one any event or RPC gave.
-  const jarvisPaseo = () => {
+  const sultiPaseo = () => {
     const paseo = paseoNow() ?? voicePaseo ?? helperPaseo;
     if (!paseo) throw new Error("Paseo isn't ready yet. Try again in a moment.");
     return paseo;
   };
   const liveAgents = async () => {
-    const listed = await jarvisPaseo().agents.list({ filter: { includeArchived: false }, page: { limit: 200 } });
+    const listed = await sultiPaseo().agents.list({ filter: { includeArchived: false }, page: { limit: 200 } });
     return listed.entries.map((entry) => entry.agent).filter((agent) => agent.status !== "closed" && !agent.archivedAt);
   };
-  const jarvis = createJarvisRouter({
+  const sulti = createSultiRouter({
     sessions: async () => splitSessions(await liveAgents()),
     // "Status": the same live agents; the line itself is built in shared/voice-status.ts.
     status: liveAgents,
-    send: (sessionId, text) => jarvisPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
+    send: (sessionId, text) => sultiPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
     interpreter: voiceInterpretService,
-    create: voiceSessionCreator(jarvisPaseo),
+    create: voiceSessionCreator(sultiPaseo),
     // The factory manager of the harness repo's factory; no repo setting, or no factory there, means none.
     manager: async () => {
       const { repo } = await readHarness();
       if (!repo) return null;
-      const id = await ensureManager(repo, jarvisPaseo());
+      const id = await ensureManager(repo, sultiPaseo());
       return id ? { id, name: "Factory manager" } : null;
     },
     // "Where are we": a cheap one-shot over the factory's files, so the manager isn't woken. Null when there is no factory.
@@ -828,10 +828,10 @@ export default function contribute(
       return factoryStatus(repo, {
         ask: defaultAsk(),
         unavailable: deps.askUnavailable ?? (() => askUnavailable()),
-        alive: async (id) => !isDead((await jarvisPaseo().agents.ref(id).refresh())?.agent),
+        alive: async (id) => !isDead((await sultiPaseo().agents.ref(id).refresh())?.agent),
       });
     },
-    // "Good morning, Jarvis": weather, the verse, your Jira stories and the priority initiative, one beat at a time.
+    // "Good morning, Sulti": weather, the verse, your Jira stories and the priority initiative, one beat at a time.
     brief: createMorningBrief({
       weather: () => fetchWeather(),
       verse: () => loadDailyVerse(),
@@ -844,13 +844,13 @@ export default function contribute(
   });
   // What each event says to the phone: the router steps it into every router's loop, and the open voice-mode
   // session says (or is owed) the lines. The Mac reads the same events from the hub.
-  let jarvisConnection: JarvisConnection | null = null;
+  let sultiConnection: SultiConnection | null = null;
   publishVoice = (events) => {
     for (const event of events) {
       voiceHub.publish(event);
-      void jarvis
+      void sulti
         .event(event)
-        .then((byRouter) => Promise.all(Object.entries(byRouter).map(([routerId, lines]) => jarvisConnection?.say(routerId, lines))))
+        .then((byRouter) => Promise.all(Object.entries(byRouter).map(([routerId, lines]) => sultiConnection?.say(routerId, lines))))
         .catch((error) => console.warn("orchestrator: Sulti event failed", error));
     }
   };
@@ -860,38 +860,38 @@ export default function contribute(
     if (awake) lastAwakeMacPoll = Date.now();
     helperPaseo = paseo;
     macTarget = target ?? null;
-    return { ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false, voice: jarvisConnection?.voiceState(Date.now()) ?? "unknown", settingsUnreadable: micOffGate.unreadable(), settingsChecking: micOffGate.checking() };
+    return { ...(await voiceHub.read(after)), phoneActive: sultiConnection?.isActive(Date.now()) ?? false, voice: sultiConnection?.voiceState(Date.now()) ?? "unknown", settingsUnreadable: micOffGate.unreadable(), settingsChecking: micOffGate.checking() };
   });
-  // The Mac's "good morning": the same briefing as Jarvis, under its own router id so its open briefing is the Mac's.
+  // The Mac's "good morning": the same briefing as Sulti, under its own router id so its open briefing is the Mac's.
   server.handle(voiceBrief, async ({ text }, { paseo }) => {
     helperPaseo = paseo;
-    const briefed = await jarvis.brief(MAC_ROUTER, text);
+    const briefed = await sulti.brief(MAC_ROUTER, text);
     return briefed && { spoken: briefed.spoken };
   });
-  // The Mac's "status": the same line as Jarvis says on the phone.
+  // The Mac's "status": the same line as Sulti says on the phone.
   server.handle(voiceStatus, async ({ text }, { paseo }) => {
     helperPaseo = paseo;
-    const answered = await jarvis.status(MAC_ROUTER, text);
+    const answered = await sulti.status(MAC_ROUTER, text);
     return answered && { spoken: answered.spoken };
   });
   // Paseo 0.11.0+ only, like the usage source.
-  const jarvisProvider = createJarvisProvider({
-    route: jarvis.route,
+  const sultiProvider = createSultiProvider({
+    route: sulti.route,
     warm: voiceInterpretService.warm,
-    owe: jarvis.owe,
-    playbackEnded: jarvis.playbackEnded,
+    owe: sulti.owe,
+    playbackEnded: sulti.playbackEnded,
     phoneAudio: () => phoneAudio,
     // voice.micOff: what Paseo voice mode heard is dropped before the router; the Mac shows what got through.
     muted: () => micOffGate.muted(),
     heard: (_routerId, text) => voiceHub.publish({ type: "heard", text }),
-    // On the Mac Jarvis speaks through the same Speaker; false (an empty line, or a Speaker still loading) lets Paseo's `speak` take it.
+    // On the Mac Sulti speaks through the same Speaker; false (an empty line, or a Speaker still loading) lets Paseo's `speak` take it.
     localSpeak: async (text) => (text.trim() ? (await localVoice.speak(text)) !== "unavailable" : false),
   });
   server.registerProvider?.({
-    ...jarvisProvider,
+    ...sultiProvider,
     async connect(...args) {
-      const connection = (await jarvisProvider.connect(...args)) as JarvisConnection;
-      jarvisConnection = connection;
+      const connection = (await sultiProvider.connect(...args)) as SultiConnection;
+      sultiConnection = connection;
       return connection;
     },
   });

@@ -86,7 +86,7 @@ Do not move this store to SQLite for token savings. Add a queryable index later 
 
 Two kinds of manager session, and the human talks to only one of them.
 
-**Sulti** is the one global manager session. It is an ordinary model session in its own folder, `~/.orchestrator/sulti`, not in any repo's worktree, and it is the only session the human talks to, in voice and in typed chat. Today Sulti has no model behind it: it only routes each utterance to a target session (`server/jarvis-provider.ts`, `server/jarvis-router.ts`). The router stays, and its default target becomes Sulti. The `jarvis` provider id and those file names do not change.
+**Sulti** is the one global manager session. It is an ordinary model session in its own folder, `~/.orchestrator/sulti`, not in any repo's worktree, and it is the only session the human talks to, in voice and in typed chat. Today Sulti has no model behind it: it only routes each utterance to a target session (`server/sulti-provider.ts`, `server/sulti-router.ts`). The router stays, and its default target becomes Sulti. The provider id is `sulti`.
 
 The deterministic **Voice loop** (`shared/voice-loop.ts`) stays in front of Sulti. The confirm gate (merge, delete, interrupt) and the fast paths (switch, list, never mind, wake word) are decided there, in code, and never reach the model. A model session does not get to approve a merge.
 

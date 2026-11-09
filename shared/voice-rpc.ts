@@ -30,7 +30,7 @@ export const voiceHelperStop = defineRpc({
 });
 
 // Reads (no `enabled`) or flips the helper's switch, which lives in the server's interpret service. Both the voice
-// runner and Jarvis follow it. Answers the switch as it is now.
+// runner and Sulti follow it. Answers the switch as it is now.
 export const voiceHelperSwitch = defineRpc({
   name: "orchestration.voice.helper.switch",
   input: z.object({ enabled: z.boolean().optional() }),
@@ -81,7 +81,7 @@ export const voiceSpeak = defineRpc({
 });
 
 // Long poll for the Mac's voice runner: answers at once when there are events past `after`, else waits up to 20 s. `phoneActive`
-// means Jarvis is speaking on the phone, so the Mac stays quiet.
+// means Sulti is speaking on the phone, so the Mac stays quiet.
 export const voiceEvents = defineRpc({
   name: "orchestration.voice.events",
   // `target`: the Mac's current voice target (the pill's pick), so the server knows its replies get a spoken summary.
@@ -91,7 +91,7 @@ export const voiceEvents = defineRpc({
     cursor: z.number().int().min(0),
     events: z.array(z.custom<VoiceEvent>((v) => v !== null && typeof v === "object" && typeof (v as { type?: unknown }).type === "string")),
     phoneActive: z.boolean(),
-    // A best guess at whether Paseo voice mode is on, from the Jarvis sessions Paseo opened; absent from an older server.
+    // A best guess at whether Paseo voice mode is on, from the Sulti sessions Paseo opened; absent from an older server.
     voice: z.enum(["on", "off", "unknown"]).optional(),
     // The saved voice setting can't be read, so Ignore me is off and speech goes through; the Mac says so.
     settingsUnreadable: z.boolean().optional(),

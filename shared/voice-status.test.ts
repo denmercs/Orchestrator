@@ -69,7 +69,7 @@ test("closed, archived and Voice's own sessions are not counted", () => {
   const line = statusLine([
     agent("old", { status: "closed" }),
     agent("gone", { status: "running", archivedAt: "2026-10-01" }),
-    agent("jarvis", { status: "running", provider: "jarvis" }),
+    agent("sulti", { status: "running", provider: "sulti" }),
     agent("helper", { status: "running", labels: { kind: "voice-helper" } }),
   ]);
   assert.equal(line, "Nothing is running.");

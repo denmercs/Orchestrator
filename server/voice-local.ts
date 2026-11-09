@@ -1,4 +1,4 @@
-// Speaks on the Mac itself, for Speak replies and Jarvis: sentence by sentence through the one Speaker, so it is the same
+// Speaks on the Mac itself, for Speak replies and Sulti: sentence by sentence through the one Speaker, so it is the same
 // voice as the drawer's. Players are ports (afplay in real life), so tests need neither audio nor a Mac. There is no
 // fallback voice: macOS `say` sounded robotic, so a Speaker that is loading or failed says nothing and `speak` reports it.
 import { spawn } from "node:child_process";

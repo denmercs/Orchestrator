@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ProviderEvent, ProviderInput, ProviderPrompt } from "@getpaseo/plugin/server/provider";
-import { createJarvisConnection, createJarvisProvider, JARVIS_ACTIVE_MS, VOICE_GUESS_MS, promptText, routerIdOf, speak, spokenText } from "./jarvis-provider";
-import type { RouteResult } from "./jarvis-router";
+import { createSultiConnection, createSultiProvider, SULTI_ACTIVE_MS, VOICE_GUESS_MS, promptText, routerIdOf, speak, spokenText } from "./sulti-provider";
+import type { RouteResult } from "./sulti-router";
 
 const PASEO = { type: "http" as const, url: "http://127.0.0.1:1/mcp", headers: { Authorization: "Bearer t" } };
 const SPOKEN = "<spoken-input>\nrun the tests\n</spoken-input>\n<instruction>Reply with the speak tool.</instruction>";
@@ -66,7 +66,7 @@ function connect(result: RouteResult, fetchReply = OK_JSON, phoneAudio?: () => b
   const owed: [string, string[]][] = [];
   const ended: string[] = [];
   const { impl, calls } = fakeFetch({ body: fetchReply });
-  const connection = createJarvisConnection({
+  const connection = createSultiConnection({
     route: async (routerId, text) => {
       routed.push([routerId, text]);
       return result;
@@ -221,8 +221,8 @@ test("close and interrupt complete their requests", async () => {
 });
 
 test("the provider registers as Sulti with one model", async () => {
-  const provider = createJarvisProvider({ route: async () => ({ spoken: [], note: null }) });
-  assert.equal(provider.id, "jarvis");
+  const provider = createSultiProvider({ route: async () => ({ spoken: [], note: null }) });
+  assert.equal(provider.id, "sulti");
   assert.equal(provider.label, "Sulti");
   assert.equal(provider.description, "Talk to your sessions hands-free with Paseo voice mode.");
   const connection = await provider.connect({ versions: [1], capabilities: [] });
@@ -247,7 +247,7 @@ test("a prompt on a session that is not open fails with an error that names Sult
 test("a new prompt while a turn is open completes the earlier turn first", async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => (release = resolve));
-  const connection = createJarvisConnection({
+  const connection = createSultiConnection({
     route: async (_id, text) => {
       if (text === "first") await gate;
       return { spoken: [`heard ${text}`], note: null };
@@ -277,7 +277,7 @@ test("interrupt aborts the open turn's route and cancels the turn", async () => 
   let signal: AbortSignal | undefined;
   let release!: () => void;
   const gate = new Promise<void>((resolve) => (release = resolve));
-  const connection = createJarvisConnection({
+  const connection = createSultiConnection({
     route: async (_id, _text, s) => {
       signal = s;
       await gate;
@@ -300,21 +300,21 @@ test("interrupt aborts the open turn's route and cancels the turn", async () => 
   assert.equal(events.filter((e) => e.type === "timeline.item").length, 0);
 });
 
-test("Jarvis is active after a prompt, until ten minutes idle", async () => {
+test("Sulti is active after a prompt, until ten minutes idle", async () => {
   const { connection, events } = connect({ spoken: ["ok"], note: null });
-  const jarvis = connection as typeof connection & { isActive(now: number): boolean };
-  await jarvis.send(open());
-  assert.equal(jarvis.isActive(Date.now()), false);
-  await jarvis.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
+  const sulti = connection as typeof connection & { isActive(now: number): boolean };
+  await sulti.send(open());
+  assert.equal(sulti.isActive(Date.now()), false);
+  await sulti.send({ type: "session.prompt", sessionId: "p1", prompt: prompt(SPOKEN) });
   await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
   const now = Date.now();
-  assert.equal(JARVIS_ACTIVE_MS, 10 * 60 * 1000);
-  assert.equal(jarvis.isActive(now), true);
-  assert.equal(jarvis.isActive(now + JARVIS_ACTIVE_MS - 1000), true);
-  assert.equal(jarvis.isActive(now + JARVIS_ACTIVE_MS + 1000), false);
+  assert.equal(SULTI_ACTIVE_MS, 10 * 60 * 1000);
+  assert.equal(sulti.isActive(now), true);
+  assert.equal(sulti.isActive(now + SULTI_ACTIVE_MS - 1000), true);
+  assert.equal(sulti.isActive(now + SULTI_ACTIVE_MS + 1000), false);
 });
 
-test("Jarvis is not active without a paseo MCP server, or once the session is closed", async () => {
+test("Sulti is not active without a paseo MCP server, or once the session is closed", async () => {
   const bare = connect({ spoken: [], note: null });
   const noVoice = bare.connection as typeof bare.connection & { isActive(now: number): boolean };
   const withoutPaseo = open();
@@ -325,13 +325,13 @@ test("Jarvis is not active without a paseo MCP server, or once the session is cl
   assert.equal(noVoice.isActive(Date.now()), false);
 
   const { connection, events } = connect({ spoken: [], note: null });
-  const jarvis = connection as typeof connection & { isActive(now: number): boolean };
-  await jarvis.send(open());
-  await jarvis.send({ type: "session.prompt", sessionId: "p1", prompt: prompt("hello") });
+  const sulti = connection as typeof connection & { isActive(now: number): boolean };
+  await sulti.send(open());
+  await sulti.send({ type: "session.prompt", sessionId: "p1", prompt: prompt("hello") });
   await settle(events, (e) => e.type === "session.turn" && e.state === "completed");
-  assert.equal(jarvis.isActive(Date.now()), true);
-  await jarvis.send({ type: "session.close", requestId: "q3", sessionId: "p1" });
-  assert.equal(jarvis.isActive(Date.now()), false);
+  assert.equal(sulti.isActive(Date.now()), true);
+  await sulti.send({ type: "session.close", requestId: "q3", sessionId: "p1" });
+  assert.equal(sulti.isActive(Date.now()), false);
 });
 
 test("with phoneAudio off, say() speaks the lines out of turn, stamps activity and ends playback", async () => {
@@ -391,7 +391,7 @@ test("say() waits for an open turn to end before speaking", async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => (release = resolve));
   const { impl, calls } = fakeFetch({ body: OK_JSON });
-  const connection = createJarvisConnection({
+  const connection = createSultiConnection({
     route: async () => {
       await gate;
       return { spoken: ["Sent to docs."], note: null };
@@ -484,11 +484,11 @@ test("a multi-line briefing reply is spoken once, in one piece, through the Mac'
 
 // --- Mute and the drawer's conversation ---
 
-function connectWith(extra: Partial<Parameters<typeof createJarvisConnection>[0]>) {
+function connectWith(extra: Partial<Parameters<typeof createSultiConnection>[0]>) {
   const routed: [string, string][] = [];
   const heard: [string, string][] = [];
   const { impl, calls } = fakeFetch({ body: OK_JSON });
-  const connection = createJarvisConnection({
+  const connection = createSultiConnection({
     route: async (routerId, text) => {
       routed.push([routerId, text]);
       return { spoken: ["Sent to docs."], note: null };
@@ -587,8 +587,8 @@ test("voiceState stays on through a long idle spell and only decays to unknown a
   await connection.send(open({ version: 1, data: { routerId: "r1" } }));
   await settle(events, (e) => e.type === "session.ready");
   const now = Date.now();
-  assert.ok(VOICE_GUESS_MS > JARVIS_ACTIVE_MS);
-  assert.equal(connection.voiceState(now + JARVIS_ACTIVE_MS + 1000), "on");
+  assert.ok(VOICE_GUESS_MS > SULTI_ACTIVE_MS);
+  assert.equal(connection.voiceState(now + SULTI_ACTIVE_MS + 1000), "on");
   assert.equal(connection.voiceState(now + VOICE_GUESS_MS - 1000), "on");
   assert.equal(connection.voiceState(now + VOICE_GUESS_MS + 1000), "unknown");
 });

@@ -83,14 +83,14 @@ export type VoiceCreatePaseo = {
 };
 
 // A marked voice session in the target's folder and workspace, on its provider only: the agent.create hook picks the
-// model (see applyVoiceSession). Shared by the drawer's link and the Jarvis router.
+// model (see applyVoiceSession). Shared by the drawer's link and the Sulti router.
 export async function createVoiceSession(paseo: VoiceCreatePaseo, targetId: string): Promise<string> {
   return createBeside(paseo, targetId, { provider: null, env: { [VOICE_SESSION_ENV]: "1" } });
 }
 
-// The Jarvis router session (the `jarvis` provider) in the target's folder and workspace. Not marked as a voice
+// The Sulti router session (the `sulti` provider) in the target's folder and workspace. Not marked as a voice
 // session: that mark swaps the provider for the voice profile's, and the router has no model behind it.
-export async function createJarvisSession(paseo: VoiceCreatePaseo, targetId: string): Promise<string> {
+export async function createSultiSession(paseo: VoiceCreatePaseo, targetId: string): Promise<string> {
   return createBeside(paseo, targetId, { provider: ROUTER_PROVIDER_ID, env: {} });
 }
 

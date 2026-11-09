@@ -1,7 +1,7 @@
-// The Voice loop: a pure state machine that decides everything the Jarvis panel does.
+// The Voice loop: a pure state machine that decides everything the Sulti panel does.
 // step(state, event) → { state, effects }. Adapters (mic, transcriber, interpreter, session link, speaker) only carry
 // events in and effects out; the loop holds no clocks and imports only its own wording (voice-lines) and name
-// matching (voice-names), so any bundle can reach it. The Voice runner (Jarvis panel, Mac) and the Jarvis router (phone) both run it.
+// matching (voice-names), so any bundle can reach it. The Voice runner (Sulti panel, Mac) and the Sulti router (phone) both run it.
 import { CANCELLED, CONFIRM_AGAIN, confirmLine, listLine, newSessionLine, noChoiceLine, noSessionLine, notTargetLine, NOTHING_TO_CONFIRM, pickFirstLine, replyLine, spokenLine, switchedLine, WAKE_LINE, whichLine } from "./voice-lines";
 import { choiceNumber, exactSessions, matchSessions, shortName } from "./voice-names";
 
@@ -14,7 +14,7 @@ export type VoiceState = {
   mode: VoiceMode;
   session: VoiceSession | null;
   sessions: VoiceSession[];
-  /** Voice's own sessions (Jarvis, the Voice helper): never a target, or Jarvis would steer itself. */
+  /** Voice's own sessions (Sulti, the Voice helper): never a target, or Sulti would steer itself. */
   blocked: VoiceSession[];
   talking: boolean;
   pending: { seq: number; heard: string } | null;
@@ -52,7 +52,7 @@ export type VoiceEvent =
   | { type: "confirm"; word: string }
   | { type: "pick"; session: VoiceSession }
   | { type: "sessions"; list: VoiceSession[]; blocked?: VoiceSession[] }
-  /** A numbered list unanswered for `CONFIRM_TIMEOUT_MS` (the runner's timer, or Jarvis on the next words) is forgotten. */
+  /** A numbered list unanswered for `CONFIRM_TIMEOUT_MS` (the runner's timer, or Sulti on the next words) is forgotten. */
   | { type: "choicesExpired" }
   | { type: "notice"; kind: string; sessionId: string; detail?: string }
   | { type: "interrupt" }
@@ -75,11 +75,17 @@ export type VoiceEffect =
 
 export type VoiceStep = { state: VoiceState; effects: VoiceEffect[] };
 
-/** How long a confirm waits for its word, and a numbered list for its number, on the Mac (the runner's timer) and the phone (Jarvis), before it is dropped. */
+/** How long a confirm waits for its word, and a numbered list for its number, on the Mac (the runner's timer) and the phone (Sulti), before it is dropped. */
 export const CONFIRM_TIMEOUT_MS = 20_000;
 
-/** Jarvis's provider id and the Voice helper's label: Voice's own sessions, never a target. */
-export const ROUTER_PROVIDER_ID = "jarvis";
+/** Sulti's provider id and the Voice helper's label: Voice's own sessions, never a target. */
+export const ROUTER_PROVIDER_ID = "sulti";
+
+/**
+ * Sulti's provider id before the rename. Paseo keeps sessions made on it, but no provider serves them now. They stay Voice's
+ * own (`canTarget` is false, so no pill and no spoken turn events) and are never reopened (`sultiSessions` skips them).
+ */
+export const LEGACY_ROUTER_PROVIDER_ID = "jarvis";
 export const VOICE_HELPER_KIND = "voice-helper";
 
 /** The confirm word that means "cancel" (button or the runner's timeout). */
@@ -375,13 +381,13 @@ export function sessionName(agent: { id: string; title?: string | null }): strin
 
 type AgentLike = { id: string; title?: string | null; provider?: string; labels?: Record<string, string> | null; lastActivityAt?: string | null };
 
-/** False for Voice's own sessions: a Jarvis session or the Voice helper. */
+/** False for Voice's own sessions: a Sulti session or the Voice helper. */
 export function canTarget(agent: { provider?: string; labels?: Record<string, string> | null }): boolean {
-  return agent.provider !== ROUTER_PROVIDER_ID && agent.labels?.kind !== VOICE_HELPER_KIND;
+  return agent.provider !== ROUTER_PROVIDER_ID && agent.provider !== LEGACY_ROUTER_PROVIDER_ID && agent.labels?.kind !== VOICE_HELPER_KIND;
 }
 
-/** Jarvis's own sessions, most recently active first, for opening its Paseo chat. */
-export function jarvisSessions(agents: AgentLike[]): VoiceSession[] {
+/** Sulti's own sessions, most recently active first, for opening its Paseo chat. */
+export function sultiSessions(agents: AgentLike[]): VoiceSession[] {
   const at = (a: AgentLike) => (a.lastActivityAt ? Date.parse(a.lastActivityAt) || 0 : 0);
   return agents
     .filter((a) => a.provider === ROUTER_PROVIDER_ID)

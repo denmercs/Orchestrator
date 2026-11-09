@@ -1,4 +1,4 @@
-// The Voice event hub: the last turn events with a cursor, handed to the Jarvis router (listeners) and the drawer (long poll). The timer is a port so tests never wait.
+// The Voice event hub: the last turn events with a cursor, handed to the Sulti router (listeners) and the drawer (long poll). The timer is a port so tests never wait.
 import type { VoiceEvent } from "../shared/voice-loop";
 
 export const HUB_KEEP = 50;

@@ -1,5 +1,5 @@
-// "Jarvis, status": one short spoken summary of the sessions, from their live state. Pure: the agents are listed
-// elsewhere (the server) and handed in, so the drawer (Mac) and Jarvis (phone) say the same words.
+// "Sulti, status": one short spoken summary of the sessions, from their live state. Pure: the agents are listed
+// elsewhere (the server) and handed in, so the drawer (Mac) and Sulti (phone) say the same words.
 import { NOTHING_RUNNING, statusErrorLine, statusIdleLine, statusCapped, statusNeedsYouLine, statusRunningLine } from "./voice-lines";
 import { canTarget, sessionName, withoutName } from "./voice-loop";
 import { shortName } from "./voice-names";

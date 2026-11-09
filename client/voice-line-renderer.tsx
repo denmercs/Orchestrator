@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { createLineGate, shouldSpeakHere } from "./voice-line-model";
 
-// The data Jarvis puts on a `voice-line` timeline item (server/jarvis-provider.ts).
+// The data Sulti puts on a `voice-line` timeline item (server/sulti-provider.ts).
 export const voiceLineSchema = z.object({ lineId: z.string(), text: z.string() });
 export type VoiceLineData = z.infer<typeof voiceLineSchema>;
 type Speaker = { speak(text: string, replyId: string): Promise<unknown> };

@@ -10,7 +10,7 @@ export const MAX_INTERPRETS = 20;
 
 export const MAX_HOLD_MS = 30_000;
 export const MIN_HOLD_MS = 300;
-// One timeout for the Mac's runner and Jarvis on the phone.
+// One timeout for the Mac's runner and Sulti on the phone.
 export { CONFIRM_TIMEOUT_MS };
 export const POLL_BACKOFF_MS = 2_000;
 export const BASE_HINTS = ["merge", "Orchestrator", "Paseo", "Sulti"];
@@ -22,8 +22,8 @@ export type VoiceRunnerPorts = {
   link: { say(sessionId: string, text: string): Promise<unknown>; interrupt(sessionId: string): Promise<unknown>;
     /** Starts a voice session beside `target` and returns its id. */
     create?(target: VoiceSession): Promise<string>;
-    /** Starts the Jarvis router session (the phone's voice path) beside `target` and returns its id. */
-    createJarvis?(target: VoiceSession): Promise<string>;
+    /** Starts the Sulti router session (the phone's voice path) beside `target` and returns its id. */
+    createSulti?(target: VoiceSession): Promise<string>;
   };
   /** The Voice helper (the server owns it): start/stop with voice, its switch, and interpret. Defaults to sending the text as heard. */
   helper?: {
@@ -71,11 +71,11 @@ export type TranscriptEntry = { text: string; outcome: string };
 
 export type InterpretRecord = { heard: string; outcome: InterpretOutcome };
 
-export type ConversationEntry = { from: "you"; text: string; outcome: string } | { from: "jarvis"; text: string };
+export type ConversationEntry = { from: "you"; text: string; outcome: string } | { from: "sulti"; text: string };
 
 /** Best guess at whether Paseo voice mode is on; Paseo gives plugins no way to know for sure. */
 export type VoiceGuess = "on" | "off" | "unknown";
-export type VoiceSnapshot = VoiceState & { lines: string[]; conversation: ConversationEntry[]; transcripts: TranscriptEntry[]; interprets: InterpretRecord[]; helper: boolean; error: string | null; phoneActive: boolean; micOn: boolean; /** voice.micOff is on: what you say is dropped. Follows the saved pref only. */ ignoring: boolean; /** The mic should be on but could not open. */ micUnavailable: boolean; voiceGuess: VoiceGuess; /** The saved voice setting can't be read: Ignore me is off and the mic defaults to on. */ settingsUnreadable: boolean; /** The Jarvis session's agent id, for opening its Paseo chat. */ jarvisAgentId: string | null; /** The saved Ignore me value isn't known yet, so speech is held and the mic stays closed. */ settingsChecking: boolean };
+export type VoiceSnapshot = VoiceState & { lines: string[]; conversation: ConversationEntry[]; transcripts: TranscriptEntry[]; interprets: InterpretRecord[]; helper: boolean; error: string | null; phoneActive: boolean; micOn: boolean; /** voice.micOff is on: what you say is dropped. Follows the saved pref only. */ ignoring: boolean; /** The mic should be on but could not open. */ micUnavailable: boolean; voiceGuess: VoiceGuess; /** The saved voice setting can't be read: Ignore me is off and the mic defaults to on. */ settingsUnreadable: boolean; /** The Sulti session's agent id, for opening its Paseo chat. */ sultiAgentId: string | null; /** The saved Ignore me value isn't known yet, so speech is held and the mic stays closed. */ settingsChecking: boolean };
 
 
 export const AUTO_SLEEP_MS = 60_000;
@@ -85,7 +85,7 @@ const keepLast = <T>(list: T[], add: T[], max: number): T[] => [...list, ...add]
 export function createVoiceRunner(ports: VoiceRunnerPorts) {
   const clock = ports.clock ?? { setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), clearTimeout: (h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>) };
   const entries: Array<{ id: number; text: string; outcome: string }> = [];
-  const convo: Array<{ id?: number; from: "you" | "jarvis"; text: string; outcome?: string }> = []; // your words and Jarvis's lines, in order
+  const convo: Array<{ id?: number; from: "you" | "sulti"; text: string; outcome?: string }> = []; // your words and Sulti's lines, in order
   const waiting = new Map<number, number>(); // interpret seq -> entry id
   let nextEntry = 0;
   let nextReply = 0;
@@ -95,7 +95,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   let lastSent: number | null = null;
   let confirmEntry: number | null = null; // the transcript that asked to confirm
   const listeners = new Set<() => void>();
-  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], conversation: [], transcripts: [], interprets: [], helper: HELPER_DEFAULT_ON, error: null, phoneActive: false, micOn: false, ignoring: false, micUnavailable: false, voiceGuess: "unknown", settingsUnreadable: false, jarvisAgentId: null, settingsChecking: false };
+  let snapshot: VoiceSnapshot = { ...initialVoiceState(), lines: [], conversation: [], transcripts: [], interprets: [], helper: HELPER_DEFAULT_ON, error: null, phoneActive: false, micOn: false, ignoring: false, micUnavailable: false, voiceGuess: "unknown", settingsUnreadable: false, sultiAgentId: null, settingsChecking: false };
   let autoSleepTimer: unknown = null;
   const clearAutoSleep = () => {
     if (autoSleepTimer === null) return;
@@ -119,7 +119,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
 
   const showConversation = (): Partial<VoiceSnapshot> => {
     convo.splice(0, Math.max(0, convo.length - MAX_CONVERSATION));
-    return { conversation: convo.map((c): ConversationEntry => (c.from === "you" ? { from: "you", text: c.text, outcome: c.outcome ?? "" } : { from: "jarvis", text: c.text })) };
+    return { conversation: convo.map((c): ConversationEntry => (c.from === "you" ? { from: "you", text: c.text, outcome: c.outcome ?? "" } : { from: "sulti", text: c.text })) };
   };
   const showEntries = () => publish({ transcripts: entries.map(({ text, outcome }) => ({ text, outcome })), ...showConversation() });
   const setOutcome = (id: number, outcome: string) => {
@@ -139,7 +139,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
 
   // Shows a line and plays it. `endsPlayback`: the loop is `speaking` until it has finished.
   function showAndSpeak(line: string, endsPlayback = false) {
-    convo.push({ from: "jarvis", text: line });
+    convo.push({ from: "sulti", text: line });
     publish({ lines: keepLast(snapshot.lines, [line], MAX_LINES), ...showConversation() });
     if (!ports.speaker) return;
     // The phone is speaking: the text stays on screen, but nothing plays here and the loop moves on.
@@ -190,7 +190,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
         showAndSpeak(effect.line, effect.type === "speak");
         return;
       case "show":
-        convo.push({ from: "jarvis", text: effect.line });
+        convo.push({ from: "sulti", text: effect.line });
         publish({ lines: keepLast(snapshot.lines, [effect.line], MAX_LINES), ...showConversation() });
         return;
       case "stopPlayback":
@@ -434,7 +434,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
           }
           const line = ports.hasMic && !ports.hasMic() && snapshot.mode === "asleep" ? phoneReplyLine(e, snapshot.session?.id) : null;
           if (line !== null) {
-            convo.push({ from: "jarvis", text: line });
+            convo.push({ from: "sulti", text: line });
             publish({ lines: keepLast(snapshot.lines, [line], MAX_LINES), ...showConversation() });
           }
           dispatch(e);
@@ -538,8 +538,8 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     localChecking = false;
     serverUnreadable = serverChecking = undefined;
     showSettingsState();
-    // The mic being on means Jarvis should be reachable from the phone too, so a router session is there before it is needed.
-    if (on) void ensureJarvis();
+    // The mic being on means Sulti should be reachable from the phone too, so a router session is there before it is needed.
+    if (on) void ensureSulti();
     if (!ports.ears) {
       publish({ micOn: on, ignoring: !on, micUnavailable: false });
       return;
@@ -565,16 +565,16 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   }
 
   let ensuring: Promise<string | null> | null = null;
-  /** Makes sure a Jarvis router session exists: the newest one, else a new one beside the target (or the first session).
+  /** Makes sure a Sulti router session exists: the newest one, else a new one beside the target (or the first session).
    * Resolves to its id, or null with nothing to build it beside. Concurrent calls share one create. */
-  function ensureJarvis(): Promise<string | null> {
-    if (snapshot.jarvisAgentId) return Promise.resolve(snapshot.jarvisAgentId);
+  function ensureSulti(): Promise<string | null> {
+    if (snapshot.sultiAgentId) return Promise.resolve(snapshot.sultiAgentId);
     if (ensuring) return ensuring;
     const beside = snapshot.session ?? snapshot.sessions[0];
-    if (!beside || !ports.link.createJarvis) return Promise.resolve(null);
-    ensuring = ports.link.createJarvis(beside).then(
+    if (!beside || !ports.link.createSulti) return Promise.resolve(null);
+    ensuring = ports.link.createSulti(beside).then(
       (id) => {
-        publish({ jarvisAgentId: id });
+        publish({ sultiAgentId: id });
         return id;
       },
       (err) => {
@@ -617,13 +617,13 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     off,
     start,
     setMic,
-    ensureJarvis,
+    ensureSulti,
     confirm: (word: string) => dispatch({ type: "confirm", word }),
     interrupt: () => dispatch({ type: "interrupt" }),
-    /** `blocked` are Voice's own sessions (Jarvis, the Voice helper), never a target. */
-    setSessions(list: VoiceSession[], blocked: VoiceSession[] = [], jarvis: VoiceSession[] = []) {
-      const jarvisAgentId = jarvis[0]?.id ?? null;
-      if (jarvisAgentId !== snapshot.jarvisAgentId) publish({ jarvisAgentId });
+    /** `blocked` are Voice's own sessions (Sulti, the Voice helper), never a target. */
+    setSessions(list: VoiceSession[], blocked: VoiceSession[] = [], sulti: VoiceSession[] = []) {
+      const sultiAgentId = sulti[0]?.id ?? null;
+      if (sultiAgentId !== snapshot.sultiAgentId) publish({ sultiAgentId });
       // The pills resync often; only a real change should reach the loop and wake subscribers.
       const same = (a: VoiceSession[], b: VoiceSession[]) => a.length === b.length && a.every((s, i) => s.id === b[i]?.id && s.name === b[i]?.name);
       if (!same(list, snapshot.sessions) || !same(blocked, snapshot.blocked)) dispatch({ type: "sessions", list, blocked });
