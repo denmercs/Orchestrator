@@ -51,7 +51,7 @@ test("falls back to the words as heard (reason error) when the RPC rejects", asy
   const { client } = setup(async () => {
     throw new Error("down");
   });
-  assert.deepEqual(await client.interpret("Jarvis, run the tests", ctx), {
+  assert.deepEqual(await client.interpret("Sulti, run the tests", ctx), {
     result: { type: "send", text: "run the tests" },
     via: "passThrough",
     reason: "error",

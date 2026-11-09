@@ -1,4 +1,4 @@
-// Every line Voice says or shows, in one place, so the Mac's voice runner and Jarvis (phone) word things the
+// Every line Voice says or shows, in one place, so the Mac's voice runner and Sulti (phone) word things the
 // same way. Pure: no imports, so any bundle can reach it.
 
 const SPOKEN_CAP = 300;
@@ -15,7 +15,7 @@ export const NO_MIC_MESSAGE = "This device can't record from a plugin. Use voice
 export const MIC_DENIED_MESSAGE = "Microphone permission was denied. Allow the microphone for Paseo, then turn voice on again.";
 export const PASEO_VOICE_TITLE = "Talk with Paseo voice mode";
 export const PASEO_VOICE_LINE =
-  "To talk to Jarvis, turn on Paseo voice mode in a Jarvis session.";
+  "To talk to Sulti, turn on Paseo voice mode in a Sulti session.";
 
 /** A choice number as said: "one" … "ten", then digits. */
 export const numberWord = (n: number): string => NUMBER_WORDS[n] ?? String(n);
@@ -23,10 +23,10 @@ const capital = (text: string): string => text.charAt(0).toUpperCase() + text.sl
 
 export const CANCELLED = "Cancelled.";
 export const WAKE_LINE = "I'm listening.";
-export const SLEEP_LINE = "Going quiet. Say Jarvis to wake me.";
-export const ASLEEP_NOTE = "Jarvis is asleep. Say Jarvis to wake it.";
+export const SLEEP_LINE = "Going quiet. Say Sulti to wake me.";
+export const ASLEEP_NOTE = "Sulti is asleep. Say Sulti to wake it.";
 export const NOTHING_SENT = "Nothing sent.";
-/** Shown in the chat only (never said) when a steer went out: Jarvis doesn't announce routing. */
+/** Shown in the chat only (never said) when a steer went out: Sulti doesn't announce routing. */
 export const SENT_NOTE = "Sent.";
 export const DIDNT_CATCH_NOTE = "I didn't catch that.";
 export const NOTHING_TO_CONFIRM = "Nothing to confirm.";
@@ -51,7 +51,7 @@ export const sendFailedLine = (name: string, error: string) => `Couldn't send to
 export const CONFIRM_AGAIN = "Say one to send, or two to cancel.";
 export const confirmLine = (text: string, name: string) => `Send "${text}" to ${name}? ${CONFIRM_AGAIN}`;
 
-/** A Jarvis session or the Voice helper: sending to it would talk to itself. */
+/** A Sulti session or the Voice helper: sending to it would talk to itself. */
 export const notTargetLine = (name: string) => `${name} is a voice session, so it can't be the target. Pick another session.`;
 
 /** After a numbered list or question: how to answer it. */

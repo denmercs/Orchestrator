@@ -13,7 +13,7 @@ export const MIN_HOLD_MS = 300;
 // One timeout for the Mac's runner and Jarvis on the phone.
 export { CONFIRM_TIMEOUT_MS };
 export const POLL_BACKOFF_MS = 2_000;
-export const BASE_HINTS = ["merge", "Orchestrator", "Paseo", "Jarvis"];
+export const BASE_HINTS = ["merge", "Orchestrator", "Paseo", "Sulti"];
 
 export type EarsRunnerEvent = { type: "wake" } | { type: "speechStart" } | { type: "utterance"; pcm: Int16Array };
 

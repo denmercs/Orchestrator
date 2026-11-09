@@ -177,7 +177,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
         const local = await deps.localSpeak?.(line).catch(() => false);
         if (!local) {
           await speak(session.mcpServers.paseo, line, fetchImpl).catch((error) =>
-            console.warn("orchestrator: Jarvis could not speak", error instanceof Error ? error.message : error),
+            console.warn("orchestrator: Sulti could not speak", error instanceof Error ? error.message : error),
           );
         }
       }
@@ -226,7 +226,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
             type: "session.prompt_result",
             sessionId: input.sessionId,
             clientMessageId: input.prompt.clientMessageId,
-            result: { type: "failed", error: { message: "This Jarvis session is not open." } },
+            result: { type: "failed", error: { message: "This Sulti session is not open." } },
           });
           return;
         }
@@ -308,7 +308,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
       try {
         await speak(session.mcpServers.paseo, lines.join(" "), fetchImpl);
       } catch (error) {
-        console.warn("orchestrator: Jarvis could not speak", error instanceof Error ? error.message : error);
+        console.warn("orchestrator: Sulti could not speak", error instanceof Error ? error.message : error);
         deps.owe?.(routerId, lines);
       }
       deps.playbackEnded?.(routerId);
@@ -339,7 +339,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
 export function createJarvisProvider(deps: JarvisProviderDeps): ProviderRegistration {
   return {
     id: ROUTER_PROVIDER_ID,
-    label: "Jarvis",
+    label: "Sulti",
     description: "Talk to your sessions hands-free with Paseo voice mode.",
     async status() {
       return { available: true };

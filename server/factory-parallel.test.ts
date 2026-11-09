@@ -8,6 +8,7 @@ import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { DEFAULT_PHASES } from "../shared/pipeline";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { TickPaseo } from "./factory-tick";
+import { paseoLoopHost } from "./loop-host-paseo";
 
 // The loop's registry lives under the home folder, so this file gets its own.
 const home = mkdtempSync(join(tmpdir(), "parallel-home-"));

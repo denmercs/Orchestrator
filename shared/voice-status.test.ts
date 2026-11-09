@@ -5,11 +5,11 @@ import { isFactoryStatusAsk, isStatusAsk, statusLine, type StatusAgent } from ".
 const agent = (id: string, extra: Partial<StatusAgent> = {}): StatusAgent => ({ id, title: id, status: "idle", ...extra });
 
 test("short status phrases are a status ask, with or without the name", () => {
-  assert.equal(isStatusAsk("Jarvis, status"), true);
+  assert.equal(isStatusAsk("Sulti, status"), true);
   assert.equal(isStatusAsk("status"), true);
   assert.equal(isStatusAsk("give me a status"), true);
   assert.equal(isStatusAsk("what are the agents doing"), true);
-  assert.equal(isStatusAsk("Jarvis, what's going on?"), true);
+  assert.equal(isStatusAsk("Sulti, what's going on?"), true);
 });
 
 test("long requests and other words are not a status ask", () => {
@@ -21,7 +21,7 @@ test("long requests and other words are not a status ask", () => {
 });
 
 test("factory status phrases are a factory status ask, with or without the name", () => {
-  for (const said of ["Where are we?", "Jarvis, where are we", "what's the factory doing", "What is the factory doing?", "factory status", "Jarvis, how's the factory", "how is the factory going"]) {
+  for (const said of ["Where are we?", "Sulti, where are we", "what's the factory doing", "What is the factory doing?", "factory status", "Sulti, how's the factory", "how is the factory going"]) {
     assert.equal(isFactoryStatusAsk(said), true, said);
   }
 });
