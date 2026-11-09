@@ -23,7 +23,6 @@ function setup(engine: "chatterbox" | "kokoro" | "loading" = "chatterbox") {
   const ports: LocalPorts = {
     render: async ({ text }) => ({ audio: engine === "loading" ? "" : `audio:${text}`, engine }),
     play: (audio) => start(audio),
-    say: (text) => start(`say:${text}`),
   };
   const tick = () => new Promise((r) => setTimeout(r, 5));
   return { voice: createLocalVoice(ports), log, playing, tick };
@@ -78,24 +77,20 @@ test("a second reply waits for the first: the Mac never speaks two at once", asy
   assert.deepEqual(log, ["audio:First.", "audio:Second."]);
 });
 
-test("with both voices unavailable, macOS say speaks the sentence", async () => {
-  const { voice, log, playing, tick } = setup("loading");
-  const done = voice.speak("Still loading.");
-  await tick();
-  assert.deepEqual(log, ["say:Still loading."]);
-  playing[0].finish();
-  assert.equal(await done, "ended");
+test("with the Speaker still loading nothing is said and the result is unavailable", async () => {
+  const { voice, log } = setup("loading");
+  assert.equal(await voice.speak("Still loading."), "unavailable");
+  assert.deepEqual(log, []);
 });
 
-test("a render that fails falls back to macOS say", async () => {
+test("a render that fails says nothing and is unavailable", async () => {
   const log: string[] = [];
   const voice = createLocalVoice({
     render: async () => {
       throw new Error("worker exited");
     },
-    play: () => ({ done: Promise.resolve(), kill: () => undefined }),
-    say: (text) => (log.push(text), { done: Promise.resolve(), kill: () => undefined }),
+    play: (audio) => (log.push(audio), { done: Promise.resolve(), kill: () => undefined }),
   });
-  assert.equal(await voice.speak("Hi there."), "ended");
-  assert.deepEqual(log, ["Hi there."]);
+  assert.equal(await voice.speak("Hi there."), "unavailable");
+  assert.deepEqual(log, []);
 });

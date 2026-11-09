@@ -30,8 +30,28 @@ export const REFOCUS = "Does this step still serve the spec, the mission outcome
 
 export const refocusLines = (mission: string, project: string) => [`Mission outcome: ${mission}`, `Project intent: ${project}`, REFOCUS];
 
-const isDead = (session: { status?: string; archivedAt?: string | null } | undefined | null) =>
+type Session = { status?: string; archivedAt?: string | null } | undefined | null;
+
+const isDead = (session: Session) =>
   !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
+
+const LIVE = new Set(["running", "initializing", "idle"]);
+
+// Whether a session the first read called dead really is. One empty or stale daemon answer would start a second agent in the
+// same worktree, so a dead read is read once more and the agent list is checked; a read or list that throws isn't a
+// confirmation, the next tick decides. No agent id has nothing to confirm.
+export async function confirmDead(agents: TickPaseo["agents"], id: string | null | undefined, first: Session): Promise<boolean> {
+  if (!isDead(first)) return false;
+  if (!id) return true;
+  try {
+    if (!isDead((await agents.ref(id).refresh())?.agent)) return false;
+    const listed = await agents.list?.({ filter: { includeArchived: false }, page: { limit: 200 } });
+    const entry = listed?.entries.find((item) => item.agent.id === id)?.agent;
+    return !entry || Boolean(entry.archivedAt) || !LIVE.has(entry.status ?? "");
+  } catch {
+    return false;
+  }
+}
 
 // What telemetry attributes a slice's spend to. A story that lives in an initiative keeps that initiative's slug and its own id,
 // so spend from before the factory adopted it adds up; any other story is the mission and the slice.
@@ -214,7 +234,7 @@ export async function leaveBuild(
   if (!steps || !state.story || !existsSync(state.story) || !state.worktree || !existsSync(state.worktree)) return null;
   const meta = frontmatter(readText(state.story));
   // A story the loop's own session still runs isn't ours yet.
-  if (meta.agent && meta.agent !== state.agent && !isDead((await ports.agents.ref(meta.agent).refresh())?.agent)) return null;
+  if (meta.agent && meta.agent !== state.agent && !(await confirmDead(ports.agents, meta.agent, (await ports.agents.ref(meta.agent).refresh())?.agent))) return null;
 
   const launch = launcher(root, slice, ports, ctx);
   const first: LoopStep = meta.track === "diagnose" ? "diagnose" : "plan";
@@ -243,7 +263,7 @@ export async function leaveBuild(
   if (marker === MARKERS.diagnoseBlocked || marker === MARKERS.implementBlocked) return block(root, slice, ports, `${step} is blocked.`);
   // No marker and the agent is gone: the same step starts again, told that an earlier session stopped.
   // A subagents parent comes back as a parent, with the cycles still open.
-  if (isDead(session)) {
+  if (await confirmDead(ports.agents, state.agent, session)) {
     const cycles = meta.cycles === "subagents" ? readCycles(worktreeState).filter((item) => !item.done) : undefined;
     return launch(step, round, { cycles, attempt: state.attempt + 1, failing: storedFailing(meta.failing) });
   }
@@ -322,7 +342,7 @@ export async function leaveReview(
   const worktreeState = readText(join(state.worktree, ".harness", "state.md"));
   const { marker } = readMarker(worktreeState);
   if (marker !== MARKERS.reviewDone && marker !== MARKERS.reviewFailed) {
-    return isDead(session) ? launch("review", round, { attempt: state.attempt + 1 }) : null;
+    return (await confirmDead(ports.agents, state.agent, session)) ? launch("review", round, { attempt: state.attempt + 1 }) : null;
   }
   const maxRounds = repoPipelineConfig(pipelineSettings.schema.parse({}), state.worktree).reviewRounds;
   const reviewRound = reviewRoundOf(meta);
@@ -412,8 +432,15 @@ export async function leaveShip(
   const launch = launcher(root, slice, ports, ctx);
   const round = Number(meta.round) || 1;
   const failing = () => (ports.failureReport ?? failureReport)(cwd, pr.failing);
+  // A PR that can't merge as it stands is the manager's to sort out: no Fix agent, no "ready" report.
+  if (pr.conflicting && pr.state !== "merged" && pr.state !== "closed") {
+    const why = `PR #${pr.number} conflicts with its base and needs the branch updated`;
+    await ports.steer?.(`Slice ${id}: ${why}. PR ${pr.url} needs you.`);
+    writeSliceState(root, mission, id, { ready: "ci" });
+    return { kind: "waiting", slice: id, why };
+  }
   // A Fix agent that died mid-step starts again on the same head, not as a new attempt.
-  if (fixing && isDead(fixer) && action.kind === "wait" && action.ci === "failing") {
+  if (fixing && action.kind === "wait" && action.ci === "failing" && (await confirmDead(ports.agents, state.agent, fixer))) {
     return launch("fix", round, { attempt: state.attempt + 1, failing: await failing() });
   }
   const ci = "ci" in action ? action.ci : null;

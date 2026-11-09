@@ -9,7 +9,7 @@ import type { LoopHost } from "../shared/loop-host";
 import type { LoopStep, StoryContext } from "../shared/story-method";
 import { type ManagerPaseo, MANAGER_MODELS } from "./factory-manager";
 import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from "./factory-layout";
-import { REFOCUS, TEST_DONE, TEST_FAILED, block, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge, sliceCostCap, sliceSpendKey, sliceTicket, startSeat } from "./factory-phases";
+import { REFOCUS, TEST_DONE, TEST_FAILED, block, confirmDead, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge, sliceCostCap, sliceSpendKey, sliceTicket, startSeat } from "./factory-phases";
 import { closeSlices, runRequestedSweep } from "./factory-workspace";
 import { frontmatter, slugOf, writeFrontmatter } from "./harness-layout";
 import { type FailingCheck, type PrStatus, prStatus } from "./pr-checks";
@@ -61,6 +61,8 @@ export type TickPaseo = {
   profiles?: () => Promise<{ list: AgentProfile[]; runnerProfileId: string }>;
   agents: {
     ref(id: string): { refresh(): Promise<{ agent: { status?: string; archivedAt?: string | null; lastUsage?: { totalCostUsd?: number } | null } } | null> };
+    // The daemon's non-archived agents, as `paseo.agents.list`: a second opinion on a dead read. Absent: two reads decide.
+    list?(request: { filter: { includeArchived: boolean }; page: { limit: number } }): Promise<{ entries: { agent: { id: string; status?: string; archivedAt?: string | null } }[] }>;
     create(request: Omit<Parameters<ManagerPaseo["agents"]["create"]>[0], "config"> & { prompt: string; config: AgentCreateConfig }): Promise<{ id: string }>;
   };
 };
@@ -358,7 +360,7 @@ async function passSlice(root: string, slice: FactorySlice, ports: TickPaseo): P
 
   if (state.agent) {
     const session = (await ports.agents.ref(state.agent).refresh())?.agent;
-    if (!isDead(session)) return { kind: "alive", slice: slice.id, agent: state.agent };
+    if (!(await confirmDead(ports.agents, state.agent, session))) return { kind: "alive", slice: slice.id, agent: state.agent };
   }
   // A story the loop's own step session still runs isn't ours yet.
   // Test is the QA seat's, so the builder's finished step session is no loop owner there.
@@ -366,7 +368,7 @@ async function passSlice(root: string, slice: FactorySlice, ports: TickPaseo): P
     const meta = frontmatter(readFileSync(state.story, "utf8"));
     if (meta.agent && meta.agent !== state.agent && LOOP_STEPS.has(meta.status ?? "")) {
       const loop = (await ports.agents.ref(meta.agent).refresh())?.agent;
-      if (!isDead(loop)) return { kind: "waiting", slice: slice.id, why: "the initiative loop still supervises its story" };
+      if (!(await confirmDead(ports.agents, meta.agent, loop))) return { kind: "waiting", slice: slice.id, why: "the initiative loop still supervises its story" };
     }
   }
 

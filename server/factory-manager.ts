@@ -28,16 +28,17 @@ export function applyFactoryManager<T extends VoiceRequest>(request: T): T {
 }
 
 // The models the manager runs on, in order: the create falls through to the next when one fails (provider missing or
-// signed out). The client wants config.provider as "provider/model", like `materializeProfile` builds it.
+// signed out). The client wants config.provider as "provider/model", like `materializeProfile` builds it. The Claude
+// one runs in auto mode, so the router's default target never stops to ask permission on a voice steer.
 export const MANAGER_MODELS = [
-  { provider: "claude/claude-opus-5-5" },
+  { provider: "claude/claude-opus-5-5", modeId: "auto" },
   { provider: "cursor/grok-4.7" },
 ];
 
 // The manager session's own list: Sulti creates it when a router has no target, and it is the one the human talks to, so
-// it runs on Sonnet, else Composer, not on the deep model the seats start on.
+// it runs on Sonnet, else Composer, not on the deep model the seats start on. Sonnet runs in auto mode like the list above.
 export const MANAGER_SESSION_MODELS = [
-  { provider: "claude/claude-sonnet-5-5" },
+  { provider: "claude/claude-sonnet-5-5", modeId: "auto" },
   { provider: "cursor/composer-2.5" },
 ];
 

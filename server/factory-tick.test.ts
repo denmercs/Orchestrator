@@ -44,7 +44,12 @@ function setup(state: string, run = "on", phase = "build") {
   return { root, worktree, stateFile: join(dir, "state.md") };
 }
 
-function fakePaseo(known: Record<string, { status: string; archivedAt?: string | null; lastUsage?: { totalCostUsd?: number } | null }> = {}) {
+type Known = Record<string, { status: string; archivedAt?: string | null; lastUsage?: { totalCostUsd?: number } | null }>;
+// `stale` is a per-id queue of reads served before the real one: a snapshot, `null` (an empty answer) or an Error (a read that throws).
+// `list` is the daemon's agent list; absent, the port has none.
+type Reads = { stale?: Record<string, ({ status: string; archivedAt?: string | null } | null | Error)[]>; list?: { id: string; status: string; archivedAt?: string | null }[] };
+
+function fakePaseo(known: Known = {}, { stale = {}, list }: Reads = {}) {
   const created: { cwd: string; prompt: string; title: string; labels: Record<string, string>; config: unknown }[] = [];
   const commits: { cwd: string; message: string }[] = [];
   // The loop's host: a workspace create lands in <repoRoot>/made-wt, and the repo is a known project.
@@ -78,7 +83,14 @@ function fakePaseo(known: Record<string, { status: string; archivedAt?: string |
       return true;
     },
     agents: {
-      ref: (id) => ({ refresh: async () => (known[id] ? { agent: known[id] } : null) }),
+      ref: (id) => ({
+        refresh: async () => {
+          const read = stale[id]?.length ? stale[id].shift() : undefined;
+          if (read instanceof Error) throw read;
+          if (read !== undefined) return read ? { agent: read } : null;
+          return known[id] ? { agent: known[id] } : null;
+        },
+      }),
       create: async (request) => {
         created.push({ cwd: request.cwd, prompt: request.prompt, title: request.title, labels: request.labels, config: request.config });
         await new Promise((resolve) => setImmediate(resolve));
@@ -88,6 +100,7 @@ function fakePaseo(known: Record<string, { status: string; archivedAt?: string |
       },
     },
   };
+  if (list) paseo.agents.list = async () => ({ entries: list.map((agent) => ({ agent })) });
   return { paseo, created, started, worktrees, commits, workspaces, projects };
 }
 
@@ -258,6 +271,36 @@ test("a live agent is left alone, whatever it is doing", async () => {
   }
 });
 
+test("a live agent whose first read is empty is left alone once the second read finds it", async () => {
+  const { root } = setup("agent: live-1");
+  const { paseo, created } = fakePaseo({ "live-1": { status: "idle" } }, { stale: { "live-1": [null] } });
+  assert.deepEqual(await runFactoryTick(root, paseo), { kind: "alive", slice: "s1", agent: "live-1" });
+  assert.equal(created.length, 0);
+});
+
+test("a first read that is dead and a second that throws waits for the next tick", async () => {
+  const { root } = setup("agent: live-1");
+  const { paseo, created } = fakePaseo({ "live-1": { status: "idle" } }, { stale: { "live-1": [null, new Error("daemon down")] } });
+  assert.deepEqual(await runFactoryTick(root, paseo), { kind: "alive", slice: "s1", agent: "live-1" });
+  assert.equal(created.length, 0);
+});
+
+test("an agent both reads call dead but the agent list shows running is left alone", async () => {
+  const { root } = setup("agent: live-1");
+  const { paseo, created } = fakePaseo({}, { list: [{ id: "live-1", status: "running" }] });
+  assert.deepEqual(await runFactoryTick(root, paseo), { kind: "alive", slice: "s1", agent: "live-1" });
+  assert.equal(created.length, 0);
+});
+
+test("an agent both reads call dead is replaced when the agent list has it archived or not at all", async () => {
+  for (const list of [[{ id: "live-1", status: "idle", archivedAt: "2026-11-01" }], [{ id: "other", status: "running" }]]) {
+    const { root } = setup("agent: live-1");
+    const { paseo, created } = fakePaseo({}, { list });
+    assert.deepEqual(await runFactoryTick(root, paseo), { kind: "restarted", slice: "s1", agent: "new-1" });
+    assert.equal(created.length, 1);
+  }
+});
+
 test("an archived or missing agent is replaced", async () => {
   const gone: Record<string, { status: string; archivedAt?: string }>[] = [{ "a-1": { status: "idle", archivedAt: "2026-11-01" } }, { other: { status: "idle" } }];
   for (const known of gone) {
@@ -285,6 +328,20 @@ test("the tick leaves a story the loop's live session still supervises", async (
   const { paseo, created } = fakePaseo({ "dead-1": { status: "error" }, "loop-1": { status: "running" } });
   assert.equal((await runFactoryTick(root, paseo)).kind, "waiting");
   assert.equal(created.length, 0);
+});
+
+test("a loop session whose first read is empty still supervises its story, in seat supervision and in build", async () => {
+  for (const steps of [false, true]) {
+    const { root } = setup("agent: dead-1\nstory: STORY");
+    const story = join(root, "story.md");
+    put(story, "---\nstatus: implementing\nagent: loop-1\n---\n");
+    const stateFile = join(sliceDir(root, "m1", "s1"), "state.md");
+    writeFileSync(stateFile, readFileSync(stateFile, "utf8").replace("STORY", story));
+    const { paseo, created } = fakePaseo({ "dead-1": { status: "error" }, "loop-1": { status: "running" } }, { stale: { "loop-1": [null] } });
+    if (!steps) delete paseo.steps;
+    assert.equal((await runFactoryTick(root, paseo)).kind, "waiting");
+    assert.equal(created.length, 0);
+  }
 });
 
 test("namedStories lists the story files slices name, so the loop skips them", () => {
@@ -552,6 +609,15 @@ test("a dead build agent is relaunched on its current step with RESTART_LINE and
   assert.match(created[0].prompt, /still serve/);
   assert.equal(field(story, "agent"), "new-1");
   assert.equal(field(ctx.stateFile, "attempt"), "2");
+});
+
+test("a build agent that reads error once and idle on the second read is not relaunched", async () => {
+  const ctx = setup("agent: i-1\nattempt: 1");
+  withStory(ctx, "step: implement\nround: 2\nagent: i-1\nstatus: implementing", "implement-running", cycles(false));
+  const { paseo, created } = fakePaseo({ "i-1": { status: "idle" } }, { stale: { "i-1": [{ status: "error" }] } });
+  assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "alive", slice: "s1", agent: "i-1" });
+  assert.equal(created.length, 0);
+  assert.equal(field(ctx.stateFile, "attempt"), "1");
 });
 
 // Adoption: the manager names a story already in flight on a slice that is still in `spec`. `withStory` seeds `status: todo`, so
@@ -900,6 +966,13 @@ test("a dead reviewer is relaunched on Review in the same round with RESTART_LIN
   assert.ok(created[0].prompt.includes(RESTART_LINE));
 });
 
+test("a reviewer that reads error once and idle on the second read is not relaunched", async () => {
+  const { ctx } = reviewSlice("review-running", { round: 2 });
+  const { paseo, created } = fakePaseo({ "r-1": { status: "idle" } }, { stale: { "r-1": [{ status: "error" }] } });
+  assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "alive", slice: "s1", agent: "r-1" });
+  assert.equal(created.length, 0);
+});
+
 test("a restart of an Implement round after test-failed still lists the failing checks", async () => {
   const { ctx } = testSlice("test-failed\nwidget renders blank");
   const known: Record<string, { status: string }> = { "q-1": { status: "idle" }, "i-1": { status: "idle" } };
@@ -1054,6 +1127,26 @@ test("a running Fix agent is left alone, and a dead one is relaunched with RESTA
   assert.ok(b.created[0].prompt.includes(RESTART_LINE));
 });
 
+test("a Fix agent that reads error once and idle on the second read is not relaunched", async () => {
+  const stale = shipSlice({ pr: "7", story: "agent: f-1\nfixed_sha: abc\nfix_attempts: 1", marker: "fix-running" });
+  writeFileSync(stale.ctx.stateFile, readFileSync(stale.ctx.stateFile, "utf8").replace("---\n", "---\nagent: f-1\n"));
+  const c = fakePaseo({ "f-1": { status: "idle" } }, { stale: { "f-1": [{ status: "error" }] } });
+  shipPorts(c.paseo, prAt("failing", "abc", FAILED));
+  assert.equal((await runFactoryTick(stale.ctx.root, c.paseo)).kind, "waiting");
+  assert.equal(c.created.length, 0);
+});
+
+test("a dead Fix agent is not confirmed while CI isn't failing", async () => {
+  const stale = shipSlice({ pr: "7", story: "agent: f-1\nfixed_sha: abc\nfix_attempts: 1", marker: "fix-running" });
+  writeFileSync(stale.ctx.stateFile, readFileSync(stale.ctx.stateFile, "utf8").replace("---\n", "---\nagent: f-1\n"));
+  const queue = { "f-1": [{ status: "error" }, { status: "idle" }] };
+  const c = fakePaseo({ "f-1": { status: "error" } }, { stale: queue });
+  shipPorts(c.paseo, prAt("pending", "abc"));
+  await runFactoryTick(stale.ctx.root, c.paseo);
+  assert.equal(queue["f-1"].length, 1);
+  assert.equal(c.created.length, 0);
+});
+
 test("pending CI waits and nothing is sent", async () => {
   const { ctx } = shipSlice({ pr: "7" });
   const { paseo, created } = fakePaseo();
@@ -1081,6 +1174,35 @@ for (const autoMerge of [false, true]) {
     assert.equal(created.length + ship.pushed.length + ship.opened.length, 0);
   });
 }
+
+test("a green PR that conflicts with its base steers the manager once, naming the conflict, and sets ready: ci", async () => {
+  const { ctx } = shipSlice({ pr: "7" });
+  const { paseo, created } = fakePaseo();
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  const ship = shipPorts(paseo, { ...prAt("green"), conflicting: true });
+  for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, paseo);
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /s1/);
+  assert.match(steers[0], /https:\/\/example\.test\/pr\/7/);
+  assert.match(steers[0], /conflicts/);
+  assert.doesNotMatch(steers[0], /CI is green/);
+  assert.equal(field(ctx.stateFile, "ready"), "ci");
+  assert.equal(created.length + ship.pushed.length + ship.opened.length, 0);
+});
+
+test("a failing PR that conflicts with its base steers once about the conflict, starts no Fix agent and sets ready: ci", async () => {
+  const { ctx } = shipSlice({ pr: "7" });
+  const { paseo, created } = fakePaseo();
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  const ship = shipPorts(paseo, { ...prAt("failing"), conflicting: true });
+  for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, paseo);
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /conflicts/);
+  assert.equal(field(ctx.stateFile, "ready"), "ci");
+  assert.equal(created.length + ship.pushed.length + ship.opened.length, 0);
+});
 
 test("after a fresh compact hands the story to the new agent, the next pass starts no second one", async () => {
   const ctx = setup("agent: a1\nattempt: 1");

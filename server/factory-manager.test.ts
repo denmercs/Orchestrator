@@ -123,7 +123,7 @@ test("ensureManager falls back to Cursor Composer 2.5 when the Claude create fai
   const { paseo, created } = fakePaseo({}, ["claude"]);
   assert.equal(await ensureManager(root, paseo), "new-2");
   assert.deepEqual(created.map((request) => request.config), [
-    { provider: "claude/claude-sonnet-5-5" },
+    { provider: "claude/claude-sonnet-5-5", modeId: "auto" },
     { provider: "cursor/composer-2.5" },
   ]);
   assert.match(managerFile(root), /^agent: new-2$/m);
