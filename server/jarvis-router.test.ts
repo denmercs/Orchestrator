@@ -58,6 +58,13 @@ test("with no target and a line owed, the owed line is said and the pick text st
   assert.deepEqual(await router.route("r1", "run the tests please"), { spoken: ["Docs finished."], note: pickFirstLine(["api-refactor", "docs"]) });
 });
 
+test("a line owed more than once is said once, in the order first owed", async () => {
+  const { router } = setup();
+  router.owe("r1", ["Docs finished.", "Api finished."]);
+  router.owe("r1", ["Docs finished.", "Api finished.", "Docs finished."]);
+  assert.deepEqual((await router.route("r1", "run the tests please")).spoken, ["Docs finished.", "Api finished."]);
+});
+
 test("switch to <name> picks the target, then speech goes there as heard, without the name", async () => {
   const { router, sent } = setup();
   assert.deepEqual((await router.route("r1", "Sulti, switch to docs")).spoken, ["Now on docs."]);
@@ -518,6 +525,14 @@ test("with a factory manager, a new router's first utterance goes to the manager
   assert.deepEqual(r.spoken, []);
   assert.deepEqual(sent, [["m1", "how is the factory doing"]]);
   assert.equal(router.stateOf("r1")?.session?.id, "m1");
+});
+
+test("the manager's reply is read aloud under its own name, not as a finished notice", async () => {
+  const { router } = setup({ manager: async () => manager });
+  await router.route("r1", "how is the factory doing");
+  const lines = await router.event({ type: "reply", sessionId: "m1", text: "Two slices are building and none are blocked." });
+  assert.deepEqual(lines.r1, ["Factory manager: Two slices are building and none are blocked."]);
+  assert.deepEqual((await router.event({ type: "notice", kind: "finished", sessionId: "m1" })).r1, []);
 });
 
 test("after a reopen (Jarvis session id changes, new router id) factory talk still goes to the same manager id", async () => {

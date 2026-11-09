@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { VOICE_HELPER_SYSTEM_PROMPT } from "../shared/voice-interpreter";
 import { mcpScopeFor } from "./mcp-scope";
+import { INTERPRET_FALLBACK_MS } from "./voice-interpret";
 import { NO_TOOLS_OPTIONS, VOICE_HELPER_KIND, VOICE_HELPER_MODEL, createVoiceHelper, type VoiceHelperPorts, type VoiceHelperSpec } from "./voice-helper";
 
 const CWD = "/tmp/voice-helper-test";
@@ -132,7 +133,7 @@ test("interpret puts the transcript, target title, session names and last 4 mess
   assert.match(prompt, /message 6/);
   assert.match(prompt, /message 3/);
   assert.doesNotMatch(prompt, /message 2/);
-  assert.ok(timeoutMs > 3000 && timeoutMs <= 10000);
+  assert.ok(timeoutMs > INTERPRET_FALLBACK_MS && timeoutMs <= 10000);
 });
 
 test("interpret passes a switch reply name through for loose matching", async () => {

@@ -334,9 +334,10 @@ export function createJarvisRouter(ports: JarvisRouterPorts) {
       const entry = entries.get(routerId);
       if (entry) entry.state = step(entry.state, { type: "playbackEnded" }).state;
     },
-    /** Lines that couldn't be said out of turn: said first at the router's next words, once. */
+    /** Lines that couldn't be said out of turn: said first at the router's next words, once. A line already owed is not owed twice. */
     owe(routerId: string, lines: string[]): void {
-      entryFor(routerId).owed.push(...lines);
+      const owed = entryFor(routerId).owed;
+      for (const line of lines) if (!owed.includes(line)) owed.push(line);
     },
     /** A router's loop state, for tests. */
     stateOf: (routerId: string): VoiceState | null => entries.get(routerId)?.state ?? null,

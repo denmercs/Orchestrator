@@ -154,7 +154,7 @@ A factory runs on one provider's models: all Cursor or all Claude, never a mix. 
 
 The code mixes today, and these must change before the rule holds:
 
-- `MANAGER_MODELS` falls back from `claude` to `cursor`.
+- `MANAGER_MODELS` and `MANAGER_SESSION_MODELS` fall back from `claude` to `cursor`.
 - A seat with no profile of the runner's provider falls back to `MANAGER_MODELS`.
 - The one-shot calls (status reporter, correction classifier, replay judge) always use the Claude CLI.
 - The voice helper, the reply summariser and the Prod Pulse schedule are pinned to `claude/claude-haiku-4-5`.

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { applyFactoryManager, ensureManager, FACTORY_MANAGER_ENV, MANAGER_MODELS, type ManagerPaseo, steerManager } from "./factory-manager";
+import { applyFactoryManager, ensureManager, FACTORY_MANAGER_ENV, MANAGER_SESSION_MODELS, type ManagerPaseo, steerManager } from "./factory-manager";
 
 const marked = (systemPrompt?: string) => ({
   config: { provider: "claude", ...(systemPrompt ? { systemPrompt } : {}) },
@@ -107,24 +107,24 @@ const dead: [string, string | undefined, Record<string, { status: string; archiv
   ["a session in error", "old", { old: { status: "error" } }],
 ];
 for (const [name, agent, known] of dead) {
-  test(`ensureManager creates one manager on Claude Opus and records it when manager.md has ${name}`, async () => {
+  test(`ensureManager creates one manager on Claude Sonnet and records it when manager.md has ${name}`, async () => {
     const root = tempRoot(true, agent);
     const { paseo, created } = fakePaseo(known);
     assert.equal(await ensureManager(root, paseo), "new-1");
     assert.deepEqual(created, [
-      { cwd: root, config: MANAGER_MODELS[0], env: { [FACTORY_MANAGER_ENV]: "1" }, title: "Factory manager", labels: { kind: "factory-manager" } },
+      { cwd: root, config: MANAGER_SESSION_MODELS[0], env: { [FACTORY_MANAGER_ENV]: "1" }, title: "Factory manager", labels: { kind: "factory-manager" } },
     ]);
     assert.match(managerFile(root), /^agent: new-1$/m);
   });
 }
 
-test("ensureManager falls back to Cursor Grok 4.7 when the Claude create fails", async () => {
+test("ensureManager falls back to Cursor Composer 2.5 when the Claude create fails", async () => {
   const root = tempRoot(true);
   const { paseo, created } = fakePaseo({}, ["claude"]);
   assert.equal(await ensureManager(root, paseo), "new-2");
   assert.deepEqual(created.map((request) => request.config), [
-    { provider: "claude/claude-opus-5-5" },
-    { provider: "cursor/grok-4.7" },
+    { provider: "claude/claude-sonnet-5-5" },
+    { provider: "cursor/composer-2.5" },
   ]);
   assert.match(managerFile(root), /^agent: new-2$/m);
 });

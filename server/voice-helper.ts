@@ -39,8 +39,8 @@ export type VoiceHelperPorts = {
   run(agentId: string, prompt: string, timeoutMs: number): Promise<{ status: string; lastMessage: string | null }>;
 };
 
-// A little over the client's 3 s fallback, so a late answer is dropped by the client, not cut here.
-export const INTERPRET_TIMEOUT_MS = 5000;
+// A little over the client's 6 s fallback, so a late answer is dropped by the client, not cut here.
+export const INTERPRET_TIMEOUT_MS = 8000;
 const RECENT_FETCH = 4;
 
 export function createVoiceHelper(ports: VoiceHelperPorts) {

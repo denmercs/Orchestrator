@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import type { InterpretResult, VoiceSession } from "../shared/voice-loop";
 import { HELPER_DEFAULT_ON } from "../shared/voice-interpreter";
-import { createVoiceInterpret, IDLE_STOP_MS, type InterpretHelper } from "./voice-interpret";
+import { createVoiceInterpret, IDLE_STOP_MS, INTERPRET_FALLBACK_MS, type InterpretHelper } from "./voice-interpret";
 
 const sessions: VoiceSession[] = [];
 
@@ -56,12 +56,12 @@ test("switch off: helper never called, name stripped", async () => {
   assert.deepEqual(out.result, { type: "send", text: "run the tests" });
 });
 
-test("slow helper (over 3 s) falls back with timeout", async () => {
+test("slow helper (over the fallback) falls back with timeout", async () => {
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
     const { helper } = fakeHelper(() => new Promise(() => {}));
     const pending = ask(createVoiceInterpret(helper));
-    mock.timers.tick(3000);
+    mock.timers.tick(INTERPRET_FALLBACK_MS);
     const out = await pending;
     assert.equal(out.via, "passThrough");
     assert.equal(out.reason, "timeout");
@@ -94,7 +94,7 @@ test("busy: a previous run still going falls back at once", async () => {
     const { helper, calls } = fakeHelper(() => new Promise(() => {}));
     const svc = createVoiceInterpret(helper);
     const first = ask(svc);
-    mock.timers.tick(3000);
+    mock.timers.tick(INTERPRET_FALLBACK_MS);
     await first;
     const second = await ask(svc);
     assert.equal(second.via, "passThrough");
