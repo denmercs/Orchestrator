@@ -82,25 +82,7 @@ test("sendToStep passes the steer option through to the agent's send", async () 
   assert.deepEqual(calls, [{ id: "a1", text: "keep going", options: { activeTurnBehavior: "steer" } }]);
 });
 
-test("refreshSession is undefined when the refresh throws, null when the agent is gone, and the session when it answers", async () => {
-  const refreshing = (refresh: () => Promise<unknown>) => hostOver({ agents: { ref: () => ({ refresh }) } });
-
-  assert.equal(await refreshing(async () => Promise.reject(new Error("daemon down"))).refreshSession("a1"), undefined);
-  assert.equal(await refreshing(async () => null).refreshSession("a1"), null);
-
-  const session = await refreshing(async () => ({ agent: { id: "a1", status: "idle", labels: { kind: "initiative-loop" } } })).refreshSession("a1");
-  assert.deepEqual(session, {
-    id: "a1",
-    status: "idle",
-    archivedAt: undefined,
-    lastError: undefined,
-    labels: { kind: "initiative-loop" },
-    activeTurn: null,
-    lastUsage: undefined,
-  });
-});
-
-test("refreshSession is null only for an empty daemon answer, and undefined for any throw or rejection", async () => {
+test("refreshSession is null only for an empty daemon answer, undefined for any throw or rejection, and the session when it answers", async () => {
   // Why it matters: the loop counts null as "gone" but treats undefined as "ask again", so an error must never read as null.
   const refreshing = (refresh: () => Promise<unknown>) => hostOver({ agents: { ref: () => ({ refresh }) } });
   const spawnGit = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT", syscall: "spawn git" });
@@ -119,6 +101,18 @@ test("refreshSession is null only for an empty daemon answer, and undefined for 
     undefined,
   );
   assert.equal(await hostOver({}).refreshSession("a1"), undefined);
+
+  // An answer: the session itself.
+  const session = await refreshing(async () => ({ agent: { id: "a1", status: "idle", labels: { kind: "initiative-loop" } } })).refreshSession("a1");
+  assert.deepEqual(session, {
+    id: "a1",
+    status: "idle",
+    archivedAt: undefined,
+    lastError: undefined,
+    labels: { kind: "initiative-loop" },
+    activeTurn: null,
+    lastUsage: undefined,
+  });
 });
 
 test("loopTurnEnded carries the agent id and timeline, and a failed turn's error as its message", () => {
