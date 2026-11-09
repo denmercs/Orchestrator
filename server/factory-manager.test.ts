@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { applyFactoryManager, ensureManager, FACTORY_MANAGER_ENV, MANAGER_SESSION_MODELS, type ManagerPaseo, steerManager } from "./factory-manager";
+import { applyFactoryManager, ensureManager, FACTORY_MANAGER_ENV, MANAGER_SESSION_MODELS, type ManagerPaseo, steerManager, SYSTEM_TAG } from "./factory-manager";
 
 const marked = (systemPrompt?: string) => ({
   config: { provider: "claude", ...(systemPrompt ? { systemPrompt } : {}) },
@@ -21,6 +21,13 @@ test("applyFactoryManager gives a marked request the manager prompt as its syste
   const prompt = applyFactoryManager(marked()).config.systemPrompt ?? "";
   assert.match(prompt, /\.harness\/factory\//);
   for (const limit of limits) assert.match(prompt, limit);
+});
+
+test("applyFactoryManager explains the [system] tag: lines starting with it come from the factory's code, not the human", () => {
+  const prompt = applyFactoryManager(marked()).config.systemPrompt ?? "";
+  assert.match(prompt, /\[system\]/);
+  assert.match(prompt, /factory's own code/i);
+  assert.match(prompt, /not the human/i);
 });
 
 test("applyFactoryManager appends the manager prompt after an existing system prompt", () => {
@@ -161,8 +168,16 @@ test("steerManager sends the line once, as a steer, to the manager.md id only wh
   const root = tempRoot(true, "mgr");
   const { paseo, created, sent } = fakePaseo({ mgr: { status: "idle" }, worker: { status: "running" }, seat: { status: "idle" } });
   assert.equal(await steerManager(root, line, paseo), true);
-  assert.deepEqual(sent, [{ id: "mgr", text: line, options: steer }]);
+  assert.deepEqual(sent, [{ id: "mgr", text: `[system] ${line}`, options: steer }]);
   assert.equal(created.length, 0);
+});
+
+test("steerManager prefixes every line with the SYSTEM_TAG", async () => {
+  const root = tempRoot(true, "mgr");
+  const { paseo, sent } = fakePaseo({ mgr: { status: "idle" } });
+  await steerManager(root, "Slice s1 was filed.", paseo);
+  assert.equal(SYSTEM_TAG, "[system]");
+  assert.deepEqual(sent.map((one) => one.text), ["[system] Slice s1 was filed."]);
 });
 
 test("steerManager replaces a dead manager first and sends the line to the new one", async () => {
@@ -170,7 +185,7 @@ test("steerManager replaces a dead manager first and sends the line to the new o
   const { paseo, created, sent } = fakePaseo({ old: { status: "closed" }, worker: { status: "running" } });
   assert.equal(await steerManager(root, line, paseo), true);
   assert.equal(created.length, 1);
-  assert.deepEqual(sent, [{ id: "new-1", text: line, options: steer }]);
+  assert.deepEqual(sent, [{ id: "new-1", text: `[system] ${line}`, options: steer }]);
   assert.match(managerFile(root), /^agent: new-1$/m);
 });
 

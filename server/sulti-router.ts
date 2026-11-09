@@ -36,13 +36,14 @@ export type SultiRouterPorts = {
   /** "Status": the live agents to summarise, from the same list as `sessions`. See `statusLine`. */
   status?(): Promise<StatusAgent[]>;
   /**
-   * The factory manager as a session, or null when there is no factory. It shows in the list as "Factory manager" and is the
-   * target of a router that has none. Asked on every route, never keyed on the Sulti session id; a rejection is said, then routing is as with null.
+   * The id of the Sulti session (the global manager), or null when there is none. It shows in the list as "Sulti" and is the
+   * target of a router that has none. It is never sent the routing preamble, since its system prompt covers it. Asked on every route;
+   * a rejection is said, then routing is as with null.
    */
-  manager?(): Promise<VoiceSession | null>;
+  sulti?(): Promise<string | null>;
   /**
    * The factory's status, answered by a cheap one-shot from its files: `answer` is spoken and nothing is sent, `unavailable`
-   * carries why it can't run (routing carries on to the manager, with a note), null means there is no factory. Read-only.
+   * carries why it can't run (routing carries on to Sulti, with a note), null means there is no factory. Read-only.
    */
   factoryStatus?(): Promise<{ answer: string } | { unavailable: string } | null>;
   now?(): number;
@@ -54,15 +55,15 @@ export type RouteResult = { spoken: string[]; note: string | null };
 // A briefing waiting on your answer lapses after this, so a later "yes" isn't taken for it.
 const BRIEF_TIMEOUT_MS = 120_000;
 
-type Entry = { state: VoiceState; confirmAt: number; choicesAt: number; owed: string[]; managerId: string | null };
+type Entry = { state: VoiceState; confirmAt: number; choicesAt: number; owed: string[]; sultiId: string | null };
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 // The router id the Mac's "good morning" and "status" run under, kept apart from the phone routers.
 export const MAC_ROUTER = "mac";
 
-// The name the factory manager answers to in the session list ("switch to factory manager").
-const FACTORY_MANAGER_NAME = "Factory manager";
+// The name the Sulti session answers to in the session list ("switch to Sulti").
+const SULTI_SESSION_NAME = "Sulti";
 
 export function createSultiRouter(ports: SultiRouterPorts) {
   const now = ports.now ?? Date.now;
@@ -80,7 +81,7 @@ export function createSultiRouter(ports: SultiRouterPorts) {
   function entryFor(routerId: string): Entry {
     let entry = entries.get(routerId);
     if (!entry) {
-      entry = { state: step(initialVoiceState(), { type: "wake" }).state, confirmAt: 0, choicesAt: 0, owed: [], managerId: null };
+      entry = { state: step(initialVoiceState(), { type: "wake" }).state, confirmAt: 0, choicesAt: 0, owed: [], sultiId: null };
       entries.set(routerId, entry);
     }
     return entry;
@@ -139,9 +140,9 @@ export function createSultiRouter(ports: SultiRouterPorts) {
     }
   }
 
-  // "Where are we" and plain "status" go to the factory reporter ahead of the loop, so the manager isn't woken to answer them.
+  // "Where are we" and plain "status" go to the factory reporter ahead of the loop, so Sulti isn't woken to answer them.
   // Null means carry on: not an ask, no factory (plain "status" then reads the sessions), or asleep and not addressed.
-  // `unavailable` is a note, and the words route on to the manager as any other.
+  // `unavailable` is a note, and the words route on to the target as any other.
   async function routeFactoryStatus(routerId: string, text: string): Promise<RouteResult | { unavailable: string } | null> {
     const report = ports.factoryStatus;
     if (!report || !(isFactoryStatusAsk(text) || isStatusAsk(text))) return null;
@@ -171,28 +172,30 @@ export function createSultiRouter(ports: SultiRouterPorts) {
     if (!text.trim()) return { spoken: [], note: DIDNT_CATCH_NOTE };
     const entry = entryFor(routerId);
     let state = entry.state;
-    // A rejection (both model creates failed) is told apart from null (no factory): the first is said, the second is silent.
-    let managerError: string | null = null;
-    const [refreshed, factory] = await Promise.all([
+    // A rejection (both model creates failed) is told apart from null (no Sulti session): the first is said, the second is silent.
+    let sultiError: string | null = null;
+    const [refreshed, sultiId] = await Promise.all([
       refresh(),
-      ports.manager
-        ? ports.manager().catch((error) => {
-            managerError = errorText(error);
+      ports.sulti
+        ? ports.sulti().catch((error) => {
+            sultiError = errorText(error);
             return null;
           })
         : null,
     ]);
     let split = refreshed;
-    if (split && factory) split = { ...split, list: [...split.list.filter((s) => s.id !== factory.id), { id: factory.id, name: FACTORY_MANAGER_NAME }] };
+    if (split && sultiId) split = { ...split, list: [...split.list.filter((s) => s.id !== sultiId), { id: sultiId, name: SULTI_SESSION_NAME }] };
+    // Its system prompt carries the routing rule, so it is never briefed.
+    if (sultiId) told.add(sultiId);
     const hadTarget = !!state.session;
     if (split) state = step(state, { type: "sessions", ...split }).state;
-    // With no target, the manager is the default one. A target that just went away is said, as an explicit switch is.
-    // A target that is the manager this router last saw, now replaced in manager.md, is re-picked at the new id.
-    const replaced = !!factory && !!state.session && !!entry.managerId && state.session.id === entry.managerId && entry.managerId !== factory.id;
-    if (factory) entry.managerId = factory.id;
+    // With no target, Sulti is the default one. A target that just went away is said, as an explicit switch is.
+    // A target that is the Sulti session this router last saw, now replaced, is re-picked at the new id.
+    const replaced = !!sultiId && !!state.session && !!entry.sultiId && state.session.id === entry.sultiId && entry.sultiId !== sultiId;
+    if (sultiId) entry.sultiId = sultiId;
     if (replaced) state = { ...state, session: null };
-    const landedOnManager = !!split && !!factory && !state.session;
-    if (landedOnManager) state = step(state, { type: "pick", session: { id: factory.id, name: FACTORY_MANAGER_NAME } }).state;
+    const landedOnSulti = !!split && !!sultiId && !state.session;
+    if (landedOnSulti) state = step(state, { type: "pick", session: { id: sultiId, name: SULTI_SESSION_NAME } }).state;
     // The same timeout as the Mac's, checked when the next words arrive (there is no timer on the phone).
     if (state.mode === "confirming" && now() - entry.confirmAt > CONFIRM_TIMEOUT_MS) {
       state = step(state, { type: "confirm", word: CONFIRM_CANCEL }).state;
@@ -203,8 +206,8 @@ export function createSultiRouter(ports: SultiRouterPorts) {
     const wasConfirming = state.mode === "confirming";
     // Lines Sulti couldn't say out of turn come first, once.
     const spoken: string[] = entry.owed.splice(0);
-    if (managerError) spoken.push(`I couldn't start the factory manager: ${managerError}`);
-    if (landedOnManager && hadTarget) spoken.push(`Now on ${FACTORY_MANAGER_NAME}.`);
+    if (sultiError) spoken.push(`I couldn't start Sulti: ${sultiError}`);
+    if (landedOnSulti && hadTarget) spoken.push(`Now on ${SULTI_SESSION_NAME}.`);
     const shown: string[] = [];
     let steered = false;
     let steeredTo: string | null = null;

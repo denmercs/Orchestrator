@@ -7,10 +7,14 @@ import { writeFrontmatter } from "./harness-layout";
 // Env marker the factory puts on the manager session it creates; the agent.create hook looks for it.
 export const FACTORY_MANAGER_ENV = "ORCHESTRATOR_FACTORY_MANAGER";
 
+// The tag on every line the factory's own code steers to the manager, so it can tell those from the human's words.
+export const SYSTEM_TAG = "[system]";
+
 // The manager's system prompt: its role, then the three limits the factory plan sets for it.
 export const MANAGER_PROMPT = [
   "Factory manager:",
   "You are the factory manager. You talk to the human, write the factory files under `.harness/factory/`, and report status.",
+  `Lines starting with ${SYSTEM_TAG} come from the factory's own code, not the human.`,
   "Limits:",
   "- You do not edit product code.",
   "- You do not tell a worker to rewrite `culture.md` or seat notes.",
@@ -75,25 +79,34 @@ export function ensureManager(root: string, ports: ManagerPaseo): Promise<string
 
 async function ensure(root: string, ports: ManagerPaseo): Promise<string | null> {
   if (!existsSync(factoryDir(root))) return null;
-  const known = readFactory(root).manager.agent;
+  const { id, created } = await liveOrCreate(
+    readFactory(root).manager.agent,
+    { cwd: root, env: { [FACTORY_MANAGER_ENV]: "1" }, title: "Factory manager", labels: { kind: "factory-manager" } },
+    ports,
+  );
+  if (created) writeFrontmatter(join(factoryDir(root), "manager.md"), { agent: id });
+  return id;
+}
+
+// The session id to use for `known`: itself while Paseo reports it live, else a fresh session made from `spec` on the
+// first of MANAGER_SESSION_MODELS that creates (the create falls through to the next on failure; the last failure is
+// thrown). Shared by the factory manager and Sulti. The caller records the id when `created`; a Paseo that doesn't answer throws.
+export async function liveOrCreate(
+  known: string | undefined,
+  spec: { cwd: string; env: Record<string, string>; title: string; labels: Record<string, string> },
+  ports: ManagerPaseo,
+): Promise<{ id: string; created: boolean }> {
   if (known) {
     const session = (await ports.agents.ref(known).refresh())?.agent;
     // Same test as the initiative loop's.
     const dead = !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
-    if (!dead) return known;
+    if (!dead) return { id: known, created: false };
   }
   let failure: unknown;
   for (const config of MANAGER_SESSION_MODELS) {
     try {
-      const { id } = await ports.agents.create({
-        cwd: root,
-        config,
-        env: { [FACTORY_MANAGER_ENV]: "1" },
-        title: "Factory manager",
-        labels: { kind: "factory-manager" },
-      });
-      writeFrontmatter(join(factoryDir(root), "manager.md"), { agent: id });
-      return id;
+      const { id } = await ports.agents.create({ ...spec, config });
+      return { id, created: true };
     } catch (error) {
       failure = error;
     }
@@ -101,11 +114,11 @@ async function ensure(root: string, ports: ManagerPaseo): Promise<string | null>
   throw failure;
 }
 
-// The status steer: one line sent as a steer to the factory manager (replaced first if it is dead), and to no other
+// The status steer: one line, prefixed with SYSTEM_TAG, sent as a steer to the factory manager (replaced first if it is dead), and to no other
 // session. False, with nothing sent, when root has no factory.
 export async function steerManager(root: string, line: string, ports: ManagerPaseo): Promise<boolean> {
   const id = await ensureManager(root, ports);
   if (!id) return false;
-  await ports.agents.ref(id).send(line, { activeTurnBehavior: "steer" });
+  await ports.agents.ref(id).send(`${SYSTEM_TAG} ${line}`, { activeTurnBehavior: "steer" });
   return true;
 }

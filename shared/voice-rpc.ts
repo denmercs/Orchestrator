@@ -91,6 +91,8 @@ export const voiceEvents = defineRpc({
     cursor: z.number().int().min(0),
     events: z.array(z.custom<VoiceEvent>((v) => v !== null && typeof v === "object" && typeof (v as { type?: unknown }).type === "string")),
     phoneActive: z.boolean(),
+    // The Sulti session's id, which the Mac picks when it has no target; null when it can't be made, absent from an older server.
+    sultiSession: z.string().nullable().optional(),
     // A best guess at whether Paseo voice mode is on, from the Sulti sessions Paseo opened; absent from an older server.
     voice: z.enum(["on", "off", "unknown"]).optional(),
     // The saved voice setting can't be read, so Ignore me is off and speech goes through; the Mac says so.

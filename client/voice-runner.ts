@@ -38,7 +38,7 @@ export type VoiceRunnerPorts = {
   /** Audio plus hint words in, text out. */
   transcriber?: (audio: string, hints: string[]) => Promise<string>;
   /** Turn events from the plugin server: read(after) waits for events past the cursor. `phoneActive` means the phone is speaking. */
-  events?: { read(after: number): Promise<{ cursor: number; events: VoiceEvent[]; phoneActive: boolean; voice?: VoiceGuess; settingsUnreadable?: boolean; settingsChecking?: boolean }> };
+  events?: { read(after: number): Promise<{ cursor: number; events: VoiceEvent[]; phoneActive: boolean; voice?: VoiceGuess; settingsUnreadable?: boolean; settingsChecking?: boolean; sultiSession?: string | null }> };
   /** Speaks a line aloud: resolves "ended" when it finished, "stopped" when stop() cut it off. */
   speaker?: { speak(text: string, replyId: string): Promise<"ended" | "stopped">; stop(): void };
   /** The morning briefing: lines to say when the words are "good morning" or an open briefing's answer, null when they are not. */
@@ -89,6 +89,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   const waiting = new Map<number, number>(); // interpret seq -> entry id
   let nextEntry = 0;
   let nextReply = 0;
+  let lastSulti: string | null = null; // the Sulti session the last poll named; survives off() and on()
   let polling = 0; // bumped by on() and off(): a poll from an older run stops dispatching
   let confirmTimer: unknown = null;
   let choicesTimer: unknown = null;
@@ -417,6 +418,13 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
         const batch = await events.read(cursor);
         if (polling !== run) return;
         cursor = batch.cursor;
+        // With no target, the server's Sulti session is the default; a target already picked (or switched to) wins,
+        // unless it is the Sulti session that was just replaced.
+        if (batch.sultiSession) {
+          const replaced = !!lastSulti && lastSulti !== batch.sultiSession && snapshot.session?.id === lastSulti;
+          if (!snapshot.session || replaced) dispatch({ type: "pick", session: { id: batch.sultiSession, name: "Sulti" } });
+          lastSulti = batch.sultiSession;
+        }
         if (batch.phoneActive !== snapshot.phoneActive) publish({ phoneActive: batch.phoneActive });
         if (batch.voice && batch.voice !== snapshot.voiceGuess) publish({ voiceGuess: batch.voice });
         if (batch.settingsUnreadable !== serverUnreadable || batch.settingsChecking !== serverChecking) {
