@@ -80,7 +80,8 @@ import { createMicOffGate } from "./server/mic-off-gate";
 import { createSultiProvider, type SultiConnection } from "./server/sulti-provider";
 import { type Filed, fileInitiative, fileSlice } from "./server/factory-file";
 import { fileInitiativeRpc, fileSliceRpc } from "./shared/factory-file";
-import { applyFactoryManager, ensureManager, steerManager } from "./server/factory-manager";
+import { applyFactoryManager, steerManager } from "./server/factory-manager";
+import { applySultiSession, ensureSulti, readSultiId } from "./server/sulti-session";
 import { isDead, runFactoryTick, type TickPaseo } from "./server/factory-tick";
 import { factoryStatus } from "./server/factory-status";
 import { commitStory } from "./server/story-git";
@@ -182,6 +183,8 @@ export default function contribute(
     harness?: { repo: string; epic: string };
     // How often the PR poll runs factory tick and the initiative loop (tests use a short interval).
     prPollMs?: number;
+    // Where the Sulti session's folder and id file live (tests use a temp dir, never ~/.orchestrator).
+    sultiHome?: string;
   } = {},
 ) {
   // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
@@ -531,7 +534,7 @@ export default function contribute(
           };
     // Only voice-marked creates need the profile; a failed config read never blocks the create.
     if (request.env?.[VOICE_SESSION_ENV] !== "1") {
-      const managed = applyFactoryManager(withServers);
+      const managed = applySultiSession(applyFactoryManager(withServers));
       return managed === request ? undefined : managed;
     }
     let profile = null;
@@ -762,6 +765,17 @@ export default function contribute(
   timer.unref?.();
   // A Claude session starts the replay by writing the start file; any Paseo handle we have seen will do.
   const replayStart = deps.replayStart ?? { file: REPLAY_START_FILE, everyMs: REPLAY_START_POLL_MS };
+  // The tick's Paseo handle, except that it refuses to send to the Sulti session: the tick steers a repo's manager only.
+  const neverSulti = (paseo: NonNullable<typeof pipelinePaseo>): NonNullable<typeof pipelinePaseo> => ({
+    ...paseo,
+    agents: {
+      ...paseo.agents,
+      ref: (id: string) => {
+        if (id === readSultiId(deps.sultiHome)) throw new Error("The tick never steers the Sulti session.");
+        return paseo.agents.ref(id);
+      },
+    },
+  });
   // What the factory tick drives slices with: loop steps, the worktree for a fresh slice, the manager steer and a message to a seat.
   const factoryPorts = (repo: string, paseo: NonNullable<typeof pipelinePaseo>): TickPaseo => ({
     agents: paseo.agents,
@@ -774,7 +788,7 @@ export default function contribute(
     cost: readCost,
     // A seat runs on its file's profile, else its role's tier; the tick falls back to the manager's models without one.
     profiles: async () => ({ list: profilesFromConfigGet(await paseo.config.get()), runnerProfileId: await readRunnerProfileId() }),
-    steer: (line) => steerManager(repo, line, paseo),
+    steer: (line) => steerManager(repo, line, neverSulti(paseo)),
     // A merged slice closes its Jira ticket the way a merged Story does: the user's setting with the slice's repo override, read even when the Story pipeline is off.
     closeTicket: closeIssue,
     closeOnMerge: async (cwd) => repoPipelineConfig((await readPipelineValues()) ?? pipelineSettings.schema.parse({}), cwd).closeOnMerge,
@@ -814,13 +828,8 @@ export default function contribute(
     send: (sessionId, text) => sultiPaseo().agents.ref(sessionId).send(text, { activeTurnBehavior: "steer" }),
     interpreter: voiceInterpretService,
     create: voiceSessionCreator(sultiPaseo),
-    // The factory manager of the harness repo's factory; no repo setting, or no factory there, means none.
-    manager: async () => {
-      const { repo } = await readHarness();
-      if (!repo) return null;
-      const id = await ensureManager(repo, sultiPaseo());
-      return id ? { id, name: "Factory manager" } : null;
-    },
+    // The Sulti session, the default target of a router that has none.
+    sulti: async () => ensureSulti(sultiPaseo(), deps.sultiHome),
     // "Where are we": a cheap one-shot over the factory's files, so the manager isn't woken. Null when there is no factory.
     factoryStatus: async () => {
       const { repo } = await readHarness();
@@ -860,7 +869,12 @@ export default function contribute(
     if (awake) lastAwakeMacPoll = Date.now();
     helperPaseo = paseo;
     macTarget = target ?? null;
-    return { ...(await voiceHub.read(after)), phoneActive: sultiConnection?.isActive(Date.now()) ?? false, voice: sultiConnection?.voiceState(Date.now()) ?? "unknown", settingsUnreadable: micOffGate.unreadable(), settingsChecking: micOffGate.checking() };
+    // The Mac picks this session when it has no target; a Sulti that can't be made leaves the field null, never fails the poll.
+    const sultiSession = await ensureSulti(paseo, deps.sultiHome).catch((error) => {
+      console.warn("orchestrator: Sulti session unavailable", error);
+      return null;
+    });
+    return { ...(await voiceHub.read(after)), sultiSession, phoneActive: sultiConnection?.isActive(Date.now()) ?? false, voice: sultiConnection?.voiceState(Date.now()) ?? "unknown", settingsUnreadable: micOffGate.unreadable(), settingsChecking: micOffGate.checking() };
   });
   // The Mac's "good morning": the same briefing as Sulti, under its own router id so its open briefing is the Mac's.
   server.handle(voiceBrief, async ({ text }, { paseo }) => {

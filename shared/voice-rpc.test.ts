@@ -40,3 +40,11 @@ test("voiceEvents takes { after } and returns { cursor, events, phoneActive }", 
   assert.equal(voiceEvents.output.safeParse(out).success, true);
   assert.equal(voiceEvents.output.safeParse({ cursor: 0, events: [] }).success, false);
 });
+
+test("voiceEvents output carries the Sulti session's id, null when it can't be made, and may leave it out", () => {
+  const out = { cursor: 0, events: [], phoneActive: false };
+  assert.equal(voiceEvents.output.safeParse({ ...out, sultiSession: "sulti-1" }).success, true);
+  assert.equal(voiceEvents.output.safeParse({ ...out, sultiSession: null }).success, true);
+  assert.equal(voiceEvents.output.safeParse(out).success, true);
+  assert.equal(voiceEvents.output.safeParse({ ...out, sultiSession: 3 }).success, false);
+});

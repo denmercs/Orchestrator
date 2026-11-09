@@ -162,7 +162,7 @@ function wired(
       return () => noop;
     },
   });
-  const stop = contribute(server, { replay: runner, askUnavailable: async () => (signedIn ? null : "Claude Code is not signed in."), replayStart, loopStart, voiceHelperCwd, speakerPorts: quietSpeaker, ...extra });
+  const stop = contribute(server, { replay: runner, askUnavailable: async () => (signedIn ? null : "Claude Code is not signed in."), replayStart, loopStart, voiceHelperCwd, speakerPorts: quietSpeaker, sultiHome: mkdtempSync(join(tmpdir(), "sulti-home-")), ...extra });
   return { handlers, listeners, providers, fake, stop };
 }
 
@@ -826,6 +826,81 @@ test("a failing config.get still gives the marked create the rule, and warns", a
   assert.equal(warned.length, 1);
 });
 
+test("a Sulti-marked agent.create gets the Sulti prompt; an unmarked one does not", async () => {
+  const hook = createHook("");
+  const paseo = { config: { get: async () => sonnetProfiles } };
+  const marked = { config: { provider: "claude", cwd: "/nowhere", systemPrompt: "mine" }, env: { ORCHESTRATOR_SULTI_SESSION: "1" } };
+  const out = (await hook({ request: marked }, { paseo })) as { config: { systemPrompt?: string } };
+  assert.match(out.config.systemPrompt ?? "", /^mine\n\n/);
+  assert.match(out.config.systemPrompt ?? "", /You are Sulti, the global manager/);
+  const plain = { config: { provider: "claude", cwd: "/nowhere" } };
+  const left = (await hook({ request: plain }, { paseo })) as { config: { systemPrompt?: string } } | undefined;
+  assert.doesNotMatch((left ?? plain).config.systemPrompt ?? "", /global manager/);
+});
+
+// A Paseo that makes `ids` in turn, calls every id live, and records what is sent to whom.
+function suPaseo(ids: string[], sent: [string, string][] = []) {
+  return {
+    agents: {
+      create: async () => ({ id: ids.shift() ?? "none" }),
+      list: noSessions,
+      ref: (id: string) => ({ refresh: async () => ({ agent: { status: "idle" } }), send: async (text: string) => void sent.push([id, text]) }),
+    },
+  };
+}
+
+test("voiceEvents returns the Sulti session's id, and null when it cannot be made", async () => {
+  const { handlers, stop } = wired();
+  try {
+    const events = handlers.get(voiceEvents.name)!;
+    const read = (await events({ after: 0 }, { paseo: suPaseo(["sulti-1"]) })) as { sultiSession?: string | null };
+    assert.equal(read.sultiSession, "sulti-1");
+    const down = { agents: { ...suPaseo([]).agents, create: async () => Promise.reject(new Error("down")) } };
+    const other = wired();
+    const warn = console.warn;
+    console.warn = () => undefined;
+    try {
+      const failed = (await other.handlers.get(voiceEvents.name)!({ after: 0 }, { paseo: down })) as { sultiSession?: string | null };
+      assert.equal(failed.sultiSession ?? null, null);
+    } finally {
+      console.warn = warn;
+      other.stop();
+    }
+  } finally {
+    stop();
+  }
+});
+
+test("a router with no target sends to the Sulti session", async () => {
+  const { handlers, providers, stop } = wired();
+  try {
+    const sent: [string, string][] = [];
+    const paseo = suPaseo(["sulti-1"], sent);
+    await handlers.get(voiceEvents.name)!({ after: 0 }, { paseo });
+    const sulti = (await providers[0].connect()) as { send(input: unknown): Promise<void>; onEvent(listener: (e: { type: string; state?: string }) => void): void };
+    const seen: { type: string; state?: string }[] = [];
+    sulti.onEvent((e) => seen.push(e));
+    await sulti.send({
+      type: "session.open",
+      requestId: "q1",
+      sessionId: "p1",
+      config: { cwd: "/repo", env: {}, mcpServers: { paseo: { type: "http", url: "http://127.0.0.1:1/mcp", headers: {} } }, settings: {}, persist: true },
+      persistence: { version: 1, data: { routerId: "r1" } },
+      history: "skip",
+    });
+    await sulti.send({
+      type: "session.prompt",
+      sessionId: "p1",
+      prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Sulti, what is next on the board" }] } },
+    });
+    await until(() => seen.some((e) => e.type === "session.turn" && e.state === "completed"));
+    assert.deepEqual(sent.map(([id]) => id), ["sulti-1"]);
+    assert.match(sent[0][1], /what is next on the board/);
+  } finally {
+    stop();
+  }
+});
+
 test("voiceHelperSwitch reads and flips the one switch the interpret RPC obeys", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "voice-helper-"));
   const { handlers, stop } = wired([], true, undefined, undefined, cwd);
@@ -860,7 +935,7 @@ test("a Sulti session opening warms the same helper the drawer's RPCs use", asyn
       return () => noop;
     },
   });
-  const stop = contribute(server, { askUnavailable: async () => null, voiceHelperCwd: cwd, speakerPorts: quietSpeaker });
+  const stop = contribute(server, { askUnavailable: async () => null, voiceHelperCwd: cwd, speakerPorts: quietSpeaker, sultiHome: mkdtempSync(join(tmpdir(), "sulti-home-")) });
   const { paseo, calls } = helperPaseo();
   // Providers get no Paseo handle; one RPC hands it over.
   await handlers.get(voiceHelperSwitch.name)!({}, { paseo });
@@ -1062,7 +1137,7 @@ function micOffHarness(read: () => Promise<unknown>) {
       return () => noop;
     },
   });
-  const stop = contribute(server, { speakerPorts: quietSpeaker });
+  const stop = contribute(server, { speakerPorts: quietSpeaker, sultiHome: mkdtempSync(join(tmpdir(), "sulti-home-")) });
   const turns = async (text: string) => {
     const connection = await providers[0].connect();
     const items: string[] = [];

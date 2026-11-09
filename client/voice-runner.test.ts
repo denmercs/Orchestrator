@@ -532,10 +532,10 @@ test("newSession() creates from the target even while voice is off", async () =>
   assert.equal(runner.getState().session?.id, "new2");
 });
 
-type Batch = { cursor: number; events: VoiceEvent[]; phoneActive: boolean };
+type Batch = { cursor: number; events: VoiceEvent[]; phoneActive: boolean; sultiSession?: string | null };
 
 // An events port whose reads stay pending until the test answers them.
-function eventsSetup(speakResult: "ended" | "stopped" = "ended") {
+function eventsSetup(speakResult: "ended" | "stopped" = "ended", picked = true) {
   const reads: Array<{ after: number; resolve(b: Batch): void; reject(e: Error): void }> = [];
   const spoken: Array<[string, string]> = [];
   let stops = 0;
@@ -554,7 +554,7 @@ function eventsSetup(speakResult: "ended" | "stopped" = "ended") {
     clock: { setTimeout: (fn, ms) => timers.push({ fn, ms }), clearTimeout: () => {} },
   });
   base.runner.setSessions([alpha]);
-  base.runner.pick(alpha);
+  if (picked) base.runner.pick(alpha);
   return { ...base, reads, spoken, timers, stops: () => stops };
 }
 
@@ -576,6 +576,34 @@ test("on() polls events with the cursor and dispatches them; off() stops the pol
   await flush();
   assert.equal(spoken.length, 1);
   assert.equal(reads.length, 2);
+});
+
+test("with no target, a poll's sultiSession becomes the target, and a later poll with another one does not replace it", async () => {
+  // Arrange: voice on, nothing picked yet.
+  const { runner, reads } = eventsSetup("ended", false);
+  runner.on();
+  await flush();
+  assert.equal(runner.getState().session, null);
+  // Act: the first poll carries the Sulti session.
+  reads[0].resolve({ cursor: 1, events: [], phoneActive: false, sultiSession: "s1" });
+  await flush();
+  // Assert: it is the target.
+  assert.deepEqual(runner.getState().session, { id: "s1", name: "Sulti" });
+  // Act: a later poll names a different Sulti session (it was re-created).
+  reads[1].resolve({ cursor: 2, events: [], phoneActive: false, sultiSession: "s2" });
+  await flush();
+  // Assert: the target already picked stays.
+  assert.equal(runner.getState().session?.id, "s1");
+});
+
+test("a target picked before the poll is kept when the poll carries a sultiSession", async () => {
+  const { runner, reads } = eventsSetup();
+  runner.on();
+  await flush();
+  assert.equal(runner.getState().session?.id, "a1");
+  reads[0].resolve({ cursor: 1, events: [], phoneActive: false, sultiSession: "s1" });
+  await flush();
+  assert.equal(runner.getState().session?.id, "a1");
 });
 
 test("a spoken reply that ends dispatches playbackEnded; one that is stopped does nothing", async () => {

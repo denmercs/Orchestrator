@@ -38,7 +38,7 @@ export type VoiceRunnerPorts = {
   /** Audio plus hint words in, text out. */
   transcriber?: (audio: string, hints: string[]) => Promise<string>;
   /** Turn events from the plugin server: read(after) waits for events past the cursor. `phoneActive` means the phone is speaking. */
-  events?: { read(after: number): Promise<{ cursor: number; events: VoiceEvent[]; phoneActive: boolean; voice?: VoiceGuess; settingsUnreadable?: boolean; settingsChecking?: boolean }> };
+  events?: { read(after: number): Promise<{ cursor: number; events: VoiceEvent[]; phoneActive: boolean; voice?: VoiceGuess; settingsUnreadable?: boolean; settingsChecking?: boolean; sultiSession?: string | null }> };
   /** Speaks a line aloud: resolves "ended" when it finished, "stopped" when stop() cut it off. */
   speaker?: { speak(text: string, replyId: string): Promise<"ended" | "stopped">; stop(): void };
   /** The morning briefing: lines to say when the words are "good morning" or an open briefing's answer, null when they are not. */
@@ -417,6 +417,8 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
         const batch = await events.read(cursor);
         if (polling !== run) return;
         cursor = batch.cursor;
+        // With no target, the server's Sulti session is the default; a target already picked (or switched to) wins.
+        if (batch.sultiSession && !snapshot.session) dispatch({ type: "pick", session: { id: batch.sultiSession, name: "Sulti" } });
         if (batch.phoneActive !== snapshot.phoneActive) publish({ phoneActive: batch.phoneActive });
         if (batch.voice && batch.voice !== snapshot.voiceGuess) publish({ voiceGuess: batch.voice });
         if (batch.settingsUnreadable !== serverUnreadable || batch.settingsChecking !== serverChecking) {
