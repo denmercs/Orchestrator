@@ -44,7 +44,7 @@ import { LoadingState } from "./loading-state";
 import { Skeleton, SkeletonBar, SkeletonCards } from "./skeleton";
 import { ProdPulsePanel, ProdPulseSkeleton, useProdPulse } from "./prod-pulse-panel";
 import { pulseTabState } from "./prod-pulse-model";
-import { NeedsYouQueue, StatsStrip } from "./needs-you";
+import { StatsStrip } from "./needs-you";
 import type { DrawerTab } from "./pipeline-drawer-model";
 import { SkillsDrawer, StoryPipelineButton } from "./skills-drawer";
 import { startJiraSession } from "./start-jira-session";
@@ -418,19 +418,26 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
     ) : null;
 
   const header = (
-    <DashboardHeader theme={theme} compact={layout.compact}>
-      <AlertsBell
-        theme={theme}
-        compact={layout.compact}
-        gates={gates}
-        open={alertsOpen}
-        onOpenChange={setAlertsOpen}
-        onOpenGate={(gate) => {
-          setAlertsOpen(false);
-          void selectTab("initiatives");
-          epic.reveal(gate.board, gate.storyId);
-        }}
-      />
+    <DashboardHeader
+      theme={theme}
+      compact={layout.compact}
+      trailing={
+        <AlertsBell
+          theme={theme}
+          compact={layout.compact}
+          gates={gates}
+          navigation={navigation}
+          open={alertsOpen}
+          onOpenChange={setAlertsOpen}
+          onOpenGate={(gate) => {
+            setAlertsOpen(false);
+            void selectTab("initiatives");
+            epic.reveal(gate.board, gate.storyId);
+          }}
+          onActed={epic.refresh}
+        />
+      }
+    >
       <StoryPipelineButton
         theme={theme}
         pipelineOn={pipelineOn}
@@ -451,16 +458,6 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
             navigation={navigation}
             onStarted={epic.refresh}
           />
-
-          {gates.length > 0 ? (
-            <NeedsYouQueue
-              theme={theme}
-              compact={layout.compact}
-              gates={gates}
-              navigation={navigation}
-              onActed={epic.refresh}
-            />
-          ) : null}
 
           <StatsStrip theme={theme} compact={layout.compact} boards={epic.boards} gates={gates} />
 

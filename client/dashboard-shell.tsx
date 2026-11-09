@@ -6,22 +6,27 @@ import { InlineVerse } from "./daily-verse";
 
 type Theme = PluginSurfaceProps["theme"];
 
-// The fixed top of the dashboard: title, the inline verse (unless showVerse is false), then the actions row passed as children.
+// The fixed top of the dashboard: title, the inline verse (unless showVerse is false), then the actions row passed as children. `trailing` sits at the right end of the title row.
 export function DashboardHeader({
   theme,
   compact,
   showVerse = true,
+  trailing,
   children,
 }: {
   theme: Theme;
   compact: boolean;
   showVerse?: boolean;
+  trailing?: ReactNode;
   children?: ReactNode;
 }) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
   return (
     <View style={styles.header}>
-      <Text style={styles.title}>Orchestration</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>Orchestration</Text>
+        {trailing}
+      </View>
       {showVerse ? <InlineVerse theme={theme} /> : null}
       {children ? <View style={styles.actions}>{children}</View> : null}
     </View>
@@ -87,6 +92,7 @@ function createStyles(theme: Theme, compact: boolean) {
       borderBottomColor: theme.colors.border,
       backgroundColor: theme.colors.surface0,
     },
+    titleRow: { flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "space-between" as const },
     title: {
       color: theme.colors.foreground,
       fontSize: 20,
