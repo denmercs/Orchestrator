@@ -10,6 +10,7 @@ import { voiceEvents, voiceHelperStart, voiceHelperStop, voiceHelperSwitch, voic
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readFactory } from "./server/factory-layout";
 
 // No test starts the real Speaker: its workers spawn `uv`.
 const quietSpeaker = (readClip: () => string | undefined) => {
@@ -326,12 +327,12 @@ test("the poll timer runs the factory tick on the harness repo once Paseo is kno
   }
 });
 
-test("a loop start file starts the initiative loop with that input, once Paseo is known", async () => {
+test("a loop start file files slices for that input, once Paseo is known", async () => {
   const file = join(mkdtempSync(join(tmpdir(), "loop-start-")), "initiative-loop-start.json");
-  const { listeners, stop } = wired([], true, undefined, { file, everyMs: 5 });
+  const repo = mkdtempSync(join(tmpdir(), "loop-repo-"));
+  const { listeners, stop } = wired([], true, undefined, { file, everyMs: 5 }, undefined, { harness: { repo, epic: "" } });
   try {
-    // An initiative that isn't there, so the loop's own check answers without touching the repo registry.
-    const repo = mkdtempSync(join(tmpdir(), "loop-repo-"));
+    // An initiative that isn't there, so the filing's own check answers without touching the repo registry.
     writeFileSync(file, JSON.stringify({ repo, initiative: "nope" }));
     await new Promise((r) => setTimeout(r, 30));
     assert.equal(existsSync(file), true, "the file waits while there is no Paseo API");
@@ -343,7 +344,7 @@ test("a loop start file starts the initiative loop with that input, once Paseo i
     assert.equal(existsSync(file), false);
     assert.deepEqual(
       { ...JSON.parse(readFileSync(result, "utf8")), at: undefined },
-      { at: undefined, ok: false, error: `nope is not an initiative in ${repo}.`, started: [], reason: "" },
+      { at: undefined, ok: false, error: `nope is not an initiative in ${repo}.` },
     );
   } finally {
     stop();
@@ -1259,6 +1260,45 @@ test("a turn end the loop can't map is a warning, and the context watch still ge
     await until(() => warnings.some((line) => line.includes("context watch failed")));
   } finally {
     warn.mock.restore();
+    stop();
+  }
+});
+
+test("the file-initiative and file-slice RPCs write inbox slices in the harness repo and start no loop agent", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "file-rpc-"));
+  const phase = join(repoRoot, ".harness", "initiatives", "demo", "phases", "1-core");
+  mkdirSync(join(phase, "stories"), { recursive: true });
+  writeFileSync(join(repoRoot, ".harness", "initiatives", "demo", "initiative.md"), "---\n---\n# Initiative: Demo\n", "utf8");
+  writeFileSync(join(phase, "stories", "01-first.md"), "---\nstatus: todo\n---\n# First story\n", "utf8");
+  const created: string[] = [];
+  const sent: string[] = [];
+  const paseo = {
+    agents: {
+      ref: () => ({ refresh: async () => ({ agent: { status: "idle" } }), send: async (text: string) => void sent.push(text) }),
+      create: async () => {
+        created.push("create");
+        return { id: "manager-1" };
+      },
+    },
+  };
+  const { handlers, stop } = wired([], true, undefined, undefined, undefined, { harness: { repo: repoRoot, epic: "" } });
+  try {
+    const fileInitiativeHandler = handlers.get("orchestration.factory.file-initiative");
+    const fileSliceHandler = handlers.get("orchestration.factory.file-slice");
+    assert.ok(fileInitiativeHandler && fileSliceHandler, "both RPCs are handled");
+
+    const first = (await fileInitiativeHandler({ repo: repoRoot, initiative: "demo" }, { paseo })) as { ok: boolean; slices: string[] };
+    assert.equal(first.ok, true);
+    assert.equal(first.slices.length, 1);
+    const second = (await fileSliceHandler({ title: "Add dark mode" }, { paseo })) as { ok: boolean; slices: string[] };
+    assert.deepEqual([second.ok, second.slices], [true, ["add-dark-mode"]]);
+
+    const inbox = readFactory(repoRoot).missions.find((mission) => mission.id === "inbox");
+    assert.equal(inbox?.slices.length, 2);
+    assert.ok(inbox?.slices.every((slice) => slice.state.run === false));
+    // Only the manager was created; no loop agent.
+    assert.deepEqual(created, ["create"]);
+  } finally {
     stop();
   }
 });

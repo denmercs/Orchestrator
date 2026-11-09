@@ -77,7 +77,8 @@ import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createMicOffGate } from "./server/mic-off-gate";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
-import { fileInitiative } from "./server/factory-file";
+import { fileInitiative, fileSlice } from "./server/factory-file";
+import { fileInitiativeRpc, fileSliceRpc } from "./shared/factory-file";
 import { applyFactoryManager, ensureManager, steerManager } from "./server/factory-manager";
 import { isDead, runFactoryTick, type TickPaseo } from "./server/factory-tick";
 import { factoryStatus } from "./server/factory-status";
@@ -315,6 +316,23 @@ export default function contribute(
     if (!repo) throw new Error("Pick a harness repo in settings first.");
     return fileInitiative(repo, input, { paseo });
   };
+  // The Initiatives tab's Start buttons and the Start input's typed text. Files that land stay `ok` when only the
+  // steer fails: the slice waits in the inbox for the manager's next read.
+  const filing = async (file: (root: string) => Promise<string[]>) => {
+    const { repo } = await readHarness();
+    if (!repo) return { ok: false, error: "Pick a harness repo in settings first.", slices: [], warning: null };
+    try {
+      return { ok: true, error: null, slices: await file(repo), warning: null };
+    } catch (cause) {
+      return { ok: false, error: cause instanceof Error ? cause.message : String(cause), slices: [], warning: null };
+    }
+  };
+  server.handle(fileInitiativeRpc, (input, { paseo }) =>
+    filing((root) => fileInitiative(root, input, { paseo })),
+  );
+  server.handle(fileSliceRpc, (input, { paseo }) =>
+    filing((root) => fileSlice(root, { title: input.title }, { paseo })),
+  );
   server.handle(startTicketRpc, (input, { paseo }) =>
     startTicket(input, {
       readIssue: async (key) => (await readIssueStatuses([key])).get(key),
