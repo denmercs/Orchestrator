@@ -54,6 +54,7 @@ export type SendToStepOptions = {
 export type LoopHost = {
   listStepAgents(): Promise<LoopSession[]>;
   // null when the session is gone; undefined when the host could not answer (try again later).
+  // One null is not proof: the loop reads again and checks the agent list before it counts a session as gone.
   refreshSession(agentId: string): Promise<LoopSession | null | undefined>;
   sendToStep(agentId: string, text: string, options?: SendToStepOptions): Promise<void>;
   // null when the timeline could not be read.

@@ -100,6 +100,27 @@ test("refreshSession is undefined when the refresh throws, null when the agent i
   });
 });
 
+test("refreshSession is null only for an empty daemon answer, and undefined for any throw or rejection", async () => {
+  // Why it matters: the loop counts null as "gone" but treats undefined as "ask again", so an error must never read as null.
+  const refreshing = (refresh: () => Promise<unknown>) => hostOver({ agents: { ref: () => ({ refresh }) } });
+  const spawnGit = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT", syscall: "spawn git" });
+
+  // Empty answers: the daemon has no agent and no error.
+  assert.equal(await refreshing(async () => null).refreshSession("a1"), null);
+  assert.equal(await refreshing(async () => undefined).refreshSession("a1"), null);
+
+  // Failures: a rejected promise (plain or spawn-git style), and a throw before any promise exists.
+  assert.equal(await refreshing(() => Promise.reject(new Error("daemon down"))).refreshSession("a1"), undefined);
+  assert.equal(await refreshing(() => Promise.reject(spawnGit)).refreshSession("a1"), undefined);
+  assert.equal(
+    await refreshing(() => {
+      throw spawnGit;
+    }).refreshSession("a1"),
+    undefined,
+  );
+  assert.equal(await hostOver({}).refreshSession("a1"), undefined);
+});
+
 test("loopTurnEnded carries the agent id and timeline, and a failed turn's error as its message", () => {
   const agent = { id: "a1" } as PluginHookAgent;
   const timeline = [{ type: "user_message" }];
