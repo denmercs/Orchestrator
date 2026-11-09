@@ -354,6 +354,9 @@ export function InitiativePanels({ epic, theme, compact, navigation, onEditPolic
   const settings = useSettings(harnessSettings);
   const toast = useToast();
   const [editing, setEditing] = useState(false);
+  // Nothing shows until a repo is picked, so the dashboard stays quiet by default.
+  const [repoFilter, setRepoFilter] = useState<string | null>(null);
+  const [repoMenu, setRepoMenu] = useState(false);
   const { boards, error, selected, refresh } = epic;
 
   // Picking or creating a phase shows it on its initiative's board.
@@ -395,7 +398,7 @@ export function InitiativePanels({ epic, theme, compact, navigation, onEditPolic
   if (!boards?.length) {
     return (
       <View style={[styles.panel, styles.folded]}>
-        <Text style={styles.foldedTitle}>Initiatives</Text>
+        <Text style={styles.foldedTitle}>Workstreams</Text>
         <Text style={[error ? styles.danger : styles.muted, styles.flex]} numberOfLines={1}>
           {error ?? "not set up"}
         </Text>
@@ -404,15 +407,48 @@ export function InitiativePanels({ epic, theme, compact, navigation, onEditPolic
     );
   }
 
+  const repoName = (repo: string) => repo.split(/[\\/]/).pop() || repo;
+  const repos = [...new Set(boards.map((board) => board.repo))];
+  const chosen = repoFilter && repos.includes(repoFilter) ? repoFilter : null;
+  const repoChoices: MenuEntry[] = [
+    { label: "None", icon: chosen ? "Folder" : "Check", onPress: () => setRepoFilter(null) },
+    ...repos.map((repo) => ({
+      label: repoName(repo),
+      icon: chosen === repo ? "Check" : "Folder",
+      onPress: () => setRepoFilter(repo),
+    })),
+  ];
+  const repoPicker = (
+    <>
+      <View style={styles.headRow}>
+        <Text style={[styles.panelTitle, styles.flex]} numberOfLines={1}>
+          Workstreams
+        </Text>
+        <Button label={`${chosen ? repoName(chosen) : "None"} ▾`} styles={styles} onPress={() => setRepoMenu(true)} />
+      </View>
+      <ActionMenu title="Show workstreams from" open={repoMenu} onOpenChange={setRepoMenu} items={repoChoices} theme={theme} styles={styles} />
+    </>
+  );
+
+  if (!chosen) {
+    return (
+      <View style={[styles.panel, styles.folded]}>
+        {repoPicker}
+        <Text style={styles.muted}>Pick a repo to see its workstreams.</Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.screenFill}>
+      {repoPicker}
       {error ? (
         <Text style={styles.danger} numberOfLines={2}>
           Couldn't refresh the initiatives, showing the last read: {error}
         </Text>
       ) : null}
       <Legend theme={theme} styles={styles} compact={compact} />
-      {boards.map((board) => {
+      {boards.filter((board) => board.repo === chosen).map((board) => {
         const key = boardKey(board);
         return (
           <InitiativePanel
@@ -454,7 +490,7 @@ function Legend({ theme, styles, compact }: { theme: Theme; styles: Styles; comp
   );
   return (
     <View style={styles.legend}>
-      <Text style={styles.legendTitle}>Initiatives</Text>
+      <Text style={styles.legendTitle}>Workstreams</Text>
       {compact ? null : <Text style={styles.hint}>Arrows point from a dependency to the story that needs it</Text>}
       <View style={styles.flex} />
       {swatch("Merged", "merged")}
