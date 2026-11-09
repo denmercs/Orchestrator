@@ -89,6 +89,7 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
   const waiting = new Map<number, number>(); // interpret seq -> entry id
   let nextEntry = 0;
   let nextReply = 0;
+  let lastSulti: string | null = null; // the Sulti session the last poll named; survives off() and on()
   let polling = 0; // bumped by on() and off(): a poll from an older run stops dispatching
   let confirmTimer: unknown = null;
   let choicesTimer: unknown = null;
@@ -412,7 +413,6 @@ export function createVoiceRunner(ports: VoiceRunnerPorts) {
     const events = ports.events;
     if (!events) return;
     let cursor = 0;
-    let lastSulti: string | null = null; // the Sulti session the last poll named
     while (polling === run) {
       try {
         const batch = await events.read(cursor);

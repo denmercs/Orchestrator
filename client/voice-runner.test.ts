@@ -596,6 +596,23 @@ test("with no target, a poll's sultiSession becomes the target, and a replaced S
   assert.deepEqual(runner.getState().session, { id: "s2", name: "Sulti" });
 });
 
+test("a replaced Sulti session is re-picked even when it was replaced while voice was off", async () => {
+  // Arrange: the Mac picked s1 from a poll, then voice went off.
+  const { runner, reads } = eventsSetup("ended", false);
+  runner.on();
+  await flush();
+  reads[0].resolve({ cursor: 1, events: [], phoneActive: false, sultiSession: "s1" });
+  await flush();
+  runner.off();
+  // Act: voice comes back on and the first poll names the re-created session.
+  runner.on();
+  await flush();
+  reads[reads.length - 1].resolve({ cursor: 2, events: [], phoneActive: false, sultiSession: "s2" });
+  await flush();
+  // Assert: the target follows to s2, not the dead s1.
+  assert.equal(runner.getState().session?.id, "s2");
+});
+
 test("a target switched to by hand is kept when the Sulti session is replaced", async () => {
   const { runner, reads } = eventsSetup("ended", false);
   runner.on();
