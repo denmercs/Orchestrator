@@ -27,6 +27,7 @@ import { stopInitiativeLoop } from "../shared/initiative-loop";
 import { LoadingState } from "./loading-state";
 import { SelectedStoryPanel } from "./selected-story-panel";
 import { SessionLog } from "./session-log";
+import { SessionMap } from "./session-map";
 import { SkeletonBar, SkeletonCards, SkeletonRows } from "./skeleton";
 import {
   boardKey,
@@ -1196,6 +1197,8 @@ function StoryDrawerView({
               </View>
             </View>
           ) : null}
+
+          <SessionMap storyId={story.id} initiative={state.initiativeSlug} workspace={story.workspace} theme={theme} />
 
           <SessionLog
             storyId={story.id}
