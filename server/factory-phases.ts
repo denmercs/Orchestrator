@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { FactorySlice } from "../shared/factory";
+import { type FactorySlice, TICKET_KEY } from "../shared/factory";
 import { pipelineSettings } from "../shared/pipeline";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { MARKERS, afterImplement, afterReview, commitSubject, finishedCycles, implementStart, readCycles, readMarker, statusSection, writeMarker, type LoopStep } from "../shared/story-method";
@@ -122,6 +122,15 @@ export async function block(
   await ports.steer?.(`Slice ${slice.id} is blocked: ${why} ${how}`);
   writeSliceState(root, slice.mission, slice.id, { ready: "blocked" });
   return { kind: "waiting", slice: slice.id, why };
+}
+
+// The Jira key a slice's work belongs to: its own `jira`, else the `jira` of the story it names (a ticket-started loop story
+// has one). Empty when neither holds a well-formed key.
+export function sliceTicket(slice: FactorySlice): string {
+  if (slice.state.jira) return slice.state.jira;
+  const { story } = slice.state;
+  const key = story && existsSync(story) ? (frontmatter(readFileSync(story, "utf8")).jira ?? "") : "";
+  return TICKET_KEY.test(key) ? key : "";
 }
 
 // The story's review rounds, counted apart from `round` (which a failed test run also advances).
@@ -357,11 +366,12 @@ export async function leaveShip(
   if (!state.pr) {
     const maxRounds = repoPipelineConfig(pipelineSettings.schema.parse({}), state.worktree).reviewRounds;
     const after = marker ? afterReview(worktreeState, marker, reviewRoundOf(meta), maxRounds) : null;
+    const ticket = sliceTicket(slice);
     try {
       const pr = await (ports.openPr ?? openStoryPr)(state.worktree, {
-        id,
+        id: ticket || id,
         title: ctx.title,
-        jira: false,
+        jira: Boolean(ticket),
         branch: meta.branch || ctx.branch,
         base: ctx.base,
         subject: commitSubject(worktreeState, "Commit remaining changes"),
