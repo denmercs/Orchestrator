@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { FactorySlice } from "../shared/factory";
 import type { LoopHost } from "../shared/loop-host";
@@ -11,7 +11,8 @@ import type { TickPaseo } from "./factory-tick";
 async function ended(slice: FactorySlice, ports: TickPaseo): Promise<boolean> {
   const { state } = slice;
   if (state.close) return true;
-  if (!state.pr) return state.ready === "ci";
+  if (state.ready !== "ci") return false;
+  if (!state.pr) return true;
   const pr = await (ports.prStatus ?? prStatus)(state.worktree, state.pr).catch(() => null);
   return pr?.state === "merged";
 }
@@ -29,8 +30,9 @@ export async function closeSlices(root: string, ports: TickPaseo) {
       try {
         if (!(await ended(slice, ports))) continue;
         const found = (await host.listWorkspaces()).find((item) => item.id === workspace);
-        if (found && resolve(found.directory) === resolve(root)) continue;
-        if (found?.busy) {
+        // Not listed (a failed list answers []): try again next pass rather than archive a workspace that may be busy.
+        if (!found || resolve(found.directory) === resolve(root)) continue;
+        if (found.busy) {
           if (archive_held) continue;
           const line = `Slice ${slice.id} is finished but an agent is still running in its workspace, so it was not archived.`;
           const delivered = steer && (await Promise.resolve().then(() => steer(line)).catch(() => false)) !== false;
@@ -46,8 +48,16 @@ export async function closeSlices(root: string, ports: TickPaseo) {
   }
 }
 
-// A project folder named like a slice worktree: `factory-sN` or `factory-<slug>`.
-const factoryNamed = (folder: string) => /^factory-[a-z0-9][a-z0-9-]*$/i.test(basename(folder));
+// A project folder named like a slice worktree (`factory-sN` or `factory-<slug>`) that is a git worktree (`.git` is a file),
+// so an unrelated repo called `factory-tools` is not taken for one.
+const factoryNamed = (folder: string) => {
+  if (!/^factory-[a-z0-9][a-z0-9-]*$/i.test(basename(folder))) return false;
+  try {
+    return statSync(join(folder, ".git")).isFile();
+  } catch {
+    return false;
+  }
+};
 
 // Archives the idle workspaces whose project folder is named like a slice worktree, and returns how many were archived.
 // A workspace a slice's state.md names (by `workspace` id or by `worktree` folder) and the repo root are never touched,

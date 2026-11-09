@@ -1896,3 +1896,21 @@ test("a steer that throws leaves the held note unsaved, does not stop other slic
   assert.deepEqual(steers, ["Slice s2 can't start: blocked dependency s1."]);
   assert.equal(field(dependentState, "held"), "blocked dependency s1");
 });
+
+test("a named story that already has a worktree line still gets the new workspace written into its frontmatter", async () => {
+  // Arrange: a fresh slice naming a story that has `worktree` but no `workspace`.
+  const ctx = setup("", "on", "spec");
+  rmSync(ctx.worktree, { recursive: true });
+  const story = join(ctx.root, "story.md");
+  put(story, "---\ntitle: Named\nstatus: todo\nworktree: /old/wt\n---\n\nBody.\n");
+  writeFileSync(ctx.stateFile, readFileSync(ctx.stateFile, "utf8").replace("\n---\n", `\nstory: ${story}\n---\n`));
+  const { paseo } = fakePaseo();
+
+  // Act
+  await runFactoryTick(ctx.root, paseo);
+
+  // Assert: the story carries the slice's workspace, and keeps the worktree line it had.
+  assert.equal(field(story, "workspace"), field(ctx.stateFile, "workspace"));
+  assert.ok(field(story, "workspace"));
+  assert.equal(field(story, "worktree"), "/old/wt");
+});

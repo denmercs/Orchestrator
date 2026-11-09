@@ -211,9 +211,11 @@ async function leaveSpec(root: string, slice: FactorySlice, ports: TickPaseo): P
     mkdirSync(join(worktree, ".harness"), { recursive: true });
     writeFileSync(story, `---\ntitle: ${id}\nstatus: todo\nworktree: ${worktree}\n${workspace ? `workspace: ${workspace}\n` : ""}---\n\n${slice.spec}\n`);
     writeSliceState(root, mission, id, { story });
-  } else if (!frontmatter(readFileSync(state.story, "utf8")).worktree) {
-    // A story the manager named carries the worktree too, or the context watch and resume can't find its state.
-    writeFrontmatter(state.story, { worktree, ...(workspace ? { workspace } : {}) });
+  } else {
+    // A story the manager named carries the worktree too, or the context watch and resume can't find its state, and the workspace.
+    const meta = frontmatter(readFileSync(state.story, "utf8"));
+    const missing = { ...(meta.worktree ? {} : { worktree }), ...(!meta.workspace && workspace ? { workspace } : {}) };
+    if (Object.keys(missing).length) writeFrontmatter(state.story, missing);
   }
   const phase = state.design ? "design" : "build";
   writeSliceState(root, mission, id, { phase });
@@ -252,7 +254,8 @@ async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
   } catch (error) {
     failures.push(error);
   }
-  for (const slice of factoryTick(root)) {
+  // A slice whose workspace is closed or archived starts no more seats: they would run in a checkout that is gone.
+  for (const slice of factoryTick(root).filter((item) => !item.state.close && !item.state.archived)) {
     try {
       results.push(await passSlice(root, slice, ports));
     } catch (error) {
