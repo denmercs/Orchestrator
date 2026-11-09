@@ -165,7 +165,7 @@ const phaseMeta = (phaseDir: string) => frontmatter(readText(join(phaseDir, PHAS
 const isMerged = (story: StoryFile) => story.meta.status === "merged";
 
 // The first phase with unmerged work. A phase with no stories stops the loop there: it isn't planned yet.
-function activePhase(init: Initiative): { phaseDir: string | null; reason: string; done: boolean } {
+export function activePhase(init: Initiative): { phaseDir: string | null; reason: string; done: boolean } {
   const dirs = phaseDirs(init);
   if (dirs.length === 0) return { phaseDir: null, reason: "the initiative has no phases yet", done: false };
   for (const phaseDir of dirs) {

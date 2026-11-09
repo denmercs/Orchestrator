@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { fileSlice } from "./factory-file";
+import { fileInitiative, fileSlice } from "./factory-file";
 import { readFactory, sliceDir } from "./factory-layout";
 import type { ManagerPaseo } from "./factory-manager";
 
@@ -82,4 +82,45 @@ test("fileSlice creates the inbox mission with an outcome when the factory is mi
 
   const inbox = readFactory(root).missions.find((mission) => mission.id === "inbox");
   assert.ok(inbox && inbox.outcome.length > 0);
+});
+
+function writeInitiative(repo: string) {
+  const dir = join(repo, ".harness", "initiatives", "demo");
+  const story = (phase: string, file: string, meta: string) => {
+    mkdirSync(join(dir, "phases", phase, "stories"), { recursive: true });
+    writeFileSync(join(dir, "phases", phase, "stories", file), `---\n${meta}\n---\nBody\n`, "utf8");
+    return join(dir, "phases", phase, "stories", file);
+  };
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "initiative.md"), "---\ntitle: Demo\n---\n", "utf8");
+  story("1-done", "01-old.md", "id: old\ntitle: Old work\nstatus: merged");
+  const running = story("2-live", "01-running.md", "id: running\ntitle: Running work\nstep: implement");
+  const named = story("2-live", "02-named.md", "id: named\ntitle: Named work");
+  const first = story("2-live", "03-first.md", "id: first\ntitle: First work\njira_url: https://jira.example/T-3");
+  const second = story("2-live", "04-second.md", "id: second\ntitle: Second work\nstatus: todo");
+  return { running, named, first, second };
+}
+
+test("fileInitiative files the remaining todo stories of the active phase in order with one steer", async () => {
+  const root = tempRoot();
+  const repo = tempRoot();
+  const stories = writeInitiative(repo);
+  const { paseo, sent } = fakePaseo();
+  await fileSlice(root, { title: "Earlier", story: stories.named }, { paseo });
+  sent.length = 0;
+
+  const ids = await fileInitiative(root, { repo, initiative: "demo" }, { paseo });
+
+  assert.deepEqual(ids, ["demo-first", "demo-second"]);
+  const inbox = readFactory(root).missions.find((mission) => mission.id === "inbox");
+  const filed = inbox?.slices.filter((slice) => ids.includes(slice.id)) ?? [];
+  assert.deepEqual(filed.map((slice) => slice.state.story), [stories.first, stories.second]);
+  assert.match(filed[0].spec, /First work/);
+  assert.match(filed[0].spec, /https:\/\/jira\.example\/T-3/);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /demo-first, demo-second/);
+
+  // Filing again finds every story named already, so nothing new is written or sent.
+  assert.deepEqual(await fileInitiative(root, { repo, initiative: "demo" }, { paseo }), []);
+  assert.equal(sent.length, 1);
 });
