@@ -152,14 +152,16 @@ function createStyles(theme: Theme, compact: boolean) {
     input: {
       flex: compact ? undefined : 1,
       minWidth: 0,
-      height: 32,
+      // A phone-sized touch target, and tall enough that the placeholder isn't clipped.
+      height: compact ? 44 : 32,
+      paddingVertical: 0,
       paddingHorizontal: 10,
       borderWidth: 1,
       borderColor: c.border,
       borderRadius: 6,
       backgroundColor: c.surface0,
       color: c.foreground,
-      fontSize: 13,
+      fontSize: compact ? 15 : 13,
     },
     pill: {
       alignSelf: compact ? ("flex-start" as const) : ("center" as const),
@@ -170,16 +172,18 @@ function createStyles(theme: Theme, compact: boolean) {
     },
     pillText: { fontSize: 11.5, fontWeight: "600" as const },
     button: {
-      height: 32,
+      height: compact ? 44 : 32,
       paddingHorizontal: 14,
       borderRadius: 6,
       alignItems: "center" as const,
       justifyContent: "center" as const,
       backgroundColor: c.accent,
     },
-    buttonText: { fontSize: 12.5, fontWeight: "600" as const, color: c.surface0 },
+    buttonText: { fontSize: compact ? 14 : 12.5, fontWeight: "600" as const, color: c.surface0 },
     disabled: { opacity: 0.5 },
-    hints: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 14 },
+    hints: compact
+      ? { gap: 8 }
+      : { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 14 },
     hint: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
     dot: { width: 7, height: 7, borderRadius: 3.5 },
     hintText: { fontSize: 11.5, color: c.foregroundMuted },

@@ -432,7 +432,7 @@ export function InitiativePanels({ epic, theme, compact, navigation, onEditPolic
 
   if (!chosen) {
     return (
-      <View style={[styles.panel, styles.folded]}>
+      <View style={[styles.panel, styles.noRepo]}>
         {repoPicker}
         <Text style={styles.muted}>Pick a repo to see its workstreams.</Text>
       </View>
@@ -1671,6 +1671,8 @@ function createStyles(theme: Theme, compact: boolean) {
     },
     panelTitle: { color: c.foreground, fontSize: compact ? 16 : 18, fontWeight: "600" as const },
     folded: { flexDirection: "row" as const, alignItems: "center" as const, gap: 10, paddingVertical: 10 },
+    // Title and dropdown on one row, the hint under them, so nothing runs off a narrow screen.
+    noRepo: { gap: 8, paddingVertical: 10 },
     foldedTitle: { color: c.foreground, fontSize: 13, fontWeight: "600" as const },
     head: { flexDirection: "row" as const, alignItems: "center" as const, gap: 12, flexWrap: "wrap" as const },
     // Title on the left, one primary action and ⋯ on the right; never wraps.
