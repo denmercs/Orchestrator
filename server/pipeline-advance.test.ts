@@ -180,6 +180,21 @@ test("a conflicting open PR is marked pr-conflict and keeps the watch, starting 
   assert.equal(status(cwd), "pr-conflict\nPR #45 conflicts with its base: GitHub can't merge it until the branch is updated.");
 });
 
+test("a conflicting PR leaves a running Fix CI marker alone, and so does the conflict clearing", async () => {
+  const { cwd, labels } = fixture();
+  const { api, created } = fakePaseo([{ id: "a1", cwd, workspaceId: "ws1", labels }]);
+  writeFileSync(join(cwd, ".harness", "state.md"), "# ABC-1 — Demo\n\n## Status\nfix-ci-running\n", "utf8");
+  ghPr("OPEN", "abc", [failedCheck], "CONFLICTING");
+
+  await watchPipelinePrs(api, readConfig, readAgentConfig);
+  assert.equal(status(cwd), "fix-ci-running");
+
+  ghPr("OPEN", "abc", []);
+  await watchPipelinePrs(api, readConfig, readAgentConfig);
+  assert.equal(status(cwd), "fix-ci-running");
+  assert.deepEqual(created, []);
+});
+
 test("once the conflict clears the marker goes back to pr-done and the watch carries on", async () => {
   const { cwd, labels } = fixture();
   const { api, created } = fakePaseo([{ id: "a1", cwd, workspaceId: "ws1", labels }]);

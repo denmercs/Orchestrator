@@ -218,14 +218,16 @@ export async function watchPipelinePrs(paseo: PaseoApi, readConfig: ReadConfig, 
     if (!record || record.done) continue;
     const pr = await prStatus(cwd, record.pr);
     if (!pr) continue;
+    const marker = readMarker(readState(cwd)).marker;
     // An open PR that can't merge as it stands: say so on the card and keep watching, with no Fix CI agent.
+    // A step still marked `-running` (a Fix CI agent at work) keeps its marker so the card keeps showing it.
     if (pr.conflicting && pr.state !== "merged" && pr.state !== "closed") {
       const conflict = `pr-conflict\nPR #${pr.number} conflicts with its base: GitHub can't merge it until the branch is updated.`;
-      if (readMarker(readState(cwd)).marker !== "pr-conflict") setMarker(cwd, conflict);
+      if (marker !== "pr-conflict" && !marker?.endsWith("-running")) setMarker(cwd, conflict);
       continue;
     }
     // The conflict is gone: put the card back to waiting on the merge.
-    if (readMarker(readState(cwd)).marker === "pr-conflict") setMarker(cwd, `${MARKERS.prDone}\n${record.url}`);
+    if (marker === "pr-conflict") setMarker(cwd, `${MARKERS.prDone}\n${record.url}`);
     const config = repoPipelineConfig(hostConfig, cwd);
     const action = ciAction(pr, record, config.maxFixes);
     // The Story pipeline doesn't pass autoMerge, so "merge" never comes back here; it waits like "wait".
