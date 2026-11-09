@@ -412,6 +412,13 @@ export async function leaveShip(
   const launch = launcher(root, slice, ports, ctx);
   const round = Number(meta.round) || 1;
   const failing = () => (ports.failureReport ?? failureReport)(cwd, pr.failing);
+  // A PR that can't merge as it stands is the manager's to sort out: no Fix agent, no "ready" report.
+  if (pr.conflicting && pr.state !== "merged" && pr.state !== "closed") {
+    const why = `PR #${pr.number} conflicts with its base and needs the branch updated`;
+    await ports.steer?.(`Slice ${id}: ${why}. PR ${pr.url} needs you.`);
+    writeSliceState(root, mission, id, { ready: "ci" });
+    return { kind: "waiting", slice: id, why };
+  }
   // A Fix agent that died mid-step starts again on the same head, not as a new attempt.
   if (fixing && isDead(fixer) && action.kind === "wait" && action.ci === "failing") {
     return launch("fix", round, { attempt: state.attempt + 1, failing: await failing() });
