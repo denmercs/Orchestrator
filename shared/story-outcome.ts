@@ -100,8 +100,15 @@ export function appendOutcome(text: string, event: OutcomeEvent): string {
       if (last?.title === "Blocked" && last.lines[0] === line) return text;
       return addEntry(text, "Blocked", [line]);
     }
-    case "resolved":
-      return text.replace(/^###[ \t]+Blocked[ \t]*$/gm, `### Blocked (resolved: ${event.step} finished)`);
+    case "resolved": {
+      const start = text.search(/^##[ \t]+Outcome[ \t]*$/m);
+      if (start < 0) return text;
+      const bodyStart = start + HEADING.length;
+      const next = text.slice(bodyStart).search(/^##[ \t]/m);
+      const end = next < 0 ? text.length : bodyStart + next;
+      const body = text.slice(bodyStart, end).replace(/^###[ \t]+Blocked[ \t]*$/gm, `### Blocked (resolved: ${event.step} finished)`);
+      return text.slice(0, bodyStart) + body + text.slice(end);
+    }
     case "merged": {
       if (has("Merged")) return text;
       const rounds = plural(outcome.reviewRounds + 1, "review round");

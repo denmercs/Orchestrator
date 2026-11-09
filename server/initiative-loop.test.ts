@@ -12,6 +12,7 @@ import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { FALLBACK_AGENT_CONFIG } from "../shared/agent-runner";
 import { DEFAULT_PHASES, type SkillSource } from "../shared/pipeline";
 import { readMarker } from "../shared/story-method";
+import { readOutcome } from "../shared/story-outcome";
 import { gatesOf } from "../shared/gates";
 import type { TelemetryRow } from "./context-telemetry";
 import { worktreeFingerprint } from "./turn-progress";
@@ -2958,6 +2959,40 @@ test("a PR that can't be opened blocks the story with kind pr and the reason", a
   const meta = storyMeta(fx.story);
   assert.deepEqual([meta.status, meta.block_kind], ["blocked", "pr"]);
   assert.match(meta.blocked_reason ?? "", /^Could not open the PR: /);
+});
+
+test("a PR that still can't be opened after Retry keeps one open Blocked entry and resolves nothing", async (t) => {
+  t.after(() => ghPr(null));
+  ghPr(null);
+  const fx = reviewPassed();
+  const initiative = loop();
+
+  await initiative.onTurnEnded(fx.api, completed);
+  assert.equal(storyMeta(fx.story).status, "blocked");
+  // Retry puts the story back on its step; review-done is still in state.md and the PR still fails.
+  writeFrontmatter(fx.story, { status: "reviewing", blocked_reason: null, blocked_from: null, blocked_at: null, block_kind: null });
+  await initiative.onTurnEnded(fx.api, completed);
+
+  assert.equal(storyMeta(fx.story).status, "blocked");
+  const titles = readOutcome(readFileSync(fx.story, "utf8")).entries.map((entry) => entry.title);
+  assert.deepEqual(titles, ["Blocked"]);
+});
+
+test("pr-done resolves an open Block in the story's Outcome", async (t) => {
+  t.after(() => ghPr(null));
+  ghPr("OPEN");
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { status: "reviewing", step: "pr" });
+  writeFileSync(fx.story, `${readFileSync(fx.story, "utf8")}\n## Outcome\n\n### Blocked\n- Could not open the PR: boom\n`, "utf8");
+  writeFileSync(join(fx.worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\npr-done\nhttps://pr/45\n", "utf8");
+  const { api } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "pr" } }]);
+
+  await loop().onTurnEnded(api, completed);
+
+  const text = readFileSync(fx.story, "utf8");
+  assert.equal(storyMeta(fx.story).status, "pr-open");
+  assert.match(text, /### Blocked \(resolved: Open PR finished\)\n- Could not open the PR: boom/);
+  assert.doesNotMatch(text, /### Blocked\n/);
 });
 
 test("a pr step that wrote pr-done records the open PR; at turn end with no PR the story blocks", async (t) => {

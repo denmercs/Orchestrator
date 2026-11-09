@@ -513,8 +513,6 @@ export function createInitiativeLoop(
     const step = meta.step as LoopStep;
     const round = Number(meta.round) || 1;
     const on = initiativeLoopState(init.dir) === "on";
-    // A step that finished has moved the story past any Blocked note an earlier try left in ## Outcome.
-    if (marker && STEP_DONE[meta.step ?? ""]?.includes(marker)) recordOutcome(story, { kind: "resolved", step: STEP_LABELS[step] });
     const next = (to: LoopStep, nextRound: number, cycle?: Cycle) =>
       on ? startStep(loopHost, config, init, phaseDir, story, to, nextRound, { cycle }) : null;
     // Round 1 with cycles left: one parent that runs them in subagents, or the next cycle's own agent
@@ -539,15 +537,14 @@ export function createInitiativeLoop(
         // A parent that ran the cycles in subagents must have ticked them all.
         const finished = finishedCycles(meta);
         const after = afterImplement(state, finished);
-        if (after.kind === "blocked") {
-          block(story, after.reason, "step");
-          return;
+        if (after.kind === "blocked") block(story, after.reason, "step");
+        else {
+          const cycle = typeof finished === "number" ? (readCycles(state).find((item) => item.number === finished) ?? null) : null;
+          const fallback = cycle ? cycle.name : round > 1 ? "Fix review findings" : story.meta.title || story.id;
+          await commitStory(meta.worktree, commitSubject(state, fallback));
+          if (after.kind === "cycle") await nextImplement(round);
+          else await next("review", round);
         }
-        const cycle = typeof finished === "number" ? (readCycles(state).find((item) => item.number === finished) ?? null) : null;
-        const fallback = cycle ? cycle.name : round > 1 ? "Fix review findings" : story.meta.title || story.id;
-        await commitStory(meta.worktree, commitSubject(state, fallback));
-        if (after.kind === "cycle") await nextImplement(round);
-        else await next("review", round);
       } else if (marker === MARKERS.implementBlocked) block(story, detail || "Implement is blocked; open its session.", "step");
     } else if (step === "review") {
       if (marker === MARKERS.reviewDone || marker === MARKERS.reviewFailed) {
@@ -568,6 +565,12 @@ export function createInitiativeLoop(
       const pr = await prForBranch(meta.worktree, meta.branch ?? "");
       if (pr) writeFrontmatter(story.path, { status: "pr-open", pr: pr.number, ci: "pending" });
       else if (turnEnded) block(story, `Open PR finished but there is no open PR for ${meta.branch}.`, "pr");
+    }
+    // A step that finished and got the story moving has moved it past any Blocked note an earlier try left in
+    // ## Outcome. A step whose own transition blocked the story again has not.
+    if (marker && STEP_DONE[meta.step ?? ""]?.includes(marker)) {
+      const current = readStoryFiles(phaseDir).find((item) => item.id === story.id);
+      if (current && current.meta.status !== "blocked") recordOutcome(current, { kind: "resolved", step: STEP_LABELS[step] });
     }
   }
 
