@@ -59,7 +59,7 @@ import { prepareTestingSkill } from "./testing-skill";
 import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
 import { activeBriefRuns, briefRuns, worktreeFingerprint } from "./turn-progress";
 import { clockTime, providerName } from "../shared/plan-usage";
-import type { LoopHost, LoopPermissionRequested, LoopPermissionResolved, LoopTurnEnded } from "../shared/loop-host";
+import type { LoopHost, LoopSession, LoopPermissionRequested, LoopPermissionResolved, LoopTurnEnded } from "../shared/loop-host";
 import { inHoldWindow, limitNotice, planLimitUntil, usageLimitResumeAt } from "./usage-limit";
 import { maybeRoundNudge } from "./round-nudge";
 import { ROUND_NUDGE_AT, roundNudgeDetail, roundNudgeLine, roundNudgeDue } from "../shared/round-nudge";
@@ -123,6 +123,14 @@ const STEP_ANSWERS: Record<string, string[]> = {
   diagnose: [MARKERS.diagnoseDone, MARKERS.diagnoseBlocked],
   implement: [MARKERS.implementDone, MARKERS.implementBlocked],
   review: [MARKERS.reviewDone, MARKERS.reviewFailed],
+};
+// The markers that mean a step finished its work (the blocked ones are not).
+const STEP_DONE: Record<string, string[]> = {
+  plan: [MARKERS.planDone],
+  diagnose: [MARKERS.diagnoseDone],
+  implement: [MARKERS.implementDone],
+  review: [MARKERS.reviewDone, MARKERS.reviewFailed],
+  pr: [MARKERS.prDone],
 };
 const PERMISSION = "permission";
 // How long before the loop first saw a plan limit a retry-limit block can be and still be put down to it.
@@ -529,15 +537,14 @@ export function createInitiativeLoop(
         // A parent that ran the cycles in subagents must have ticked them all.
         const finished = finishedCycles(meta);
         const after = afterImplement(state, finished);
-        if (after.kind === "blocked") {
-          block(story, after.reason, "step");
-          return;
+        if (after.kind === "blocked") block(story, after.reason, "step");
+        else {
+          const cycle = typeof finished === "number" ? (readCycles(state).find((item) => item.number === finished) ?? null) : null;
+          const fallback = cycle ? cycle.name : round > 1 ? "Fix review findings" : story.meta.title || story.id;
+          await commitStory(meta.worktree, commitSubject(state, fallback));
+          if (after.kind === "cycle") await nextImplement(round);
+          else await next("review", round);
         }
-        const cycle = typeof finished === "number" ? (readCycles(state).find((item) => item.number === finished) ?? null) : null;
-        const fallback = cycle ? cycle.name : round > 1 ? "Fix review findings" : story.meta.title || story.id;
-        await commitStory(meta.worktree, commitSubject(state, fallback));
-        if (after.kind === "cycle") await nextImplement(round);
-        else await next("review", round);
       } else if (marker === MARKERS.implementBlocked) block(story, detail || "Implement is blocked; open its session.", "step");
     } else if (step === "review") {
       if (marker === MARKERS.reviewDone || marker === MARKERS.reviewFailed) {
@@ -558,6 +565,14 @@ export function createInitiativeLoop(
       const pr = await prForBranch(meta.worktree, meta.branch ?? "");
       if (pr) writeFrontmatter(story.path, { status: "pr-open", pr: pr.number, ci: "pending" });
       else if (turnEnded) block(story, `Open PR finished but there is no open PR for ${meta.branch}.`, "pr");
+    }
+    // A step that finished and got the story moving has moved it past any Blocked note an earlier try left in
+    // ## Outcome. A step whose own transition blocked the story again has not.
+    if (marker && STEP_DONE[meta.step ?? ""]?.includes(marker)) {
+      const current = readStoryFiles(phaseDir).find((item) => item.id === story.id);
+      // The pr step moves the story only once it found the PR; until then its Blocked note still stands.
+      const moved = step === "pr" ? current?.meta.status === "pr-open" : current?.meta.status !== "blocked";
+      if (current && moved) recordOutcome(current, { kind: "resolved", step: STEP_LABELS[step] });
     }
   }
 
@@ -646,6 +661,11 @@ export function createInitiativeLoop(
     }
     if (action.kind === "closed") {
       block(story, `PR #${pr.number} was closed without merging.`, "pr");
+      return;
+    }
+    if (pr.conflicting) {
+      block(story, `PR #${pr.number} conflicts with its base: GitHub can't merge it until the branch is updated.`, "pr");
+      writeFrontmatter(story.path, { ci: null });
       return;
     }
     if (meta.ci !== action.ci) writeFrontmatter(story.path, { ci: action.ci });
@@ -742,6 +762,23 @@ export function createInitiativeLoop(
     };
   }
 
+  const isDeadSession = (session: LoopSession | null) =>
+    !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
+
+  // Asks again before a dead read counts: a second refreshSession, then the host's agent list. Gone only
+  // when the second read is dead too and the list doesn't show the agent live. A host that doesn't
+  // answer either one (undefined, a throw) says nothing, so that is "not gone" and the next tick asks again.
+  async function confirmGone(loopHost: LoopHost, agentId: string) {
+    try {
+      const again = await loopHost.refreshSession(agentId);
+      if (again === undefined || !isDeadSession(again)) return false;
+      const listed = (await loopHost.listStepAgents()).find((agent) => agent.id === agentId);
+      return !(listed && !listed.archivedAt && ["running", "initializing", "idle"].includes(listed.status ?? ""));
+    } catch {
+      return false;
+    }
+  }
+
   // Keeps an in-flight step moving when its session can't. A session that is gone, closed or errored
   // gets a fresh one; a stalled one (a failed turn, or a turn that ended without the step's marker)
   // gets a nudge. Each counts as a retry; past maxRetries the story blocks for you.
@@ -769,7 +806,10 @@ export function createInitiativeLoop(
       return;
     }
     if (session?.status === "running" || session?.status === "initializing") return;
-    const dead = !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
+    const dead = isDeadSession(session);
+    // One read isn't proof: the host can answer "no agent" or a stale record for a live one. Count a
+    // death only once it is confirmed; otherwise leave the step alone and look again next tick.
+    if (dead && !(await confirmGone(loopHost, meta.agent))) return;
     const waitedSince = Date.parse(meta.waiting_subagent_since ?? "");
     const waitedOut = !Number.isNaN(waitedSince) && Date.now() - waitedSince >= SUBAGENT_WAIT_MS;
     if (!dead && !meta.stalled && !resuming && !waitedOut) return;

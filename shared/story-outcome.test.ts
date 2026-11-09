@@ -60,3 +60,24 @@ test("no-change records Nothing to ship once", () => {
   assert.match(text, /### Nothing to ship\n- The branch had no commits over its base/);
   assert.equal(appendOutcome(text, { kind: "no-change" }), text);
 });
+
+test("resolved retitles every open Blocked entry and leaves the rest alone", () => {
+  let text = appendOutcome(story, { kind: "blocked", reason: "Implement: Its session is gone." });
+  text = appendOutcome(text, round1);
+  text = appendOutcome(text, { kind: "blocked", reason: "Review: Its session is gone." });
+  const done = appendOutcome(text, { kind: "resolved", step: "Implement" });
+  assert.deepEqual(
+    readOutcome(done).entries.map((entry) => entry.title),
+    ["Blocked (resolved: Implement finished)", "Review round 1", "Blocked (resolved: Implement finished)"],
+  );
+  assert.deepEqual(readOutcome(done).entries[0].lines, ["- Implement: Its session is gone."]);
+  assert.equal(appendOutcome(done, { kind: "resolved", step: "Review" }), done);
+  assert.equal(appendOutcome(story, { kind: "resolved", step: "Implement" }), story);
+  const quoted = "# S\n\n## Notes\n\n### Blocked\nquoted heading\n\n## Outcome\n\n### Blocked\n- r\n\n## Later\n\n### Blocked\nx\n";
+  assert.equal(
+    appendOutcome(quoted, { kind: "resolved", step: "Plan" }),
+    quoted.replace("## Outcome\n\n### Blocked", "## Outcome\n\n### Blocked (resolved: Plan finished)"),
+  );
+  const again = appendOutcome(done, { kind: "blocked", reason: "Review: Its session is gone." });
+  assert.equal(readOutcome(again).entries.at(-1)?.title, "Blocked");
+});

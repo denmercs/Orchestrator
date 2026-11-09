@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { FactorySlice } from "../shared/factory";
+import { type FactorySlice, TICKET_KEY } from "../shared/factory";
 import { pipelineSettings } from "../shared/pipeline";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { MARKERS, afterImplement, afterReview, commitSubject, finishedCycles, implementStart, readCycles, readMarker, statusSection, writeMarker, type LoopStep } from "../shared/story-method";
@@ -142,6 +142,15 @@ export async function block(
   await ports.steer?.(`Slice ${slice.id} is blocked: ${why} ${how}`);
   writeSliceState(root, slice.mission, slice.id, { ready: "blocked" });
   return { kind: "waiting", slice: slice.id, why };
+}
+
+// The Jira key a slice's work belongs to: its own `jira`, else the `jira` of the story it names (a ticket-started loop story
+// has one). Empty when neither holds a well-formed key.
+export function sliceTicket(slice: FactorySlice): string {
+  if (slice.state.jira) return slice.state.jira;
+  const { story } = slice.state;
+  const key = story && existsSync(story) ? (frontmatter(readFileSync(story, "utf8")).jira ?? "") : "";
+  return TICKET_KEY.test(key) ? key : "";
 }
 
 // The story's review rounds, counted apart from `round` (which a failed test run also advances).
@@ -377,11 +386,12 @@ export async function leaveShip(
   if (!state.pr) {
     const maxRounds = repoPipelineConfig(pipelineSettings.schema.parse({}), state.worktree).reviewRounds;
     const after = marker ? afterReview(worktreeState, marker, reviewRoundOf(meta), maxRounds) : null;
+    const ticket = sliceTicket(slice);
     try {
       const pr = await (ports.openPr ?? openStoryPr)(state.worktree, {
-        id,
+        id: ticket || id,
         title: ctx.title,
-        jira: false,
+        jira: Boolean(ticket),
         branch: meta.branch || ctx.branch,
         base: ctx.base,
         subject: commitSubject(worktreeState, "Commit remaining changes"),
@@ -422,6 +432,13 @@ export async function leaveShip(
   const launch = launcher(root, slice, ports, ctx);
   const round = Number(meta.round) || 1;
   const failing = () => (ports.failureReport ?? failureReport)(cwd, pr.failing);
+  // A PR that can't merge as it stands is the manager's to sort out: no Fix agent, no "ready" report.
+  if (pr.conflicting && pr.state !== "merged" && pr.state !== "closed") {
+    const why = `PR #${pr.number} conflicts with its base and needs the branch updated`;
+    await ports.steer?.(`Slice ${id}: ${why}. PR ${pr.url} needs you.`);
+    writeSliceState(root, mission, id, { ready: "ci" });
+    return { kind: "waiting", slice: id, why };
+  }
   // A Fix agent that died mid-step starts again on the same head, not as a new attempt.
   if (fixing && action.kind === "wait" && action.ci === "failing" && (await confirmDead(ports.agents, state.agent, fixer))) {
     return launch("fix", round, { attempt: state.attempt + 1, failing: await failing() });
