@@ -835,7 +835,6 @@ export default function contribute(
         const { repo } = await readHarness();
         return repo ? (await loadHarnessBoards([repo], await readHarness())).boards : [];
       },
-      startLoop: (target) => startLoop(target, jarvisPaseo()),
     }),
   });
   // What each event says to the phone: the router steps it into every router's loop, and the open voice-mode

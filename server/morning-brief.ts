@@ -18,7 +18,6 @@ export type BriefPorts = {
   stories(): Promise<{ items: { summary: string; statusCategory: string }[]; error: string | null }>;
   boards(): Promise<EpicBoard[]>;
   weather(): Promise<RawWeather>;
-  startLoop(target: { repo: string; initiative: string }): Promise<{ ok: boolean; error: string | null }>;
   now?(): number;
 };
 
@@ -47,13 +46,9 @@ export async function fetchWeather(fetchImpl: Fetch = fetch): Promise<RawWeather
 
 export function createMorningBrief(ports: BriefPorts) {
   const now = ports.now ?? Date.now;
-  // The initiative the last briefing offered, so "do it" starts that one and not whatever ranks first by then.
-  let offered: { repo: string; initiative: string } | null = null;
-
   async function gather(): Promise<BriefData> {
     const [weather, verse, stories, boards] = await Promise.allSettled([ports.weather(), ports.verse(), ports.stories(), ports.boards()]);
     const initiative = boards.status === "fulfilled" ? priorityInitiative(boards.value) : null;
-    offered = initiative?.target ?? null;
     return {
       name: BRIEF_NAME,
       at: now(),
@@ -67,11 +62,5 @@ export function createMorningBrief(ports: BriefPorts) {
     };
   }
 
-  async function startInitiative(): Promise<string | null> {
-    if (!offered) return "there is nothing to start.";
-    const result = await ports.startLoop(offered);
-    return result.ok ? null : (result.error ?? "the loop wouldn't start.");
-  }
-
-  return { gather, startInitiative };
+  return { gather };
 }
