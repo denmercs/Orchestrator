@@ -5,11 +5,11 @@ import { isStatusAsk, statusLine, type StatusAgent } from "./voice-status";
 const agent = (id: string, extra: Partial<StatusAgent> = {}): StatusAgent => ({ id, title: id, status: "idle", ...extra });
 
 test("short status phrases are a status ask, with or without the name", () => {
-  assert.equal(isStatusAsk("Jarvis, status"), true);
+  assert.equal(isStatusAsk("Sulti, status"), true);
   assert.equal(isStatusAsk("status"), true);
   assert.equal(isStatusAsk("give me a status"), true);
   assert.equal(isStatusAsk("what are the agents doing"), true);
-  assert.equal(isStatusAsk("Jarvis, what's going on?"), true);
+  assert.equal(isStatusAsk("Sulti, what's going on?"), true);
 });
 
 test("long requests and other words are not a status ask", () => {

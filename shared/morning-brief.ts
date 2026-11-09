@@ -1,10 +1,10 @@
-// The Jarvis morning briefing, paced like the movie: one short beat at a time, then it waits for you.
+// The Sulti morning briefing, paced like the movie: one short beat at a time, then it waits for you.
 // Greeting, weather and the verse come together; then the Jira stories (titles only), the priority initiative,
 // and a joke to sign off. Pure: the data is gathered elsewhere (server/morning-brief.ts) and handed in.
 import { gatesOf } from "./gates";
 import type { EpicBoard } from "./orchestration";
 import { initiativeStatus } from "./story-steps";
-import { withoutName } from "./voice-loop";
+import { AWAKE_NAMES, withoutName } from "./voice-loop";
 
 export type BriefInitiative = {
   title: string;
@@ -65,13 +65,13 @@ const norm = (text: string): string =>
 
 const plain = (text: string): string => text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
 
-/** "Good morning" starts the briefing: said short, or in one sentence with the name ("Hey Jarvis, good morning"). */
+/** "Good morning" starts the briefing: said short, or in one sentence with the name ("Hey Sulti, good morning"). */
 export const isBriefGreeting = (text: string): boolean => {
   // "Hey, good morning" has no name for withoutName to strip.
   const said = norm(text).replace(/^(?:hey|hi|hello) /, "");
   // Short only: "good morning team, standup is at nine" is for someone else.
   if (GREETING.test(said) && said.split(" ").length <= 4) return true;
-  return text.split(/[.!?\n]+/).some((part) => /\bgood morning\b/.test(plain(part)) && /\bjarvis\b/.test(plain(part)));
+  return text.split(/[.!?\n]+/).some((part) => /\bgood morning\b/.test(plain(part)) && new RegExp(`\\b(?:${AWAKE_NAMES})\\b`).test(plain(part)));
 };
 
 const hourOf = (at: number): number => new Date(at).getHours();

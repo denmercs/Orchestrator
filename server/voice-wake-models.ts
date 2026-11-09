@@ -1,4 +1,4 @@
-// Downloads the three openWakeWord ONNX models once into a local cache, then serves them from disk. The client
+// Downloads the two shared openWakeWord ONNX models once into a local cache, then serves them and the locally built hey_sulti classifier from disk. The client
 // cannot fetch GitHub release assets directly (S0 lesson 4), so this sits behind orchestration.voice.wake-model.
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -10,8 +10,12 @@ const RELEASE = "https://github.com/dscripka/openWakeWord/releases/download/v0.5
 export const WAKE_MODEL_FILES = {
   melspectrogram: "melspectrogram.onnx",
   embedding: "embedding_model.onnx",
-  hey_jarvis: "hey_jarvis_v0.1.onnx",
+  hey_sulti: "hey_sulti.onnx",
 } as const;
+
+// Built on this Mac by scripts/wake-model/train.sh, never downloaded (the repo is public and openWakeWord's
+// training data is non-commercial).
+const LOCAL_ONLY: readonly WakeModelName[] = ["hey_sulti"];
 
 export type WakeModelName = keyof typeof WAKE_MODEL_FILES;
 
@@ -47,6 +51,9 @@ export function createWakeModelLoader(ports: WakeModelPorts) {
     const dir = join(ports.home, ".orchestrator", "voice", "models", "wake");
     const dest = join(dir, file);
     if (ports.exists(dest)) return { bytes: (await ports.readFile(dest)).toString("base64") };
+    if (LOCAL_ONLY.includes(model)) {
+      throw new Error(`The ${model} wake model is not at ${dest}. Build it by running scripts/wake-model/train.sh.`);
+    }
     const partial = `${dest}.incomplete`;
     await ports.mkdir(dir);
     let bytes: Buffer;

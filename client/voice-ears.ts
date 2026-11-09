@@ -64,7 +64,7 @@ function base64ToBuffer(base64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-async function loadSession(ort: OrtModule, rpc: PluginClientContext["rpc"], model: "melspectrogram" | "embedding" | "hey_jarvis"): Promise<OrtSession> {
+async function loadSession(ort: OrtModule, rpc: PluginClientContext["rpc"], model: "melspectrogram" | "embedding" | "hey_sulti"): Promise<OrtSession> {
   const { bytes } = await rpc(voiceWakeModel, { model });
   return ort.InferenceSession.create(base64ToBuffer(bytes));
 }
@@ -140,7 +140,7 @@ export function createVoiceEars(rpc: PluginClientContext["rpc"]) {
     const [mel, embedding, classifier] = await Promise.all([
       loadSession(ort, rpc, "melspectrogram"),
       loadSession(ort, rpc, "embedding"),
-      loadSession(ort, rpc, "hey_jarvis"),
+      loadSession(ort, rpc, "hey_sulti"),
     ]);
     wakeModel = createWakeModel(toRunners(ort, { mel, embedding, classifier }));
     earsModel = createEarsModel({ pushFrame: (frame) => wakeModel!.pushFrame(frame) });
