@@ -1321,6 +1321,208 @@ test("a session Paseo no longer knows is replaced too", async () => {
   assert.equal(storyMeta(story).agent, "n1");
 });
 
+// Bad reads of a live session: from the second read on (the tick's reconcile reads first), refreshSession
+// answers the scripted `bad` answers in turn, then the real record. `calls()` counts every refreshSession
+// and listStepAgents call, so a test can prove the bad read reached supervise and its confirmation: if the
+// reads moved, supervise would stop at the real `running` read and the counts would come out smaller.
+function badReads(api: LoopHost, bad: Array<Awaited<ReturnType<LoopHost["refreshSession"]>>>, listFails = false) {
+  const real = api.refreshSession;
+  const realList = api.listStepAgents;
+  const counts = { reads: 0, lists: 0 };
+  api.refreshSession = async (id) => {
+    const n = counts.reads++;
+    return n >= 1 && n <= bad.length ? bad[n - 1] : real(id);
+  };
+  api.listStepAgents = async () => {
+    counts.lists++;
+    if (listFails) throw new Error("list failed");
+    return realList();
+  };
+  return { calls: () => ({ ...counts }) };
+}
+
+test("a running session read as gone once spends no retry and starts no agent", async () => {
+  const { story, labels } = fixture("a1");
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels, status: "running" }]);
+  const bad = badReads(api, [null]);
+  const initiative = loop();
+  initiative.rememberHost(api);
+
+  await initiative.tick();
+
+  assert.deepEqual(bad.calls(), { reads: 3, lists: 0 });
+  assert.deepEqual([sent, created], [[], []]);
+  assert.equal(storyMeta(story).agent, "a1");
+  assert.equal(storyMeta(story).retries, undefined);
+  assert.equal(storyMeta(story).status, "implementing");
+});
+
+test("a running session read once as a stale closed record spends no retry and starts no agent", async () => {
+  const { story, labels } = fixture("a1");
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels, status: "running" }]);
+  const bad = badReads(api, [{ id: "a1", labels, status: "closed" }]);
+  const initiative = loop();
+  initiative.rememberHost(api);
+
+  await initiative.tick();
+
+  assert.deepEqual(bad.calls(), { reads: 3, lists: 0 });
+  assert.deepEqual([sent, created], [[], []]);
+  assert.equal(storyMeta(story).agent, "a1");
+  assert.equal(storyMeta(story).retries, undefined);
+});
+
+test("a story at its last retry is not blocked by one read of its live session as gone", async () => {
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { retries: 2 });
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels, status: "running" }]);
+  const bad = badReads(api, [null]);
+  const initiative = loop();
+  initiative.rememberHost(api);
+
+  await initiative.tick();
+
+  assert.deepEqual(bad.calls(), { reads: 3, lists: 0 });
+  assert.deepEqual([sent, created], [[], []]);
+  assert.equal(storyMeta(story).status, "implementing");
+  assert.equal(storyMeta(story).retries, "2");
+});
+
+test("two empty reads of a session the host lists as running spend no retry and start no agent", async () => {
+  // Why: the list is the second witness; without it two bad reads in a row would count as a death.
+  for (const status of ["running", "idle"]) {
+    const { story, labels } = fixture("a1");
+    const { api, created, sent } = fakePaseo([{ id: "a1", labels, status }]);
+    const bad = badReads(api, [null, null]);
+    const initiative = loop();
+    initiative.rememberHost(api);
+
+    await initiative.tick();
+
+    assert.deepEqual(bad.calls(), { reads: 3, lists: 1 }, status);
+    assert.deepEqual([sent, created], [[], []], status);
+    assert.equal(storyMeta(story).agent, "a1", status);
+    assert.equal(storyMeta(story).retries, undefined, status);
+  }
+});
+
+test("a confirming read the host can't answer, or an agent list that fails, leaves the step alone", async () => {
+  // Why: undefined and a throw say nothing about the session, so they must mean "ask again next tick".
+  type Calls = { reads: number; lists: number };
+  const cases: Array<[string, (api: LoopHost) => { calls: () => Calls }, Calls]> = [
+    ["undefined second read", (api) => badReads(api, [null, undefined]), { reads: 3, lists: 0 }],
+    ["failing list", (api) => badReads(api, [null, null], true), { reads: 3, lists: 1 }],
+  ];
+  for (const [name, arrange, expected] of cases) {
+    const { story } = fixture("a1");
+    const { api, created, sent } = fakePaseo([]);
+    const bad = arrange(api);
+    const initiative = loop();
+    initiative.rememberHost(api);
+
+    await initiative.tick();
+
+    assert.deepEqual(bad.calls(), expected, name);
+    assert.deepEqual([sent, created], [[], []], name);
+    assert.equal(storyMeta(story).agent, "a1", name);
+    assert.equal(storyMeta(story).retries, undefined, name);
+  }
+});
+
+// A story that spent its retries and then moves on: the new step, round or cycle starts with none of them.
+test("a story at retries 2 starts Review, a second Implement round and the next cycle with retries cleared", async () => {
+  const subagentsOff = () =>
+    createInitiativeLoop(async () => ({ ...DEFAULT_LOOP_CONFIG, subagentCycles: false }), async () => FALLBACK_AGENT_CONFIG, noExtras);
+  const done = async (
+    frontmatter: Record<string, string | number | null>,
+    state: string,
+    labels: Record<string, string>,
+    initiative: ReturnType<typeof loop>,
+  ) => {
+    const fx = fixture("a1");
+    writeFrontmatter(fx.story, { retries: 2, ...frontmatter });
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: fx.worktree, encoding: "utf8" }).trim();
+    git("config", "user.email", "test@example.com");
+    git("config", "user.name", "Test");
+    writeFileSync(join(fx.worktree, "meter.ts"), "export const meter = 1;\n", "utf8");
+    writeFileSync(join(fx.worktree, ".harness", "state.md"), `# S1 — Demo story\n\n## Status\n${state}\n`, "utf8");
+    const { api, created } = fakePaseo([{ id: "a1", labels: { ...fx.labels, ...labels } }]);
+    await initiative.onTurnEnded(api, { agentId: "a1", outcome: { kind: "completed" } } as never);
+    return { created, meta: storyMeta(fx.story) };
+  };
+
+  // Arrange + act: each move starts a new agent from a story that already spent 2 retries.
+  const review = await done({}, "implement-done", {}, loop());
+  const round2 = await done(
+    { status: "reviewing", step: "review" },
+    "review-done\n\n## Review findings\n- [x] blocking: a.ts:1 — off by one — use <=\n- [ ] non-blocking: b.ts:2 — unclear name — rename",
+    { "loop-step": "review" },
+    loop(),
+  );
+  const cycle2 = await done(
+    { cycle: 1 },
+    "implement-done\n\n## Cycles\n- [x] Cycle 1 — Reads: test → change\n- [ ] Cycle 2 — Warns: warning test → warn once",
+    { "loop-cycle": "1" },
+    subagentsOff(),
+  );
+
+  // Assert: the right step started, and its story carries no retries.
+  assert.deepEqual(review.created.map((agent) => agent.labels["loop-step"]), ["review"]);
+  assert.deepEqual(round2.created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-round"]]), [["implement", "2"]]);
+  assert.deepEqual(cycle2.created.map((agent) => [agent.labels["loop-step"], agent.labels["loop-cycle"]]), [["implement", "2"]]);
+  assert.deepEqual([review.meta.retries, round2.meta.retries, cycle2.meta.retries], [undefined, undefined, undefined]);
+});
+
+test("a compact hand-over between two ticks never reads as gone: no new agent, no retry", async () => {
+  const { story, labels } = fixture("a1");
+  const { api, created, sent, live } = fakePaseo([{ id: "a1", labels, status: "running" }]);
+  const initiative = loop();
+  initiative.rememberHost(api);
+  await initiative.tick();
+
+  // The compactor archives a1 and f1 takes over with the same loop labels, between two ticks.
+  live.splice(0, live.length, { id: "f1", labels: { ...labels, "context-from": "a1" }, status: "running" });
+  await initiative.handOver(labels, "a1", "f1");
+  await initiative.tick();
+
+  assert.deepEqual([sent, created], [[], []]);
+  const meta = storyMeta(story);
+  assert.deepEqual([meta.agent, meta.status, meta.retries, meta.blocked_reason], ["f1", "implementing", undefined, undefined]);
+});
+
+// Both reads dead and the agent not listed live: a real death restarts once, then blocks at maxRetries.
+const deaths: Array<[string, (labels: Record<string, string>) => Agent[]]> = [
+  ["archived", (labels) => [{ id: "a1", labels, status: "idle", archivedAt: "2026-11-01T00:00:00Z" }]],
+  ["closed", (labels) => [{ id: "a1", labels, status: "closed" }]],
+  ["errored with no message", (labels) => [{ id: "a1", labels, status: "error" }]],
+  ["missing", () => []],
+];
+for (const [death, agents] of deaths) {
+  test(`a ${death} session restarts with attempt 1, then blocks at maxRetries with the same reason`, async () => {
+    const restart = fixture("a1");
+    const first = fakePaseo(agents(restart.labels));
+    const initiative = loop();
+    initiative.rememberHost(first.api);
+
+    await initiative.tick();
+
+    assert.deepEqual(first.created.map((agent) => agent.labels["loop-attempt"]), ["1"]);
+    assert.equal(storyMeta(restart.story).retries, "1");
+
+    const spent = fixture("a1");
+    writeFrontmatter(spent.story, { retries: 2 });
+    const second = fakePaseo(agents(spent.labels));
+    const blocking = loop();
+    blocking.rememberHost(second.api);
+
+    await blocking.tick();
+
+    assert.deepEqual([second.sent, second.created], [[], []]);
+    assert.equal(storyMeta(spent.story).status, "blocked");
+    assert.equal(storyMeta(spent.story).blocked_reason, "Implement: Its session is gone. Gave up after 2 retries.");
+  });
+}
+
 test("past maxRetries the story blocks with the reason instead of retrying", async () => {
   const { story, labels } = fixture("a1");
   writeFrontmatter(story, { retries: 2 });

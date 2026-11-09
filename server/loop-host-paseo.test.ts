@@ -82,12 +82,27 @@ test("sendToStep passes the steer option through to the agent's send", async () 
   assert.deepEqual(calls, [{ id: "a1", text: "keep going", options: { activeTurnBehavior: "steer" } }]);
 });
 
-test("refreshSession is undefined when the refresh throws, null when the agent is gone, and the session when it answers", async () => {
+test("refreshSession is null only for an empty daemon answer, undefined for any throw or rejection, and the session when it answers", async () => {
+  // Why it matters: the loop counts null as "gone" but treats undefined as "ask again", so an error must never read as null.
   const refreshing = (refresh: () => Promise<unknown>) => hostOver({ agents: { ref: () => ({ refresh }) } });
+  const spawnGit = Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT", syscall: "spawn git" });
 
-  assert.equal(await refreshing(async () => Promise.reject(new Error("daemon down"))).refreshSession("a1"), undefined);
+  // Empty answers: the daemon has no agent and no error.
   assert.equal(await refreshing(async () => null).refreshSession("a1"), null);
+  assert.equal(await refreshing(async () => undefined).refreshSession("a1"), null);
 
+  // Failures: a rejected promise (plain or spawn-git style), and a throw before any promise exists.
+  assert.equal(await refreshing(() => Promise.reject(new Error("daemon down"))).refreshSession("a1"), undefined);
+  assert.equal(await refreshing(() => Promise.reject(spawnGit)).refreshSession("a1"), undefined);
+  assert.equal(
+    await refreshing(() => {
+      throw spawnGit;
+    }).refreshSession("a1"),
+    undefined,
+  );
+  assert.equal(await hostOver({}).refreshSession("a1"), undefined);
+
+  // An answer: the session itself.
   const session = await refreshing(async () => ({ agent: { id: "a1", status: "idle", labels: { kind: "initiative-loop" } } })).refreshSession("a1");
   assert.deepEqual(session, {
     id: "a1",

@@ -59,7 +59,7 @@ import { prepareTestingSkill } from "./testing-skill";
 import { commitStory, failureText, openStoryPr, pushStoryFix, uniqueBranch } from "./story-git";
 import { activeBriefRuns, briefRuns, worktreeFingerprint } from "./turn-progress";
 import { clockTime, providerName } from "../shared/plan-usage";
-import type { LoopHost, LoopPermissionRequested, LoopPermissionResolved, LoopTurnEnded } from "../shared/loop-host";
+import type { LoopHost, LoopSession, LoopPermissionRequested, LoopPermissionResolved, LoopTurnEnded } from "../shared/loop-host";
 import { inHoldWindow, limitNotice, planLimitUntil, usageLimitResumeAt } from "./usage-limit";
 import { maybeRoundNudge } from "./round-nudge";
 import { ROUND_NUDGE_AT, roundNudgeDetail, roundNudgeLine, roundNudgeDue } from "../shared/round-nudge";
@@ -762,6 +762,23 @@ export function createInitiativeLoop(
     };
   }
 
+  const isDeadSession = (session: LoopSession | null) =>
+    !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
+
+  // Asks again before a dead read counts: a second refreshSession, then the host's agent list. Gone only
+  // when the second read is dead too and the list doesn't show the agent live. A host that doesn't
+  // answer either one (undefined, a throw) says nothing, so that is "not gone" and the next tick asks again.
+  async function confirmGone(loopHost: LoopHost, agentId: string) {
+    try {
+      const again = await loopHost.refreshSession(agentId);
+      if (again === undefined || !isDeadSession(again)) return false;
+      const listed = (await loopHost.listStepAgents()).find((agent) => agent.id === agentId);
+      return !(listed && !listed.archivedAt && ["running", "initializing", "idle"].includes(listed.status ?? ""));
+    } catch {
+      return false;
+    }
+  }
+
   // Keeps an in-flight step moving when its session can't. A session that is gone, closed or errored
   // gets a fresh one; a stalled one (a failed turn, or a turn that ended without the step's marker)
   // gets a nudge. Each counts as a retry; past maxRetries the story blocks for you.
@@ -789,7 +806,10 @@ export function createInitiativeLoop(
       return;
     }
     if (session?.status === "running" || session?.status === "initializing") return;
-    const dead = !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
+    const dead = isDeadSession(session);
+    // One read isn't proof: the host can answer "no agent" or a stale record for a live one. Count a
+    // death only once it is confirmed; otherwise leave the step alone and look again next tick.
+    if (dead && !(await confirmGone(loopHost, meta.agent))) return;
     const waitedSince = Date.parse(meta.waiting_subagent_since ?? "");
     const waitedOut = !Number.isNaN(waitedSince) && Date.now() - waitedSince >= SUBAGENT_WAIT_MS;
     if (!dead && !meta.stalled && !resuming && !waitedOut) return;
