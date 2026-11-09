@@ -124,6 +124,14 @@ const STEP_ANSWERS: Record<string, string[]> = {
   implement: [MARKERS.implementDone, MARKERS.implementBlocked],
   review: [MARKERS.reviewDone, MARKERS.reviewFailed],
 };
+// The markers that mean a step finished its work (the blocked ones are not).
+const STEP_DONE: Record<string, string[]> = {
+  plan: [MARKERS.planDone],
+  diagnose: [MARKERS.diagnoseDone],
+  implement: [MARKERS.implementDone],
+  review: [MARKERS.reviewDone, MARKERS.reviewFailed],
+  pr: [MARKERS.prDone],
+};
 const PERMISSION = "permission";
 // How long before the loop first saw a plan limit a retry-limit block can be and still be put down to it.
 const LIMIT_GRACE_MS = 30 * 60 * 1000;
@@ -505,6 +513,8 @@ export function createInitiativeLoop(
     const step = meta.step as LoopStep;
     const round = Number(meta.round) || 1;
     const on = initiativeLoopState(init.dir) === "on";
+    // A step that finished has moved the story past any Blocked note an earlier try left in ## Outcome.
+    if (marker && STEP_DONE[meta.step ?? ""]?.includes(marker)) recordOutcome(story, { kind: "resolved", step: STEP_LABELS[step] });
     const next = (to: LoopStep, nextRound: number, cycle?: Cycle) =>
       on ? startStep(loopHost, config, init, phaseDir, story, to, nextRound, { cycle }) : null;
     // Round 1 with cycles left: one parent that runs them in subagents, or the next cycle's own agent
@@ -646,6 +656,11 @@ export function createInitiativeLoop(
     }
     if (action.kind === "closed") {
       block(story, `PR #${pr.number} was closed without merging.`, "pr");
+      return;
+    }
+    if (pr.conflicting) {
+      block(story, `PR #${pr.number} conflicts with its base: GitHub can't merge it until the branch is updated.`, "pr");
+      writeFrontmatter(story.path, { ci: null });
       return;
     }
     if (meta.ci !== action.ci) writeFrontmatter(story.path, { ci: action.ci });

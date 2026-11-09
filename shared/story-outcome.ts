@@ -4,6 +4,7 @@ export type OutcomeEvent =
   | { kind: "review-failed"; round: number; findings: string[] }
   | { kind: "fix"; attempt: number; checks: string[] }
   | { kind: "blocked"; reason: string }
+  | { kind: "resolved"; step: string }
   | { kind: "merged" }
   | { kind: "no-change" };
 
@@ -99,6 +100,8 @@ export function appendOutcome(text: string, event: OutcomeEvent): string {
       if (last?.title === "Blocked" && last.lines[0] === line) return text;
       return addEntry(text, "Blocked", [line]);
     }
+    case "resolved":
+      return text.replace(/^###[ \t]+Blocked[ \t]*$/gm, `### Blocked (resolved: ${event.step} finished)`);
     case "merged": {
       if (has("Merged")) return text;
       const rounds = plural(outcome.reviewRounds + 1, "review round");

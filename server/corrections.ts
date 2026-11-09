@@ -43,7 +43,7 @@ export function storyObservations(text: string, context: ObservationContext): Ob
         const checks = /^failing:\s*(.*)$/.exec(bullet(line))?.[1] ?? "";
         for (const name of checks.split(",").map((check) => check.trim()).filter(Boolean)) found.push(make("ci-check", name));
       }
-    } else if (entry.title === "Blocked") {
+    } else if (entry.title.startsWith("Blocked")) {
       for (const line of entry.lines) found.push(make("blocked", bullet(line)));
     }
   }
