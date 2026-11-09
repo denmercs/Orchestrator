@@ -117,9 +117,12 @@ export async function speak(server: ProviderMcpServerConfig | undefined, text: s
         .map((line) => line.slice(5).trim())
         .pop()
     : body;
-  const message = JSON.parse(json || "{}") as { result?: { isError?: boolean }; error?: { message?: string } };
+  const message = JSON.parse(json || "{}") as { result?: { isError?: boolean; content?: { text?: string }[] }; error?: { message?: string } };
   if (message.error) throw new Error(`speak: ${message.error.message ?? "error"}`);
-  if (message.result?.isError) throw new Error("speak: the tool failed (is voice mode on?)");
+  if (message.result?.isError) {
+    const detail = message.result.content?.find((part) => part.text)?.text;
+    throw new Error(`speak: the tool failed (is voice mode on?)${detail ? `: ${detail}` : ""}`);
+  }
 }
 
 export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnection {
@@ -305,8 +308,11 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
         deps.playbackEnded?.(routerId);
         return;
       }
+      // The same order as a turn's own lines: the warm local voice first, Paseo's speak only if that cannot.
       try {
-        await speak(session.mcpServers.paseo, lines.join(" "), fetchImpl);
+        const line = lines.join(" ");
+        const local = await deps.localSpeak?.(line).catch(() => false);
+        if (!local) await speak(session.mcpServers.paseo, line, fetchImpl);
       } catch (error) {
         console.warn("orchestrator: Sulti could not speak", error instanceof Error ? error.message : error);
         deps.owe?.(routerId, lines);

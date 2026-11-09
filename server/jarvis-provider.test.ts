@@ -52,6 +52,8 @@ test("speak reads an SSE reply, and throws on tool errors, HTTP errors and a mis
   await speak(PASEO, "hi", sse.impl);
   const toolError = fakeFetch({ type: "text/event-stream", body: `data: ${JSON.stringify({ result: { isError: true } })}\n\n` });
   await assert.rejects(speak(PASEO, "hi", toolError.impl), /voice mode/);
+  const detailed = fakeFetch({ body: JSON.stringify({ result: { isError: true, content: [{ type: "text", text: "Voice mode is not active" }] } }) });
+  await assert.rejects(speak(PASEO, "hi", detailed.impl), /Voice mode is not active/);
   const rpcError = fakeFetch({ body: JSON.stringify({ error: { message: "Unknown tool: speak" } }) });
   await assert.rejects(speak(PASEO, "hi", rpcError.impl), /Unknown tool/);
   await assert.rejects(speak(PASEO, "hi", fakeFetch({ status: 401, body: "no" }).impl), /HTTP 401/);
@@ -342,6 +344,34 @@ test("with phoneAudio off, say() speaks the lines out of turn, stamps activity a
   assert.deepEqual(ended, ["r1"]);
   assert.deepEqual(owed, []);
   assert.equal(connection.isActive(Date.now()), true);
+});
+
+test("say() speaks out of turn through a warm local voice first, so Paseo's speak is not called", async () => {
+  const spoken: string[] = [];
+  const { connection, calls, ended, owed } = connect({ spoken: [], note: null }, OK_JSON, undefined, async (text) => {
+    spoken.push(text);
+    return true;
+  });
+  await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await connection.say("r1", ["docs: All done."]);
+  assert.deepEqual(spoken, ["docs: All done."]);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(ended, ["r1"]);
+  assert.deepEqual(owed, []);
+});
+
+test("say() falls back to Paseo's speak when the local voice is cold or fails, and owes the line when both fail", async () => {
+  for (const localSpeak of [async () => false, async () => Promise.reject(new Error("boom"))]) {
+    const { connection, calls, owed } = connect({ spoken: [], note: null }, OK_JSON, undefined, localSpeak);
+    await connection.send(open({ version: 1, data: { routerId: "r1" } }));
+    await connection.say("r1", ["docs: All done."]);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(owed, []);
+  }
+  const both = connect({ spoken: [], note: null }, JSON.stringify({ error: { message: "Unknown tool" } }), undefined, async () => false);
+  await both.connection.send(open({ version: 1, data: { routerId: "r1" } }));
+  await both.connection.say("r1", ["docs: All done."]);
+  assert.deepEqual(both.owed, [["r1", ["docs: All done."]]]);
 });
 
 test("a line that cannot be spoken out of turn is owed to the next words, and playback still ends", async () => {

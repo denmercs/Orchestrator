@@ -123,7 +123,7 @@ test("ensureManager falls back to Cursor Grok 4.7 when the Claude create fails",
   const { paseo, created } = fakePaseo({}, ["claude"]);
   assert.equal(await ensureManager(root, paseo), "new-2");
   assert.deepEqual(created.map((request) => request.config), [
-    { provider: "claude/claude-opus-5-5" },
+    { provider: "claude/claude-opus-5-5", modeId: "auto" },
     { provider: "cursor/grok-4.7" },
   ]);
   assert.match(managerFile(root), /^agent: new-2$/m);

@@ -462,7 +462,6 @@ test("disposing the plugin archives the voice helper", async () => {
 // The Mac's players are fakes: `plays` are the sentences played, `kills` how often a sentence was cut off.
 function speakWired(pending: string[] = [], voiceHelperCwd?: string) {
   const plays: string[] = [];
-  const says: string[] = [];
   const state = { kills: 0 };
   const ready = { ready: () => true, render: async (text: string) => `audio:${text}` };
   const speakerPorts = (readClip: () => string | undefined) => ({
@@ -480,12 +479,8 @@ function speakWired(pending: string[] = [], voiceHelperCwd?: string) {
       plays.push(audio);
       return { done: new Promise<void>(() => undefined), kill: () => void (state.kills += 1) };
     },
-    say: (text: string) => {
-      says.push(text);
-      return { done: Promise.resolve(), kill: () => undefined };
-    },
   });
-  return { plays, says, state, ...wired(pending, true, undefined, undefined, voiceHelperCwd, { speakerPorts, localPorts }) };
+  return { plays, state, ...wired(pending, true, undefined, undefined, voiceHelperCwd, { speakerPorts, localPorts }) };
 }
 
 const spokenTurn = (id: string) => ({
@@ -529,12 +524,12 @@ test("speak replies: a new turn on a switched-on session hushes the Mac's voice"
 });
 
 test("speak replies: a memory-replay turn end stays silent even for a switched-on session", async () => {
-  const { handlers, listeners, plays, says, stop } = speakWired(["s1"]);
+  const { handlers, listeners, plays, stop } = speakWired(["s1"]);
   const paseo = paseoStub;
   await handlers.get(speakRepliesSet.name)!({ agentId: "s1", mode: "short" }, { paseo });
   await listeners.get("agent.turn_ended")!(spokenTurn("s1"), { paseo });
   await tick();
-  assert.deepEqual([plays, says], [[], []]);
+  assert.deepEqual(plays, []);
   stop();
 });
 
