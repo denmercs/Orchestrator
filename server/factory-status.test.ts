@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, test } from "node:test";
 import { factoryProjection, factoryStatus } from "./factory-status";
 import { sliceDir } from "./factory-layout";
@@ -67,14 +67,14 @@ test("no missions and no project is no factory", async () => {
   const root = mkdtempSync(join(tmpdir(), "status-"));
   roots.push(root);
   assert.equal(await factoryProjection(root, alive), null);
-  assert.equal(await factoryStatus(root, { ask: async () => ({ text: "x", costUsd: 0 }), unavailable: async () => null, alive }), null);
+  assert.equal(await factoryStatus([root], { ask: async () => ({ text: "x", costUsd: 0 }), unavailable: async () => null, alive }), null);
 });
 
 test("the answer is the one-shot's reply to the projection, and the factory tree is untouched", async () => {
   const root = setup();
   const before = snapshot(root);
   const calls: { system: string; prompt: string }[] = [];
-  const result = await factoryStatus(root, {
+  const result = await factoryStatus([root], {
     ask: async (system, prompt) => {
       calls.push({ system, prompt });
       return { text: "  Two slices; s1 is building.  ", costUsd: 0 };
@@ -91,7 +91,7 @@ test("the answer is the one-shot's reply to the projection, and the factory tree
 
 test("when the one-shot is unavailable the reason comes back and ask is never called", async () => {
   let asked = 0;
-  const result = await factoryStatus(setup(), {
+  const result = await factoryStatus([setup()], {
     ask: async () => {
       asked += 1;
       return { text: "x", costUsd: 0 };
@@ -104,7 +104,7 @@ test("when the one-shot is unavailable the reason comes back and ask is never ca
 });
 
 test("an ask that throws is treated as unavailable, with its message", async () => {
-  const result = await factoryStatus(setup(), {
+  const result = await factoryStatus([setup()], {
     ask: async () => {
       throw new Error("endpoint answered 500");
     },
@@ -112,4 +112,80 @@ test("an ask that throws is treated as unavailable, with its message", async () 
     alive,
   });
   assert.deepEqual(result, { unavailable: "endpoint answered 500" });
+});
+
+const reply = (prompts: string[]) => ({
+  ask: async (_system: string, prompt: string) => {
+    prompts.push(prompt);
+    return { text: "ok", costUsd: 0 };
+  },
+  unavailable: async () => null,
+  alive,
+});
+
+test("an unavailable one-shot makes no Paseo liveness calls for a repo without a digest", async () => {
+  // Arrange: a factory with a seat agent but no digest, so the projection would ask whether the agent is alive
+  const root = setup();
+  let aliveCalls = 0;
+  // Act
+  const result = await factoryStatus([root], {
+    ask: async () => ({ text: "x", costUsd: 0 }),
+    unavailable: async () => "Claude Code is not signed in.",
+    alive: async () => {
+      aliveCalls += 1;
+      return true;
+    },
+  });
+  // Assert: the reason comes back and nothing was probed
+  assert.deepEqual(result, { unavailable: "Claude Code is not signed in." });
+  assert.equal(aliveCalls, 0);
+});
+
+test("a repo's digest feeds the one-shot with the repo label, not the projection", async () => {
+  // Arrange: a repo whose tick has written a digest
+  const root = setup();
+  put(join(root, ".harness", "factory", "digest.md"), "Project: Ship it.\n\n## Needs you\n- m1/s2: phase test, review is clean\n");
+  const prompts: string[] = [];
+  // Act + Assert: the one-shot gets the labelled digest, not the projection
+  assert.deepEqual(await factoryStatus([root], reply(prompts)), { answer: "ok" });
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], new RegExp(`Repo ${basename(root)}:`));
+  assert.match(prompts[0], /## Needs you\n- m1\/s2: phase test, review is clean/);
+  assert.doesNotMatch(prompts[0], /attempt|proof/);
+});
+
+test("a factory with no digest yet falls back to the projection", async () => {
+  // Arrange + Act: a factory before its first pass, so no digest
+  const root = setup();
+  const prompts: string[] = [];
+  await factoryStatus([root], reply(prompts));
+  // Assert: the projection stands in for it
+  assert.match(prompts[0], new RegExp(`Repo ${basename(root)}:`));
+  assert.match(prompts[0], /s1.*phase build.*attempt 2/);
+});
+
+test("two repos send both reports, and a repo with no factory adds nothing", async () => {
+  // Arrange: two repos with digests and one with no factory
+  const first = setup();
+  const second = setup();
+  const bare = mkdtempSync(join(tmpdir(), "status-"));
+  roots.push(bare);
+  put(join(first, ".harness", "factory", "digest.md"), "Project: First.\n");
+  put(join(second, ".harness", "factory", "digest.md"), "Project: Second.\n");
+  const prompts: string[] = [];
+  // Act
+  await factoryStatus([first, bare, second], reply(prompts));
+  // Assert: both reports are sent, labelled, and the bare repo is absent
+  assert.match(prompts[0], new RegExp(`Repo ${basename(first)}:\nProject: First\\.\n\nRepo ${basename(second)}:\nProject: Second\\.`));
+  assert.doesNotMatch(prompts[0], new RegExp(basename(bare)));
+});
+
+test("no factory in any repo is null and the one-shot is never asked", async () => {
+  // Arrange + Act + Assert: no factory anywhere steps aside, so the session list answers
+  const bare = mkdtempSync(join(tmpdir(), "status-"));
+  roots.push(bare);
+  const prompts: string[] = [];
+  assert.equal(await factoryStatus([bare], reply(prompts)), null);
+  assert.equal(await factoryStatus([], reply(prompts)), null);
+  assert.equal(prompts.length, 0);
 });

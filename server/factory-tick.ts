@@ -8,6 +8,7 @@ import { branchName } from "../shared/naming";
 import type { LoopHost } from "../shared/loop-host";
 import type { LoopStep, StoryContext } from "../shared/story-method";
 import { type ManagerPaseo, MANAGER_MODELS } from "./factory-manager";
+import { writeDigest } from "./factory-digest";
 import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from "./factory-layout";
 import { REFOCUS, TEST_DONE, TEST_FAILED, block, confirmDead, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge, sliceCostCap, sliceSpendKey, sliceTicket, startSeat } from "./factory-phases";
 import { closeSlices, runRequestedSweep } from "./factory-workspace";
@@ -269,6 +270,12 @@ async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
     } catch (error) {
       failures.push(error);
     }
+  }
+  // The digest is the last thing a pass writes, in its own try so a failing slice still leaves it current.
+  try {
+    writeDigest(root);
+  } catch (error) {
+    failures.push(error);
   }
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) throw new AggregateError(failures, failures.map(String).join("; "));

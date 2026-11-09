@@ -837,7 +837,7 @@ export default function contribute(
     factoryStatus: async () => {
       const { repo } = await readHarness();
       if (!repo) return null;
-      return factoryStatus(repo, {
+      return factoryStatus([repo], {
         ask: defaultAsk(),
         unavailable: deps.askUnavailable ?? (() => askUnavailable()),
         alive: async (id) => !isDead((await sultiPaseo().agents.ref(id).refresh())?.agent),
