@@ -22,6 +22,8 @@ export type PrStatus = {
   headSha: string;
   failing: FailingCheck[];
   mergedAt?: string;
+  // GitHub says the PR can't merge as it stands. UNKNOWN (still computing) doesn't count.
+  conflicting?: boolean;
 };
 
 export async function gh(args: string[], cwd: string, timeout = 30_000) {
@@ -77,7 +79,7 @@ function latest(rollup: unknown[]) {
 export async function prStatus(cwd: string, pr: number | string): Promise<PrStatus | null> {
   try {
     const out = await gh(
-      ["pr", "view", String(pr), "--json", "number,url,state,headRefOid,statusCheckRollup,mergedAt"],
+      ["pr", "view", String(pr), "--json", "number,url,state,headRefOid,statusCheckRollup,mergedAt,mergeable"],
       cwd,
     );
     const row = JSON.parse(out) as {
@@ -87,8 +89,15 @@ export async function prStatus(cwd: string, pr: number | string): Promise<PrStat
       headRefOid: string;
       statusCheckRollup?: unknown[];
       mergedAt?: string | null;
+      mergeable?: string;
     };
-    const base = { number: row.number, url: row.url, headSha: row.headRefOid, failing: [] as FailingCheck[] };
+    const base = {
+      number: row.number,
+      url: row.url,
+      headSha: row.headRefOid,
+      failing: [] as FailingCheck[],
+      conflicting: row.mergeable === "CONFLICTING",
+    };
     if (row.state === "MERGED") return { ...base, state: "merged", mergedAt: row.mergedAt || undefined };
     if (row.state === "CLOSED") return { ...base, state: "closed" };
     const checks = latest(row.statusCheckRollup ?? []);

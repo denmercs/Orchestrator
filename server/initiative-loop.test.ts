@@ -12,6 +12,7 @@ import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { FALLBACK_AGENT_CONFIG } from "../shared/agent-runner";
 import { DEFAULT_PHASES, type SkillSource } from "../shared/pipeline";
 import { readMarker } from "../shared/story-method";
+import { readOutcome } from "../shared/story-outcome";
 import { gatesOf } from "../shared/gates";
 import type { TelemetryRow } from "./context-telemetry";
 import { worktreeFingerprint } from "./turn-progress";
@@ -25,10 +26,12 @@ process.env.HOME = home;
 // gh answers `pr view` with whatever ghPr() last set, and fails when nothing is set.
 const ghReply = join(home, "gh-reply.json");
 process.env.GH_BIN = join(home, "gh");
-writeFileSync(process.env.GH_BIN, `#!/bin/sh\n[ -f "${ghReply}" ] && cat "${ghReply}" || exit 1\n`, "utf8");
+// Every call's arguments are appended to ghCalls, so a test can see that `pr merge` was never run.
+const ghCalls = join(home, "gh-calls.txt");
+writeFileSync(process.env.GH_BIN, `#!/bin/sh\necho "$@" >> "${ghCalls}"\n[ -f "${ghReply}" ] && cat "${ghReply}" || exit 1\n`, "utf8");
 chmodSync(process.env.GH_BIN, 0o755);
-const ghPr = (state: string | null, statusCheckRollup: unknown[] = [], mergedAt?: string, headRefOid = "abc") => {
-  if (state) writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid, statusCheckRollup, mergedAt }), "utf8");
+const ghPr = (state: string | null, statusCheckRollup: unknown[] = [], mergedAt?: string, headRefOid = "abc", mergeable = "MERGEABLE") => {
+  if (state) writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid, statusCheckRollup, mergedAt, mergeable }), "utf8");
   else rmSync(ghReply, { force: true });
 };
 const failedCheck = {
@@ -1361,6 +1364,33 @@ test("a step blocked by the retry limit that then writes implement-done is resum
     [meta.status, meta.blocked_reason, meta.blocked_from, meta.retries, meta.stalled, meta.block_kind],
     ["reviewing", undefined, undefined, undefined, undefined, undefined],
   );
+  const text = readFileSync(story, "utf8");
+  assert.match(text, /### Blocked \(resolved: Implement finished\)\n- Implement: Its last turn failed/);
+  assert.doesNotMatch(text, /### Blocked\n/);
+});
+
+test("review-done resolves an open Review block in the story's Outcome", async () => {
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { status: "reviewing", step: "review" });
+  writeFileSync(fx.story, `${readFileSync(fx.story, "utf8")}\n## Outcome\n\n### Blocked\n- Review: Its session is gone. Gave up after 2 retries.\n`, "utf8");
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: fx.worktree, encoding: "utf8" }).trim();
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  const origin = join(fx.root, "origin.git");
+  execFileSync("git", ["init", "-q", "--bare", origin]);
+  git("remote", "add", "origin", origin);
+  git("checkout", "-q", "-b", "main");
+  git("commit", "-q", "--allow-empty", "-m", "start");
+  git("push", "-q", "-u", "origin", "main");
+  git("checkout", "-q", "-b", "feature/s1");
+  writeFileSync(join(fx.worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\nreview-done\n", "utf8");
+  const { api } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "review" } }]);
+
+  await loop().onTurnEnded(api, { agentId: "a1", outcome: { kind: "completed" } } as never);
+
+  const text = readFileSync(fx.story, "utf8");
+  assert.match(text, /### Blocked \(resolved: Review finished\)\n- Review: Its session is gone/);
+  assert.doesNotMatch(text, /### Blocked\n/);
 });
 
 test("a retry-limit block stays blocked when state.md holds no answer from the step", async () => {
@@ -2931,6 +2961,58 @@ test("a PR that can't be opened blocks the story with kind pr and the reason", a
   assert.match(meta.blocked_reason ?? "", /^Could not open the PR: /);
 });
 
+test("a PR that still can't be opened after Retry keeps one open Blocked entry and resolves nothing", async (t) => {
+  t.after(() => ghPr(null));
+  ghPr(null);
+  const fx = reviewPassed();
+  const initiative = loop();
+
+  await initiative.onTurnEnded(fx.api, completed);
+  assert.equal(storyMeta(fx.story).status, "blocked");
+  // Retry puts the story back on its step; review-done is still in state.md and the PR still fails.
+  writeFrontmatter(fx.story, { status: "reviewing", blocked_reason: null, blocked_from: null, blocked_at: null, block_kind: null });
+  await initiative.onTurnEnded(fx.api, completed);
+
+  assert.equal(storyMeta(fx.story).status, "blocked");
+  const titles = readOutcome(readFileSync(fx.story, "utf8")).entries.map((entry) => entry.title);
+  assert.deepEqual(titles, ["Blocked"]);
+});
+
+test("pr-done resolves an open Block in the story's Outcome", async (t) => {
+  t.after(() => ghPr(null));
+  ghPr("OPEN");
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { status: "reviewing", step: "pr" });
+  writeFileSync(fx.story, `${readFileSync(fx.story, "utf8")}\n## Outcome\n\n### Blocked\n- Could not open the PR: boom\n`, "utf8");
+  writeFileSync(join(fx.worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\npr-done\nhttps://pr/45\n", "utf8");
+  const { api } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "pr" } }]);
+
+  await loop().onTurnEnded(api, completed);
+
+  const text = readFileSync(fx.story, "utf8");
+  assert.equal(storyMeta(fx.story).status, "pr-open");
+  assert.match(text, /### Blocked \(resolved: Open PR finished\)\n- Could not open the PR: boom/);
+  assert.doesNotMatch(text, /### Blocked\n/);
+});
+
+test("pr-done with no PR yet on a tick leaves the open Blocked entry open", async (t) => {
+  t.after(() => ghPr(null));
+  ghPr(null);
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { status: "reviewing", step: "pr" });
+  writeFileSync(fx.story, `${readFileSync(fx.story, "utf8")}\n## Outcome\n\n### Blocked\n- Open PR finished but there is no open PR for feature/s1.\n`, "utf8");
+  writeFileSync(join(fx.worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\npr-done\nhttps://pr/45\n", "utf8");
+  const { api } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "pr" } }]);
+  const initiative = loop();
+  // A turn end for an unrelated agent only hands the loop its host; the tick then sees pr-done without a turn end.
+  await initiative.onTurnEnded(api, ended("other", { kind: "completed" }));
+
+  await initiative.tick();
+
+  const titles = readOutcome(readFileSync(fx.story, "utf8")).entries.map((entry) => entry.title);
+  assert.deepEqual(titles, ["Blocked"]);
+});
+
 test("a pr step that wrote pr-done records the open PR; at turn end with no PR the story blocks", async (t) => {
   t.after(() => ghPr(null));
   const prStep = () => {
@@ -3234,4 +3316,45 @@ test("a slice agent's labels find nothing when the loop has no factory", async (
   await initiative.handOver(labels, "a1", "a2");
   assert.equal(storyMeta(story).agent, "a1");
   assert.equal(await initiative.resumePrompt(labels), null);
+});
+
+const passedCheck = { ...failedCheck, conclusion: "SUCCESS" };
+
+for (const autoMerge of [false, true]) {
+  test(`an open PR GitHub calls CONFLICTING blocks the story despite green checks (autoMerge ${autoMerge})`, async (t) => {
+    t.after(() => ghPr(null));
+    const { story, worktree, labels } = fixture("a1");
+    if (autoMerge) {
+      mkdirSync(join(worktree, ".orchestrator"), { recursive: true });
+      writeFileSync(join(worktree, ".orchestrator", "pipeline.json"), JSON.stringify({ autoMerge: true }));
+    }
+    writeFrontmatter(story, { status: "pr-open", step: "pr", agent: null, pr: 45, ci: "green" });
+    const { api } = fakePaseo([{ id: "a1", labels }]);
+    const initiative = loop();
+    initiative.rememberHost(api);
+    rmSync(ghCalls, { force: true });
+
+    ghPr("OPEN", [passedCheck], undefined, "abc", "CONFLICTING");
+    await initiative.tick();
+
+    const meta = storyMeta(story);
+    assert.deepEqual([meta.status, meta.block_kind, meta.ci], ["blocked", "pr", undefined]);
+    assert.equal(meta.blocked_reason, "PR #45 conflicts with its base: GitHub can't merge it until the branch is updated.");
+    assert.match(readFileSync(story, "utf8"), /## Outcome[\s\S]*### Blocked\n- PR #45 conflicts/);
+    assert.doesNotMatch(readFileSync(ghCalls, "utf8"), /pr merge/);
+  });
+}
+
+test("an open PR GitHub is still computing (UNKNOWN) stays pr-open", async (t) => {
+  t.after(() => ghPr(null));
+  const { story, labels } = fixture("a1");
+  writeFrontmatter(story, { status: "pr-open", step: "pr", agent: null, pr: 45, ci: "pending" });
+  const { api } = fakePaseo([{ id: "a1", labels }]);
+  const initiative = loop();
+  initiative.rememberHost(api);
+
+  ghPr("OPEN", [passedCheck], undefined, "abc", "UNKNOWN");
+  await initiative.tick();
+
+  assert.deepEqual([storyMeta(story).status, storyMeta(story).ci], ["pr-open", "green"]);
 });
