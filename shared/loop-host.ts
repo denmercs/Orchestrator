@@ -38,6 +38,14 @@ export type LoopProject = {
   projectRootPath: string;
 };
 
+// A workspace as the host lists it. `busy` means an agent in it is running or initializing.
+export type LoopWorkspace = {
+  id: string;
+  directory: string;
+  projectRootPath: string;
+  busy: boolean;
+};
+
 export type SendToStepOptions = {
   activeTurnBehavior?: "steer" | "interrupt";
 };
@@ -58,6 +66,8 @@ export type LoopHost = {
   createStoryWorkspace(input: StoryWorkspaceCreate): Promise<StoryWorkspace>;
   // Never rejects: a host with no project list answers [].
   listProjects(): Promise<LoopProject[]>;
+  // Never rejects: a host that cannot list answers [].
+  listWorkspaces(): Promise<LoopWorkspace[]>;
   archiveStoryWorkspace(workspaceId: string): Promise<void>;
   readPlanUsage(): Promise<PlanUsageResult>;
   // The host's agent profiles as the daemon reports them (the raw `config.get` result); `profilesFromConfigGet` reads it.

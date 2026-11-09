@@ -775,27 +775,7 @@ export default function contribute(
     profiles: async () => ({ list: profilesFromConfigGet(await paseo.config.get()), runnerProfileId: await readRunnerProfileId() }),
     steer: (line) => steerManager(repo, line, paseo),
     send: (agentId, text) => paseo.agents.ref(agentId).send(text),
-    worktrees: {
-      create: async ({ cwd, branch, base, slug }) => {
-        const { projects } = await paseo.projects.list().catch(() => ({ projects: [] as { projectId: string; projectRootPath: string }[] }));
-        const project = projects.find((item) => resolve(item.projectRootPath) === cwd);
-        const created = await paseo.workspaces.create({
-          title: `${MARK} ${slug}`.slice(0, 60),
-          source: {
-            kind: "worktree",
-            cwd,
-            ...(project ? { projectId: project.projectId } : {}),
-            action: "branch-off",
-            baseBranch: base,
-            branchName: branch,
-            worktreeSlug: slug,
-          },
-        });
-        const directory = created.directory ?? (await created.refresh())?.workspaceDirectory ?? "";
-        if (!directory) throw new Error("Paseo created the workspace but did not report its folder.");
-        return { directory };
-      },
-    },
+    host: paseoLoopHost(paseo),
   });
   const paseoNow = () => contextPaseo ?? pipelinePaseo;
   const replayStartTimer = setInterval(() => {

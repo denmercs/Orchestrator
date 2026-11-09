@@ -87,3 +87,14 @@ test("a plan-done turn end on the same host starts the Implement agent with loop
   assert.equal(created[1].labels["loop-step"], "implement");
   assert.equal(frontmatter(readFileSync(story, "utf8")).status, "implementing");
 });
+
+test("a started story's workspace shows in the host's workspace list, so the loop reads workspaces through the type alone", async () => {
+  // Arrange: a started initiative on the fake host.
+  const { root, host, loop } = todoInitiative();
+
+  // Act
+  await loop.start(host, { repo: root, initiative: "demo" });
+
+  // Assert: the story's workspace is listed with its folder, the repo root, and not busy.
+  assert.deepEqual(await host.listWorkspaces(), [{ id: "ws1", directory: root, projectRootPath: root, busy: false }]);
+});

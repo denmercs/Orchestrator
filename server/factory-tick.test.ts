@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, test } from "node:test";
+import { afterEach, describe, test } from "node:test";
 import { FALLBACK_AGENT_CONFIG, type AgentProfile } from "../shared/agent-runner";
+import { branchName } from "../shared/naming";
 import { DEFAULT_PHASES } from "../shared/pipeline";
 import { runnableSlices } from "../shared/factory";
 import { namedStories, readFactory, sliceDir, storyKey, writeSliceState } from "./factory-layout";
-import { MANAGER_MODELS } from "./factory-manager";
+import { MANAGER_MODELS, steerManager, type ManagerPaseo } from "./factory-manager";
 import { buildContext, runFactoryTick, type TickPaseo } from "./factory-tick";
 import { writeFrontmatter } from "./harness-layout";
 import { APPROVE_MESSAGE } from "./gate-actions";
@@ -15,6 +16,8 @@ import { createInitiativeLoop } from "./initiative-loop";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import type { PrStatus } from "./pr-checks";
 import { RESTART_LINE } from "./story-steps";
+import type { StoryWorkspaceCreate } from "../shared/loop-host";
+import { fakeLoopHost } from "../test-support/fake-loop-host";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -44,8 +47,27 @@ function setup(state: string, run = "on", phase = "build") {
 function fakePaseo(known: Record<string, { status: string; archivedAt?: string | null; lastUsage?: { totalCostUsd?: number } | null }> = {}) {
   const created: { cwd: string; prompt: string; title: string; labels: Record<string, string>; config: unknown }[] = [];
   const commits: { cwd: string; message: string }[] = [];
-  const worktrees: { cwd: string; branch: string; base: string }[] = [];
+  // The loop's host: a workspace create lands in <repoRoot>/made-wt, and the repo is a known project.
+  const { host, workspaces } = fakeLoopHost([]);
+  const worktrees: StoryWorkspaceCreate[] = [];
+  const makeWorkspace = host.createStoryWorkspace;
+  const projects = [{ projectId: "proj-other", projectRootPath: "/elsewhere" }];
+  host.listProjects = async () => projects;
+  const started: { workspace: string; title: string; labels: Record<string, string> }[] = [];
+  const startOnHost = host.startStepAgent;
+  host.startStepAgent = async (workspace, input) => {
+    started.push({ workspace, title: input.title, labels: input.labels });
+    return startOnHost(workspace, input);
+  };
+  host.createStoryWorkspace = async (input) => {
+    worktrees.push(input);
+    const made = await makeWorkspace(input);
+    const directory = join(input.repoRoot, "made-wt");
+    mkdirSync(directory, { recursive: true });
+    return { id: made.id, directory };
+  };
   const paseo: TickPaseo = {
+    host,
     steps: {
       api: {} as NonNullable<TickPaseo["steps"]>["api"],
       readPipeline: async () => ({ phases: DEFAULT_PHASES, sources: [] }),
@@ -54,14 +76,6 @@ function fakePaseo(known: Record<string, { status: string; archivedAt?: string |
     commit: async (cwd, message) => {
       commits.push({ cwd, message });
       return true;
-    },
-    worktrees: {
-      create: async (request) => {
-        worktrees.push({ cwd: request.cwd, branch: request.branch, base: request.base });
-        const directory = join(request.cwd, "made-wt");
-        mkdirSync(directory, { recursive: true });
-        return { directory };
-      },
     },
     agents: {
       ref: (id) => ({ refresh: async () => (known[id] ? { agent: known[id] } : null) }),
@@ -74,7 +88,7 @@ function fakePaseo(known: Record<string, { status: string; archivedAt?: string |
       },
     },
   };
-  return { paseo, created, worktrees, commits };
+  return { paseo, created, started, worktrees, commits, workspaces, projects };
 }
 
 const field = (file: string, name: string) => readFileSync(file, "utf8").match(new RegExp(`^${name}: (.*)$`, "m"))?.[1];
@@ -105,17 +119,27 @@ test("a written spec with design on goes to design", async () => {
   assert.equal(created.length, 0);
 });
 
-test("a spec slice with no worktree gets one through the port, branched off origin/main", async () => {
+test("a spec slice with no worktree gets a workspace from the host, found through the repo's project", async () => {
+  // Arrange: no worktree on record, and the repo is one of the host's projects.
   const { root, worktree, stateFile } = setup("", "on", "spec");
   rmSync(worktree, { recursive: true });
-  const { paseo, worktrees } = fakePaseo();
+  const { paseo, worktrees, workspaces, projects } = fakePaseo();
+  projects.push({ projectId: "proj-repo", projectRootPath: root });
+
+  // Act
   assert.equal((await runFactoryTick(root, paseo)).kind, "advanced");
+
+  // Assert: one create, off origin/main in the repo's project; the slice records the workspace and its folder.
   assert.equal(worktrees.length, 1);
-  assert.equal(worktrees[0].cwd, root);
-  assert.equal(worktrees[0].base, "origin/main");
-  assert.match(worktrees[0].branch, /s1/);
+  assert.equal(worktrees[0].repoRoot, root);
+  assert.equal(worktrees[0].projectId, "proj-repo");
+  assert.equal(worktrees[0].baseBranch, "origin/main");
+  assert.match(worktrees[0].branchName, /s1/);
+  assert.equal(field(stateFile, "workspace"), workspaces[0].id);
   assert.equal(field(stateFile, "worktree"), join(root, "made-wt"));
   assert.equal(field(stateFile, "phase"), "build");
+  // The story file made in that folder carries the workspace too.
+  assert.equal(field(field(stateFile, "story")!, "workspace"), workspaces[0].id);
 });
 
 test("a spec slice with no story gets <worktree>/.harness/story.md written from its spec", async () => {
@@ -315,6 +339,64 @@ test("entering build launches Plan in the worktree with the slice's labels and r
   assert.equal(field(ctx.stateFile, "phase"), "build");
 });
 
+// A story file with the loop's own id and title, named by slice s1.
+function namedStory(ctx: { root: string; stateFile: string }, extra = "") {
+  const file = join(ctx.root, "story.md");
+  put(file, `---\nid: S8\ntitle: Factory start paths\nstatus: todo\n${extra}---\n\nAdd the widget.\n`);
+  writeFileSync(ctx.stateFile, readFileSync(ctx.stateFile, "utf8").replace("---\n", `---\nstory: ${file}\n`));
+}
+
+describe("loop-style names", () => {
+  test("a slice naming a story titles its Plan session, workspace and QA seat from the story's id and title", async () => {
+    // Arrange: build slice naming the story.
+    const build = setup("");
+    namedStory(build);
+    put(join(build.worktree, ".harness", "state.md"), "# S\n\n## Status\ntodo\n");
+    const planned = fakePaseo();
+
+    // Act + Assert: Plan carries the loop's title.
+    await runFactoryTick(build.root, planned.paseo);
+    assert.equal(planned.created[0].title, "🔁 S8 · Plan — Factory start paths");
+
+    // Arrange: spec slice with no workspace yet.
+    const spec = setup("", "on", "spec");
+    rmSync(spec.worktree, { recursive: true });
+    namedStory(spec);
+    const made = fakePaseo();
+    made.projects.push({ projectId: "proj-repo", projectRootPath: spec.root });
+
+    // Act + Assert: the fresh workspace is titled from the story, the branch still from the slice id.
+    await runFactoryTick(spec.root, made.paseo);
+    assert.equal(made.worktrees[0].title, "🔁 S8 — Factory start paths");
+    assert.equal(made.worktrees[0].branchName, branchName({ title: "s1" }));
+
+    // Arrange: test slice with no QA agent yet.
+    const qaCtx = setup("", "on", "test");
+    namedStory(qaCtx, "step: implement\nround: 1\nagent: i-1\nstatus: implementing\n");
+    put(join(qaCtx.worktree, ".harness", "state.md"), "# S\n\n## Status\nimplement-done\n" + cycles(true));
+    const qa = fakePaseo({ "i-1": { status: "idle" } });
+
+    // Act + Assert: the QA seat is titled like a loop Test step.
+    await runFactoryTick(qaCtx.root, qa.paseo);
+    assert.equal(qa.created[0].labels.seat, "qa");
+    assert.equal(qa.created[0].title, "🔁 S8 · Test — Factory start paths");
+  });
+
+  test("a slice with no story keeps its slice id in the workspace and QA seat titles", async () => {
+    const spec = setup("", "on", "spec");
+    rmSync(spec.worktree, { recursive: true });
+    const made = fakePaseo();
+    made.projects.push({ projectId: "proj-repo", projectRootPath: spec.root });
+    await runFactoryTick(spec.root, made.paseo);
+    assert.equal(made.worktrees[0].title, "🔁 s1");
+
+    const { ctx } = testSlice("implement-done", "");
+    const qa = fakePaseo({ "i-1": { status: "idle" } });
+    await runFactoryTick(ctx.root, qa.paseo);
+    assert.match(qa.created[0].title, /^🔁 s1 · Test/);
+  });
+});
+
 test("a slice whose story lives in an initiative is labelled with that initiative and the story's id", async () => {
   const ctx = setup("");
   withStory(ctx, "id: S7", "todo", "", join(ctx.root, ".harness", "initiatives", "init-a", "phases", "1-x", "stories", "01-y.md"));
@@ -347,7 +429,7 @@ test("plan-done with the planner's turn ended launches Implement round 1", async
   const story = withStory(ctx, "step: plan\nround: 1\nagent: p-1\nstatus: planning", "plan-done", cycles(false));
   const { paseo, created } = fakePaseo({ "p-1": { status: "idle" } });
   assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "restarted", slice: "s1", agent: "new-1" });
-  assert.deepEqual(created[0].labels, sliceLabels("implement"));
+  assert.deepEqual(created[0].labels, { ...sliceLabels("implement"), "loop-cycles": "subagents" });
   assert.equal(field(story, "step"), "implement");
   assert.equal(field(ctx.stateFile, "phase"), "build");
 });
@@ -372,6 +454,62 @@ test("implement-done commits the work and moves the slice to test", async () => 
   assert.equal(commits[0].cwd, ctx.worktree);
   assert.equal(field(ctx.stateFile, "phase"), "test");
   assert.equal(created.length, 0);
+});
+
+describe("Implement as one parent with subagents", () => {
+  test("a plan-done slice with three open cycles starts one parent session for all of them", async () => {
+    const ctx = setup("agent: p-1");
+    const story = withStory(ctx, "step: plan\nround: 1\nagent: p-1\nstatus: planning", "plan-done", cycles(false, false, false));
+    const { paseo, created } = fakePaseo({ "p-1": { status: "idle" } });
+    const result = await runFactoryTick(ctx.root, paseo);
+    assert.equal(result.kind, "restarted");
+    assert.equal(created.length, 1);
+    assert.deepEqual(created[0].labels, { ...sliceLabels("implement"), "loop-cycles": "subagents" });
+    assert.equal(field(story, "cycles"), "subagents");
+    assert.equal(field(ctx.stateFile, "agent"), "new-1");
+  });
+
+  test("a pass while the parent runs with cycles ticked keeps its agent, starts nothing and does not block", async () => {
+    const ctx = setup("agent: i-1");
+    withStory(ctx, "step: implement\nround: 1\ncycles: subagents\nagent: i-1\nstatus: implementing", "implement-running", cycles(true, true, false));
+    const { paseo, created, commits } = fakePaseo({ "i-1": { status: "running" } });
+    assert.equal((await runFactoryTick(ctx.root, paseo)).kind, "alive");
+    assert.equal(created.length, 0);
+    assert.equal(commits.length, 0);
+    assert.equal(field(ctx.stateFile, "agent"), "i-1");
+    assert.equal(field(ctx.stateFile, "ready"), undefined);
+  });
+
+  test("the parent's implement-done commits once and moves to test, without a second session", async () => {
+    const ctx = setup("agent: i-1");
+    withStory(ctx, "step: implement\nround: 1\ncycles: subagents\nagent: i-1\nstatus: implementing", "implement-done", cycles(true, true, true));
+    const { paseo, created, commits } = fakePaseo({ "i-1": { status: "idle" } });
+    assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "advanced", slice: "s1", phase: "test" });
+    assert.equal((await runFactoryTick(ctx.root, paseo)).kind !== "advanced", true);
+    assert.equal(commits.length, 1);
+    assert.equal(created.filter((spec) => spec.labels["loop-step"] === "implement").length, 0);
+  });
+
+  test("a parent that says implement-done with a cycle unticked waits and commits nothing", async () => {
+    const ctx = setup("agent: i-1");
+    withStory(ctx, "step: implement\nround: 1\ncycles: subagents\nagent: i-1\nstatus: implementing", "implement-done", cycles(true, false, true));
+    const { paseo, commits } = fakePaseo({ "i-1": { status: "idle" } });
+    assert.equal((await runFactoryTick(ctx.root, paseo)).kind, "waiting");
+    assert.equal(commits.length, 0);
+  });
+
+  test("a dead parent restarts as a parent with only the cycles still open", async () => {
+    const ctx = setup("agent: i-1");
+    const story = withStory(ctx, "step: implement\nround: 1\ncycles: subagents\nagent: i-1\nstatus: implementing", "implement-running", cycles(true, false, false));
+    const { paseo, created } = fakePaseo({ "i-1": { status: "error" } });
+    assert.equal((await runFactoryTick(ctx.root, paseo)).kind, "restarted");
+    assert.equal(created.length, 1);
+    assert.equal(created[0].labels["loop-cycles"], "subagents");
+    assert.match(created[0].prompt, /Cycle 2/);
+    assert.match(created[0].prompt, /Cycle 3/);
+    assert.doesNotMatch(created[0].prompt, /Cycle 1 — part 1/);
+    assert.equal(field(story, "cycles"), "subagents");
+  });
 });
 
 test("implement-done with a cycle still open commits and launches the next Implement cycle", async () => {
@@ -515,6 +653,78 @@ test("an awaiting-approval plan without approve: plan sends nothing to the plann
   await runFactoryTick(ctx.root, fake.paseo);
   await runFactoryTick(ctx.root, fake.paseo);
   assert.equal(sent.length, 0);
+});
+
+// A story the loop already parked as awaiting-approval, adopted by a slice with no manager yet: the steer goes through the real
+// `steerManager` over fake agents, which creates the manager on the way.
+function parkedPlan(steerResult: () => boolean = () => true) {
+  const ctx = setup("agent: p-1", "on", "spec");
+  const story = adoptedStory(ctx, "step: plan\nround: 1\nagent: p-1\nstatus: awaiting-approval", "plan-running", cycles(false));
+  const known: Record<string, { status: string }> = { "p-1": { status: "idle" } };
+  const fake = fakePaseo(known);
+  const managerSent: { id: string; text: string }[] = [];
+  const managerCreated: string[] = [];
+  const managerPaseo: ManagerPaseo = {
+    agents: {
+      ref: (id) => ({
+        refresh: async () => (known[id] ? { agent: known[id] } : null),
+        send: async (text) => {
+          managerSent.push({ id, text });
+          return undefined;
+        },
+      }),
+      create: async () => {
+        const id = `mgr-${managerCreated.length + 1}`;
+        managerCreated.push(id);
+        known[id] = { status: "idle" };
+        return { id };
+      },
+    },
+  };
+  fake.paseo.steer = async (line) => {
+    const delivered = await steerManager(ctx.root, line, managerPaseo);
+    return delivered && steerResult();
+  };
+  return { ctx, story, fake, managerSent, managerCreated };
+}
+const managerFile = (root: string) => join(root, ".harness", "factory", "manager.md");
+
+test("a parked awaiting-approval story with no manager steers once through steerManager, creating the manager and recording steered: plan", async () => {
+  const { ctx, fake, managerSent, managerCreated } = parkedPlan();
+  for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, fake.paseo);
+  // The first pass adopts the story and the next ones reach the gate: one manager, one steer, remembered on the slice.
+  assert.deepEqual(managerCreated, ["mgr-1"]);
+  assert.equal(managerSent.length, 1);
+  assert.match(managerSent[0].text, /s1/);
+  assert.equal(managerSent[0].id, "mgr-1");
+  assert.match(readFileSync(managerFile(ctx.root), "utf8"), /agent: mgr-1/);
+  assert.equal(field(ctx.stateFile, "steered"), "plan");
+});
+
+test("a plan-gate steer that is not delivered records nothing, so the next pass tries again", async () => {
+  let deliver = false;
+  const { ctx, fake, managerSent } = parkedPlan(() => deliver);
+  for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, fake.paseo);
+  assert.equal(field(ctx.stateFile, "steered"), undefined);
+  const attempts = managerSent.length;
+  assert.ok(attempts >= 2);
+  deliver = true;
+  await runFactoryTick(ctx.root, fake.paseo);
+  assert.equal(field(ctx.stateFile, "steered"), "plan");
+  await runFactoryTick(ctx.root, fake.paseo);
+  assert.equal(managerSent.length, attempts + 1);
+});
+
+test("approving a plan clears steered, so a later plan gate steers again", async () => {
+  const { ctx, story, fake, managerSent } = parkedPlan();
+  for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, fake.paseo);
+  assert.equal(field(ctx.stateFile, "steered"), "plan");
+  fake.paseo.send = async () => undefined;
+  writeFileSync(ctx.stateFile, readFileSync(ctx.stateFile, "utf8").replace("---\n", "---\napprove: plan\n"));
+  await runFactoryTick(ctx.root, fake.paseo);
+  assert.equal(field(ctx.stateFile, "steered"), undefined);
+  assert.equal(field(story, "status"), "planning");
+  assert.equal(managerSent.length, 1);
 });
 
 // A slice in `test`, as the build left it: the story still says implementing, with the idle builder's agent on it.
@@ -924,6 +1134,65 @@ test("an adopted story with no worktree line gets the slice's, so the context wa
   const { paseo } = fakePaseo({ "l-1": { status: "running" } });
   await runFactoryTick(ctx.root, paseo);
   assert.equal(field(story, "worktree"), ctx.worktree);
+});
+
+test("an adopted story keeps its workspace: the slice records the story's workspace when it has none", async () => {
+  // The story was started in a Paseo workspace by the loop; the slice must keep seating agents there.
+  const ctx = setup("", "on", "spec");
+  adoptedStory(ctx, "step: implement\nround: 1\nagent: l-1\nstatus: implementing\nworkspace: wks_x", "implement-running", cycles(false));
+  const { paseo } = fakePaseo({ "l-1": { status: "running" } });
+  await runFactoryTick(ctx.root, paseo);
+  assert.equal(field(ctx.stateFile, "workspace"), "wks_x");
+});
+
+describe("a slice with a workspace seats its agents there", () => {
+  // Arrange helper: the slice sits in Paseo workspace wks_x, so every seat must go through the host, never a bare cwd.
+  const inWorkspace = (state: string) => `${state}\nworkspace: wks_x`;
+
+  test("the build step starts through the host", async () => {
+    const ctx = setup(inWorkspace("agent: p-1"), "on", "build");
+    withStory(ctx, "step: plan\nround: 1\nagent: p-1\nstatus: planning", "plan-done", cycles(false));
+    const { paseo, created, started, workspaces } = fakePaseo({ "p-1": { status: "idle" } });
+    const result = await runFactoryTick(ctx.root, paseo);
+    assert.equal(result.kind, "restarted");
+    assert.equal(started.length, 1);
+    assert.equal(started[0].workspace, "wks_x");
+    assert.equal(field(ctx.stateFile, "agent"), (result as { agent: string }).agent);
+    assert.equal(created.length, 0);
+    assert.equal(workspaces.length, 0);
+  });
+
+  test("the review step starts through the host", async () => {
+    const { ctx } = reviewSlice("test-done", { entering: true });
+    writeFileSync(ctx.stateFile, readFileSync(ctx.stateFile, "utf8").replace("\n---\n", "\nworkspace: wks_x\n---\n"));
+    const { paseo, created, started, workspaces } = fakePaseo({ "i-1": { status: "idle" } });
+    assert.equal((await runFactoryTick(ctx.root, paseo)).kind, "restarted");
+    assert.equal(started.length, 1);
+    assert.equal(started[0].workspace, "wks_x");
+    assert.equal(started[0].labels.seat, "reviewer");
+    assert.equal(created.length, 0);
+    assert.equal(workspaces.length, 0);
+  });
+
+  test("the QA seat starts through the host", async () => {
+    const { ctx } = testSlice("implement-done", "");
+    writeFileSync(ctx.stateFile, readFileSync(ctx.stateFile, "utf8").replace("\n---\n", "\nworkspace: wks_x\n---\n"));
+    const { paseo, created, started, workspaces } = fakePaseo({ "i-1": { status: "idle" } });
+    assert.equal((await runFactoryTick(ctx.root, paseo)).kind, "restarted");
+    assert.equal(started.length, 1);
+    assert.equal(started[0].workspace, "wks_x");
+    assert.equal(started[0].labels.seat, "qa");
+    assert.equal(created.length, 0);
+    assert.equal(workspaces.length, 0);
+  });
+
+  test("a slice with no workspace still starts through agents.create", async () => {
+    const { ctx } = testSlice("implement-done", "");
+    const { paseo, created, started } = fakePaseo({ "i-1": { status: "idle" } });
+    assert.equal((await runFactoryTick(ctx.root, paseo)).kind, "restarted");
+    assert.equal(created.length, 1);
+    assert.equal(started.length, 0);
+  });
 });
 
 test("a story the factory writes in spec carries its worktree, so the context watch owns the step and resume reads its state", async () => {
@@ -1380,13 +1649,13 @@ function addSlice(root: string, id: string, state: string, phase = "spec") {
 function perSlicePaseo(known: Parameters<typeof fakePaseo>[0] = {}) {
   const fake = fakePaseo(known);
   const slugs: string[] = [];
-  fake.paseo.worktrees = {
-    create: async (request) => {
-      slugs.push(request.slug);
-      const directory = join(request.cwd, `wt-${request.slug}`);
-      mkdirSync(directory, { recursive: true });
-      return { directory };
-    },
+  const made = fake.paseo.host!.createStoryWorkspace;
+  fake.paseo.host!.createStoryWorkspace = async (input) => {
+    slugs.push(input.worktreeSlug);
+    const workspace = await made(input);
+    const directory = join(input.repoRoot, `wt-${input.worktreeSlug}`);
+    mkdirSync(directory, { recursive: true });
+    return { id: workspace.id, directory };
   };
   delete fake.paseo.steps;
   return { ...fake, slugs };
@@ -1397,7 +1666,7 @@ test("two independent spec slices each get their own worktree, then their own se
   const first = setup("", "on", "spec");
   rmSync(first.worktree, { recursive: true });
   const secondState = addSlice(first.root, "s2", "");
-  const { paseo, created, slugs } = perSlicePaseo();
+  const { paseo, created, started, slugs } = perSlicePaseo();
 
   // Act: the first pass hands both specs off.
   const handoff = await runFactoryTick(first.root, paseo);
@@ -1414,10 +1683,11 @@ test("two independent spec slices each get their own worktree, then their own se
   // Act: the next pass works the build seats.
   const seats = await runFactoryTick(first.root, paseo);
 
-  // Assert: one agent per slice, each in that slice's own worktree.
+  // Assert: one agent per slice, each in that slice's own workspace.
   assert.equal(seats.kind, "fan-out");
-  assert.deepEqual(created.map((agent) => agent.cwd).sort(), [...(worktrees as string[])].sort());
-  assert.deepEqual(created.map((agent) => agent.labels.slice).sort(), ["s1", "s2"]);
+  assert.deepEqual(started.map((agent) => agent.workspace).sort(), [field(first.stateFile, "workspace"), field(secondState, "workspace")].sort());
+  assert.deepEqual(started.map((agent) => agent.labels.slice).sort(), ["s1", "s2"]);
+  assert.equal(created.length, 0);
 });
 
 test("a slice that depends on a reviewed slice with an empty proof.md gets no worktree and no agent, while an independent slice does", async () => {
@@ -1427,7 +1697,7 @@ test("a slice that depends on a reviewed slice with an empty proof.md gets no wo
   const dependentState = addSlice(root, "s2", "depends: s1");
   const freeState = addSlice(root, "s3", "");
   writeFileSync(join(sliceDir(root, "m1", "s1"), "proof.md"), "\n");
-  const { paseo, created, slugs } = perSlicePaseo();
+  const { paseo, started, slugs } = perSlicePaseo();
 
   // Act: the handoff pass, then the seat pass.
   const handoff = await runFactoryTick(root, paseo);
@@ -1437,8 +1707,8 @@ test("a slice that depends on a reviewed slice with an empty proof.md gets no wo
   assert.deepEqual(handoff, { kind: "advanced", slice: "s3", phase: "build" });
   assert.equal(seat.kind, "restarted");
   assert.deepEqual(slugs, ["s3"]);
-  assert.deepEqual(created.map((agent) => agent.labels.slice), ["s3"]);
-  assert.equal(created[0].cwd, field(freeState, "worktree"));
+  assert.deepEqual(started.map((agent) => agent.labels.slice), ["s3"]);
+  assert.equal(started[0].workspace, field(freeState, "workspace"));
   assert.equal(field(dependentState, "worktree"), undefined);
   assert.equal(field(dependentState, "agent"), undefined);
 });
@@ -1625,4 +1895,22 @@ test("a steer that throws leaves the held note unsaved, does not stop other slic
   assert.ok(ranOthers > 0);
   assert.deepEqual(steers, ["Slice s2 can't start: blocked dependency s1."]);
   assert.equal(field(dependentState, "held"), "blocked dependency s1");
+});
+
+test("a named story that already has a worktree line still gets the new workspace written into its frontmatter", async () => {
+  // Arrange: a fresh slice naming a story that has `worktree` but no `workspace`.
+  const ctx = setup("", "on", "spec");
+  rmSync(ctx.worktree, { recursive: true });
+  const story = join(ctx.root, "story.md");
+  put(story, "---\ntitle: Named\nstatus: todo\nworktree: /old/wt\n---\n\nBody.\n");
+  writeFileSync(ctx.stateFile, readFileSync(ctx.stateFile, "utf8").replace("\n---\n", `\nstory: ${story}\n---\n`));
+  const { paseo } = fakePaseo();
+
+  // Act
+  await runFactoryTick(ctx.root, paseo);
+
+  // Assert: the story carries the slice's workspace, and keeps the worktree line it had.
+  assert.equal(field(story, "workspace"), field(ctx.stateFile, "workspace"));
+  assert.ok(field(story, "workspace"));
+  assert.equal(field(story, "worktree"), "/old/wt");
 });

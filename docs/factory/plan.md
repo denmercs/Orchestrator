@@ -28,6 +28,14 @@ Later work should reuse the names in this file. When code adds one of these conc
 
 All under the factory's home worktree, kept out of git the same way `.harness/` already is. The home worktree holds the plan only. No seat builds in it. Each slice runs in its own worktree, named in its `state.md`, so two slices never share a checkout.
 
+### Slice workspace
+
+A fresh slice gets its workspace from the loop's `createStoryWorkspace`, under the repo's project (found through `listProjects`, as `startStory` does). The tick records it as `workspace` (with `worktree`) in the slice's `state.md` and in the story's frontmatter. Adopting a story copies the story's `workspace` into a slice that has none. A slice with a `workspace` starts every seat inside it through `startStepAgent`; with none on record, seats start by cwd as before. Sessions are named the loop's way: `🔁 S8 · Plan — Factory start paths` for a slice that names a story, the slice id when it has none. Implement runs as one parent session with a subagent per cycle (`loop-cycles: subagents`), not one top-level session per cycle. Later rounds (a test failure, review fixes) are one agent each.
+
+A slice is closed when its PR is merged, when the manager writes `close: on`, or when it is `ready: ci` with no PR (the work is already on base). Closing archives its workspace and records `archived: on`. While an agent is running there, the archive is skipped and the manager gets one `archive_held` steer. The repo root is never archived, and a failed archive is ignored.
+
+The sweep is a one-off the manager starts with `sweep: on` in `manager.md`. The tick archives idle stray `factory-sN` and `factory-<slug>` workspaces that no slice names (by `workspace` or `worktree`), clears the field, and steers the count.
+
 Because the tree is not in git, archiving or cleaning up the home worktree deletes the factory. The home worktree is pinned: job cleanup skips it, and archiving it asks the human first.
 
 ```text

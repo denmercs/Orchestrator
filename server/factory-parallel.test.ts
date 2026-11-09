@@ -8,12 +8,12 @@ import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
 import { DEFAULT_PHASES } from "../shared/pipeline";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { TickPaseo } from "./factory-tick";
-import { paseoLoopHost } from "./loop-host-paseo";
 
 // The loop's registry lives under the home folder, so this file gets its own.
 const home = mkdtempSync(join(tmpdir(), "parallel-home-"));
 process.env.HOME = home;
 const { createInitiativeLoop } = await import("./initiative-loop");
+const { paseoLoopHost } = await import("./loop-host-paseo");
 const { runFactoryTick } = await import("./factory-tick");
 const { sliceDir } = await import("./factory-layout");
 
@@ -72,7 +72,6 @@ test("a loop at its parallel cap of 1 starts nothing, and the factory still star
   } as unknown as PaseoApi;
   const factoryPaseo: TickPaseo = {
     commit: async () => true,
-    worktrees: { create: async () => ({ directory: root }) },
     agents: {
       ref: (id) => ({ refresh: async () => (known[id] ? { agent: known[id] } : null) }),
       create: async (request) => {

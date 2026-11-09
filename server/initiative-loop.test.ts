@@ -3217,7 +3217,7 @@ test("resumePrompt and stepActive find a slice's story by its factory-slice labe
 
   const prompt = await initiative.resumePrompt(labels);
   assert.ok(prompt);
-  assert.match(prompt, /^Implement for story s1 — s1\.$/m);
+  assert.match(prompt, /^Implement for story S1 — Demo story\.$/m);
   assert.match(prompt, /## This step: implement the story/);
   assert.ok(prompt.endsWith(`\n\n${RESUME_LINE}`));
   assert.equal(await initiative.resumePrompt({ ...labels, "factory-slice": "s9" }), null);

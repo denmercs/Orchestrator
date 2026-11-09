@@ -7,7 +7,9 @@ import {
   afterImplement,
   afterReview,
   commitSubject,
+  finishedCycles,
   formatSkills,
+  implementStart,
   readCycles,
   parseSkills,
   readFindings,
@@ -639,4 +641,29 @@ test("light mode changes only Review", () => {
     const extra: StepExtra = { round: 2 };
     assert.equal(stepPrompt(step, story, { ...extra, light: true }), stepPrompt(step, story, extra), step);
   }
+});
+
+const threeCycles = "# S\n\n## Cycles\n- [x] Cycle 1 — one\n- [ ] Cycle 2 — two\n- [ ] Cycle 3 — three\n";
+
+test("implementStart: round 1 with subagent cycles and cycles open is one parent with every open cycle", () => {
+  const start = implementStart(threeCycles, 1, true);
+  assert.deepEqual("cycles" in start && start.cycles.map((cycle) => cycle.number), [2, 3]);
+  assert.equal("cycle" in start, false);
+});
+
+test("implementStart: without subagent cycles, in a later round, or with nothing open it is one agent on the next open cycle", () => {
+  const start = (state: string, round: number, subagents: boolean) => {
+    const got = implementStart(state, round, subagents);
+    return "cycle" in got ? (got.cycle?.number ?? null) : "parent";
+  };
+  assert.equal(start(threeCycles, 1, false), 2);
+  assert.equal(start(threeCycles, 2, true), 2);
+  assert.equal(start("# S\n\n## Cycles\n- [x] Cycle 1 — one\n", 1, true), null);
+  assert.equal(start("# S\n", 1, true), null);
+});
+
+test("finishedCycles: a subagents parent finished all, a cycle agent its own number, anything else null", () => {
+  assert.equal(finishedCycles({ cycles: "subagents", cycle: "2" }), "all");
+  assert.equal(finishedCycles({ cycle: "2" }), 2);
+  assert.equal(finishedCycles({}), null);
 });

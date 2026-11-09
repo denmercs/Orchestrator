@@ -1,18 +1,21 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { type FactoryPhase, type FactorySeat, type FactorySlice, heldBy } from "../shared/factory";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { type AgentCreateConfig, type AgentProfile, materializeProfile, seatProfile } from "../shared/agent-runner";
 import type { Phase, SkillSource } from "../shared/pipeline";
 import { branchName } from "../shared/naming";
+import type { LoopHost } from "../shared/loop-host";
 import type { LoopStep, StoryContext } from "../shared/story-method";
 import { type ManagerPaseo, MANAGER_MODELS } from "./factory-manager";
 import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from "./factory-layout";
-import { REFOCUS, TEST_DONE, TEST_FAILED, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge, sliceCostCap, sliceSpendKey } from "./factory-phases";
+import { REFOCUS, TEST_DONE, TEST_FAILED, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge, sliceCostCap, sliceSpendKey, startSeat } from "./factory-phases";
+import { closeSlices, runRequestedSweep } from "./factory-workspace";
 import { frontmatter, slugOf, writeFrontmatter } from "./harness-layout";
 import type { FailingCheck, PrStatus } from "./pr-checks";
 import type { ReadCost } from "./initiative-loop";
 import type { OpenedPr } from "./story-git";
+import { MARK } from "./story-steps";
 
 // The seat that works each phase. The manager owns `spec`, which the tick doesn't deliver.
 const SEATS: Partial<Record<FactoryPhase, string>> = {
@@ -28,8 +31,8 @@ const LOOP_STEPS = new Set(["planning", "implementing", "reviewing"]);
 
 // What the tick needs of Paseo; tests pass a fake. The same shape the manager uses, minus the steer.
 export type TickPaseo = {
-  // A fresh worktree for a slice, branched off `base`; `directory` is its folder. Absent in a handle that can't make one.
-  worktrees?: { create(request: { cwd: string; branch: string; base: string; slug: string }): Promise<{ directory: string }> };
+  // The loop's own host: a fresh slice gets its workspace and worktree from it. Absent in a handle that can't make one.
+  host?: LoopHost;
   // What `launchStep` needs to run a loop step in a slice's worktree. Absent in a handle that can't: build then falls through to seat supervision.
   steps?: {
     api: PluginHandlerContext["paseo"];
@@ -141,9 +144,11 @@ async function leaveDesign(root: string, slice: FactorySlice, ports: TickPaseo):
 // The story context a slice's loop steps run with. The body is the spec, then the design when the slice has one, so the
 // builder's Plan sees both. Build steps (cycle 5) pass this to `launchStep`.
 export function buildContext(slice: FactorySlice): StoryContext {
+  // A named story's own id and title name the sessions, as the loop's do; the branch still comes from the slice id.
+  const meta = slice.state.story && existsSync(slice.state.story) ? frontmatter(readFileSync(slice.state.story, "utf8")) : {};
   return {
-    id: slice.id,
-    title: slice.id,
+    id: meta.id || slice.id,
+    title: meta.title || slice.id,
     body: slice.design ? `${slice.spec}\n\n## Design\n\n${slice.design}` : slice.spec,
     ticketKey: null,
     ticketUrl: null,
@@ -172,7 +177,7 @@ function adoptStory(root: string, slice: FactorySlice): TickResult | null {
   if (!phase) return null;
   // The story's live agent becomes the slice's, so the tick reads that agent's turn end instead of starting another.
   const seat = phase === "review" ? "reviewer" : "builder";
-  writeSliceState(root, mission, id, { phase, ...(meta.agent ? { seat, agent: meta.agent } : {}), ...(phase === "ship" && !state.pr && meta.pr ? { pr: meta.pr } : {}) });
+  writeSliceState(root, mission, id, { phase, ...(meta.agent ? { seat, agent: meta.agent } : {}), ...(phase === "ship" && !state.pr && meta.pr ? { pr: meta.pr } : {}), ...(!state.workspace && meta.workspace ? { workspace: meta.workspace } : {}) });
   if (state.worktree && !meta.worktree) writeFrontmatter(state.story, { worktree: state.worktree });
   return { kind: "advanced", slice: id, phase };
 }
@@ -183,20 +188,34 @@ async function leaveSpec(root: string, slice: FactorySlice, ports: TickPaseo): P
   const { id, mission, state } = slice;
   if (!slice.spec) return { kind: "waiting", slice: id, why: "its spec is empty" };
   let worktree = state.worktree;
+  let workspace = state.workspace;
   if (!worktree || !existsSync(worktree)) {
-    if (!ports.worktrees) return { kind: "waiting", slice: id, why: "its worktree is missing and this handle can't create one" };
-    const branch = branchName({ title: id });
-    worktree = (await ports.worktrees.create({ cwd: root, branch, base: "origin/main", slug: slugOf(id) })).directory;
-    writeSliceState(root, mission, id, { worktree });
+    if (!ports.host) return { kind: "waiting", slice: id, why: "its worktree is missing and this handle can't create one" };
+    const names = buildContext(slice);
+    const projects = await ports.host.listProjects();
+    const project = projects.find((item) => resolve(item.projectRootPath) === resolve(root));
+    const created = await ports.host.createStoryWorkspace({
+      title: (names.title === names.id ? `${MARK} ${names.id}` : `${MARK} ${names.id} — ${names.title}`).slice(0, 60),
+      repoRoot: root,
+      ...(project ? { projectId: project.projectId } : {}),
+      baseBranch: "origin/main",
+      branchName: branchName({ title: id }),
+      worktreeSlug: slugOf(id),
+    });
+    worktree = created.directory;
+    workspace = created.id;
+    writeSliceState(root, mission, id, { worktree, workspace });
   }
   if (!state.story || !existsSync(state.story)) {
     const story = join(worktree, ".harness", "story.md");
     mkdirSync(join(worktree, ".harness"), { recursive: true });
-    writeFileSync(story, `---\ntitle: ${id}\nstatus: todo\nworktree: ${worktree}\n---\n\n${slice.spec}\n`);
+    writeFileSync(story, `---\ntitle: ${id}\nstatus: todo\nworktree: ${worktree}\n${workspace ? `workspace: ${workspace}\n` : ""}---\n\n${slice.spec}\n`);
     writeSliceState(root, mission, id, { story });
-  } else if (!frontmatter(readFileSync(state.story, "utf8")).worktree) {
-    // A story the manager named carries the worktree too, or the context watch and resume can't find its state.
-    writeFrontmatter(state.story, { worktree });
+  } else {
+    // A story the manager named carries the worktree too, or the context watch and resume can't find its state, and the workspace.
+    const meta = frontmatter(readFileSync(state.story, "utf8"));
+    const missing = { ...(meta.worktree ? {} : { worktree }), ...(!meta.workspace && workspace ? { workspace } : {}) };
+    if (Object.keys(missing).length) writeFrontmatter(state.story, missing);
   }
   const phase = state.design ? "design" : "build";
   writeSliceState(root, mission, id, { phase });
@@ -225,7 +244,18 @@ async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
   } catch (error) {
     failures.push(error);
   }
-  for (const slice of factoryTick(root)) {
+  try {
+    await closeSlices(root, ports);
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await runRequestedSweep(root, ports);
+  } catch (error) {
+    failures.push(error);
+  }
+  // A slice whose workspace is closed or archived starts no more seats: they would run in a checkout that is gone.
+  for (const slice of factoryTick(root).filter((item) => !item.state.close && !item.state.archived)) {
     try {
       results.push(await passSlice(root, slice, ports));
     } catch (error) {
@@ -258,6 +288,16 @@ async function noteHeld(root: string, ports: TickPaseo) {
   }
 }
 
+const SEAT_STEPS: Record<string, string> = { design: "Design", qa: "Test" };
+
+// Design and QA seats are titled like the loop's steps, from the named story's id and title.
+function seatTitle(seat: string, slice: FactorySlice): string {
+  const step = SEAT_STEPS[seat];
+  if (!step) return `${seat}: ${slice.id}`;
+  const { id, title } = buildContext(slice);
+  return `${MARK} ${id} · ${step} — ${title}`.slice(0, 60);
+}
+
 async function passSlice(root: string, slice: FactorySlice, ports: TickPaseo): Promise<TickResult> {
   const moved = await advanceSlice(root, slice, ports);
   if (moved) return moved;
@@ -287,12 +327,10 @@ async function passSlice(root: string, slice: FactorySlice, ports: TickPaseo): P
   let failure: unknown;
   for (const config of [...(await seatConfig(factory.seats.find((item) => item.role === seat), seat, ports)), ...MANAGER_MODELS]) {
     try {
-      const { id } = await ports.agents.create({
-        cwd: state.worktree,
+      const { id } = await startSeat(slice, ports, {
         config,
         prompt,
-        env: {},
-        title: `${seat}: ${slice.id}`,
+        title: seatTitle(seat, slice),
         labels: { kind: "factory-seat", seat, slice: slice.id, mission: slice.mission, "loop-initiative": spend.initiative, "loop-story": spend.story },
       });
       writeSliceState(root, slice.mission, slice.id, { seat, agent: id, attempt: state.attempt + 1 });
