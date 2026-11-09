@@ -35,6 +35,13 @@ export const MANAGER_MODELS = [
   { provider: "cursor/grok-4.7" },
 ];
 
+// The manager session's own list: Sulti creates it when a router has no target, and it is the one the human talks to, so
+// it runs on Sonnet, else Composer, not on the deep model the seats start on. Sonnet runs in auto mode like the list above.
+export const MANAGER_SESSION_MODELS = [
+  { provider: "claude/claude-sonnet-5-5", modeId: "auto" },
+  { provider: "cursor/composer-2.5" },
+];
+
 // The slice of Paseo the manager needs; tests pass a fake.
 export type ManagerPaseo = {
   agents: {
@@ -76,7 +83,7 @@ async function ensure(root: string, ports: ManagerPaseo): Promise<string | null>
     if (!dead) return known;
   }
   let failure: unknown;
-  for (const config of MANAGER_MODELS) {
+  for (const config of MANAGER_SESSION_MODELS) {
     try {
       const { id } = await ports.agents.create({
         cwd: root,

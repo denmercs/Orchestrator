@@ -11,7 +11,7 @@ import type { createVoiceHelper } from "./voice-helper";
 // The one interpret service behind both surfaces (see CONTEXT.md, "Voice helper"): owns the switch,
 // the helper's lifecycle and the fallback. Phone and Mac both call interpret() on every utterance.
 
-export const INTERPRET_FALLBACK_MS = 3000;
+export const INTERPRET_FALLBACK_MS = 6000;
 export const IDLE_STOP_MS = 10 * 60 * 1000;
 
 /** The helper's surface, injectable so tests use a fake. `createVoiceHelper(...)` fits as is. */
@@ -65,7 +65,7 @@ export function createVoiceInterpret(helper: InterpretHelper) {
       void warm();
       return passThrough("starting");
     }
-    // The previous run outlived its 3 s and is still going: don't queue behind it.
+    // The previous run outlived the fallback and is still going: don't queue behind it.
     if (running) return passThrough("timeout");
     const primary: Interpreter = {
       interpret: () => {
