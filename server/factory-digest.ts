@@ -9,25 +9,28 @@ const section = (title: string, lines: string[]) => [`## ${title}`, ...(lines.le
 // The factory in a few lines for someone who only wants to know what runs, what is stuck and what waits on them: the project
 // intent, then Running, Blocked and Needs you. It uses no model, no Paseo and no clock, so the same files give the same bytes.
 export function renderDigest(factory: Factory): string {
-  const slices = factory.missions.flatMap((mission) => mission.slices.map((slice) => ({ slice, mission })));
+  // A closed or archived slice is finished: it neither runs nor waits on anyone.
+  const slices = factory.missions.flatMap((mission) => mission.slices.map((slice) => ({ slice, mission }))).filter(({ slice }) => !slice.state.close && !slice.state.archived);
   const blocked: string[] = [];
-  const blockedIds = new Set<FactorySlice>();
+  const blockedSlices = new Set<FactorySlice>();
   for (const { slice, mission } of slices) {
     const cause = slice.state.ready === "blocked" ? "blocked" : heldBy(slice, mission);
     if (!cause) continue;
     blocked.push(line(slice, cause));
-    blockedIds.add(slice);
+    blockedSlices.add(slice);
   }
-  const running = runnableSlices(factory)
-    .filter((slice) => !slice.state.close && !slice.state.archived && !blockedIds.has(slice))
-    .map((slice) => line(slice));
   const waiting = new Set(mergeWatch(factory));
-  const needs = slices.flatMap(({ slice }) => {
-    if (slice.state.ready === "review") return [line(slice, "review is clean")];
-    if (waiting.has(slice)) return [line(slice, `PR ${slice.state.pr} waits on your merge`)];
-    if (slice.state.steered === "plan") return [line(slice, "plan awaits your approval")];
-    return [];
-  });
+  const needsWhy = (slice: FactorySlice) => {
+    if (slice.state.ready === "review") return "review is clean";
+    if (waiting.has(slice)) return `PR ${slice.state.pr} waits on your merge`;
+    if (slice.state.steered === "plan") return "plan awaits your approval";
+    return "";
+  };
+  const live = new Set(slices.map(({ slice }) => slice));
+  const running = runnableSlices(factory)
+    .filter((slice) => live.has(slice) && !blockedSlices.has(slice) && !needsWhy(slice))
+    .map((slice) => line(slice));
+  const needs = slices.flatMap(({ slice }) => (needsWhy(slice) ? [line(slice, needsWhy(slice))] : []));
   return [`Project: ${factory.project}`, "", ...section("Running", running), ...section("Blocked", blocked), ...section("Needs you", needs)].join("\n");
 }
 

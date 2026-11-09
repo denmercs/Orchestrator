@@ -26,11 +26,19 @@ export async function factoryProjection(root: string, alive: (agent: string) => 
   return lines.join("\n");
 }
 
-// One repo's report: its digest when the tick has written one, else the projection (a factory before its first pass), else
-// null (no factory, so nothing to say). Labelled by the repo folder name.
+const digestFile = (root: string) => join(factoryDir(root), "digest.md");
+
+// Whether the repo has a factory: a digest, or any project or mission files. Cheap, no Paseo calls.
+function hasFactory(root: string): boolean {
+  if (existsSync(digestFile(root))) return true;
+  const factory = readFactory(root);
+  return Boolean(factory.project) || factory.missions.length > 0;
+}
+
+// One repo's report: its digest when the tick has written one, else the projection (a factory before its first pass).
+// Labelled by the repo folder name.
 async function repoReport(root: string, alive: (agent: string) => Promise<boolean>): Promise<string | null> {
-  const file = join(factoryDir(root), "digest.md");
-  const text = existsSync(file) ? readFileSync(file, "utf8").trim() : await factoryProjection(root, alive);
+  const text = existsSync(digestFile(root)) ? readFileSync(digestFile(root), "utf8").trim() : await factoryProjection(root, alive);
   return text ? `Repo ${basename(root)}:\n${text}` : null;
 }
 
@@ -41,14 +49,16 @@ export async function factoryStatus(
   roots: string[],
   ports: { ask: Ask; unavailable: () => Promise<string | null>; alive: (agent: string) => Promise<boolean> },
 ): Promise<FactoryStatus | null> {
+  const withFactory = roots.filter(hasFactory);
+  if (withFactory.length === 0) return null;
+  const reason = await ports.unavailable();
+  if (reason) return { unavailable: reason };
   const reports: string[] = [];
-  for (const root of roots) {
+  for (const root of withFactory) {
     const report = await repoReport(root, ports.alive);
     if (report) reports.push(report);
   }
   if (reports.length === 0) return null;
-  const reason = await ports.unavailable();
-  if (reason) return { unavailable: reason };
   try {
     const { text } = await ports.ask(SYSTEM, reports.join("\n\n"));
     return { answer: text.trim() };
