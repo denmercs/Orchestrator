@@ -726,8 +726,8 @@ const prAt = (state: PrStatus["state"], headSha = "abc", failing: PrStatus["fail
 const FAILED = [{ name: "ci / test", url: "https://example.test/run/1", runId: "1" }];
 
 // A slice in `ship`: the reviewer is done and gone. With `pr` the PR is already open and `story` adds to the story's frontmatter.
-function shipSlice({ pr = "", story = "", marker = "review-done" } = {}) {
-  const ctx = setup(`kind: ship${pr ? `\npr: ${pr}` : ""}`, "on", "ship");
+function shipSlice({ pr = "", story = "", marker = "review-done", jira = "" } = {}) {
+  const ctx = setup(`kind: ship${pr ? `\npr: ${pr}` : ""}${jira ? `\njira: ${jira}` : ""}`, "on", "ship");
   const file = withStory(ctx, `step: review\nround: 1\nstatus: ${pr ? "pr-open" : "reviewing"}${story ? `\n${story}` : ""}`, marker, `${cycles(true)}\n## Review findings\n- [x] blocking: server/x.ts:1 — wrong — fixed\n`);
   return { ctx, story: file };
 }
@@ -746,6 +746,21 @@ test("entering ship opens the PR once over repeated passes and records it on the
   assert.equal(field(story, "status"), "pr-open");
   assert.equal(field(ctx.stateFile, "phase"), "ship");
   assert.equal(created.length, 0);
+});
+
+test("a ship slice with a ticket key opens its PR under that key, and one without keeps its own id", async () => {
+  const keyed = shipSlice({ jira: "ABC-1" });
+  const fromStory = shipSlice({ story: "jira: ABC-2" });
+  const plain = shipSlice();
+  const opened = async (slice: { ctx: { root: string } }) => {
+    const { paseo } = fakePaseo();
+    const ship = shipPorts(paseo, prAt("pending"));
+    await runFactoryTick(slice.ctx.root, paseo);
+    return ship.opened.map((call) => [call.input.id, call.input.jira]);
+  };
+  assert.deepEqual(await opened(keyed), [["ABC-1", true]]);
+  assert.deepEqual(await opened(fromStory), [["ABC-2", true]]);
+  assert.deepEqual(await opened(plain), [["s1", false]]);
 });
 
 test("a PR that can't be opened waits and records no pr", async () => {
@@ -1625,4 +1640,138 @@ test("a steer that throws leaves the held note unsaved, does not stop other slic
   assert.ok(ranOthers > 0);
   assert.deepEqual(steers, ["Slice s2 can't start: blocked dependency s1."]);
   assert.equal(field(dependentState, "held"), "blocked dependency s1");
+});
+
+// A ship slice waiting on its merge: green CI left it at `ready: ci` with its PR open. `extra` adds to its state.md and `story` to its story.
+function waitingSlice({ extra = "", story = "" } = {}) {
+  const ctx = setup(`kind: ship\npr: 7\nready: ci${extra ? `\n${extra}` : ""}`, "on", "ship");
+  const file = withStory(ctx, `step: review${story ? `\n${story}` : ""}`, "review-done");
+  return { ctx, story: file };
+}
+const MERGED_AT = "2026-11-08T10:00:00Z";
+const merged = (): PrStatus => ({ ...prAt("merged"), mergedAt: MERGED_AT });
+
+test("a ready ship slice whose PR merged is recorded on the slice and its story, with one steer, once", async () => {
+  const { ctx, story } = waitingSlice();
+  const { paseo, created } = fakePaseo();
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  let reads = 0;
+  const ship = shipPorts(paseo, merged());
+  paseo.prStatus = async () => (reads++, ship.pr.current);
+  for (let pass = 0; pass < 3; pass++) assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "idle" });
+  assert.equal(field(ctx.stateFile, "merged"), MERGED_AT);
+  assert.equal(field(story, "status"), "merged");
+  assert.equal(field(story, "merged_at"), MERGED_AT);
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /s1/);
+  assert.match(steers[0], /merged/);
+  // A recorded merge leaves the watch: later passes read nothing and start nothing.
+  assert.equal(reads, 1);
+  assert.equal(created.length + ship.pushed.length + ship.opened.length, 0);
+});
+
+test("a ready ship slice whose PR is still open changes nothing", async () => {
+  const { ctx, story } = waitingSlice();
+  const { paseo } = fakePaseo();
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  let reads = 0;
+  const ship = shipPorts(paseo, prAt("green"));
+  paseo.prStatus = async () => (reads++, ship.pr.current);
+  await runFactoryTick(ctx.root, paseo);
+  assert.equal(reads, 1);
+  assert.equal(field(ctx.stateFile, "merged"), undefined);
+  assert.equal(field(ctx.stateFile, "ready"), "ci");
+  assert.equal(field(story, "status"), "todo");
+  assert.equal(steers.length, 0);
+});
+
+test("a ready ship slice whose PR was closed without merging is blocked with one steer", async () => {
+  const { ctx } = waitingSlice();
+  const { paseo } = fakePaseo();
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  shipPorts(paseo, prAt("closed"));
+  for (let pass = 0; pass < 2; pass++) await runFactoryTick(ctx.root, paseo);
+  assert.equal(field(ctx.stateFile, "ready"), "blocked");
+  assert.equal(field(ctx.stateFile, "merged"), undefined);
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /closed without merging/);
+});
+
+// Ticket ports for a merged slice: `closed` records each key, `result` is what the close returns, `on` is the closeOnMerge answer.
+function ticketPorts(paseo: TickPaseo, on = true) {
+  const ticket = { closed: [] as string[], result: { ok: true, error: null } as { ok: boolean; error: string | null }, on, cwds: [] as string[] };
+  paseo.closeTicket = async (key) => (ticket.closed.push(key), ticket.result);
+  paseo.closeOnMerge = async (cwd) => (ticket.cwds.push(cwd), ticket.on);
+  return ticket;
+}
+
+for (const [where, args, key] of [
+  ["its state.md", { extra: "jira: ABC-1" }, "ABC-1"],
+  ["only its story", { story: "jira: ABC-2" }, "ABC-2"],
+  ["both, the slice's own winning", { extra: "jira: ABC-1", story: "jira: ABC-2" }, "ABC-1"],
+] as const) {
+  test(`a merged slice with a ticket key in ${where} closes that ticket once and says so`, async () => {
+    const { ctx } = waitingSlice(args);
+    const { paseo } = fakePaseo();
+    const steers: string[] = [];
+    paseo.steer = async (line) => void steers.push(line);
+    shipPorts(paseo, merged());
+    const ticket = ticketPorts(paseo);
+    for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, paseo);
+    assert.deepEqual(ticket.closed, [key]);
+    assert.deepEqual(ticket.cwds, [ctx.worktree]);
+    assert.equal(field(ctx.stateFile, "merged"), MERGED_AT);
+    assert.equal(steers.length, 1);
+    assert.match(steers[0], new RegExp(`${key} closed`));
+  });
+}
+
+test("a merged slice closes no ticket when closeOnMerge is off or it has no valid key, and is still recorded merged", async () => {
+  for (const [args, on] of [[{ extra: "jira: ABC-1" }, false], [{}, true], [{ extra: "jira: nope" }, true]] as const) {
+    const { ctx } = waitingSlice(args);
+    const { paseo } = fakePaseo();
+    shipPorts(paseo, merged());
+    const ticket = ticketPorts(paseo, on);
+    await runFactoryTick(ctx.root, paseo);
+    assert.deepEqual(ticket.closed, []);
+    assert.equal(field(ctx.stateFile, "merged"), MERGED_AT);
+  }
+});
+
+test("a failed ticket close writes nothing and steers nothing, and the next pass tries again", async () => {
+  const { ctx, story } = waitingSlice({ extra: "jira: ABC-1" });
+  const { paseo } = fakePaseo();
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  shipPorts(paseo, merged());
+  const ticket = ticketPorts(paseo);
+  ticket.result = { ok: false, error: "Jira is down" };
+  await runFactoryTick(ctx.root, paseo);
+  assert.deepEqual(ticket.closed, ["ABC-1"]);
+  assert.equal(field(ctx.stateFile, "merged"), undefined);
+  assert.equal(field(story, "status"), "todo");
+  assert.equal(steers.length, 0);
+  // Jira is back: the retry closes it and records the merge.
+  ticket.result = { ok: true, error: null };
+  await runFactoryTick(ctx.root, paseo);
+  assert.deepEqual(ticket.closed, ["ABC-1", "ABC-1"]);
+  assert.equal(field(ctx.stateFile, "merged"), MERGED_AT);
+  assert.equal(steers.length, 1);
+});
+
+test("a ticket close that throws is a failed close too, and does not stop the pass", async () => {
+  const { ctx } = waitingSlice({ extra: "jira: ABC-1" });
+  const { paseo } = fakePaseo();
+  shipPorts(paseo, merged());
+  const ticket = ticketPorts(paseo);
+  paseo.closeTicket = async (key) => {
+    ticket.closed.push(key);
+    throw new Error("network");
+  };
+  await runFactoryTick(ctx.root, paseo);
+  assert.deepEqual(ticket.closed, ["ABC-1"]);
+  assert.equal(field(ctx.stateFile, "merged"), undefined);
 });

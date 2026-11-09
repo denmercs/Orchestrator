@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Factory, type FactorySlice, parseSeat, heldBy, parseSliceState, runnableSlices } from "./factory";
+import { type Factory, type FactorySlice, parseSeat, heldBy, mergeWatch, parseSliceState, runnableSlices } from "./factory";
 
 test("parseSliceState reads an empty frontmatter as an idle scout at the spec phase", () => {
   assert.deepEqual(parseSliceState({}), {
@@ -18,6 +18,8 @@ test("parseSliceState reads an empty frontmatter as an idle scout at the spec ph
     approve: "",
     pr: "",
     held: "",
+    jira: "",
+    merged: "",
   });
 });
 
@@ -38,6 +40,8 @@ test("parseSliceState reads every field", () => {
       approve: "plan",
       pr: "42",
       held: "blocked dependency a",
+      jira: "ABC-12",
+      merged: "2026-11-08T10:00:00Z",
     }),
     {
       phase: "build",
@@ -54,6 +58,8 @@ test("parseSliceState reads every field", () => {
       approve: "plan",
       pr: "42",
       held: "blocked dependency a",
+      jira: "ABC-12",
+      merged: "2026-11-08T10:00:00Z",
     },
   );
 });
@@ -66,6 +72,13 @@ test("parseSliceState falls back on unknown values", () => {
   const odd = parseSliceState({ ready: "soon", approve: "yes" });
   assert.deepEqual([odd.ready, odd.approve], ["", ""]);
   assert.equal(parseSliceState({ ready: "review" }).ready, "review");
+});
+
+test("parseSliceState keeps a valid ticket key and drops anything else", () => {
+  assert.equal(parseSliceState({ jira: "ABC-12" }).jira, "ABC-12");
+  assert.equal(parseSliceState({ jira: "nope" }).jira, "");
+  assert.equal(parseSliceState({ jira: "abc-12" }).jira, "");
+  assert.equal(parseSliceState({ merged: "2026-11-08T10:00:00Z" }).merged, "2026-11-08T10:00:00Z");
 });
 
 test("parseSeat reads profile, skills and agent from frontmatter and notes from the body", () => {
@@ -154,4 +167,21 @@ test("heldBy names a blocked or unknown dependency, and nothing for one still in
   // An idle or ready slice is not held, whatever it depends on.
   assert.equal(held({ depends: "a" }), null);
   assert.equal(held({ run: "on", ready: "blocked", depends: "a" }), null);
+});
+
+test("mergeWatch returns only ship slices that are ready at ci with a pr and not yet merged", () => {
+  const watched = slice("a", "m1", { kind: "ship", ready: "ci", pr: "7" });
+  const factory = factoryOf(
+    ["m1", [watched, slice("b", "m1", { kind: "ship", ready: "ci", pr: "8", merged: "2026-11-08T10:00:00Z" })]],
+    [
+      "m2",
+      [
+        slice("c", "m2", { kind: "scout", ready: "ci", pr: "9" }),
+        slice("d", "m2", { kind: "ship", ready: "review", pr: "10" }),
+        slice("e", "m2", { kind: "ship", ready: "ci" }),
+        slice("f", "m2", { kind: "ship", ready: "blocked", pr: "11" }),
+      ],
+    ],
+  );
+  assert.deepEqual(mergeWatch(factory), [watched]);
 });

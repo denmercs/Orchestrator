@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type FactoryPhase, type FactorySeat, type FactorySlice, heldBy } from "../shared/factory";
+import { type FactoryPhase, type FactorySeat, type FactorySlice, heldBy, mergeWatch } from "../shared/factory";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { type AgentCreateConfig, type AgentProfile, materializeProfile, seatProfile } from "../shared/agent-runner";
 import type { Phase, SkillSource } from "../shared/pipeline";
@@ -8,9 +8,9 @@ import { branchName } from "../shared/naming";
 import type { LoopStep, StoryContext } from "../shared/story-method";
 import { type ManagerPaseo, MANAGER_MODELS } from "./factory-manager";
 import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from "./factory-layout";
-import { REFOCUS, TEST_DONE, TEST_FAILED, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge, sliceCostCap, sliceSpendKey } from "./factory-phases";
+import { REFOCUS, TEST_DONE, TEST_FAILED, block, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge, sliceCostCap, sliceSpendKey, sliceTicket } from "./factory-phases";
 import { frontmatter, slugOf, writeFrontmatter } from "./harness-layout";
-import type { FailingCheck, PrStatus } from "./pr-checks";
+import { type FailingCheck, type PrStatus, prStatus } from "./pr-checks";
 import type { ReadCost } from "./initiative-loop";
 import type { OpenedPr } from "./story-git";
 
@@ -46,6 +46,10 @@ export type TickPaseo = {
   prStatus?: (cwd: string, pr: number | string) => Promise<PrStatus | null>;
   failureReport?: (cwd: string, failing: FailingCheck[]) => Promise<string>;
   push?: (cwd: string, message: string) => Promise<unknown>;
+  // Closes a Jira issue when a slice's PR merges (`closeIssue` in the real wiring), reporting failure instead of throwing. Absent: no ticket is closed.
+  closeTicket?: (key: string) => Promise<{ ok: boolean; error: string | null }>;
+  // Whether a merge closes its ticket, for the repo the slice's worktree is in (the user's `closeOnMerge` setting with the repo's override). Absent: no ticket is closed.
+  closeOnMerge?: (cwd: string) => boolean | Promise<boolean>;
   // One line to the factory manager as a steer (`steerManager` in the real wiring). Absent: the slice still records its state, nothing is sent.
   steer?: (line: string) => Promise<unknown>;
   // A message to a slice agent's session, for the plan gate's approval.
@@ -220,10 +224,12 @@ async function seatConfig(seat: FactorySeat | undefined, role: string, ports: Ti
 async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
   const results: TickResult[] = [];
   const failures: unknown[] = [];
-  try {
-    await noteHeld(root, ports);
-  } catch (error) {
-    failures.push(error);
+  for (const note of [noteHeld, noteMerged]) {
+    try {
+      await note(root, ports);
+    } catch (error) {
+      failures.push(error);
+    }
   }
   for (const slice of factoryTick(root)) {
     try {
@@ -255,6 +261,38 @@ async function noteHeld(root: string, ports: TickPaseo) {
       }
       writeSliceState(root, mission.id, slice.id, { held: cause });
     }
+  }
+}
+
+// A ship slice at `ready: ci` is out of the runnable set, so nothing else would see its PR merge. Each pass reads the PR of
+// every slice in `mergeWatch`: merged is recorded on the slice (`merged`) and its story (`status: merged`, `merged_at`) and
+// the manager hears once, which also takes the slice out of the watch. Open changes nothing; closed unmerged blocks the slice.
+// A slice whose worktree is gone, or whose PR can't be read, is tried again next pass.
+async function noteMerged(root: string, ports: TickPaseo) {
+  for (const slice of mergeWatch(readFactory(root))) {
+    const { id, mission, state } = slice;
+    if (!state.worktree || !existsSync(state.worktree)) continue;
+    const pr = await (ports.prStatus ?? prStatus)(state.worktree, state.pr);
+    if (pr?.state === "closed") {
+      await block(root, slice, ports, `PR #${pr.number} was closed without merging.`);
+      continue;
+    }
+    if (pr?.state !== "merged") continue;
+    const key = sliceTicket(slice);
+    let closed = false;
+    if (key && ports.closeTicket && (await ports.closeOnMerge?.(state.worktree))) {
+      // A failed close leaves the slice in the watch, so the next pass tries again.
+      const result = await ports.closeTicket(key).catch((error: unknown) => ({ ok: false, error: String(error) }));
+      if (!result.ok) {
+        console.warn(`Slice ${id}: could not close ${key}: ${result.error}`);
+        continue;
+      }
+      closed = true;
+    }
+    const mergedAt = pr.mergedAt ?? new Date().toISOString();
+    writeSliceState(root, mission, id, { merged: mergedAt });
+    if (state.story && existsSync(state.story)) writeFrontmatter(state.story, { status: "merged", merged_at: mergedAt });
+    await ports.steer?.(`Slice ${id} merged: PR ${pr.url} is on the base branch.${closed ? ` ${key} closed.` : ""}`);
   }
 }
 

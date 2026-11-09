@@ -6,6 +6,7 @@ import { pickMcpServers, readHostMcpServers } from "./server/host-mcp";
 import { voiceNudgeLive } from "./server/round-nudge";
 import { mcpScopeFor, registerMcpScope, scopeWorkerWorkspace } from "./server/mcp-scope";
 import {
+  closeIssue,
   listAccessibleJiraBoards,
   listMyWorkStories,
   loadJiraBoard,
@@ -746,6 +747,9 @@ export default function contribute(
     // A seat runs on its file's profile, else its role's tier; the tick falls back to the manager's models without one.
     profiles: async () => ({ list: profilesFromConfigGet(await paseo.config.get()), runnerProfileId: await readRunnerProfileId() }),
     steer: (line) => steerManager(repo, line, paseo),
+    // A merged slice closes its Jira ticket the way a merged Story does: the user's setting with the slice's repo override, read even when the Story pipeline is off.
+    closeTicket: closeIssue,
+    closeOnMerge: async (cwd) => repoPipelineConfig((await readPipelineValues()) ?? pipelineSettings.schema.parse({}), cwd).closeOnMerge,
     send: (agentId, text) => paseo.agents.ref(agentId).send(text),
     worktrees: {
       create: async ({ cwd, branch, base, slug }) => {

@@ -21,6 +21,10 @@ export type SliceState = {
   pr: string;
   // The cause the manager was last told holds the slice (`blocked dependency X`, `unknown dependency Y`); empty when none.
   held: string;
+  // The Jira key this slice's work belongs to (`ABC-12`); empty when it has none. Only a well-formed key counts.
+  jira: string;
+  // When the slice's PR was seen merged (the PR's merged-at time); empty until then.
+  merged: string;
 };
 
 export type FactorySlice = { id: string; mission: string; state: SliceState; spec: string; design: string; proof: string };
@@ -35,6 +39,8 @@ export type Factory = {
 };
 
 const PHASES: FactoryPhase[] = ["spec", "design", "build", "test", "review", "ship"];
+// A Jira issue key: project letters or digits, a dash, the number.
+export const TICKET_KEY = /^[A-Z][A-Z0-9]+-\d+$/;
 const list = (value: string | undefined) => (value ? value.split(",").map((part) => part.trim()).filter(Boolean) : []);
 
 export function parseSliceState(fields: Record<string, string>): SliceState {
@@ -54,6 +60,8 @@ export function parseSliceState(fields: Record<string, string>): SliceState {
     approve: fields.approve === "plan" ? "plan" : "",
     pr: fields.pr ?? "",
     held: fields.held ?? "",
+    jira: TICKET_KEY.test(fields.jira ?? "") ? fields.jira : "",
+    merged: fields.merged ?? "",
   };
 }
 
@@ -80,6 +88,12 @@ export const runnableSlices = (factory: Factory): FactorySlice[] => {
   }
   return runnable;
 };
+
+// Every ship slice waiting on a human to merge its PR: ready at ci, with a pr, not yet recorded merged. The tick polls these.
+export const mergeWatch = (factory: Factory): FactorySlice[] =>
+  factory.missions.flatMap((mission) =>
+    mission.slices.filter((slice) => slice.state.kind === "ship" && slice.state.ready === "ci" && slice.state.pr !== "" && !slice.state.merged),
+  );
 
 // Why a run: on, not ready slice can't start until the manager acts: its first depends id that is a `ready: blocked` slice
 // or not a slice of its own mission. Null otherwise: a dependency still in progress is a normal wait.
