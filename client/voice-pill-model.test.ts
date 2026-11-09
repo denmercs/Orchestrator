@@ -41,16 +41,16 @@ test("voiceSessions lists id and name", () => {
   ]);
 });
 
-test("Jarvis sessions and the Voice helper are not targets: left out of the list and split off as blocked", () => {
+test("Sulti sessions and the Voice helper are not targets: left out of the list and split off as blocked", () => {
   const agents = [
     { id: "a1", title: "Build", provider: "claude" },
-    { id: "j1", title: "Jarvis", provider: "jarvis" },
+    { id: "j1", title: "Sulti", provider: "sulti" },
     { id: "h1", title: "Voice helper", provider: "claude", labels: { kind: "voice-helper" } },
   ];
   assert.deepEqual(agents.map(canTarget), [true, false, false]);
   assert.deepEqual(voiceSessions(agents), [{ id: "a1", name: "Build" }]);
   assert.deepEqual(splitSessions(agents).blocked, [
-    { id: "j1", name: "Jarvis" },
+    { id: "j1", name: "Sulti" },
     { id: "h1", name: "Voice helper" },
   ]);
 });

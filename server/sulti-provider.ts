@@ -1,5 +1,5 @@
-// The Jarvis provider: a Paseo agent provider with no model behind it. A session on it, with Paseo voice
-// mode on, hears you on the phone and hands each utterance to the Jarvis router, which steers the target
+// The Sulti provider: a Paseo agent provider with no model behind it. A session on it, with Paseo voice
+// mode on, hears you on the phone and hands each utterance to the Sulti router, which steers the target
 // session. Replies are spoken in the cloned Chatterbox voice when its worker is warm, else through the `paseo` MCP
 // server's `speak` tool (Kokoro; only there while voice mode is on) and shown in the chat as assistant messages.
 import { randomUUID } from "node:crypto";
@@ -12,17 +12,17 @@ import type {
   ProviderRegistration,
 } from "@getpaseo/plugin/server/provider";
 import { ROUTER_PROVIDER_ID } from "../shared/voice-loop";
-import type { RouteResult } from "./jarvis-router";
+import type { RouteResult } from "./sulti-router";
 
-export { ROUTER_PROVIDER_ID as JARVIS_PROVIDER_ID } from "../shared/voice-loop";
-export const JARVIS_MODEL = "router";
+export { ROUTER_PROVIDER_ID as SULTI_PROVIDER_ID } from "../shared/voice-loop";
+export const SULTI_MODEL = "router";
 // session.persistence is required: voice on/off reopens the session, and Paseo refuses to without a handle.
 const CAPABILITIES = ["prompt.message", "session.persistence"] as const;
 const PLUGIN_ID = "orchestrator";
 const VOICE_LINE_KIND = "voice-line";
 const SPEAK_TIMEOUT_MS = 90_000;
-/** Jarvis counts as active for this long after the last prompt or line (the phone is the speaker then). */
-export const JARVIS_ACTIVE_MS = 10 * 60 * 1000;
+/** Sulti counts as active for this long after the last prompt or line (the phone is the speaker then). */
+export const SULTI_ACTIVE_MS = 10 * 60 * 1000;
 /** The voice on/off guess holds this long after a session was last seen (open, prompt, turn end or line): idle is not gone. */
 export const VOICE_GUESS_MS = 2 * 60 * 60 * 1000;
 
@@ -41,8 +41,8 @@ type Session = {
   idle: (() => void)[];
 };
 
-export type JarvisConnection = ProviderConnection & {
-  /** True when a session with a `paseo` MCP server (voice mode on) was active in the last JARVIS_ACTIVE_MS. */
+export type SultiConnection = ProviderConnection & {
+  /** True when a session with a `paseo` MCP server (voice mode on) was active in the last SULTI_ACTIVE_MS. */
   isActive(now: number): boolean;
   /** Best guess whether Paseo voice mode is on: a session open with the `paseo` MCP server means on, one without means off, none is unknown. */
   voiceState(now: number): "on" | "off" | "unknown";
@@ -50,9 +50,9 @@ export type JarvisConnection = ProviderConnection & {
   say(routerId: string, lines: string[]): Promise<void>;
 };
 
-export type JarvisProviderDeps = {
+export type SultiProviderDeps = {
   route(routerId: string, text: string, signal?: AbortSignal, opts?: { typed?: boolean }): Promise<RouteResult>;
-  /** Keeps a line Jarvis couldn't say, to say first at the router's next words. */
+  /** Keeps a line Sulti couldn't say, to say first at the router's next words. */
   owe?(routerId: string, lines: string[]): void;
   /** What was spoken has finished (or failed), so the router's loop leaves `speaking`. */
   playbackEnded?(routerId: string): void;
@@ -125,7 +125,7 @@ export async function speak(server: ProviderMcpServerConfig | undefined, text: s
   }
 }
 
-export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnection {
+export function createSultiConnection(deps: SultiProviderDeps): SultiConnection {
   const fetchImpl = deps.fetch ?? fetch;
   const listeners = new Set<(event: ProviderEvent) => void>();
   const sessions = new Map<string, Session>();
@@ -195,7 +195,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
         later({
           type: "catalog",
           requestId: input.requestId,
-          catalog: { models: [{ id: JARVIS_MODEL, label: "Router", isDefault: true }], modes: [], defaultModel: JARVIS_MODEL },
+          catalog: { models: [{ id: SULTI_MODEL, label: "Router", isDefault: true }], modes: [], defaultModel: SULTI_MODEL },
         });
         return;
       case "sessions":
@@ -327,7 +327,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
     },
     isActive(now) {
       for (const session of sessions.values()) {
-        if (session.mcpServers.paseo && now - session.lastActiveAt < JARVIS_ACTIVE_MS) return true;
+        if (session.mcpServers.paseo && now - session.lastActiveAt < SULTI_ACTIVE_MS) return true;
       }
       return false;
     },
@@ -342,7 +342,7 @@ export function createJarvisConnection(deps: JarvisProviderDeps): JarvisConnecti
   };
 }
 
-export function createJarvisProvider(deps: JarvisProviderDeps): ProviderRegistration {
+export function createSultiProvider(deps: SultiProviderDeps): ProviderRegistration {
   return {
     id: ROUTER_PROVIDER_ID,
     label: "Sulti",
@@ -351,7 +351,7 @@ export function createJarvisProvider(deps: JarvisProviderDeps): ProviderRegistra
       return { available: true };
     },
     async connect() {
-      return createJarvisConnection(deps);
+      return createSultiConnection(deps);
     },
   };
 }

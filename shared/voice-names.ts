@@ -1,6 +1,6 @@
 // Session names as Voice says and hears them: a short name to speak, loose matching of what the transcriber
 // heard against session titles, and spoken numbers for numbered choices. Deterministic, no model. Pure: no
-// imports, so any bundle can reach it. Used by the Voice loop, so the drawer (Mac) and Jarvis (phone) match alike.
+// imports, so any bundle can reach it. Used by the Voice loop, so the drawer (Mac) and Sulti (phone) match alike.
 
 const CARDINALS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"];
 const ORDINALS = ["", "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];

@@ -116,7 +116,7 @@ export const voiceSettings = defineSettings({
     profile: z.string().default(""),
     // Reference clip the Speaker clones its voice from; empty uses Kokoro only.
     referenceClip: z.string().default(""),
-    // On: the phone plays the cloned voice through the Speaker. Off: Jarvis speaks in Paseo's voice.
+    // On: the phone plays the cloned voice through the Speaker. Off: Sulti speaks in Paseo's voice.
     phoneAudio: z.boolean().default(false),
     // On: the hands-free mic adapter stays closed; the drawer's mic toggle persists here.
     micOff: z.boolean().default(false),

@@ -129,7 +129,7 @@ test("a session that moves workspace gets its pill there, still live, with the m
 });
 
 test("Voice's own sessions get no pill, and a removed session loses only its own", async () => {
-  const t = setup([agent("a1", "w1"), agent("a2", "w1"), agent("j1", "w1", { provider: "jarvis" })]);
+  const t = setup([agent("a1", "w1"), agent("a2", "w1"), agent("j1", "w1", { provider: "sulti" }), agent("j0", "w1", { provider: "jarvis" })]);
   await t.runner.start();
   await flush();
   assert.deepEqual(t.voicePills().map((p) => p.agentId).sort(), ["a1", "a2"]);

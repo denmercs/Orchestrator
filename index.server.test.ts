@@ -112,7 +112,7 @@ test("registers the Sulti provider", () => {
     },
   });
   contribute(server, { speakerPorts: quietSpeaker });
-  assert.deepEqual(ids, ["jarvis:Sulti"]);
+  assert.deepEqual(ids, ["sulti:Sulti"]);
 });
 
 type Fake = {
@@ -549,13 +549,13 @@ test("turn_ended / permission_requested reach the hub and the router; orchestrat
     const listing = { ...paseo, agents: { ...paseo.agents, list: async () => ({ entries: [{ agent }] }) } };
     assert.deepEqual(await events({ after: 0 }, { paseo: listing }).then((r) => (r as { phoneActive: boolean }).phoneActive), false);
     // A phone session with voice mode on (it has a paseo MCP server); its first words make its router.
-    const jarvis = (await providers[0].connect()) as {
+    const sulti = (await providers[0].connect()) as {
       send(input: unknown): Promise<void>;
       onEvent(listener: (e: { type: string; state?: string }) => void): void;
     };
     const seen: { type: string; state?: string }[] = [];
-    jarvis.onEvent((e) => seen.push(e));
-    await jarvis.send({
+    sulti.onEvent((e) => seen.push(e));
+    await sulti.send({
       type: "session.open",
       requestId: "q1",
       sessionId: "p1",
@@ -563,7 +563,7 @@ test("turn_ended / permission_requested reach the hub and the router; orchestrat
       persistence: { version: 1, data: { routerId: "r1" } },
       history: "skip",
     });
-    await jarvis.send({
+    await sulti.send({
       type: "session.prompt",
       sessionId: "p1",
       prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Sulti, switch to api" }] } },
@@ -604,10 +604,10 @@ for (const [phoneAudio, asleep] of [[true, false], [false, false], [true, true]]
       const target = { id: "s1", provider: "claude", title: "api", cwd: "/x", labels: {} };
       const watched = { id: "s2", provider: "claude", title: "docs", cwd: "/x", labels: {} };
       const paseo = { agents: { ref: () => ({ refresh: async () => null }), list: async () => ({ entries: [{ agent: target }, { agent: watched }] }) } };
-      const jarvis = (await providers[0].connect()) as { send(input: unknown): Promise<void>; onEvent(listener: (e: { type: string; state?: string; item?: { kind?: string; data?: { text: string } } }) => void): void };
+      const sulti = (await providers[0].connect()) as { send(input: unknown): Promise<void>; onEvent(listener: (e: { type: string; state?: string; item?: { kind?: string; data?: { text: string } } }) => void): void };
       const seen: { type: string; state?: string; item?: { kind?: string; data?: { text: string } } }[] = [];
-      jarvis.onEvent((e) => seen.push(e));
-      await jarvis.send({
+      sulti.onEvent((e) => seen.push(e));
+      await sulti.send({
         type: "session.open",
         requestId: "q1",
         sessionId: "p1",
@@ -615,14 +615,14 @@ for (const [phoneAudio, asleep] of [[true, false], [false, false], [true, true]]
         persistence: { version: 1, data: { routerId: "r1" } },
         history: "skip",
       });
-      await jarvis.send({
+      await sulti.send({
         type: "session.prompt",
         sessionId: "p1",
         prompt: { clientMessageId: "m1", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Sulti, switch to api" }] } },
       });
       await until(() => seen.some((e) => e.type === "session.turn" && e.state === "completed"));
       if (asleep) {
-        await jarvis.send({
+        await sulti.send({
           type: "session.prompt",
           sessionId: "p1",
           prompt: { clientMessageId: "m2", delivery: "auto", input: { type: "message", content: [{ type: "text", text: "Sulti, ignore me" }] } },
@@ -845,7 +845,7 @@ test("voiceHelperSwitch reads and flips the one switch the interpret RPC obeys",
   stop();
 });
 
-test("a Jarvis session opening warms the same helper the drawer's RPCs use", async () => {
+test("a Sulti session opening warms the same helper the drawer's RPCs use", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "voice-helper-"));
   const providers: { connect(): Promise<{ send(input: unknown): Promise<void>; onEvent(fn: (e: unknown) => void): unknown }> }[] = [];
   const handlers = new Map<string, (input: unknown, context: unknown) => unknown>();
@@ -864,7 +864,7 @@ test("a Jarvis session opening warms the same helper the drawer's RPCs use", asy
   const { paseo, calls } = helperPaseo();
   // Providers get no Paseo handle; one RPC hands it over.
   await handlers.get(voiceHelperSwitch.name)!({}, { paseo });
-  assert.equal(providers.length, 1, "the Jarvis provider is registered");
+  assert.equal(providers.length, 1, "the Sulti provider is registered");
   const connection = await providers[0].connect();
   await connection.send({
     type: "session.open",

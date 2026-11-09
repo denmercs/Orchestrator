@@ -66,7 +66,7 @@ test("voiceStatusLine labels the indirect voice signal as a best guess and never
   assert.match(PASEO_STOP_HINT, /Paseo's own (Stop|Mute)/i);
 });
 
-test("openChatView is enabled with a Jarvis agent id and navigation, else disabled with a reason", () => {
+test("openChatView is enabled with a Sulti agent id and navigation, else disabled with a reason", () => {
   assert.deepEqual(openChatView("j1", true), { label: "Open in Paseo chat", disabled: false, reason: null });
   assert.equal(openChatView(null, true).disabled, true);
   assert.match(openChatView(null, true).reason ?? "", /no Sulti session/i);

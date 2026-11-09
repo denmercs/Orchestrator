@@ -4,7 +4,7 @@ import { createContextPillIcon } from "./context-pill-icon";
 import { createRequestSequence, createToastQueue, pillMenu, pillView, usageChanged } from "./context-pill-model";
 import { RECAP_COMMAND, recapPill } from "./recap-pill-model";
 import { speakRepliesSet, speakRepliesState, type SpeakMode } from "../shared/speak-replies";
-import { jarvisSessions } from "../shared/voice-loop";
+import { sultiSessions } from "../shared/voice-loop";
 import type { createVoiceRunner } from "./voice-runner";
 import { canTarget, sessionName, splitSessions, voicePill, voicePillMenu, type VoiceMenuEntry } from "./voice-pill-model";
 
@@ -228,7 +228,7 @@ export function contributeSessionRolePills(client: PluginClientContext, voice?: 
   }
 
   function voiceButton(agent: Agent): PluginButton | null {
-    // Voice's own sessions (Jarvis, the Voice helper) can't be a target, so they get no pill.
+    // Voice's own sessions (Sulti, the Voice helper) can't be a target, so they get no pill.
     const talk = !!voice && canTarget(agent);
     // Only a top-level session speaks; a worker's replies belong to its harness.
     const speak: SpeakMode | null = !parentOf(agent) && canTarget(agent) ? (speaking.get(agent.id) ?? "off") : null;
@@ -281,7 +281,7 @@ export function contributeSessionRolePills(client: PluginClientContext, voice?: 
   function sync() {
     const live = [...agents.values()].filter(isLive);
     const { list, blocked } = splitSessions(live);
-    voice?.setSessions(list, blocked, jarvisSessions(live));
+    voice?.setSessions(list, blocked, sultiSessions(live));
     const childCounts = new Map<string, number>();
     for (const agent of live) {
       const parentId = parentOf(agent);

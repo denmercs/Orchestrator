@@ -37,7 +37,7 @@ export default function contribute(client: PluginClientContext) {
   });
   // Launch-time: open the mic (unless muted) and start the events poll; the loop stays asleep until a wake word.
   void voice.start();
-  // Jarvis lines for the phone (behind voice.phoneAudio) arrive as timeline items; the renderer speaks each once.
+  // Sulti lines for the phone (behind voice.phoneAudio) arrive as timeline items; the renderer speaks each once.
   const offVoiceLines = client.addTimelineRenderer({
     kind: "voice-line",
     version: 1,

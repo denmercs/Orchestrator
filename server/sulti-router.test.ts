@@ -6,20 +6,20 @@ import { DIDNT_CATCH_NOTE, NOTHING_TO_CONFIRM, notTargetLine, pickFirstLine, SEN
 import type { BriefData } from "../shared/morning-brief";
 import type { StatusAgent } from "../shared/voice-status";
 import { VOICE_ROUTING_PREAMBLE, VOICE_SESSION_ENV } from "../shared/voice-session";
-import { createJarvisRouter, MAC_ROUTER, voiceSessionCreator, type JarvisInterpreter } from "./jarvis-router";
+import { createSultiRouter, MAC_ROUTER, voiceSessionCreator, type SultiInterpreter } from "./sulti-router";
 
 const api: VoiceSession = { id: "s1", name: "api-refactor" };
 const docs: VoiceSession = { id: "s2", name: "docs" };
 const self: VoiceSession = { id: "j1", name: "Sulti" };
 
-function setup(opts: { sessions?: VoiceSession[]; fail?: boolean; interpreter?: JarvisInterpreter; createFail?: boolean; manager?: () => Promise<VoiceSession | null>; blocked?: VoiceSession[] } = {}) {
+function setup(opts: { sessions?: VoiceSession[]; fail?: boolean; interpreter?: SultiInterpreter; createFail?: boolean; manager?: () => Promise<VoiceSession | null>; blocked?: VoiceSession[] } = {}) {
   // `raw` is what the sessions received; `sent` is the same with the one-time routing preamble taken off, so the
   // tests that aren't about the preamble read the words alone.
   const raw: [string, string][] = [];
   const sent: [string, string][] = [];
   const created: unknown[] = [];
   let clock = 0;
-  const router = createJarvisRouter({
+  const router = createSultiRouter({
     sessions: async () => ({ list: opts.sessions ?? [api, docs], blocked: opts.blocked ?? [self] }),
     send: async (id, text) => {
       if (opts.fail) throw new Error("agent not found");
@@ -39,7 +39,7 @@ function setup(opts: { sessions?: VoiceSession[]; fail?: boolean; interpreter?: 
 }
 
 // Picks api-refactor by voice on each router (r1 by default), the way a phone router gets its target.
-async function pick(router: ReturnType<typeof createJarvisRouter>, ...routerIds: string[]) {
+async function pick(router: ReturnType<typeof createSultiRouter>, ...routerIds: string[]) {
   for (const id of routerIds.length ? routerIds : ["r1"]) await router.route(id, "Sulti, switch to api-refactor");
 }
 
@@ -148,7 +148,7 @@ const helped = (result: InterpretOutcome["result"]): InterpretOutcome => ({ resu
 
 test("an interpreter gets the target's id and the sessions, and its result reaches the loop (a risky one still just sends)", async () => {
   const seen: unknown[] = [];
-  const helper: JarvisInterpreter = {
+  const helper: SultiInterpreter = {
     async interpret(text, req) {
       seen.push([text, req.sessionId, req.sessions.map((s) => s.name)]);
       return helped(text.includes("england") ? { type: "send", text: "merge it" } : { type: "send", text: "run the tests in Orchestrator" });
@@ -319,7 +319,7 @@ const briefData: BriefData = {
 function briefSetup(opts: { gather?: () => Promise<BriefData> } = {}) {
   let clock = 0;
   const sent: [string, string][] = [];
-  const router = createJarvisRouter({
+  const router = createSultiRouter({
     sessions: async () => ({ list: [api, docs], blocked: [self] }),
     send: async (id, text) => void sent.push([id, text]),
     now: () => clock,
@@ -459,7 +459,7 @@ const statusAgents: StatusAgent[] = [
 
 function statusSetup(opts: { list?: () => Promise<StatusAgent[]> } = {}) {
   const sent: [string, string][] = [];
-  const router = createJarvisRouter({
+  const router = createSultiRouter({
     sessions: async () => ({ list: [api, docs], blocked: [self] }),
     send: async (id, text) => void sent.push([id, text]),
     create: async () => "new1",
@@ -535,17 +535,17 @@ test("the manager's reply is read aloud under its own name, not as a finished no
   assert.deepEqual((await router.event({ type: "notice", kind: "finished", sessionId: "m1" })).r1, []);
 });
 
-test("after a reopen (Jarvis session id changes, new router id) factory talk still goes to the same manager id", async () => {
-  let jarvis = self;
+test("after a reopen (Sulti session id changes, new router id) factory talk still goes to the same manager id", async () => {
+  let sulti = self;
   const sent: [string, string][] = [];
-  const router = createJarvisRouter({
-    sessions: async () => ({ list: [api, docs], blocked: [jarvis] }),
+  const router = createSultiRouter({
+    sessions: async () => ({ list: [api, docs], blocked: [sulti] }),
     send: async (id, text) => void sent.push([id, text.replace(`${VOICE_ROUTING_PREAMBLE}\n\n`, "")]),
     create: async () => "new1",
     manager: async () => manager,
   });
   await router.route("r1", "status of the slice");
-  jarvis = { id: "j2", name: "Sulti" };
+  sulti = { id: "j2", name: "Sulti" };
   await router.route("r2", "and the next one");
   assert.deepEqual(sent, [["m1", "status of the slice"], ["m1", "and the next one"]]);
 });
@@ -584,7 +584,7 @@ test("when the target is dropped, the next utterance says it is now on the manag
   let list = [api, docs];
   let blocked: VoiceSession[] = [];
   const sent: [string, string][] = [];
-  const router = createJarvisRouter({
+  const router = createSultiRouter({
     sessions: async () => ({ list, blocked }),
     send: async (id, text) => void sent.push([id, text.replace(`${VOICE_ROUTING_PREAMBLE}\n\n`, "")]),
     create: async () => "new1",
@@ -603,7 +603,7 @@ test("when the manager is replaced, the next utterance goes to the new id in man
   // Arrange: the router lands on m1, then the manager dies and ensureManager hands back m2.
   let current: VoiceSession = manager;
   const sent: [string, string][] = [];
-  const router = createJarvisRouter({
+  const router = createSultiRouter({
     sessions: async () => ({ list: [api, docs], blocked: [] }),
     send: async (id, text) => void sent.push([id, text.replace(`${VOICE_ROUTING_PREAMBLE}\n\n`, "")]),
     create: async () => "new1",
@@ -623,7 +623,7 @@ test("when the manager is replaced, the next utterance goes to the new id in man
 function reporterSetup(factoryStatus: () => Promise<{ answer: string } | { unavailable: string } | null>) {
   const sent: [string, string][] = [];
   let managerCalls = 0;
-  const router = createJarvisRouter({
+  const router = createSultiRouter({
     sessions: async () => ({ list: [api, docs], blocked: [self] }),
     send: async (id, text) => void sent.push([id, text.replace(`${VOICE_ROUTING_PREAMBLE}\n\n`, "")]),
     create: async () => "new1",

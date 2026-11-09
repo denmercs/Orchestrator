@@ -42,10 +42,11 @@ test("a permission request is a needsYou notice", () => {
   assert.deepEqual(permissionEvents(event), [{ type: "notice", kind: "needsYou", sessionId: "a1" }]);
 });
 
-test("Voice's own sessions (Jarvis, the Voice helper) say nothing", () => {
-  const jarvis = { ...AGENT, id: "j1", provider: "jarvis" };
+test("Voice's own sessions (Sulti, a legacy jarvis session, the Voice helper) say nothing", () => {
+  const sulti = { ...AGENT, id: "s1", provider: "sulti" };
+  const legacy = { ...AGENT, id: "j1", provider: "jarvis" };
   const helper = { ...AGENT, id: "h1", labels: { kind: "voice-helper" } } as TurnEnded["agent"];
-  for (const agent of [jarvis, helper]) {
+  for (const agent of [sulti, legacy, helper]) {
     assert.deepEqual(turnEvents(turnEnded({ kind: "completed" }, [user("hi"), said("hello")], agent)), []);
     assert.deepEqual(permissionEvents({ agent, request: {} } as unknown as Permission), []);
   }
@@ -56,5 +57,5 @@ test("a watched session's completed turn is only a watched reply (no finished no
   assert.deepEqual(turnEvents(turnEnded({ kind: "completed" }, timeline), { watched: true }), [{ type: "reply", sessionId: "a1", text: "All done.", watched: true }]);
   assert.deepEqual(turnEvents(turnEnded({ kind: "completed" }, [user("do it"), tool]), { watched: true }), [{ type: "notice", kind: "finished", sessionId: "a1" }]);
   assert.deepEqual(turnEvents(turnEnded({ kind: "failed", error: { message: "x" } }, timeline), { watched: true }), [{ type: "notice", kind: "error", sessionId: "a1" }]);
-  assert.deepEqual(turnEvents(turnEnded({ kind: "completed" }, timeline, { ...AGENT, provider: "jarvis" }), { watched: true }), []);
+  assert.deepEqual(turnEvents(turnEnded({ kind: "completed" }, timeline, { ...AGENT, provider: "sulti" }), { watched: true }), []);
 });

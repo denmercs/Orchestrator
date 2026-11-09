@@ -1,5 +1,5 @@
 // Turn events, one source: maps Paseo's lifecycle events to Voice loop events (reply, notice). Pure, so the plugin
-// server feeds the drawer and Jarvis from the same mapping. The loop decides what is spoken and when.
+// server feeds the drawer and Sulti from the same mapping. The loop decides what is spoken and when.
 import type { PluginLifecycleEvents } from "@getpaseo/plugin/server";
 import { canTarget, type VoiceEvent } from "../shared/voice-loop";
 

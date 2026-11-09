@@ -459,13 +459,13 @@ test("turning voice on again clears the last error; a stale failed open does not
 
 test("setSessions passes Voice's own sessions to the loop as blocked, and only on a change", () => {
   const { runner } = talkSetup();
-  const jarvis = { id: "j1", name: "Jarvis" };
+  const sulti = { id: "j1", name: "Sulti" };
   let notified = 0;
   runner.subscribe(() => notified++);
-  runner.setSessions([alpha], [jarvis]);
-  assert.deepEqual(runner.getState().blocked, [jarvis]);
+  runner.setSessions([alpha], [sulti]);
+  assert.deepEqual(runner.getState().blocked, [sulti]);
   const before = notified;
-  runner.setSessions([alpha], [{ ...jarvis }]);
+  runner.setSessions([alpha], [{ ...sulti }]);
   assert.equal(notified, before);
 });
 
@@ -1068,7 +1068,7 @@ test("typed text with a target is sent like a transcript; blank text does nothin
   assert.deepEqual(runner.getState().transcripts, [{ text: "fix the test", outcome: "sent" }]);
 });
 
-test("conversation interleaves your words and Jarvis's lines in order, updates outcomes in place, keeps 40", async () => {
+test("conversation interleaves your words and Sulti's lines in order, updates outcomes in place, keeps 40", async () => {
   const { runner } = setup({ status: async (text) => (text === "status" ? ["docs needs you."] : null) });
   assert.deepEqual(runner.getState().conversation, []);
   runner.setSessions([alpha]);
@@ -1080,7 +1080,7 @@ test("conversation interleaves your words and Jarvis's lines in order, updates o
   assert.deepEqual(runner.getState().conversation, [
     { from: "you", text: "fix the test", outcome: "sent" },
     { from: "you", text: "status", outcome: "status" },
-    { from: "jarvis", text: "docs needs you." },
+    { from: "sulti", text: "docs needs you." },
   ]);
   // transcripts and lines keep working alongside
   assert.deepEqual(runner.getState().lines, ["docs needs you."]);
@@ -1099,7 +1099,7 @@ test("conversation outcomes update in place and the log is capped at 40", async 
   }
   const log = runner.getState().conversation;
   assert.equal(log.length, 40);
-  assert.deepEqual(log.at(-1), { from: "jarvis", text: "reply q24" });
+  assert.deepEqual(log.at(-1), { from: "sulti", text: "reply q24" });
   assert.deepEqual(log.at(-2), { from: "you", text: "q24", outcome: "status" });
 });
 
@@ -1120,12 +1120,12 @@ test("a conversation outcome updates in place when the helper answers", async ()
 const heard = (text: string): VoiceEvent => ({ type: "heard", text });
 const convoText = (runner: ReturnType<typeof setup>["runner"]) => runner.getState().conversation.map((c) => `${c.from}:${c.text}`);
 
-test("heard speech is a you line, then the reply a jarvis line, in order, with no mic API", async () => {
+test("heard speech is a you line, then the reply a sulti line, in order, with no mic API", async () => {
   const { runner, reads, spoken } = noMicSetup(() => false);
   await runner.start();
   reads[0]({ cursor: 2, events: [heard("run the tests"), reply("All done.")], phoneActive: false });
   await flush();
-  assert.deepEqual(convoText(runner), ["you:run the tests", "jarvis:All done."]);
+  assert.deepEqual(convoText(runner), ["you:run the tests", "sulti:All done."]);
   assert.deepEqual(spoken, []);
 });
 
@@ -1139,14 +1139,14 @@ test("heard speech never reaches the loop: no send, no mode change, no second li
   assert.equal(runner.getState().mode, "listening");
 });
 
-test("a reply is one jarvis line whether the loop is asleep or awake (no double count)", async () => {
+test("a reply is one sulti line whether the loop is asleep or awake (no double count)", async () => {
   for (const awake of [false, true]) {
     const { runner, reads } = noMicSetup(() => false);
     if (awake) runner.on();
     else await runner.start();
     reads[0]({ cursor: 1, events: [reply("All done.")], phoneActive: false });
     await flush();
-    assert.equal(runner.getState().conversation.filter((c) => c.from === "jarvis").length, 1, `awake=${awake}`);
+    assert.equal(runner.getState().conversation.filter((c) => c.from === "sulti").length, 1, `awake=${awake}`);
   }
 });
 
@@ -1159,7 +1159,7 @@ test("the conversation keeps the last MAX_CONVERSATION lines across heard and re
   await flush();
   const lines = convoText(runner);
   assert.equal(lines.length, MAX_CONVERSATION);
-  assert.equal(lines.at(-1), `jarvis:a${MAX_CONVERSATION - 1}`);
+  assert.equal(lines.at(-1), `sulti:a${MAX_CONVERSATION - 1}`);
   assert.equal(lines[0], `you:q${MAX_CONVERSATION / 2}`);
 });
 
@@ -1257,7 +1257,7 @@ test("awake, [heard A, reply A, heard B] renders in true order", async () => {
   reads[0]({ cursor: 1, events: [heard("A"), reply("rA"), heard("B")], phoneActive: false });
   await flush();
   assert.equal(convoText(runner)[0], "you:A");
-  assert.match(convoText(runner)[1], /^jarvis:.*rA/);
+  assert.match(convoText(runner)[1], /^sulti:.*rA/);
   assert.equal(convoText(runner)[2], "you:B");
 });
 
@@ -1323,13 +1323,13 @@ test("setMic saves over an unreadable setting, which repairs it", async () => {
   assert.equal(runner.getState().ignoring, true);
 });
 
-test("the Jarvis session's agent id comes from setSessions' third argument, and clears when it is gone", () => {
+test("the Sulti session's agent id comes from setSessions' third argument, and clears when it is gone", () => {
   const { runner } = setup();
-  assert.equal(runner.getState().jarvisAgentId, null);
-  runner.setSessions([alpha], [], [{ id: "j1", name: "Jarvis" }]);
-  assert.equal(runner.getState().jarvisAgentId, "j1");
+  assert.equal(runner.getState().sultiAgentId, null);
+  runner.setSessions([alpha], [], [{ id: "j1", name: "Sulti" }]);
+  assert.equal(runner.getState().sultiAgentId, "j1");
   runner.setSessions([alpha], [], []);
-  assert.equal(runner.getState().jarvisAgentId, null);
+  assert.equal(runner.getState().sultiAgentId, null);
 });
 
 // --- Ignore me never turns itself off on a glitch ---
@@ -1481,52 +1481,52 @@ test("Repair while the server says checking still rewrites the client's last kno
   assert.deepEqual(repairs, [true]);
 });
 
-// --- Jarvis on by default: the mic makes sure a router session exists ---
+// --- Sulti on by default: the mic makes sure a router session exists ---
 
-function jarvisSetup(over: { create?: (t: { id: string; name: string }) => Promise<string> } = {}) {
+function sultiSetup(over: { create?: (t: { id: string; name: string }) => Promise<string> } = {}) {
   const made: string[] = [];
-  const createJarvis = over.create ?? (async (t: { id: string; name: string }) => {
+  const createSulti = over.create ?? (async (t: { id: string; name: string }) => {
     made.push(t.id);
-    return "jarvis1";
+    return "sulti1";
   });
   const base = setup({
-    link: { say: async () => {}, interrupt: async () => {}, createJarvis },
+    link: { say: async () => {}, interrupt: async () => {}, createSulti },
   });
   base.runner.setSessions([{ id: "a1", name: "api" }]);
   return { ...base, made };
 }
 
-test("ensureJarvis creates a router beside the target once, and reuses it", async () => {
-  const { runner, made } = jarvisSetup();
+test("ensureSulti creates a router beside the target once, and reuses it", async () => {
+  const { runner, made } = sultiSetup();
   runner.pick({ id: "a1", name: "api" });
-  const [first, second] = await Promise.all([runner.ensureJarvis(), runner.ensureJarvis()]);
-  assert.equal(first, "jarvis1");
-  assert.equal(second, "jarvis1");
-  assert.equal(await runner.ensureJarvis(), "jarvis1");
+  const [first, second] = await Promise.all([runner.ensureSulti(), runner.ensureSulti()]);
+  assert.equal(first, "sulti1");
+  assert.equal(second, "sulti1");
+  assert.equal(await runner.ensureSulti(), "sulti1");
   assert.deepEqual(made, ["a1"]);
-  assert.equal(runner.getState().jarvisAgentId, "jarvis1");
+  assert.equal(runner.getState().sultiAgentId, "sulti1");
 });
 
-test("ensureJarvis falls back to the first session when none is picked, and does nothing with no sessions", async () => {
-  const { runner, made } = jarvisSetup();
-  assert.equal(await runner.ensureJarvis(), "jarvis1");
+test("ensureSulti falls back to the first session when none is picked, and does nothing with no sessions", async () => {
+  const { runner, made } = sultiSetup();
+  assert.equal(await runner.ensureSulti(), "sulti1");
   assert.deepEqual(made, ["a1"]);
-  const empty = setup({ link: { say: async () => {}, interrupt: async () => {}, createJarvis: async () => "x" } });
-  assert.equal(await empty.runner.ensureJarvis(), null);
+  const empty = setup({ link: { say: async () => {}, interrupt: async () => {}, createSulti: async () => "x" } });
+  assert.equal(await empty.runner.ensureSulti(), null);
 });
 
-test("ensureJarvis keeps an existing Jarvis session and shows a failed create", async () => {
-  const { runner, made } = jarvisSetup();
-  runner.setSessions([{ id: "a1", name: "api" }], [], [{ id: "old", name: "Jarvis" }]);
-  assert.equal(await runner.ensureJarvis(), "old");
+test("ensureSulti keeps an existing Sulti session and shows a failed create", async () => {
+  const { runner, made } = sultiSetup();
+  runner.setSessions([{ id: "a1", name: "api" }], [], [{ id: "old", name: "Sulti" }]);
+  assert.equal(await runner.ensureSulti(), "old");
   assert.deepEqual(made, []);
-  const failing = jarvisSetup({ create: async () => { throw new Error("nope"); } });
-  assert.equal(await failing.runner.ensureJarvis(), null);
+  const failing = sultiSetup({ create: async () => { throw new Error("nope"); } });
+  assert.equal(await failing.runner.ensureSulti(), null);
   assert.equal(failing.runner.getState().error, "nope");
 });
 
-test("turning the mic on makes sure Jarvis exists, with or without a mic adapter", async () => {
-  const { runner, made } = jarvisSetup();
+test("turning the mic on makes sure Sulti exists, with or without a mic adapter", async () => {
+  const { runner, made } = sultiSetup();
   await runner.setMic(true);
   await flush();
   assert.deepEqual(made, ["a1"]);
