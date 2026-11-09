@@ -1319,33 +1319,35 @@ test("a session Paseo no longer knows is replaced too", async () => {
 });
 
 // Bad reads of a live session: from the second read on (the tick's reconcile reads first), refreshSession
-// answers `stale` for `count` reads, then the real record. `served()` says how many stale answers were
-// actually returned, so a test can prove the bad read reached supervise.
-function staleReads(api: LoopHost, stale: Awaited<ReturnType<LoopHost["refreshSession"]>>, count = 1) {
+// answers the scripted `bad` answers in turn, then the real record. `calls()` counts every refreshSession
+// and listStepAgents call, so a test can prove the bad read reached supervise and its confirmation: if the
+// reads moved, supervise would stop at the real `running` read and the counts would come out smaller.
+function badReads(api: LoopHost, bad: Array<Awaited<ReturnType<LoopHost["refreshSession"]>>>, listFails = false) {
   const real = api.refreshSession;
-  let reads = 0;
-  let served = 0;
+  const realList = api.listStepAgents;
+  const counts = { reads: 0, lists: 0 };
   api.refreshSession = async (id) => {
-    const n = reads++;
-    if (n >= 1 && n < 1 + count) {
-      served++;
-      return stale;
-    }
-    return real(id);
+    const n = counts.reads++;
+    return n >= 1 && n <= bad.length ? bad[n - 1] : real(id);
   };
-  return { served: () => served };
+  api.listStepAgents = async () => {
+    counts.lists++;
+    if (listFails) throw new Error("list failed");
+    return realList();
+  };
+  return { calls: () => ({ ...counts }) };
 }
 
 test("a running session read as gone once spends no retry and starts no agent", async () => {
   const { story, labels } = fixture("a1");
   const { api, created, sent } = fakePaseo([{ id: "a1", labels, status: "running" }]);
-  const stale = staleReads(api, null);
+  const bad = badReads(api, [null]);
   const initiative = loop();
   initiative.rememberHost(api);
 
   await initiative.tick();
 
-  assert.equal(stale.served(), 1);
+  assert.deepEqual(bad.calls(), { reads: 3, lists: 0 });
   assert.deepEqual([sent, created], [[], []]);
   assert.equal(storyMeta(story).agent, "a1");
   assert.equal(storyMeta(story).retries, undefined);
@@ -1355,13 +1357,13 @@ test("a running session read as gone once spends no retry and starts no agent", 
 test("a running session read once as a stale closed record spends no retry and starts no agent", async () => {
   const { story, labels } = fixture("a1");
   const { api, created, sent } = fakePaseo([{ id: "a1", labels, status: "running" }]);
-  const stale = staleReads(api, { id: "a1", labels, status: "closed" });
+  const bad = badReads(api, [{ id: "a1", labels, status: "closed" }]);
   const initiative = loop();
   initiative.rememberHost(api);
 
   await initiative.tick();
 
-  assert.equal(stale.served(), 1);
+  assert.deepEqual(bad.calls(), { reads: 3, lists: 0 });
   assert.deepEqual([sent, created], [[], []]);
   assert.equal(storyMeta(story).agent, "a1");
   assert.equal(storyMeta(story).retries, undefined);
@@ -1371,13 +1373,13 @@ test("a story at its last retry is not blocked by one read of its live session a
   const { story, labels } = fixture("a1");
   writeFrontmatter(story, { retries: 2 });
   const { api, created, sent } = fakePaseo([{ id: "a1", labels, status: "running" }]);
-  const stale = staleReads(api, null);
+  const bad = badReads(api, [null]);
   const initiative = loop();
   initiative.rememberHost(api);
 
   await initiative.tick();
 
-  assert.equal(stale.served(), 1);
+  assert.deepEqual(bad.calls(), { reads: 3, lists: 0 });
   assert.deepEqual([sent, created], [[], []]);
   assert.equal(storyMeta(story).status, "implementing");
   assert.equal(storyMeta(story).retries, "2");
@@ -1388,13 +1390,13 @@ test("two empty reads of a session the host lists as running spend no retry and 
   for (const status of ["running", "idle"]) {
     const { story, labels } = fixture("a1");
     const { api, created, sent } = fakePaseo([{ id: "a1", labels, status }]);
-    const stale = staleReads(api, null, 2);
+    const bad = badReads(api, [null, null]);
     const initiative = loop();
     initiative.rememberHost(api);
 
     await initiative.tick();
 
-    assert.equal(stale.served(), 2, status);
+    assert.deepEqual(bad.calls(), { reads: 3, lists: 1 }, status);
     assert.deepEqual([sent, created], [[], []], status);
     assert.equal(storyMeta(story).agent, "a1", status);
     assert.equal(storyMeta(story).retries, undefined, status);
@@ -1403,33 +1405,21 @@ test("two empty reads of a session the host lists as running spend no retry and 
 
 test("a confirming read the host can't answer, or an agent list that fails, leaves the step alone", async () => {
   // Why: undefined and a throw say nothing about the session, so they must mean "ask again next tick".
-  const cases: Array<[string, (api: LoopHost) => void]> = [
-    ["undefined second read", (api) => {
-      const real = api.refreshSession;
-      let reads = 0;
-      api.refreshSession = async (id) => {
-        const n = reads++;
-        return n === 0 ? real(id) : n === 1 ? null : undefined;
-      };
-    }],
-    ["failing list", (api) => {
-      const real = api.refreshSession;
-      let reads = 0;
-      api.refreshSession = async (id) => (reads++ === 0 ? real(id) : null);
-      api.listStepAgents = async () => {
-        throw new Error("list failed");
-      };
-    }],
+  type Calls = { reads: number; lists: number };
+  const cases: Array<[string, (api: LoopHost) => { calls: () => Calls }, Calls]> = [
+    ["undefined second read", (api) => badReads(api, [null, undefined]), { reads: 3, lists: 0 }],
+    ["failing list", (api) => badReads(api, [null, null], true), { reads: 3, lists: 1 }],
   ];
-  for (const [name, arrange] of cases) {
+  for (const [name, arrange, expected] of cases) {
     const { story } = fixture("a1");
     const { api, created, sent } = fakePaseo([]);
-    arrange(api);
+    const bad = arrange(api);
     const initiative = loop();
     initiative.rememberHost(api);
 
     await initiative.tick();
 
+    assert.deepEqual(bad.calls(), expected, name);
     assert.deepEqual([sent, created], [[], []], name);
     assert.equal(storyMeta(story).agent, "a1", name);
     assert.equal(storyMeta(story).retries, undefined, name);
