@@ -77,7 +77,7 @@ import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createMicOffGate } from "./server/mic-off-gate";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
-import { fileInitiative, fileSlice } from "./server/factory-file";
+import { type Filed, fileInitiative, fileSlice } from "./server/factory-file";
 import { fileInitiativeRpc, fileSliceRpc } from "./shared/factory-file";
 import { applyFactoryManager, ensureManager, steerManager } from "./server/factory-manager";
 import { isDead, runFactoryTick, type TickPaseo } from "./server/factory-tick";
@@ -314,15 +314,18 @@ export default function contribute(
   const fileForManager = (paseo: PluginHandlerContext["paseo"]) => async (input: { repo: string; initiative: string }) => {
     const { repo } = await readHarness();
     if (!repo) throw new Error("Pick a harness repo in settings first.");
-    return fileInitiative(repo, input, { paseo });
+    const { ids, warning } = await fileInitiative(repo, input, { paseo });
+    if (warning) console.warn("orchestrator: filed slices but the manager wasn't told:", warning);
+    return ids;
   };
   // The Initiatives tab's Start buttons and the Start input's typed text. Files that land stay `ok` when only the
   // steer fails: the slice waits in the inbox for the manager's next read.
-  const filing = async (file: (root: string) => Promise<string[]>) => {
+  const filing = async (file: (root: string) => Promise<Filed>) => {
     const { repo } = await readHarness();
     if (!repo) return { ok: false, error: "Pick a harness repo in settings first.", slices: [], warning: null };
     try {
-      return { ok: true, error: null, slices: await file(repo), warning: null };
+      const { ids, warning } = await file(repo);
+      return { ok: true, error: null, slices: ids, warning };
     } catch (cause) {
       return { ok: false, error: cause instanceof Error ? cause.message : String(cause), slices: [], warning: null };
     }

@@ -39,7 +39,7 @@ test("fileSlice writes an inbox slice with the title and link as its spec and no
   const root = tempRoot();
   const { paseo, sent } = fakePaseo();
 
-  const ids = await fileSlice(root, { title: "Add dark mode", link: "https://jira.example/T-1" }, { paseo });
+  const { ids } = await fileSlice(root, { title: "Add dark mode", link: "https://jira.example/T-1" }, { paseo });
 
   assert.deepEqual(ids, ["add-dark-mode"]);
   const slice = readFactory(root).missions.find((mission) => mission.id === "inbox")?.slices[0];
@@ -70,7 +70,7 @@ test("fileSlice suffixes the id when a slice of that name exists", async () => {
   const second = await fileSlice(root, { title: "Same title" }, { paseo });
   const third = await fileSlice(root, { title: "Same title" }, { paseo });
 
-  assert.deepEqual([first, second, third], [["same-title"], ["same-title-2"], ["same-title-3"]]);
+  assert.deepEqual([first.ids, second.ids, third.ids], [["same-title"], ["same-title-2"], ["same-title-3"]]);
   assert.ok(existsSync(join(sliceDir(root, "inbox", "same-title-3"), "spec.md")));
 });
 
@@ -109,7 +109,7 @@ test("fileInitiative files the remaining todo stories of the active phase in ord
   await fileSlice(root, { title: "Earlier", story: stories.named }, { paseo });
   sent.length = 0;
 
-  const ids = await fileInitiative(root, { repo, initiative: "demo" }, { paseo });
+  const { ids } = await fileInitiative(root, { repo, initiative: "demo" }, { paseo });
 
   assert.deepEqual(ids, ["demo-first", "demo-second"]);
   const inbox = readFactory(root).missions.find((mission) => mission.id === "inbox");
@@ -121,6 +121,44 @@ test("fileInitiative files the remaining todo stories of the active phase in ord
   assert.match(sent[0], /demo-first, demo-second/);
 
   // Filing again finds every story named already, so nothing new is written or sent.
-  assert.deepEqual(await fileInitiative(root, { repo, initiative: "demo" }, { paseo }), []);
+  assert.deepEqual((await fileInitiative(root, { repo, initiative: "demo" }, { paseo })).ids, []);
   assert.equal(sent.length, 1);
+});
+
+test("a steer that throws after the slice is written still returns the id, with a warning", async () => {
+  const root = tempRoot();
+  const { paseo } = fakePaseo();
+  const broken: ManagerPaseo = {
+    agents: {
+      ...paseo.agents,
+      ref: () => ({
+        send: async () => {
+          throw new Error("Paseo went away");
+        },
+        refresh: async () => ({ agent: { status: "idle" } }),
+      }),
+    },
+  };
+
+  const filed = await fileSlice(root, { title: "Keep me" }, { paseo: broken });
+
+  assert.deepEqual(filed, { ids: ["keep-me"], warning: "Paseo went away" });
+  assert.ok(existsSync(join(sliceDir(root, "inbox", "keep-me"), "spec.md")));
+});
+
+test("a manager that cannot be created leaves the slice filed and warns", async () => {
+  const root = tempRoot();
+  const none: ManagerPaseo = {
+    agents: {
+      ref: () => ({ send: async () => {}, refresh: async () => null }),
+      create: async () => {
+        throw new Error("no model");
+      },
+    },
+  };
+
+  const filed = await fileSlice(root, { title: "Orphan" }, { paseo: none });
+
+  assert.deepEqual(filed.ids, ["orphan"]);
+  assert.equal(filed.warning, "no model");
 });
