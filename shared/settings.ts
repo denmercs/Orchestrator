@@ -120,5 +120,7 @@ export const voiceSettings = defineSettings({
     phoneAudio: z.boolean().default(false),
     // On: the hands-free mic adapter stays closed; the drawer's mic toggle persists here.
     micOff: z.boolean().default(false),
+    // Which provider runs the two voice helper agents (interpret and reply summary); read at the next voice-on.
+    provider: z.enum(["claude", "cursor"]).default("claude"),
   }),
 });

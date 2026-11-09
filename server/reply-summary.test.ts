@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import { mcpScopeFor } from "./mcp-scope";
 import { REPLY_SUMMARY_SYSTEM_PROMPT, SUMMARY_FALLBACK_MS, createReplySummary } from "./reply-summary";
-import { NO_TOOLS_OPTIONS, VOICE_HELPER_KIND, VOICE_HELPER_MODEL, type VoiceHelperPorts, type VoiceHelperSpec } from "./voice-helper";
+import { NO_TOOLS_OPTIONS, VOICE_HELPER_KIND, voiceHelperConfig, type VoiceHelperPorts, type VoiceHelperSpec } from "./voice-helper";
 
 const CWD = "/tmp/reply-summary-test";
 const LONG = "The build finished and every check passed. ".repeat(20); // ~880 chars
@@ -28,7 +28,7 @@ function fakePorts(run: (prompt: string) => Promise<Run> = async () => ({ status
   return { ports, runs, created, archived };
 }
 
-test("start creates a Haiku agent with no MCP servers, no tools, the voice-helper label and its own prompt; stop archives it", async () => {
+test("start creates an agent with no MCP servers, no tools, the voice-helper label and its own prompt; stop archives it", async () => {
   const fake = fakePorts();
   const s = createReplySummary(fake.ports);
   await s.start();
@@ -36,7 +36,7 @@ test("start creates a Haiku agent with no MCP servers, no tools, the voice-helpe
   assert.equal(fake.created.length, 1);
   const { spec, scope } = fake.created[0];
   assert.equal(scope, "none");
-  assert.equal(spec.provider, VOICE_HELPER_MODEL);
+  assert.equal(spec.provider, "claude/claude-sonnet-5-5");
   assert.deepEqual(spec.options, NO_TOOLS_OPTIONS);
   assert.deepEqual(spec.labels, { kind: VOICE_HELPER_KIND });
   assert.equal(spec.systemPrompt, REPLY_SUMMARY_SYSTEM_PROMPT);
@@ -44,6 +44,18 @@ test("start creates a Haiku agent with no MCP servers, no tools, the voice-helpe
   assert.match(REPLY_SUMMARY_SYSTEM_PROMPT, /400/);
   await s.stop();
   assert.deepEqual(fake.archived, ["summary-1"]);
+});
+
+test("the summariser's model, tools and mode match the helper's for each provider", async () => {
+  for (const provider of ["claude", "cursor"] as const) {
+    const fake = fakePorts();
+    await createReplySummary(fake.ports).start(provider);
+    const { provider: model, options, modeId } = fake.created[0].spec;
+    const expected = voiceHelperConfig(provider);
+    assert.equal(model, expected.provider);
+    assert.deepEqual(options, "options" in expected ? expected.options : undefined);
+    assert.equal(modeId, "modeId" in expected ? expected.modeId : undefined);
+  }
 });
 
 test("an answer inside the limit is the summary", async () => {

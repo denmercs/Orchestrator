@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { VOICE_HELPER_SYSTEM_PROMPT } from "../shared/voice-interpreter";
 import { mcpScopeFor } from "./mcp-scope";
 import { INTERPRET_FALLBACK_MS } from "./voice-interpret";
-import { NO_TOOLS_OPTIONS, VOICE_HELPER_KIND, VOICE_HELPER_MODEL, createVoiceHelper, type VoiceHelperPorts, type VoiceHelperSpec } from "./voice-helper";
+import { NO_TOOLS_OPTIONS, VOICE_HELPER_KIND, VOICE_HELPER_MODELS, createVoiceHelper, voiceHelperConfig, type VoiceHelperPorts, type VoiceHelperSpec } from "./voice-helper";
 
 const CWD = "/tmp/voice-helper-test";
 
@@ -52,7 +52,7 @@ function fakePorts(opts: { failFirst?: boolean; run?: (agentId: string, prompt: 
   };
 }
 
-test("start creates one Haiku helper with no MCP servers, no tools, the voice-helper label and the system prompt", async () => {
+test("start creates one Claude Sonnet helper with no MCP servers, no tools, the voice-helper label and the system prompt", async () => {
   const fake = fakePorts();
   const helper = createVoiceHelper(fake.ports);
   assert.equal(helper.agentId(), null);
@@ -60,9 +60,9 @@ test("start creates one Haiku helper with no MCP servers, no tools, the voice-he
   assert.equal(fake.created.length, 1);
   const { spec, scope } = fake.created[0];
   assert.equal(scope, "none");
-  assert.equal(spec.provider, "claude/claude-haiku-4-5");
-  assert.equal(VOICE_HELPER_MODEL, "claude/claude-haiku-4-5");
+  assert.equal(spec.provider, "claude/claude-sonnet-5-5");
   assert.deepEqual(spec.options, NO_TOOLS_OPTIONS);
+  assert.equal("modeId" in spec, false);
   assert.deepEqual(spec.labels, { kind: VOICE_HELPER_KIND });
   assert.equal(VOICE_HELPER_KIND, "voice-helper");
   assert.equal(spec.systemPrompt, VOICE_HELPER_SYSTEM_PROMPT);
@@ -70,6 +70,24 @@ test("start creates one Haiku helper with no MCP servers, no tools, the voice-he
   assert.ok(spec.title.length > 0 && spec.title.length <= 60);
   assert.equal(helper.agentId(), "helper-1");
   assert.equal(mcpScopeFor(CWD), "all", "scope is released after create");
+});
+
+test("start with cursor creates a Composer helper in Ask mode, with no options", async () => {
+  const fake = fakePorts();
+  const helper = createVoiceHelper(fake.ports);
+  await helper.start("cursor");
+  const { spec } = fake.created[0];
+  assert.equal(spec.provider, "cursor/composer-2.5");
+  assert.equal(spec.modeId, "ask");
+  assert.equal("options" in spec, false);
+  assert.equal(spec.systemPrompt, VOICE_HELPER_SYSTEM_PROMPT);
+  assert.deepEqual(spec.labels, { kind: VOICE_HELPER_KIND });
+});
+
+test("voiceHelperConfig is the one source of each provider's model, tools and mode", () => {
+  assert.deepEqual(VOICE_HELPER_MODELS, { claude: "claude/claude-sonnet-5-5", cursor: "cursor/composer-2.5" });
+  assert.deepEqual(voiceHelperConfig("claude"), { provider: "claude/claude-sonnet-5-5", options: NO_TOOLS_OPTIONS });
+  assert.deepEqual(voiceHelperConfig("cursor"), { provider: "cursor/composer-2.5", modeId: "ask" });
 });
 
 test("a second start, even concurrent, reuses the one helper", async () => {

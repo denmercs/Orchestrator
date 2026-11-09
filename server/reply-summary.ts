@@ -1,9 +1,9 @@
 import { SUMMARY_CAP, spokenLine } from "../shared/voice-lines";
 import { VOICE_HELPER_KIND } from "../shared/voice-loop";
 import { withMcpScope } from "./mcp-scope";
-import { NO_TOOLS_OPTIONS, VOICE_HELPER_MODEL, type VoiceHelperPorts } from "./voice-helper";
+import { voiceHelperConfig, type VoiceHelperPorts, type VoiceProvider } from "./voice-helper";
 
-// The reply summariser (see CONTEXT.md, "Voice helper"): a second small Haiku agent next to the interpret helper,
+// The reply summariser (see CONTEXT.md, "Voice helper"): a second small agent (same model as the helper) next to the interpret helper,
 // same ports, same cwd and kind label (so it is never a target and never replies into the loop), its own prompt.
 // It talks to Paseo only through the ports, so tests use fakes.
 
@@ -24,13 +24,12 @@ export function createReplySummary(ports: VoiceHelperPorts, opts: { timeoutMs?: 
   // The agent a run is in flight on; a leftover run on an archived agent does not make a new one busy.
   let runningOn: string | null = null;
 
-  function start(): Promise<void> {
+  function start(provider: VoiceProvider = "claude"): Promise<void> {
     if (id) return Promise.resolve();
     starting ??= withMcpScope(ports.cwd, "none", () =>
       ports.createAgent({
-        provider: VOICE_HELPER_MODEL,
+        ...voiceHelperConfig(provider),
         systemPrompt: REPLY_SUMMARY_SYSTEM_PROMPT,
-        options: NO_TOOLS_OPTIONS,
         cwd: ports.cwd,
         title: "Reply summary",
         labels: { kind: VOICE_HELPER_KIND },

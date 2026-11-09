@@ -5,11 +5,15 @@ import { VOICE_HELPER_SYSTEM_PROMPT, helperPrompt, parseHelperReply } from "../s
 import { VOICE_HELPER_KIND, type InterpretResult, type VoiceSession } from "../shared/voice-loop";
 import { withMcpScope } from "./mcp-scope";
 
-// The Voice helper's agent lifecycle (see CONTEXT.md, "Voice helper"): one Haiku agent per voice-on
-// period, created with MCP scope "none" and no built-in tools, reused, and archived on stop. It talks
+// The Voice helper's agent lifecycle (see CONTEXT.md, "Voice helper"): one small agent per voice-on
+// period (Claude Sonnet or Cursor Composer, by `voice.provider`), created with MCP scope "none" and no tools, reused, and archived on stop. It talks
 // to Paseo only through the ports, so tests use fakes.
 
-export const VOICE_HELPER_MODEL = "claude/claude-haiku-4-5";
+export type VoiceProvider = "claude" | "cursor";
+export const VOICE_HELPER_MODELS: Record<VoiceProvider, string> = {
+  claude: "claude/claude-sonnet-5-5",
+  cursor: "cursor/composer-2.5",
+};
 // Shared, so the Voice loop can keep the helper out of its targets.
 export { VOICE_HELPER_KIND } from "../shared/voice-loop";
 
@@ -18,10 +22,19 @@ export { VOICE_HELPER_KIND } from "../shared/voice-loop";
 // built-in tool. Not yet run against the daemon (see Evidence); a permission request is a failure anyway.
 export const NO_TOOLS_OPTIONS = { extraArgs: { tools: "" } };
 
+// The one source of the model and its no-tools setup, for the interpret helper and the reply summariser:
+// Claude gets `--tools ""`; Cursor runs in Ask mode (Q&A only: no edits, no commands).
+export function voiceHelperConfig(provider: VoiceProvider): Pick<VoiceHelperSpec, "provider" | "options" | "modeId"> {
+  return provider === "cursor"
+    ? { provider: VOICE_HELPER_MODELS.cursor, modeId: "ask" }
+    : { provider: VOICE_HELPER_MODELS.claude, options: NO_TOOLS_OPTIONS };
+}
+
 export type VoiceHelperSpec = {
-  provider: typeof VOICE_HELPER_MODEL;
+  provider: string;
   systemPrompt: string;
-  options: typeof NO_TOOLS_OPTIONS;
+  options?: typeof NO_TOOLS_OPTIONS;
+  modeId?: string;
   cwd: string;
   title: string;
   labels: { kind: typeof VOICE_HELPER_KIND };
@@ -48,15 +61,14 @@ export function createVoiceHelper(ports: VoiceHelperPorts) {
   // The in-flight create, so concurrent starts share one agent.
   let starting: Promise<void> | null = null;
 
-  function start(): Promise<void> {
+  function start(provider: VoiceProvider = "claude"): Promise<void> {
     if (id) {
       return Promise.resolve();
     }
     starting ??= withMcpScope(ports.cwd, "none", () =>
       ports.createAgent({
-        provider: VOICE_HELPER_MODEL,
+        ...voiceHelperConfig(provider),
         systemPrompt: VOICE_HELPER_SYSTEM_PROMPT,
-        options: NO_TOOLS_OPTIONS,
         cwd: ports.cwd,
         title: "Voice helper",
         labels: { kind: VOICE_HELPER_KIND },
@@ -113,7 +125,7 @@ export function paseoVoiceHelperPorts(paseo: PaseoApi, cwd: string = VOICE_HELPE
     cwd,
     createAgent: async (spec) => {
       const agent = await paseo.agents.create({
-        config: { provider: spec.provider, systemPrompt: spec.systemPrompt, options: spec.options },
+        config: { provider: spec.provider, systemPrompt: spec.systemPrompt, options: spec.options, modeId: spec.modeId },
         cwd: spec.cwd,
         title: spec.title,
         labels: spec.labels,
