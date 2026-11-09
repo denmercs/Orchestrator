@@ -110,8 +110,9 @@ export const mergeWatch = (factory: Factory): FactorySlice[] =>
     mission.slices.filter((slice) => slice.state.kind === "ship" && slice.state.ready === "ci" && slice.state.pr !== "" && !slice.state.merged),
   );
 
-// Why a run: on, not ready slice can't start until the manager acts: its first depends id that is a `ready: blocked` slice
-// or not a slice of its own mission. Null otherwise: a dependency still in progress is a normal wait.
+// Why a run: on, not ready slice can't start until the manager acts: its first depends id that is a `ready: blocked` slice,
+// is not a slice of its own mission, or is idle (`run` off and not done, so nothing will ever run it); or a depends chain that
+// loops back to the slice (itself included). Null otherwise: a dependency still in progress is a normal wait.
 export const heldBy = (slice: FactorySlice, mission: FactoryMission): string | null => {
   if (!slice.state.run || slice.state.ready) return null;
   for (const id of slice.state.depends) {
@@ -119,5 +120,27 @@ export const heldBy = (slice: FactorySlice, mission: FactoryMission): string | n
     if (!dependency) return `unknown dependency ${id}`;
     if (dependency.state.ready === "blocked") return `blocked dependency ${id}`;
   }
+  const loop = dependencyLoop(slice, mission);
+  if (loop) return `dependency loop ${loop.join(" -> ")}`;
+  for (const id of slice.state.depends) {
+    const dependency = mission.slices.find((item) => item.id === id);
+    if (dependency && !dependency.state.run && !isDone(dependency)) return `idle dependency ${id}`;
+  }
   return null;
+};
+
+// The depends chain from `slice` back to itself, as ids from the slice and ending on it, or null. Ids outside the mission end a chain.
+const dependencyLoop = (slice: FactorySlice, mission: FactoryMission): string[] | null => {
+  const walk = (current: FactorySlice, path: string[]): string[] | null => {
+    for (const id of current.state.depends) {
+      if (id === slice.id) return [...path, id];
+      const next = mission.slices.find((item) => item.id === id);
+      if (next && !path.includes(id)) {
+        const found = walk(next, [...path, id]);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  return walk(slice, [slice.id]);
 };

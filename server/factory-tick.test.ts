@@ -1941,6 +1941,39 @@ for (const [name, other] of [
   });
 }
 
+test("slices that depend on each other steer the manager once each over two passes and none starts", async () => {
+  // Arrange: s1 depends on s2 and s2 on s1.
+  const { root, stateFile } = setup("depends: s2", "on", "spec");
+  const secondState = addSlice(root, "s2", "depends: s1");
+  const { paseo, steers, created } = steeringPaseo();
+
+  // Act: two passes.
+  await runFactoryTick(root, paseo);
+  await runFactoryTick(root, paseo);
+
+  // Assert: one steer per slice naming the loop, recorded in state.md; nothing started.
+  assert.deepEqual(steers, ["Slice s1 can't start: dependency loop s1 -> s2 -> s1.", "Slice s2 can't start: dependency loop s2 -> s1 -> s2."]);
+  assert.equal(field(stateFile, "held"), "dependency loop s1 -> s2 -> s1");
+  assert.equal(field(secondState, "held"), "dependency loop s2 -> s1 -> s2");
+  assert.equal(created.length, 0);
+});
+
+test("a run: on slice that depends on an idle slice steers the manager once and does not start", async () => {
+  // Arrange: s1 is idle (run off) and not done; s2 depends on it.
+  const { root } = setup("", "off", "spec");
+  const dependentState = addSlice(root, "s2", "depends: s1");
+  const { paseo, steers, created } = steeringPaseo();
+
+  // Act: two passes.
+  await runFactoryTick(root, paseo);
+  await runFactoryTick(root, paseo);
+
+  // Assert: one steer naming the idle dependency; s2 started nothing.
+  assert.deepEqual(steers, ["Slice s2 can't start: idle dependency s1."]);
+  assert.equal(field(dependentState, "held"), "idle dependency s1");
+  assert.equal(created.length, 0);
+});
+
 test("a slice waiting on a dependency still in progress does not steer", async () => {
   // Arrange: s1 is in build with a live agent; s2 depends on it.
   const { root } = setup("agent: a1", "on", "build");

@@ -184,6 +184,24 @@ test("heldBy names a blocked or unknown dependency, and nothing for one still in
   assert.equal(held({ run: "on", ready: "blocked", depends: "a" }), null);
 });
 
+test("heldBy names a dependency loop, a self-dependency, and an idle dependency nothing will run", () => {
+  const a = slice("a", "m1", { run: "on", depends: "b" });
+  const b = slice("b", "m1", { run: "on", depends: "c" });
+  const c = slice("c", "m1", { run: "on", depends: "a" });
+  const idle = slice("idle", "m1", {});
+  const doneIdle = slice("doneIdle", "m1", { ready: "review" });
+  doneIdle.proof = "ran it";
+  const mission = { id: "m1", outcome: "", slices: [a, b, c, idle, doneIdle] };
+  assert.equal(heldBy(a, mission), "dependency loop a -> b -> c -> a");
+  assert.equal(heldBy(b, mission), "dependency loop b -> c -> a -> b");
+  assert.equal(heldBy(slice("s", "m1", { run: "on", depends: "s" }), { ...mission, slices: [slice("s", "m1", { run: "on", depends: "s" })] }), "dependency loop s -> s");
+  assert.equal(heldBy(slice("x", "m1", { run: "on", depends: "idle" }), mission), "idle dependency idle");
+  // A done slice that is not run: on is finished, not idle.
+  assert.equal(heldBy(slice("y", "m1", { run: "on", depends: "doneIdle" }), mission), null);
+  // A chain that ends in a loop it is not part of is a normal wait on the loop's own slices.
+  assert.equal(heldBy(slice("z", "m1", { run: "on", depends: "a" }), mission), null);
+});
+
 test("mergeWatch returns only ship slices that are ready at ci with a pr and not yet merged", () => {
   const watched = slice("a", "m1", { kind: "ship", ready: "ci", pr: "7" });
   const factory = factoryOf(
