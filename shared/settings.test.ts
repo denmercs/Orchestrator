@@ -62,15 +62,27 @@ test("voice settings are host-scoped at version 1", () => {
   assert.equal(voiceSettings.version, 1);
 });
 
-test("voice settings default to Auto profile, no reference clip, phone audio off, mic on", () => {
-  assert.deepEqual(voiceSettings.schema.parse({}), { profile: "", referenceClip: "", phoneAudio: false, micOff: false });
+test("voice settings default to Auto profile, no reference clip, phone audio off, mic on, Claude helper", () => {
+  assert.deepEqual(voiceSettings.schema.parse({}), {
+    profile: "",
+    referenceClip: "",
+    phoneAudio: false,
+    micOff: false,
+    provider: "claude",
+  });
+});
+
+test("voice settings accept the cursor provider and reject any other", () => {
+  assert.equal(voiceSettings.schema.parse({ provider: "cursor" }).provider, "cursor");
+  assert.equal(voiceSettings.schema.safeParse({ provider: "openai" }).success, false);
 });
 
 test("voice settings keep given values", () => {
-  assert.deepEqual(voiceSettings.schema.parse({ profile: "off", referenceClip: "/a.wav", phoneAudio: true, micOff: true }), {
+  assert.deepEqual(voiceSettings.schema.parse({ profile: "off", referenceClip: "/a.wav", phoneAudio: true, micOff: true, provider: "cursor" }), {
     profile: "off",
     referenceClip: "/a.wav",
     phoneAudio: true,
     micOff: true,
+    provider: "cursor",
   });
 });

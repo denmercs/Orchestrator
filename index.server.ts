@@ -576,7 +576,10 @@ export default function contribute(
   const voiceInterpretService = createVoiceInterpret({
     start: async () => {
       await mkdir(helperCwd, { recursive: true });
-      await Promise.all([voiceHelper.start(), replySummary.start().catch((error) => console.warn("orchestrator: reply summary start failed", error))]);
+      // One read per start, so the helper and the summariser always share a provider; anything unreadable or unknown is Claude.
+      const state = await voiceSetting.read().catch(() => null);
+      const provider = state?.status === "ready" && state.values.provider === "cursor" ? "cursor" : "claude";
+      await Promise.all([voiceHelper.start(provider), replySummary.start(provider).catch((error) => console.warn("orchestrator: reply summary start failed", error))]);
     },
     stop: async () => {
       await Promise.all([voiceHelper.stop(), replySummary.stop()]);

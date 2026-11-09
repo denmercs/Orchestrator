@@ -13,3 +13,13 @@ Asks, so the drawer can control voice for real:
 3. `voice.getState()` and a subscribe, returning on/off and muted, so the drawer need not guess.
 4. A daemon message to stop voice for an agent.
 5. An MCP tool such as `stop_listening` on the `paseo` server, so a session can end its own recording.
+
+## Voice helper on Cursor
+
+Checked live against Paseo 0.11.2: a `cursor/composer-2.5` agent in Ask mode refused a file write (nothing written, no permission request) but still ran read-only tools, a glob search and a shell `ls`. Cursor has no equivalent of Claude's `--tools ""`, so `voice.provider: "cursor"` is accepted but not supported yet, and the voice helper is only tool-free on Claude.
+
+Follow-ups:
+
+1. Re-probe through the SDK (`paseo.agents.create` with the real `VOICE_HELPER_SYSTEM_PROMPT` and `cwd`); the Paseo MCP `create_agent` takes no system prompt, options or cwd, so the first probe could not.
+2. Ask for a way to start a Cursor agent with no tools (a tool allow-list, or a mode that blocks reads and shell).
+3. Time Composer 2.5 against the 8 s `INTERPRET_TIMEOUT_MS` and the summariser's 3 s `SUMMARY_FALLBACK_MS` once that holds, and time Sonnet 5.5 on both.

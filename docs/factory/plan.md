@@ -173,7 +173,7 @@ The code mixes today, and these must change before the rule holds:
 - `MANAGER_MODELS` and `MANAGER_SESSION_MODELS` fall back from `claude` to `cursor`.
 - A seat with no profile of the runner's provider falls back to `MANAGER_MODELS`.
 - The one-shot calls (status reporter, correction classifier, replay judge) always use the Claude CLI.
-- The voice helper, the reply summariser and the Prod Pulse schedule are pinned to `claude/claude-haiku-4-5`.
+- The Prod Pulse schedule is pinned to `claude/claude-haiku-4-5`.
 
 ## Tick
 

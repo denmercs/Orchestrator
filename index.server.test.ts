@@ -123,6 +123,8 @@ type Fake = {
 
 // Set by a test that needs voice.phoneAudio on in `wired`.
 let voicePhoneAudio = false;
+// Set by a test that needs voice.provider in `wired`; undefined leaves the voice setting loading.
+let voiceProvider: unknown;
 
 function wired(
   pending: string[] = [],
@@ -154,7 +156,10 @@ function wired(
       if (key === "registerProvider") return (provider: { connect(): Promise<unknown> }) => void providers.push(provider);
       if (key === "registerSettings") {
         return (definition: { id: string }) => {
-          const state = definition.id === "voice" && voicePhoneAudio ? { status: "ready", values: { referenceClip: "", phoneAudio: true } } : { status: "loading" };
+          const state =
+            definition.id === "voice" && (voicePhoneAudio || voiceProvider !== undefined)
+              ? { status: "ready", values: { referenceClip: "", phoneAudio: voicePhoneAudio, provider: voiceProvider } }
+              : { status: "loading" };
           return new Proxy({}, { get: (_t, k) => (k === "read" ? async () => state : () => noop) });
         };
       }
@@ -354,9 +359,10 @@ test("a loop start file files slices for that input, once Paseo is known", async
 // A fake Paseo that records every agent it is asked about; `create` hands back the helper's id.
 function helperPaseo() {
   const calls: string[] = [];
+  const configs: { provider: string; modeId?: string }[] = [];
   const paseo = {
     agents: {
-      create: async () => (calls.push("create"), { id: "helper-1" }),
+      create: async (request: { config: { provider: string; modeId?: string } }) => (calls.push("create"), configs.push(request.config), { id: "helper-1" }),
       list: noSessions,
       ref: (id: string) => (
         calls.push(`ref:${id}`),
@@ -367,7 +373,7 @@ function helperPaseo() {
       ),
     },
   };
-  return { paseo, calls };
+  return { paseo, calls, configs };
 }
 
 const turnAgent = (id: string, cwd = "/x") => ({ id, workspaceId: null, parentAgentId: null, provider: "claude", cwd, title: null });
@@ -396,6 +402,28 @@ test("the voice helper RPCs start and stop one helper agent, and interpret falls
   assert.ok(calls.includes("archive:helper-1"));
   stop();
 });
+
+for (const [setting, expected] of [
+  [undefined, { provider: "claude/claude-sonnet-5-5", modeId: undefined }],
+  ["claude", { provider: "claude/claude-sonnet-5-5", modeId: undefined }],
+  ["cursor", { provider: "cursor/composer-2.5", modeId: "ask" }],
+  ["gemini", { provider: "claude/claude-sonnet-5-5", modeId: undefined }],
+] as const) {
+  test(`voice.provider ${setting === undefined ? "unset" : `"${setting}"`} starts the helper and the reply summariser on ${expected.provider}`, async () => {
+    // Both agents must come from the one setting read, so they can never split across providers.
+    voiceProvider = setting;
+    const { handlers, stop } = wired([], true, undefined, undefined, mkdtempSync(join(tmpdir(), "voice-helper-")));
+    const { paseo, configs } = helperPaseo();
+    try {
+      await handlers.get(voiceHelperStart.name)!({}, { paseo });
+      assert.equal(configs.length, 2, "the helper and the reply summariser are created");
+      for (const config of configs) assert.deepEqual({ provider: config.provider, modeId: config.modeId }, expected);
+    } finally {
+      voiceProvider = undefined;
+      stop();
+    }
+  });
+}
 
 test("the Mac's status RPC says who needs you, hit an error or is running, and leaves out other words", async () => {
   const { handlers, stop } = wired();
