@@ -77,6 +77,7 @@ import { permissionEvents, turnEvents } from "./server/turn-events";
 import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createMicOffGate } from "./server/mic-off-gate";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
+import { fileInitiative } from "./server/factory-file";
 import { applyFactoryManager, ensureManager, steerManager } from "./server/factory-manager";
 import { isDead, runFactoryTick, type TickPaseo } from "./server/factory-tick";
 import { factoryStatus } from "./server/factory-status";
@@ -308,10 +309,16 @@ export default function contribute(
     initiativeLoop.start(paseoLoopHost(paseo), input);
   server.handle(startInitiativeLoop, (input, { paseo }) => startLoop(input, paseo));
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
+  // Ticket start and promote file slices into the harness repo's factory; the manager decides when they run.
+  const fileForManager = (paseo: PluginHandlerContext["paseo"]) => async (input: { repo: string; initiative: string }) => {
+    const { repo } = await readHarness();
+    if (!repo) throw new Error("Pick a harness repo in settings first.");
+    return fileInitiative(repo, input, { paseo });
+  };
   server.handle(startTicketRpc, (input, { paseo }) =>
     startTicket(input, {
       readIssue: async (key) => (await readIssueStatuses([key])).get(key),
-      startLoop: (loop) => initiativeLoop.start(paseoLoopHost(paseo), loop),
+      file: fileForManager(paseo),
     }),
   );
   server.handle(promoteSessionToStory, async (input, { paseo }) => {
@@ -322,7 +329,7 @@ export default function contribute(
       if (!repo) return fail("That workspace has no directory on disk.");
       const result = await startLocalTicket(
         { repo, title: input.title, kind: input.kind },
-        { startLoop: (loop) => initiativeLoop.start(paseoLoopHost(paseo), loop) },
+        { file: fileForManager(paseo) },
       );
       return { ok: result.ok, error: result.error, ticketKey: result.key, agentId: result.agentId };
     } catch (cause) {
