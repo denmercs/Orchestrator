@@ -285,3 +285,15 @@ test("fileObservations counts the cost a failed classify call reports", async ()
   assert.equal(result.stopped, "error");
   assert.ok(Math.abs(result.spentUsd - 0.01) < 1e-9);
 });
+
+test("storyObservations still reads a block whose step later finished", () => {
+  const resolved = [
+    { kind: "blocked" as const, reason: "needs a key" },
+    { kind: "resolved" as const, step: "Review" },
+  ].reduce(appendOutcome, base);
+  assert.match(resolved, /### Blocked \(resolved: Review finished\)/);
+  assert.deepEqual(
+    storyObservations(resolved, ctx).map((o) => [o.source, o.text]),
+    [["blocked", "needs a key"]],
+  );
+});

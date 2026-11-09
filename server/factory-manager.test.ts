@@ -74,7 +74,10 @@ function fakePaseo(known: Record<string, { status: string; archivedAt?: string |
       create: async (request) => {
         created.push(request);
         await new Promise((resolve) => setImmediate(resolve));
-        if (failing.includes(request.config.provider)) throw new Error(`${request.config.provider} is unavailable`);
+        // The real client's check (parseProviderModel in @getpaseo/client).
+        if (!/^[^/]+\/[^/]+$/.test(request.config.provider)) throw new Error('Expected config.provider in "provider/model" format');
+        const provider = request.config.provider.split("/")[0];
+        if (failing.includes(provider)) throw new Error(`${provider} is unavailable`);
         return { id: `new-${created.length}` };
       },
     },
@@ -120,8 +123,8 @@ test("ensureManager falls back to Cursor Grok 4.7 when the Claude create fails",
   const { paseo, created } = fakePaseo({}, ["claude"]);
   assert.equal(await ensureManager(root, paseo), "new-2");
   assert.deepEqual(created.map((request) => request.config), [
-    { provider: "claude", model: "claude-opus-5-5" },
-    { provider: "cursor", model: "grok-4.7" },
+    { provider: "claude/claude-opus-5-5" },
+    { provider: "cursor/grok-4.7" },
   ]);
   assert.match(managerFile(root), /^agent: new-2$/m);
 });
