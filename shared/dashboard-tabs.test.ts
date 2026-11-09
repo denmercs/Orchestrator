@@ -11,11 +11,11 @@ const pulse = (issueCount: number, olderCount: number) => ({
   older: Array.from({ length: olderCount }, () => ({}) as ProdPulse["older"][number]),
 });
 
-test("the dashboard has five tabs in order: Initiatives, Today, Todos, Board, Pulse", () => {
+test("the dashboard has five tabs in order: Workstreams, Today, Todos, Board, Pulse", () => {
   assert.deepEqual(
     TABS.map((tab) => [tab.id, tab.label]),
     [
-      ["initiatives", "Initiatives"],
+      ["initiatives", "Workstreams"],
       ["today", "Today"],
       ["todos", "Todos"],
       ["board", "Board"],

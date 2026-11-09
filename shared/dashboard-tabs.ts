@@ -5,7 +5,7 @@ export const TAB_IDS = ["initiatives", "today", "todos", "board", "pulse"] as co
 export type TabId = (typeof TAB_IDS)[number];
 
 export const TABS: readonly { id: TabId; label: string }[] = [
-  { id: "initiatives", label: "Initiatives" },
+  { id: "initiatives", label: "Workstreams" },
   { id: "today", label: "Today" },
   { id: "todos", label: "Todos" },
   { id: "board", label: "Board" },
