@@ -6,6 +6,7 @@ import { speakRepliesSet, speakRepliesState } from "./shared/speak-replies";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { defaultTree } from "./shared/loop-tree";
 import { pipelineSettings } from "./shared/pipeline";
+import { sultiStripRead, sultiStripSend } from "./shared/sulti-strip";
 import { voiceEvents, voiceHelperStart, voiceHelperStop, voiceHelperSwitch, voiceInterpret, voiceSpeak, voiceStatus } from "./shared/voice-rpc";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -894,6 +895,51 @@ test("voiceEvents returns the Sulti session's id, and null when it cannot be mad
       console.warn = warn;
       other.stop();
     }
+  } finally {
+    stop();
+  }
+});
+
+// A Paseo whose Sulti session's timeline tail holds a user message, a reply and a tool call.
+function stripPaseo(sent: [string, string][] = []) {
+  const base = suPaseo(["sulti-1"], sent);
+  return {
+    agents: {
+      ...base.agents,
+      ref: (id: string) => ({
+        ...base.agents.ref(id),
+        timeline: {
+          refetch: async () => ({
+            entries: [
+              { item: { type: "user_message", text: "status?" }, timestamp: "2026-01-01T00:00:01Z" },
+              { item: { type: "assistant_message", text: "Two stories are running." }, timestamp: "2026-01-01T00:00:02Z" },
+              { item: { type: "tool_call", text: "ls" }, timestamp: "2026-01-01T00:00:03Z" },
+            ],
+          }),
+        },
+      }),
+    },
+  };
+}
+
+test("sultiStripRead returns the Sulti session's latest reply from its timeline", async () => {
+  const { handlers, stop } = wired();
+  try {
+    const read = await handlers.get(sultiStripRead.name)!({}, { paseo: stripPaseo() });
+    assert.deepEqual(read, { sultiId: "sulti-1", reply: "Two stories are running.", at: "2026-01-01T00:00:02Z", error: null });
+  } finally {
+    stop();
+  }
+});
+
+test("sultiStripSend steers the Sulti session with the typed text", async () => {
+  const { handlers, stop } = wired();
+  try {
+    const sent: [string, string][] = [];
+    const paseo = stripPaseo(sent);
+    await handlers.get(sultiStripSend.name)!({ text: "Sulti, what is next on the board" }, { paseo });
+    assert.deepEqual(sent.map(([id]) => id), ["sulti-1"]);
+    assert.match(sent[0][1], /what is next on the board/);
   } finally {
     stop();
   }

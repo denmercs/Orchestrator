@@ -50,6 +50,7 @@ import { SkillsDrawer, StoryPipelineButton } from "./skills-drawer";
 import { startJiraSession } from "./start-jira-session";
 import { StandupSection } from "./standup-section";
 import { StartInput } from "./start-input";
+import { SultiStrip } from "./sulti-strip";
 import { useOrchestrationCatalog } from "./use-orchestration-catalog";
 
 export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurfaceProps) {
@@ -561,6 +562,7 @@ export function OrchestrationDashboard({ theme, layout, navigation }: PluginSurf
           style={styles.alertsBackdrop}
         />
       ) : null}
+      <SultiStrip theme={theme} compact={layout.compact} navigation={navigation} />
       <TabBar
         theme={theme}
         compact={layout.compact}
