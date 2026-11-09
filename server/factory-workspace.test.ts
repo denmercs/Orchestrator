@@ -250,26 +250,33 @@ describe("Feature: sweeping stray slice workspaces", () => {
   });
 
   test("ignores a failed archive and counts only the ones that went through", async () => {
+    // Arrange: two idle strays, and the archive of the first one fails.
     const { root, host, archived, workspaces } = setup("phase: build\nkind: ship");
     workspaces.splice(0, workspaces.length, stray("a", root, "factory-s8"), stray("b", root, "factory-s9"));
     host.archiveStoryWorkspace = async (id) => {
       if (id === "a") throw new Error("down");
       archived.push(id);
     };
-    assert.equal(await sweepStrayWorkspaces(root, host), 1);
+    // Act
+    const count = await sweepStrayWorkspaces(root, host);
+    // Assert: the failure does not stop the sweep and is not counted.
+    assert.equal(count, 1);
     assert.deepEqual(archived, ["b"]);
   });
 
   describe("when the manager writes sweep: on", () => {
     test("runs the sweep once, clears the field and steers the count", async () => {
+      // Arrange: an idle stray, and the manager asks for a sweep.
       const { root, paseo, archived, workspaces, steers } = setup("phase: build\nkind: ship");
       workspaces.push(stray("wsStray", root, "factory-s8"));
       const manager = join(factoryDir(root), "manager.md");
       put(manager, "---\nagent: mgr1\nsweep: on\n---\n");
 
+      // Act: two passes, so a second sweep would show.
       await runFactoryTick(root, paseo);
       await runFactoryTick(root, paseo);
 
+      // Assert: one sweep, the request cleared, the manager's agent kept and one steer with the count.
       assert.deepEqual(archived, ["wsStray"]);
       assert.equal(field(manager, "sweep"), undefined);
       assert.equal(field(manager, "agent"), "mgr1");
@@ -278,10 +285,13 @@ describe("Feature: sweeping stray slice workspaces", () => {
     });
 
     test("does not sweep without sweep: on", async () => {
+      // Arrange: an idle stray, and a manager that has not asked for a sweep.
       const { root, paseo, archived, workspaces } = setup("phase: build\nkind: ship");
       workspaces.push(stray("wsStray", root, "factory-s8"));
       put(join(factoryDir(root), "manager.md"), "---\nagent: mgr1\n---\n");
+      // Act
       await runFactoryTick(root, paseo);
+      // Assert: the stray stays, since only sweep: on starts a sweep.
       assert.deepEqual(archived, []);
     });
   });
