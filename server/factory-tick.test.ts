@@ -2268,3 +2268,24 @@ test("a merged slice whose worktree is gone is still recorded and its ticket clo
   assert.equal(field(ctx.stateFile, "merged"), MERGED_AT);
   assert.equal(steers.length, 1);
 });
+
+test("after a pass the digest reflects the phase the pass left, even when a slice's pass throws", async () => {
+  // Arrange: a spec slice that advances to build, and a second slice whose agent can't be started.
+  const { root } = setup("", "on", "spec");
+  const otherTree = join(root, "wt2");
+  mkdirSync(otherTree);
+  addSlice(root, "s2", `worktree: ${otherTree}`, "build");
+  const { paseo } = perSlicePaseo();
+  const started = paseo.agents.create;
+  paseo.agents.create = async (request) => {
+    if (request.cwd === otherTree) throw new Error("no capacity for s2");
+    return started(request);
+  };
+
+  // Act
+  await assert.rejects(runFactoryTick(root, paseo), /no capacity for s2/);
+
+  // Assert: the digest exists and shows s1 at build.
+  const digest = readFileSync(join(root, ".harness", "factory", "digest.md"), "utf8");
+  assert.match(digest, /m1\/s1: phase build/);
+});

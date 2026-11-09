@@ -1,9 +1,11 @@
 import type { Ask } from "./claude-cli";
-import { readFactory } from "./factory-layout";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import { factoryDir, readFactory } from "./factory-layout";
 
 export type FactoryStatus = { answer: string } | { unavailable: string };
 
-const SYSTEM = "You report on a software factory to someone listening. Answer in at most three short spoken sentences, from the projection only. Say what is happening and what is stuck. Do not read ids letter by letter, and do not invent anything the projection doesn't say.";
+const SYSTEM = "You report on a software factory to someone listening. Answer in at most three short spoken sentences, from the reports only. Say what is happening and what is stuck. Do not read ids letter by letter, and do not invent anything the reports don't say.";
 
 // A short text projection of the factory: the project's intent, each mission's outcome and per slice the fields that say
 // where it is. Not the files: no spec, culture or frontmatter. Null when the factory has no missions and no project.
@@ -24,21 +26,31 @@ export async function factoryProjection(root: string, alive: (agent: string) => 
   return lines.join("\n");
 }
 
-// One cheap answer to "where are we": the projection through the one-shot model. It only reads files and sends nothing.
-// `{ unavailable }` carries the reason when the one-shot can't run or fails, so the caller can fall back and say why; null
-// when there is no factory.
+// One repo's report: its digest when the tick has written one, else the projection (a factory before its first pass), else
+// null (no factory, so nothing to say). Labelled by the repo folder name.
+async function repoReport(root: string, alive: (agent: string) => Promise<boolean>): Promise<string | null> {
+  const file = join(factoryDir(root), "digest.md");
+  const text = existsSync(file) ? readFileSync(file, "utf8").trim() : await factoryProjection(root, alive);
+  return text ? `Repo ${basename(root)}:\n${text}` : null;
+}
+
+// One cheap answer to "where are we" across repos: each repo's digest through the one-shot model. It only reads files and
+// sends nothing, and wakes no manager. `{ unavailable }` carries the reason when the one-shot can't run or fails, so the
+// caller can fall back and say why; null when no repo has a factory, so the session list answers.
 export async function factoryStatus(
-  root: string,
+  roots: string[],
   ports: { ask: Ask; unavailable: () => Promise<string | null>; alive: (agent: string) => Promise<boolean> },
 ): Promise<FactoryStatus | null> {
-  const factory = readFactory(root);
-  if (!factory.project && factory.missions.length === 0) return null;
+  const reports: string[] = [];
+  for (const root of roots) {
+    const report = await repoReport(root, ports.alive);
+    if (report) reports.push(report);
+  }
+  if (reports.length === 0) return null;
   const reason = await ports.unavailable();
   if (reason) return { unavailable: reason };
-  const projection = await factoryProjection(root, ports.alive);
-  if (!projection) return null;
   try {
-    const { text } = await ports.ask(SYSTEM, projection);
+    const { text } = await ports.ask(SYSTEM, reports.join("\n\n"));
     return { answer: text.trim() };
   } catch (error) {
     return { unavailable: error instanceof Error ? error.message : String(error) };
