@@ -116,6 +116,19 @@ test("a loop agent gets the step prompt plus resume, no handoff turn, and the st
   assert.deepEqual(calls[3], ["handOver", labels, "a1", "a2"]);
 });
 
+test("a factory slice's build agent restarts its step like a loop agent: step prompt, no handoff turn, hand-over", async () => {
+  const labels = { kind: "factory-seat", seat: "builder", "factory-slice": "s1", "factory-mission": "m1", "loop-step": "implement", "loop-round": "1" };
+  const { port, calls } = fakeFresh(session(labels), { loopPrompt: "Implement s1.\n\nResume from `.harness/state.md`." });
+
+  await freshCompactor(port).compact("a1", keepList(labels));
+
+  assert.deepEqual(
+    calls.map((call) => call[0]),
+    ["session", "loopPrompt", "create", "handOver", "archive"],
+  );
+  assert.deepEqual(calls[3], ["handOver", labels, "a1", "a2"]);
+});
+
 test("a loop agent's fresh session keeps the step's profile config", async () => {
   const labels = { kind: "initiative-loop", "loop-step": "plan", "loop-story": "S9", "loop-round": "1" };
   const stepConfig = { provider: "claude/opus", modeId: "bypassPermissions", thinkingOptionId: "max" };

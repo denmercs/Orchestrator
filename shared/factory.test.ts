@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Factory, type FactorySlice, parseSeat, parseSliceState, runnableSlice } from "./factory";
+import { type Factory, type FactorySlice, parseSeat, heldBy, parseSliceState, runnableSlices } from "./factory";
 
 test("parseSliceState reads an empty frontmatter as an idle scout at the spec phase", () => {
   assert.deepEqual(parseSliceState({}), {
@@ -14,6 +14,10 @@ test("parseSliceState reads an empty frontmatter as an idle scout at the spec ph
     depends: [],
     run: false,
     design: false,
+    ready: "",
+    approve: "",
+    pr: "",
+    held: "",
   });
 });
 
@@ -30,6 +34,10 @@ test("parseSliceState reads every field", () => {
       depends: "a, b",
       run: "on",
       design: "on",
+      ready: "ci",
+      approve: "plan",
+      pr: "42",
+      held: "blocked dependency a",
     }),
     {
       phase: "build",
@@ -42,6 +50,10 @@ test("parseSliceState reads every field", () => {
       depends: ["a", "b"],
       run: true,
       design: true,
+      ready: "ci",
+      approve: "plan",
+      pr: "42",
+      held: "blocked dependency a",
     },
   );
 });
@@ -51,6 +63,9 @@ test("parseSliceState falls back on unknown values", () => {
   assert.deepEqual([state.phase, state.kind, state.attempt, state.run], ["spec", "scout", 0, false]);
   assert.equal(parseSliceState({ attempt: "-1" }).attempt, 0);
   assert.equal(parseSliceState({ attempt: "1.5" }).attempt, 0);
+  const odd = parseSliceState({ ready: "soon", approve: "yes" });
+  assert.deepEqual([odd.ready, odd.approve], ["", ""]);
+  assert.equal(parseSliceState({ ready: "review" }).ready, "review");
 });
 
 test("parseSeat reads profile, skills and agent from frontmatter and notes from the body", () => {
@@ -79,17 +94,64 @@ const factoryOf = (...missions: [string, FactorySlice[]][]): Factory => ({
   missions: missions.map(([id, slices]) => ({ id, outcome: "", slices })),
 });
 
-test("runnableSlice is null when no slice is run: on", () => {
-  assert.equal(runnableSlice(factoryOf(["m1", [slice("a", "m1"), slice("b", "m1", { run: "off" })]])), null);
+const ids = (factory: Factory) => runnableSlices(factory).map((found) => found.id);
+const finished = (id: string, mission: string, ready = "review") => ({ ...slice(id, mission, { run: "on", ready }), proof: "Proof." });
+
+test("runnableSlices is empty when no slice is run: on", () => {
+  assert.deepEqual(runnableSlices(factoryOf(["m1", [slice("a", "m1"), slice("b", "m1", { run: "off" })]])), []);
 });
 
-test("runnableSlice ignores depends on an unfinished slice", () => {
-  const dependent = slice("b", "m1", { run: "on", depends: "a" });
-  assert.equal(runnableSlice(factoryOf(["m1", [slice("a", "m1"), dependent]])), dependent);
+test("runnableSlices returns every run: on slice that is not ready, in mission then slice order", () => {
+  const factory = factoryOf(
+    ["m1", [slice("x", "m1"), slice("a", "m1", { run: "on" }), slice("r", "m1", { run: "on", ready: "review" }), slice("b", "m1", { run: "on" })]],
+    ["m2", [slice("c", "m2", { run: "on" })]],
+  );
+  // m1 has no finished slice yet, so m2 waits behind it
+  assert.deepEqual(ids(factory), ["a", "b"]);
+  assert.deepEqual(ids(factoryOf(["m1", [finished("a", "m1")]], ["m2", [slice("c", "m2", { run: "on" }), slice("d", "m2", { run: "on" })]])), ["c", "d"]);
 });
 
-test("runnableSlice returns only the first run: on slice, in mission then slice order", () => {
-  const first = slice("a", "m1", { run: "on" });
-  const second = slice("b", "m2", { run: "on" });
-  assert.equal(runnableSlice(factoryOf(["m1", [slice("x", "m1"), first]], ["m2", [second]])), first);
+test("runnableSlices blocks a slice whose dependency has an empty proof", () => {
+  const dependency = { ...slice("a", "m1", { run: "on", ready: "review" }), proof: "" };
+  assert.deepEqual(ids(factoryOf(["m1", [dependency, slice("b", "m1", { run: "on", depends: "a" })]])), []);
+});
+
+test("runnableSlices blocks a slice whose dependency has proof but is not ready", () => {
+  const dependency = { ...slice("a", "m1", { run: "on" }), proof: "Proof." };
+  assert.deepEqual(ids(factoryOf(["m1", [dependency, slice("b", "m1", { run: "on", depends: "a" })]])), ["a"]);
+});
+
+test("runnableSlices lets a slice run once its dependency has proof and is ready for review or ci", () => {
+  for (const ready of ["review", "ci"]) {
+    assert.deepEqual(ids(factoryOf(["m1", [finished("a", "m1", ready), slice("b", "m1", { run: "on", depends: "a" })]])), ["b"]);
+  }
+});
+
+test("runnableSlices blocks a slice that depends on an unknown id", () => {
+  assert.deepEqual(ids(factoryOf(["m1", [slice("b", "m1", { run: "on", depends: "ghost" })]])), []);
+});
+
+test("runnableSlices holds a later mission while an earlier mission is open", () => {
+  const later = slice("c", "m2", { run: "on" });
+  assert.deepEqual(ids(factoryOf(["m1", [slice("a", "m1", { run: "on" })]], ["m2", [later]])), ["a"]);
+  assert.deepEqual(ids(factoryOf(["m1", [slice("a", "m1", { run: "on", ready: "blocked" })]], ["m2", [later]])), []);
+});
+
+test("runnableSlices does not hold a later mission for an earlier mission that is done or idle", () => {
+  const later = slice("c", "m2", { run: "on" });
+  assert.deepEqual(ids(factoryOf(["m1", [finished("a", "m1")]], ["m2", [later]])), ["c"]);
+  assert.deepEqual(ids(factoryOf(["m1", [slice("a", "m1")]], ["m2", [later]])), ["c"]);
+});
+
+test("heldBy names a blocked or unknown dependency, and nothing for one still in progress", () => {
+  const blocked = slice("a", "m1", { run: "on", ready: "blocked" });
+  const working = slice("w", "m1", { run: "on" });
+  const held = (fields: Record<string, string>, mission = { id: "m1", outcome: "", slices: [blocked, working] }) =>
+    heldBy(slice("b", "m1", fields), mission);
+  assert.equal(held({ run: "on", depends: "w, a" }), "blocked dependency a");
+  assert.equal(held({ run: "on", depends: "ghost" }), "unknown dependency ghost");
+  assert.equal(held({ run: "on", depends: "w" }), null);
+  // An idle or ready slice is not held, whatever it depends on.
+  assert.equal(held({ depends: "a" }), null);
+  assert.equal(held({ run: "on", ready: "blocked", depends: "a" }), null);
 });

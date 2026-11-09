@@ -7,8 +7,8 @@ import { choiceNumber, exactSessions, matchSessions, shortName } from "./voice-n
 
 export type VoiceMode = "asleep" | "listening" | "confirming" | "waiting" | "speaking";
 export type VoiceSession = { id: string; name: string };
-export type NoticeKind = "finished" | "needsYou" | "error" | "costCap";
-export type Notice = { kind: NoticeKind; sessionId: string; name: string };
+export type NoticeKind = "finished" | "needsYou" | "error" | "costCap" | "roundCap";
+export type Notice = { kind: NoticeKind; sessionId: string; name: string; detail?: string };
 
 export type VoiceState = {
   mode: VoiceMode;
@@ -54,7 +54,7 @@ export type VoiceEvent =
   | { type: "sessions"; list: VoiceSession[]; blocked?: VoiceSession[] }
   /** A numbered list unanswered for `CONFIRM_TIMEOUT_MS` (the runner's timer, or Jarvis on the next words) is forgotten. */
   | { type: "choicesExpired" }
-  | { type: "notice"; kind: string; sessionId: string }
+  | { type: "notice"; kind: string; sessionId: string; detail?: string }
   | { type: "interrupt" }
   /** Sleep from the drawer (the runner's off switch): same as "Sulti, ignore me". */
   | { type: "sleep" };
@@ -105,9 +105,21 @@ const LIST_SESSIONS = /^(?:(?:list|show|read|which|what)(?: me)?(?: the| all| my
 // "switch to X" (and "go/talk/change/move to X"), or "use/pick/open/choose/select X".
 const SWITCH_TO = /^(?:(switch|go|talk|change|move) to|(use|pick|open|choose|select)) (.+)$/;
 const NEW_SESSION = /^(?:start |create |open )?(?:a )?new (?:voice )?session$/;
-const NOTICE_ORDER: NoticeKind[] = ["finished", "needsYou", "error", "costCap"];
-const NOTICE_ONE: Record<NoticeKind, string> = { finished: "finished", needsYou: "needs you", error: "hit an error", costCap: "hit the cost cap" };
-const NOTICE_MANY: Record<NoticeKind, string> = { finished: "finished", needsYou: "need you", error: "hit an error", costCap: "hit the cost cap" };
+const NOTICE_ORDER: NoticeKind[] = ["finished", "needsYou", "error", "costCap", "roundCap"];
+const NOTICE_ONE: Record<NoticeKind, string> = {
+  finished: "finished",
+  needsYou: "needs you",
+  error: "hit an error",
+  costCap: "hit the cost cap",
+  roundCap: "is on round 3, near the cap on rounds and spend",
+};
+const NOTICE_MANY: Record<NoticeKind, string> = {
+  finished: "finished",
+  needsYou: "need you",
+  error: "hit an error",
+  costCap: "hit the cost cap",
+  roundCap: "are on round 3, near the cap on rounds and spend",
+};
 const NUMBER_WORDS = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
 // Said after the name to wake the loop with nothing else to do.
 const WAKE_WORDS = new Set(["", "wake up", "wake", "i m back", "im back", "listen", "you there", "are you there"]);
@@ -328,7 +340,7 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
       if (!NOTICE_ORDER.includes(kind) || (kind === "finished" && event.sessionId === state.session?.id)) return out(state);
       const found = state.sessions.find((s) => s.id === event.sessionId);
       const name = found ? shortName(found.name) : "A session";
-      return out({ ...state, queue: [...state.queue, { kind, sessionId: event.sessionId, name }] });
+      return out({ ...state, queue: [...state.queue, { kind, sessionId: event.sessionId, name, detail: event.detail }] });
     }
   }
 }
@@ -347,8 +359,10 @@ function flush(r: VoiceStep): VoiceStep {
 function mergeNotices(queue: Notice[]): string {
   const parts: string[] = [];
   for (const kind of NOTICE_ORDER) {
-    const names = [...new Map(queue.filter((n) => n.kind === kind).map((n) => [n.sessionId, n.name])).values()];
-    if (names.length === 1) parts.push(`${names[0]} ${NOTICE_ONE[kind]}`);
+    const of = [...new Map(queue.filter((n) => n.kind === kind).map((n) => [n.sessionId, n])).values()];
+    const names = of.map((n) => n.name);
+    // A detail (the spend) belongs to one session, so only a lone name speaks it.
+    if (names.length === 1) parts.push(`${names[0]} ${NOTICE_ONE[kind]}${of[0].detail ? ` (${of[0].detail})` : ""}`);
     else if (names.length > 1) parts.push(`${NUMBER_WORDS[names.length] ?? names.length} sessions ${NOTICE_MANY[kind]}`);
   }
   return parts.map((p, i) => (i === 0 ? p[0].toUpperCase() + p.slice(1) : p)).join(". ") + ".";

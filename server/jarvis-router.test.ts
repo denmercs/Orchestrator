@@ -12,7 +12,7 @@ const api: VoiceSession = { id: "s1", name: "api-refactor" };
 const docs: VoiceSession = { id: "s2", name: "docs" };
 const self: VoiceSession = { id: "j1", name: "Sulti" };
 
-function setup(opts: { sessions?: VoiceSession[]; fail?: boolean; interpreter?: JarvisInterpreter; createFail?: boolean } = {}) {
+function setup(opts: { sessions?: VoiceSession[]; fail?: boolean; interpreter?: JarvisInterpreter; createFail?: boolean; manager?: () => Promise<VoiceSession | null>; blocked?: VoiceSession[] } = {}) {
   // `raw` is what the sessions received; `sent` is the same with the one-time routing preamble taken off, so the
   // tests that aren't about the preamble read the words alone.
   const raw: [string, string][] = [];
@@ -20,7 +20,7 @@ function setup(opts: { sessions?: VoiceSession[]; fail?: boolean; interpreter?: 
   const created: unknown[] = [];
   let clock = 0;
   const router = createJarvisRouter({
-    sessions: async () => ({ list: opts.sessions ?? [api, docs], blocked: [self] }),
+    sessions: async () => ({ list: opts.sessions ?? [api, docs], blocked: opts.blocked ?? [self] }),
     send: async (id, text) => {
       if (opts.fail) throw new Error("agent not found");
       raw.push([id, text]);
@@ -33,6 +33,7 @@ function setup(opts: { sessions?: VoiceSession[]; fail?: boolean; interpreter?: 
     },
     now: () => clock,
     interpreter: opts.interpreter,
+    manager: opts.manager,
   });
   return { router, sent, raw, created, tick: (ms: number) => void (clock += ms) };
 }
@@ -520,4 +521,190 @@ test("a typed one-word message reaches the target, even asleep; spoken one-word 
   await pick(asleep.router, "r2");
   await asleep.router.route("r2", "continue", undefined, { typed: true });
   assert.deepEqual(asleep.sent, [["s1", "continue"]]);
+});
+
+// The factory manager: when the port returns it, a router with no target lands on it.
+const manager: VoiceSession = { id: "m1", name: "Manager title from Paseo" };
+
+test("with a factory manager, a new router's first utterance goes to the manager, not a pick prompt", async () => {
+  const { router, sent } = setup({ manager: async () => manager });
+  const r = await router.route("r1", "how is the factory doing");
+  assert.deepEqual(r.spoken, []);
+  assert.deepEqual(sent, [["m1", "how is the factory doing"]]);
+  assert.equal(router.stateOf("r1")?.session?.id, "m1");
+});
+
+test("after a reopen (Jarvis session id changes, new router id) factory talk still goes to the same manager id", async () => {
+  let jarvis = self;
+  const sent: [string, string][] = [];
+  const router = createJarvisRouter({
+    sessions: async () => ({ list: [api, docs], blocked: [jarvis] }),
+    send: async (id, text) => void sent.push([id, text.replace(`${VOICE_ROUTING_PREAMBLE}\n\n`, "")]),
+    create: async () => "new1",
+    manager: async () => manager,
+  });
+  await router.route("r1", "status of the slice");
+  jarvis = { id: "j2", name: "Sulti" };
+  await router.route("r2", "and the next one");
+  assert.deepEqual(sent, [["m1", "status of the slice"], ["m1", "and the next one"]]);
+});
+
+test("'switch to factory manager' after picking another session picks the manager again", async () => {
+  const { router, sent } = setup({ manager: async () => manager });
+  await pick(router);
+  assert.equal(router.stateOf("r1")?.session?.id, "s1");
+  assert.deepEqual((await router.route("r1", "Sulti, switch to factory manager")).spoken, ["Now on Factory manager."]);
+  await router.route("r1", "any blockers");
+  assert.deepEqual(sent, [["m1", "any blockers"]]);
+});
+
+test("a manager that is also in the session list shows once", async () => {
+  const { router } = setup({ sessions: [api, manager, docs], manager: async () => manager });
+  await router.route("r1", "hello");
+  assert.deepEqual(router.stateOf("r1")?.sessions.map((s) => s.id), ["s1", "s2", "m1"]);
+});
+
+test("a null manager leaves routing as today: pick first, nothing said, nothing sent", async () => {
+  const { router, sent } = setup({ manager: async () => null });
+  assert.deepEqual(await router.route("r1", "run the tests please"), { spoken: [], note: pickFirstLine(["api-refactor", "docs"]) });
+  assert.deepEqual(sent, []);
+});
+
+test("a manager that rejects is said once, then routing is as today", async () => {
+  const { router, sent } = setup({ manager: async () => Promise.reject(new Error("no model signed in")) });
+  const r = await router.route("r1", "run the tests please");
+  assert.deepEqual(r.spoken, ["I couldn't start the factory manager: no model signed in"]);
+  assert.equal(r.note, pickFirstLine(["api-refactor", "docs"]));
+  assert.deepEqual(sent, []);
+});
+
+// The sessions step drops a target that turns out to be one of Voice's own (blocked) sessions.
+test("when the target is dropped, the next utterance says it is now on the manager before sending", async () => {
+  let list = [api, docs];
+  let blocked: VoiceSession[] = [];
+  const sent: [string, string][] = [];
+  const router = createJarvisRouter({
+    sessions: async () => ({ list, blocked }),
+    send: async (id, text) => void sent.push([id, text.replace(`${VOICE_ROUTING_PREAMBLE}\n\n`, "")]),
+    create: async () => "new1",
+    manager: async () => manager,
+  });
+  await pick(router);
+  assert.equal(router.stateOf("r1")?.session?.id, "s1");
+  list = [docs];
+  blocked = [api];
+  const r = await router.route("r1", "any news");
+  assert.deepEqual(r.spoken, ["Now on Factory manager."]);
+  assert.deepEqual(sent.at(-1), ["m1", "any news"]);
+});
+
+test("when the manager is replaced, the next utterance goes to the new id in manager.md", async () => {
+  // Arrange: the router lands on m1, then the manager dies and ensureManager hands back m2.
+  let current: VoiceSession = manager;
+  const sent: [string, string][] = [];
+  const router = createJarvisRouter({
+    sessions: async () => ({ list: [api, docs], blocked: [] }),
+    send: async (id, text) => void sent.push([id, text.replace(`${VOICE_ROUTING_PREAMBLE}\n\n`, "")]),
+    create: async () => "new1",
+    manager: async () => current,
+  });
+  await router.route("r1", "status of the slice");
+  current = { id: "m2", name: "Manager title from Paseo" };
+  // Act
+  const r = await router.route("r1", "and the next one");
+  // Assert: said once, and sent to the new id, not the dead one
+  assert.deepEqual(r.spoken, ["Now on Factory manager."]);
+  assert.deepEqual(sent, [["m1", "status of the slice"], ["m2", "and the next one"]]);
+  assert.equal(router.stateOf("r1")?.session?.id, "m2");
+});
+
+// The factory status reporter: "where are we" is answered from the factory's files by a cheap one-shot, never by the manager.
+function reporterSetup(factoryStatus: () => Promise<{ answer: string } | { unavailable: string } | null>) {
+  const sent: [string, string][] = [];
+  let managerCalls = 0;
+  const router = createJarvisRouter({
+    sessions: async () => ({ list: [api, docs], blocked: [self] }),
+    send: async (id, text) => void sent.push([id, text.replace(`${VOICE_ROUTING_PREAMBLE}\n\n`, "")]),
+    create: async () => "new1",
+    status: async () => statusAgents,
+    manager: async () => {
+      managerCalls += 1;
+      return manager;
+    },
+    factoryStatus,
+  });
+  return { router, sent, managerCalls: () => managerCalls };
+}
+
+test("'where are we' is spoken from the reporter, and the manager is neither woken nor sent anything", async () => {
+  const { router, sent, managerCalls } = reporterSetup(async () => ({ answer: "Two slices; s1 is building." }));
+  const r = await router.route("r1", "Sulti, where are we?");
+  assert.deepEqual(r.spoken, ["Two slices; s1 is building."]);
+  assert.equal(managerCalls(), 0);
+  assert.deepEqual(sent, []);
+});
+
+test("when the reporter is unavailable the words go to the manager, with a note that says why", async () => {
+  const { router, sent, managerCalls } = reporterSetup(async () => ({ unavailable: "Claude Code is not signed in." }));
+  const r = await router.route("r1", "where are we");
+  assert.equal(managerCalls(), 1);
+  assert.deepEqual(sent, [["m1", "where are we"]]);
+  assert.match(r.note ?? "", /Claude Code is not signed in\./);
+});
+
+test("the unavailable note names the session the words actually went to, not the manager", async () => {
+  const { router, sent } = reporterSetup(async () => ({ unavailable: "offline" }));
+  await router.route("r1", "Sulti, switch to docs");
+  const r = await router.route("r1", "where are we");
+  assert.deepEqual(sent, [["s2", "where are we"]]);
+  assert.match(r.note ?? "", /this went to docs/);
+  assert.doesNotMatch(r.note ?? "", /manager/);
+});
+
+test("plain 'status' with the reporter unavailable keeps the free session line and says why", async () => {
+  const { router, sent, managerCalls } = reporterSetup(async () => ({ unavailable: "offline" }));
+  const r = await router.route("r1", "Sulti, status");
+  assert.match(r.spoken[0] ?? "", /docs needs you/);
+  assert.match(r.note ?? "", /offline/);
+  assert.equal(managerCalls(), 0);
+  assert.deepEqual(sent, []);
+});
+
+test("a reporter that throws is treated as unavailable", async () => {
+  const { router, sent } = reporterSetup(async () => Promise.reject(new Error("disk gone")));
+  const r = await router.route("r1", "what's the factory doing");
+  assert.deepEqual(sent, [["m1", "what's the factory doing"]]);
+  assert.match(r.note ?? "", /disk gone/);
+});
+
+test("with no factory the reporter says null and 'where are we' routes as before", async () => {
+  const { router, sent } = reporterSetup(async () => null);
+  await router.route("r1", "where are we");
+  assert.deepEqual(sent, [["m1", "where are we"]]);
+});
+
+test("plain 'status' goes to the reporter when a factory exists, and to the session line when it doesn't", async () => {
+  const withFactory = reporterSetup(async () => ({ answer: "s1 is building." }));
+  assert.deepEqual((await withFactory.router.route("r1", "Sulti, status")).spoken, ["s1 is building."]);
+  assert.equal(withFactory.managerCalls(), 0);
+
+  const without = reporterSetup(async () => null);
+  const r = await without.router.route("r1", "Sulti, status");
+  assert.match(r.spoken[0] ?? "", /docs needs you/);
+  assert.deepEqual(without.sent, []);
+});
+
+test("asleep, the reporter answers only to the name, like status", async () => {
+  let asked = 0;
+  const { router } = reporterSetup(async () => {
+    asked += 1;
+    return { answer: "s1 is building." };
+  });
+  await router.route("r1", "Sulti, silent mode");
+  const quiet = await router.route("r1", "where are we");
+  assert.deepEqual(quiet.spoken, []);
+  assert.equal(asked, 0);
+  const named = await router.route("r1", "Sulti, where are we");
+  assert.deepEqual(named.spoken, ["s1 is building."]);
+  assert.notEqual(router.stateOf("r1")?.mode, "asleep");
 });

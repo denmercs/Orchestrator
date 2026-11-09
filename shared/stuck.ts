@@ -36,56 +36,108 @@ export function testRuns(items: readonly ToolItem[]): string[][] {
   return runs;
 }
 
-export type StuckCounters = { idle_turns: number; fail_tests: string[]; fail_runs: number };
+// What the turns of a failing-test streak edited: "code" once any turn edited a file that is neither a test nor under
+// `.harness/`, else "tests" once any edited a test or `.harness/` file, else "none".
+export type FailEdits = "none" | "tests" | "code";
+
+// `ceremony_turns` counts completed turns in a row that edited only `.harness/` files.
+export type StuckCounters = { idle_turns: number; fail_tests: string[]; fail_runs: number; ceremony_turns: number; fail_edits: FailEdits };
 
 const FAIL_RUNS = 3;
 
 // The shared-failure streak: each run's failing names fold into the carried streak. A pass resets it;
-// a run sharing no name with the streak restarts it.
-function foldRuns(streak: { fail_tests: string[]; fail_runs: number }, runs: readonly string[][]): { fail_tests: string[]; fail_runs: number } {
+// a run sharing no name with the streak restarts it. `restarted` is true when either happened during the fold,
+// so the streak left standing began inside these runs rather than carrying on from before.
+function foldRuns(
+  streak: { fail_tests: string[]; fail_runs: number },
+  runs: readonly string[][],
+): { fail_tests: string[]; fail_runs: number; restarted: boolean } {
   let { fail_tests, fail_runs } = streak;
+  let restarted = false;
   for (const names of runs) {
     if (names.length === 0) {
       fail_tests = [];
       fail_runs = 0;
+      restarted = true;
       continue;
     }
     const shared = fail_runs === 0 ? names : fail_tests.filter((name) => names.includes(name));
     if (shared.length === 0) {
       fail_tests = names;
       fail_runs = 1;
+      restarted = true;
     } else {
       fail_tests = shared;
       fail_runs += 1;
     }
   }
-  return { fail_tests, fail_runs };
+  return { fail_tests, fail_runs, restarted };
 }
 
-function failEvidence(fail_tests: string[], fail_runs: number): string | null {
+function failEvidence(fail_tests: string[], fail_runs: number, fail_edits: FailEdits = "code"): string | null {
   if (fail_runs < FAIL_RUNS || fail_tests.length === 0) return null;
   const more = fail_tests.length > 1 ? ` (+${fail_tests.length - 1} more)` : "";
-  return `${fail_tests[0]} failed ${FAIL_RUNS} test runs in a row${more}`;
+  const checks = fail_edits === "tests" ? ", and every turn edited only tests or .harness files, not the code under test" : "";
+  return `${fail_tests[0]} failed ${FAIL_RUNS} test runs in a row${more}${checks}`;
 }
+
+const inHarness = (path: string) => path.split(/[\\/]/).includes(".harness");
+const isTestFile = (path: string) => /\.(test|spec)\.[^\\/]+$/.test(path) || /(^|[\\/])(test|__tests__)[\\/]/.test(path);
+
+// Which kinds of file a turn's edits and writes touched: product code (neither a test nor under
+// `.harness/`), a test file, or a file under `.harness/`.
+function editedFiles(items: readonly ToolItem[]): { code: boolean; test: boolean; harness: boolean } {
+  const touched = { code: false, test: false, harness: false };
+  for (const step of toolSteps(items)) {
+    if (step.kind !== "edit" && step.kind !== "write") continue;
+    for (const path of step.paths) {
+      if (inHarness(path)) touched.harness = true;
+      else if (isTestFile(path)) touched.test = true;
+      else touched.code = true;
+    }
+  }
+  return touched;
+}
+
+const RANK: Record<FailEdits, number> = { none: 0, tests: 1, code: 2 };
+
+// Steps that legitimately write only `.harness/` files over several turns: the ceremony signal skips them.
+const CEREMONY_EXEMPT = new Set(["plan", "diagnose"]);
 
 // One completed turn's items against the story's carried counters: the next counters, and the
 // evidence the step is stuck (null when it is not). Idle turns count on Implement only and not for
-// subagent parents; the fail streak counts on every step. A failing test is named before idleness.
+// subagent parents; the fail streak counts on every step. A failing test is named before idleness, and ceremony turns before idleness (a `.harness`-only turn bumps both on Implement, and ceremony says what it did).
+// Two more signals run on every step but Plan and Diagnose: ceremony turns (`stuckTurns` completed
+// turns in a row that edit only `.harness/` files; a turn with no edits neither counts nor resets,
+// and an edit outside `.harness/` resets) and checks instead of a fix (the fail streak, whose turns
+// all edited only tests or `.harness/` files, which the evidence says).
 export function stuckCheck(
   counters: StuckCounters,
   items: readonly ToolItem[],
   { step, subagents, stuckTurns }: { step: string | null; subagents: boolean; stuckTurns: number },
 ): { counters: StuckCounters; evidence: string | null } {
-  let { idle_turns, fail_tests, fail_runs } = counters;
+  let { idle_turns, fail_tests, fail_runs, ceremony_turns, fail_edits } = counters;
   if (step === "implement" && !subagents) {
     idle_turns = exploration(toolSteps(items), { step }).edited ? 0 : idle_turns + 1;
   }
-  ({ fail_tests, fail_runs } = foldRuns({ fail_tests, fail_runs }, testRuns(items)));
-  let evidence = failEvidence(fail_tests, fail_runs);
+  const edited = editedFiles(items);
+  const streakBefore = fail_runs;
+  const folded = foldRuns({ fail_tests, fail_runs }, testRuns(items));
+  ({ fail_tests, fail_runs } = folded);
+  // A streak that began or restarted this turn starts from this turn's edits; a longer one keeps the larger of the two.
+  const turnEdits: FailEdits = edited.code ? "code" : edited.test || edited.harness ? "tests" : "none";
+  const fresh = streakBefore === 0 || folded.restarted;
+  fail_edits = fail_runs === 0 ? "none" : fresh || RANK[turnEdits] > RANK[fail_edits] ? turnEdits : fail_edits;
+  if (edited.code || edited.test) ceremony_turns = 0;
+  else if (edited.harness) ceremony_turns += 1;
+  let evidence = failEvidence(fail_tests, fail_runs, fail_edits);
+  if (evidence === null && !CEREMONY_EXEMPT.has(step ?? "") && ceremony_turns >= stuckTurns) {
+    evidence = `${ceremony_turns} turns in a row edited only .harness files`;
+  }
   if (evidence === null && step === "implement" && !subagents && idle_turns >= stuckTurns) {
     evidence = `no file edits in ${idle_turns} turns`;
   }
-  return { counters: { idle_turns, fail_tests, fail_runs }, evidence };
+  return { counters: { idle_turns, fail_tests, fail_runs, ceremony_turns, fail_edits }, evidence };
 }
 
 export const MID_TURN_IDLE_MS = 20 * 60_000;

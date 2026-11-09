@@ -1,3 +1,4 @@
+import type { FactorySeat } from "./factory";
 import type { LoopConfig, LoopStep } from "./initiative-loop";
 
 export const FALLBACK_AGENT_CONFIG = {
@@ -61,14 +62,29 @@ export function resolveRunnerConfig(
   };
 }
 
-// Decision d1: Plan and Review default to an Opus profile, Implement and Fix CI to a Sonnet one.
-const STEP_TIER: Partial<Record<LoopStep, string>> = {
-  plan: "opus",
-  diagnose: "opus",
-  review: "opus",
-  implement: "sonnet",
-  fix: "sonnet",
+// Decision d1: Plan and Review default to a deep profile, Implement and Fix CI to a fast one.
+const STEP_TIER: Partial<Record<LoopStep, "deep" | "fast">> = {
+  plan: "deep",
+  diagnose: "deep",
+  review: "deep",
+  implement: "fast",
+  fix: "fast",
 };
+
+// What marks a profile's tier in its name or model, first match wins. The role word works for any provider
+// ("Grok deep", "grok-code-fast") and must stand alone, so "deepseek" is no tier; the Claude model names are the
+// fallback for profiles named before roles existed.
+const TIER_WORDS = { deep: [/\bdeep\b/, /opus/], fast: [/\bfast\b/, /sonnet/] } as const;
+
+// The first profile of `provider` whose name or model carries the tier's word; null when none does.
+export function profileForTier(profiles: AgentProfile[], tier: "deep" | "fast", provider: string) {
+  const ofProvider = profiles.filter((candidate) => candidate.provider === provider);
+  return (
+    TIER_WORDS[tier]
+      .map((word) => ofProvider.find((candidate) => word.test(`${candidate.model ?? ""} ${candidate.name}`.toLowerCase())))
+      .find(Boolean) ?? null
+  );
+}
 
 // The loop step's default profile: the legacy `profiles` setting (id or name; nothing in the dashboard sets it
 // now), else the d1 tier
@@ -85,19 +101,26 @@ export function profileForStep(
   const setId = step === "pr" ? "" : loop.profiles[step === "diagnose" ? "plan" : step];
   const provider = runner?.provider ?? FALLBACK_AGENT_CONFIG.provider;
   const profile =
-    (setId ? pickProfile(profiles, setId) : null) ??
-    (tier
-      ? profiles.find(
-          (candidate) =>
-            candidate.provider === provider &&
-            `${candidate.model ?? ""} ${candidate.name}`.toLowerCase().includes(tier),
-        )
-      : null) ??
-    runner;
+    (setId ? pickProfile(profiles, setId) : null) ?? (tier ? profileForTier(profiles, tier, provider) : null) ?? runner;
   return {
     profile,
     config: profile ? materializeProfile(profile) : { ...FALLBACK_AGENT_CONFIG },
   };
+}
+
+// A factory seat's profile: the one its file names (id or name), else its role's tier among the runner provider's
+// profiles (the reviewer is deep, every other role fast). Null when neither resolves: there is no runner fallback, so
+// the caller picks its own.
+export function seatProfile(
+  seat: Pick<FactorySeat, "profile"> | undefined,
+  role: string,
+  profiles: AgentProfile[],
+  runnerProfileId: string,
+) {
+  const named = seat?.profile ? pickProfile(profiles, seat.profile) : null;
+  if (named) return named;
+  const provider = pickProfile(profiles, runnerProfileId)?.provider ?? FALLBACK_AGENT_CONFIG.provider;
+  return profileForTier(profiles, role === "reviewer" ? "deep" : "fast", provider);
 }
 
 export function profilesFromConfigGet(got: unknown): AgentProfile[] {

@@ -68,7 +68,7 @@ rules/                           engineering rules; index.md lists them
 scripts/link-kit.mjs             links the kit into your global agent folders
 ```
 
-Linking is a manual step. Run `node scripts/link-kit.mjs` (add `--dry-run` to preview). It links skills into `~/.claude/skills` and rules into `~/.claude/rules` and `~/.kiro/steering`, skips real files and links it doesn't own, and removes its own stale links.
+Linking is a manual step. Run `node scripts/link-kit.mjs` (add `--dry-run` to preview). It links skills into `~/.claude/skills` and `~/.agents/skills` (the shared folder Codex, OpenCode and other agents read), and rules into `~/.claude/rules` and `~/.kiro/steering`. It skips real files and links it doesn't own, and removes its own stale links.
 
 Convention: keep a dedicated main clone at `~/.orchestrator/kit` and point the global links at it. Run the script from that clone, and `git pull` there to update.
 
@@ -89,7 +89,8 @@ Every session also gets a **context pill** with its size (for example `82k / 200
 
 ## Choices that keep it cheap and predictable
 
-- **Model split.** Plan and Review run on Opus, while Implement and Fix CI run on Sonnet. A repo can pick another model per phase in its Story pipeline (`.orchestrator/pipeline.json`, `profile`).
+- **Model split.** Plan and Review run on a *deep* profile, while Implement and Fix CI run on a *fast* one. The loop looks among the runner's provider's Paseo profiles for one with `deep` or `fast` in its name or model (for example "Grok deep" and "Grok fast" on Cursor), then falls back to `opus` and `sonnet`. A repo can pick another profile per phase in its Story pipeline (`.orchestrator/pipeline.json`, `profile`).
+- **One-shot calls on any model.** The correction classifier and the replay judge use Claude Haiku through the `claude` CLI. To use another model, write `~/.orchestrator/ask.json` with an OpenAI-compatible endpoint, for example `{"url": "https://api.x.ai/v1", "model": "grok-4-fast", "keyEnv": "XAI_API_KEY"}`. The key stays in the named environment variable. Add `inputUsdPerMTok` and `outputUsdPerMTok` (USD per million tokens) to count spend; without them a call reports no cost and the cost cap only applies its worst-case estimate. Code: `server/ask.ts`.
 - **Guidance on a diet.** The testing guidelines are a step skill for Implement and Review, not an always-on rule, so planning, PR and CI agents don't pay for them on every call.
 - **Tools on a diet.** Loop steps get no MCP servers, and board sessions get Atlassian only. Each tool list costs tokens on every turn.
 - **Any provider.** Step prompts name no skills or slash commands, and the context meter never branches on a provider's name.

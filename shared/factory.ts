@@ -1,6 +1,9 @@
 // The factory's files read into types. No Node imports here: server/factory-layout.ts does the file work.
 export type FactoryPhase = "spec" | "design" | "build" | "test" | "review" | "ship";
 export type FactoryKind = "scout" | "ship";
+// Set when the slice has gone as far as the factory takes it: after a clean review (scout) or green CI (ship), or `blocked`
+// when it cannot go on without the manager.
+export type SliceReady = "" | "review" | "ci" | "blocked";
 
 export type SliceState = {
   phase: FactoryPhase;
@@ -13,6 +16,11 @@ export type SliceState = {
   depends: string[];
   run: boolean;
   design: boolean;
+  ready: SliceReady;
+  approve: "" | "plan";
+  pr: string;
+  // The cause the manager was last told holds the slice (`blocked dependency X`, `unknown dependency Y`); empty when none.
+  held: string;
 };
 
 export type FactorySlice = { id: string; mission: string; state: SliceState; spec: string; design: string; proof: string };
@@ -42,6 +50,10 @@ export function parseSliceState(fields: Record<string, string>): SliceState {
     depends: list(fields.depends),
     run: fields.run === "on",
     design: fields.design === "on",
+    ready: fields.ready === "review" || fields.ready === "ci" || fields.ready === "blocked" ? fields.ready : "",
+    approve: fields.approve === "plan" ? "plan" : "",
+    pr: fields.pr ?? "",
+    held: fields.held ?? "",
   };
 }
 
@@ -53,6 +65,30 @@ export const parseSeat = (role: string, fields: Record<string, string>, body: st
   notes: body,
 });
 
-// Until S6: the first slice in mission order, then slice order, with run on. depends is ignored; at most one runs.
-export const runnableSlice = (factory: Factory): FactorySlice | null =>
-  factory.missions.flatMap((mission) => mission.slices).find((slice) => slice.state.run) ?? null;
+const isDone = (slice: FactorySlice) => slice.proof.trim() !== "" && (slice.state.ready === "review" || slice.state.ready === "ci");
+
+// Every slice that can run now, in mission then slice order: run on, not ready, every depends id a done slice of the same
+// mission (an unknown id is not done), and no earlier mission open (a run: on slice that is not done).
+export const runnableSlices = (factory: Factory): FactorySlice[] => {
+  const runnable: FactorySlice[] = [];
+  for (const mission of factory.missions) {
+    const done = new Set(mission.slices.filter(isDone).map((slice) => slice.id));
+    runnable.push(
+      ...mission.slices.filter((slice) => slice.state.run && !slice.state.ready && slice.state.depends.every((id) => done.has(id))),
+    );
+    if (mission.slices.some((slice) => slice.state.run && !isDone(slice))) break;
+  }
+  return runnable;
+};
+
+// Why a run: on, not ready slice can't start until the manager acts: its first depends id that is a `ready: blocked` slice
+// or not a slice of its own mission. Null otherwise: a dependency still in progress is a normal wait.
+export const heldBy = (slice: FactorySlice, mission: FactoryMission): string | null => {
+  if (!slice.state.run || slice.state.ready) return null;
+  for (const id of slice.state.depends) {
+    const dependency = mission.slices.find((item) => item.id === id);
+    if (!dependency) return `unknown dependency ${id}`;
+    if (dependency.state.ready === "blocked") return `blocked dependency ${id}`;
+  }
+  return null;
+};

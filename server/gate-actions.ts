@@ -2,6 +2,8 @@ import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { GateAction } from "../shared/gates";
 import type { ActResult } from "./context-watch";
 import type { BlockKind } from "./initiative-loop";
+import type { LoopHost } from "../shared/loop-host";
+import { paseoLoopHost } from "./loop-host-paseo";
 
 // Gate actions (see CONTEXT.md, "Gate action"): the rules for acting on a story's gate from outside
 // its session. Everything outside this file reaches it through GatePort.
@@ -45,6 +47,8 @@ export type GatePort = {
   leaveStopped(ref: StoryRef): Promise<void>;
   // Whether the story's step marker in state.md is still `<step>-running`.
   stepRunning(ref: StoryRef): Promise<boolean>;
+  // Whether a factory slice names the story: the tick owns it, so no gate action acts on it. Absent, none does.
+  adopted?(ref: StoryRef): Promise<boolean>;
 };
 
 // The gate each action belongs to: the status the story must still be at, and how a refusal names it.
@@ -117,6 +121,7 @@ export function createGateActions(port: GatePort) {
       if (!story) return refuse(`${storyId} is not on that board.`);
       const gate = GATE_OF[action];
       if (story.status !== gate.status) return refuse(`${storyId} is now ${story.status}, not ${gate.name}.`);
+      if (await port.adopted?.({ board, storyId })) return refuse(`${storyId} belongs to a factory slice; ask the manager.`);
       const ref = { board, storyId };
       if (action === "continue" || action === "leave" || (action === "retry" && isCostCap(story))) {
         if (!isCostCap(story) || (action === "leave" && story.blockKind !== "cost-cap")) {
@@ -165,11 +170,12 @@ type PaseoApi = PluginHandlerContext["paseo"];
 type LoopFiles = {
   gateStory(ref: { repo: string; initiative: string; storyId: string }): Promise<GateStory | null>;
   reopen(ref: { repo: string; initiative: string; storyId: string }): Promise<void>;
-  retryStep(api: PaseoApi, ref: { repo: string; initiative: string; storyId: string }): Promise<GateResult>;
+  retryStep(host: LoopHost, ref: { repo: string; initiative: string; storyId: string }): Promise<GateResult>;
   closedPr(ref: { repo: string; initiative: string; storyId: string }): Promise<number | null>;
   raiseCap(ref: { repo: string; initiative: string; storyId: string }): Promise<void>;
   leaveStopped(ref: { repo: string; initiative: string; storyId: string }): Promise<void>;
   stepRunning(ref: { repo: string; initiative: string; storyId: string }): Promise<boolean>;
+  adopted(ref: { repo: string; initiative: string; storyId: string }): Promise<boolean>;
 };
 type FreshAct = { act(input: { agentId: string; action: "fresh" }): Promise<ActResult> };
 
@@ -210,7 +216,7 @@ export function loopGatePort(loop: LoopFiles, paseo: PaseoApi, contextWatch: Fre
     },
     async retryStep({ board, storyId }) {
       const split = splitBoard(board);
-      return split ? loop.retryStep(paseo, { ...split, storyId }) : refuse(`${storyId} is not on that board.`);
+      return split ? loop.retryStep(paseoLoopHost(paseo), { ...split, storyId }) : refuse(`${storyId} is not on that board.`);
     },
     async closedPr({ board, storyId }) {
       const split = splitBoard(board);
@@ -227,6 +233,10 @@ export function loopGatePort(loop: LoopFiles, paseo: PaseoApi, contextWatch: Fre
     async stepRunning({ board, storyId }) {
       const split = splitBoard(board);
       return split ? loop.stepRunning({ ...split, storyId }) : false;
+    },
+    async adopted({ board, storyId }) {
+      const split = splitBoard(board);
+      return split ? loop.adopted({ ...split, storyId }) : false;
     },
   };
 }

@@ -78,22 +78,22 @@ test("a factory with no project, manager, culture or seats reads those as empty"
   }
 });
 
-test("a repo with no .harness/factory reads as an empty factory and the tick returns null", () => {
+test("a repo with no .harness/factory reads as an empty factory and the tick returns no slices", () => {
   const root = mkdtempSync(join(tmpdir(), "factory-layout-"));
   try {
     assert.deepEqual(readFactory(root), { project: "", manager: { agent: "" }, culture: "", seats: [], missions: [] });
-    assert.equal(factoryTick(root), null);
+    assert.deepEqual(factoryTick(root), []);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("factoryTick returns the first runnable slice", () => {
+test("factoryTick returns every runnable slice", () => {
   const root = mkdtempSync(join(tmpdir(), "factory-layout-"));
   try {
     put(join(sliceDir(root, "01-m", "01-a"), "state.md"), "---\nphase: build\n---\n");
     put(join(sliceDir(root, "01-m", "02-b"), "state.md"), "---\nrun: on\n---\n");
-    assert.equal(factoryTick(root)?.id, "02-b");
+    assert.deepEqual(factoryTick(root).map((slice) => slice.id), ["02-b"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

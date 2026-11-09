@@ -1,4 +1,5 @@
-// Links the kit's skills and rules into a home folder (Claude Code, and Kiro for rules):
+// Links the kit's skills and rules into a home folder (skills: Claude Code and the shared ~/.agents/skills that
+// Codex, OpenCode and other agents read; rules: Claude Code and Kiro):
 //   node scripts/link-kit.mjs [--home D] [--kit D] [--dry-run]
 //
 // This file names `skillsync` on purpose (later passes use it to recognise stale links left by the old
@@ -124,7 +125,8 @@ function syncDir(dir, wanted, plan, log) {
 }
 
 function apply(plan, log) {
-  syncDir(join(plan.home, ".claude", "skills"), new Map(plan.skills.map(({ name, dir }) => [name, dir])), plan, log);
+  const skills = new Map(plan.skills.map(({ name, dir }) => [name, dir]));
+  for (const folder of [".claude", ".agents"]) syncDir(join(plan.home, folder, "skills"), skills, plan, log);
   if (!plan.rules) {
     log("no rules/index.md, rules skipped");
     return;
