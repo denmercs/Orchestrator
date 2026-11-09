@@ -23,8 +23,8 @@ const failedCheck = {
   detailsUrl: "https://gh/actions/runs/9/job/1",
   completedAt: "2026-10-08T12:00:00Z",
 };
-const ghPr = (state: string, headRefOid = "abc", statusCheckRollup: unknown[] = []) =>
-  writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid, statusCheckRollup }), "utf8");
+const ghPr = (state: string, headRefOid = "abc", statusCheckRollup: unknown[] = [], mergeable = "MERGEABLE") =>
+  writeFileSync(ghReply, JSON.stringify({ number: 45, url: "https://pr/45", state, headRefOid, statusCheckRollup, mergeable }), "utf8");
 const { advancePipeline, watchPipelinePrs } = await import("./pipeline-advance");
 
 type PaseoApi = PluginHandlerContext["paseo"];
@@ -165,6 +165,52 @@ test("a repo pipeline maxFixes of 0 starts no Fix CI agent and keeps watching fo
   ghPr("MERGED");
   await watchPipelinePrs(api, readConfig, readAgentConfig);
   assert.equal(readCi(cwd).done, "merged");
+});
+
+test("a conflicting open PR is marked pr-conflict and keeps the watch, starting no Fix CI agent even with a failing check", async () => {
+  const { cwd, labels } = fixture();
+  const { api, created } = fakePaseo([{ id: "a1", cwd, workspaceId: "ws1", labels }]);
+  ghPr("OPEN", "abc", [failedCheck], "CONFLICTING");
+
+  await watchPipelinePrs(api, readConfig, readAgentConfig);
+  await watchPipelinePrs(api, readConfig, readAgentConfig);
+
+  assert.deepEqual(created, []);
+  assert.equal(readCi(cwd).done, undefined);
+  assert.equal(status(cwd), "pr-conflict\nPR #45 conflicts with its base: GitHub can't merge it until the branch is updated.");
+});
+
+test("a conflicting PR leaves a running Fix CI marker alone, and so does the conflict clearing", async () => {
+  const { cwd, labels } = fixture();
+  const { api, created } = fakePaseo([{ id: "a1", cwd, workspaceId: "ws1", labels }]);
+  writeFileSync(join(cwd, ".harness", "state.md"), "# ABC-1 — Demo\n\n## Status\nfix-ci-running\n", "utf8");
+  ghPr("OPEN", "abc", [failedCheck], "CONFLICTING");
+
+  await watchPipelinePrs(api, readConfig, readAgentConfig);
+  assert.equal(status(cwd), "fix-ci-running");
+
+  ghPr("OPEN", "abc", []);
+  await watchPipelinePrs(api, readConfig, readAgentConfig);
+  assert.equal(status(cwd), "fix-ci-running");
+  assert.deepEqual(created, []);
+});
+
+test("once the conflict clears the marker goes back to pr-done and the watch carries on", async () => {
+  const { cwd, labels } = fixture();
+  const { api, created } = fakePaseo([{ id: "a1", cwd, workspaceId: "ws1", labels }]);
+  ghPr("OPEN", "abc", [failedCheck], "CONFLICTING");
+  await watchPipelinePrs(api, readConfig, readAgentConfig);
+  assert.match(status(cwd), /^pr-conflict\n/);
+
+  ghPr("OPEN", "abc", []);
+  await watchPipelinePrs(api, readConfig, readAgentConfig);
+
+  assert.equal(status(cwd), "pr-done\nhttps://pr/45");
+  assert.equal(readCi(cwd).done, undefined);
+  ghPr("MERGED");
+  await watchPipelinePrs(api, readConfig, readAgentConfig);
+  assert.equal(readCi(cwd).done, "merged");
+  assert.deepEqual(created, []);
 });
 
 test("a merged PR ends the watch; green and pending CI leave it running without an agent", async () => {

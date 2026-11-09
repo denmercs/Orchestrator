@@ -1082,6 +1082,35 @@ for (const autoMerge of [false, true]) {
   });
 }
 
+test("a green PR that conflicts with its base steers the manager once, naming the conflict, and sets ready: ci", async () => {
+  const { ctx } = shipSlice({ pr: "7" });
+  const { paseo, created } = fakePaseo();
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  const ship = shipPorts(paseo, { ...prAt("green"), conflicting: true });
+  for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, paseo);
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /s1/);
+  assert.match(steers[0], /https:\/\/example\.test\/pr\/7/);
+  assert.match(steers[0], /conflicts/);
+  assert.doesNotMatch(steers[0], /CI is green/);
+  assert.equal(field(ctx.stateFile, "ready"), "ci");
+  assert.equal(created.length + ship.pushed.length + ship.opened.length, 0);
+});
+
+test("a failing PR that conflicts with its base steers once about the conflict, starts no Fix agent and sets ready: ci", async () => {
+  const { ctx } = shipSlice({ pr: "7" });
+  const { paseo, created } = fakePaseo();
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  const ship = shipPorts(paseo, { ...prAt("failing"), conflicting: true });
+  for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, paseo);
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /conflicts/);
+  assert.equal(field(ctx.stateFile, "ready"), "ci");
+  assert.equal(created.length + ship.pushed.length + ship.opened.length, 0);
+});
+
 test("after a fresh compact hands the story to the new agent, the next pass starts no second one", async () => {
   const ctx = setup("agent: a1\nattempt: 1");
   const story = withStory(ctx, "step: implement\nround: 1\nagent: a1\nstatus: implementing", "implement-running", cycles(false));
