@@ -73,7 +73,7 @@ const SUBAGENT_WAIT_MS = 30 * 60_000;
 //   agent.turn_ended reads the step's marker in the story worktree's .harness/state.md and starts the
 //                    next step in a fresh agent: Plan → Implement (one agent per cycle, committed by the
 //                    plugin) → Review → the plugin pushes and opens the PR itself.
-//   the 2-minute tick watches each open PR: a failing check starts a Fix CI agent, a merge marks the
+//   the 30-second tick watches each open PR: a failing check starts a Fix CI agent, a merge marks the
 //                    story merged, archives its workspace and starts the next ready story.
 //   supervision      keeps a step moving without an agent watching it. A failed turn, or a turn that
 //                    ends without the step's marker, marks the story `stalled` and the tick nudges that

@@ -204,7 +204,7 @@ async function finishFix(cwd: string, state: string) {
   }
 }
 
-// The 2-minute tick: the CI watcher checks each PR the pipeline opened. A failing head starts a Fix CI
+// The 30-second tick: the CI watcher checks each PR the pipeline opened. A failing head starts a Fix CI
 // agent in the story's worktree; past maxFixes the story stops with `ci-failed` and the reason.
 export async function watchPipelinePrs(paseo: PaseoApi, readConfig: ReadConfig, readAgentConfig: ReadAgentConfig) {
   const hostConfig = await readConfig();
