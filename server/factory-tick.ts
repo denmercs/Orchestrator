@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { FactoryPhase, FactorySeat, FactorySlice } from "../shared/factory";
+import { type FactoryPhase, type FactorySeat, type FactorySlice, heldBy } from "../shared/factory";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { type AgentCreateConfig, type AgentProfile, materializeProfile, seatProfile } from "../shared/agent-runner";
 import type { Phase, SkillSource } from "../shared/pipeline";
@@ -63,7 +63,8 @@ export type TickResult =
   | { kind: "waiting"; slice: string; why: string }
   | { kind: "advanced"; slice: string; phase: FactoryPhase }
   | { kind: "alive"; slice: string; agent: string }
-  | { kind: "restarted"; slice: string; agent: string };
+  | { kind: "restarted"; slice: string; agent: string }
+  | { kind: "fan-out"; results: TickResult[] };
 
 export const isDead = (session: { status?: string; archivedAt?: string | null } | undefined | null) =>
   !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
@@ -94,7 +95,7 @@ export function seatPrompt(seat: string, slice: FactorySlice, mission: string, p
 
 let running = false;
 
-// One factory pass: finds the one runnable slice and, when its seat's agent is missing, archived, closed or in error,
+// One factory pass: walks every runnable slice and, when its seat's agent is missing, archived, closed or in error,
 // starts one fresh agent in the slice's worktree and records its id. A live agent (a permission wait included) is left
 // alone, and so is a story whose loop session is still live: one owner per story. Never throws on a missing factory.
 export async function runFactoryTick(root: string, ports: TickPaseo): Promise<TickResult> {
@@ -214,9 +215,50 @@ async function seatConfig(seat: FactorySeat | undefined, role: string, ports: Ti
   }
 }
 
+// One pass over every runnable slice, one after another so the seat file and the slice files never get two writers.
+// Each slice has its own try: one slice's failure doesn't stop the others, and once all have run a lone error is rethrown as is, several as one AggregateError.
 async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
-  const slice = factoryTick(root);
-  if (!slice) return { kind: "idle" };
+  const results: TickResult[] = [];
+  const failures: unknown[] = [];
+  try {
+    await noteHeld(root, ports);
+  } catch (error) {
+    failures.push(error);
+  }
+  for (const slice of factoryTick(root)) {
+    try {
+      results.push(await passSlice(root, slice, ports));
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, failures.map(String).join("; "));
+  if (results.length === 0) return { kind: "idle" };
+  return results.length === 1 ? results[0] : { kind: "fan-out", results };
+}
+
+// A slice held by a blocked or unknown dependency would wait in silence: the manager hears once per cause, and `held` in
+// state.md remembers it across passes and restarts. It clears when the cause goes away, so a later cause steers again.
+// `held` is saved only when the steer was delivered (the round 3 nudge's rule): no steer, a `false` or a throw leaves it
+// unchanged, so the next pass tries again.
+async function noteHeld(root: string, ports: TickPaseo) {
+  const { steer } = ports;
+  for (const mission of readFactory(root).missions) {
+    for (const slice of mission.slices) {
+      const cause = heldBy(slice, mission);
+      if ((cause ?? "") === slice.state.held) continue;
+      if (cause) {
+        const line = `Slice ${slice.id} can't start: ${cause}.`;
+        const delivered = steer && (await Promise.resolve().then(() => steer(line)).catch(() => false)) !== false;
+        if (!delivered) continue;
+      }
+      writeSliceState(root, mission.id, slice.id, { held: cause });
+    }
+  }
+}
+
+async function passSlice(root: string, slice: FactorySlice, ports: TickPaseo): Promise<TickResult> {
   const moved = await advanceSlice(root, slice, ports);
   if (moved) return moved;
   const seat = SEATS[slice.state.phase];

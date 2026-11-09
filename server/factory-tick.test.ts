@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { FALLBACK_AGENT_CONFIG, type AgentProfile } from "../shared/agent-runner";
 import { DEFAULT_PHASES } from "../shared/pipeline";
-import { runnableSlice } from "../shared/factory";
-import { namedStories, readFactory, sliceDir, storyKey } from "./factory-layout";
+import { runnableSlices } from "../shared/factory";
+import { namedStories, readFactory, sliceDir, storyKey, writeSliceState } from "./factory-layout";
 import { MANAGER_MODELS } from "./factory-manager";
 import { buildContext, runFactoryTick, type TickPaseo } from "./factory-tick";
 import { writeFrontmatter } from "./harness-layout";
@@ -1019,7 +1019,7 @@ for (const [name, build] of blockedCases) {
     assert.match(blocked[0], /s1/);
     assert.equal(field(ctx.stateFile, "ready"), "blocked");
     assert.equal(created.length, 0);
-    assert.equal(runnableSlice(readFactory(ctx.root)), null);
+    assert.equal(runnableSlices(readFactory(ctx.root)).length, 0);
   });
 }
 
@@ -1366,4 +1366,263 @@ test("cost cap: after ready is cleared, a cost reader that throws keeps the slic
   assert.equal(field(story, "cost_cap_usd"), "10");
   assert.equal(created.length, 1);
   assert.equal(steers.length, 1);
+});
+
+// A second slice beside setup's s1, in the same mission; `state` is its state.md frontmatter beyond the phase and run.
+function addSlice(root: string, id: string, state: string, phase = "spec") {
+  const dir = sliceDir(root, "m1", id);
+  put(join(dir, "spec.md"), `Do ${id}.\n`);
+  put(join(dir, "state.md"), `---\nphase: ${phase}\nrun: on\n${state}\n---\n`);
+  return join(dir, "state.md");
+}
+
+// A fake whose worktrees land in <cwd>/wt-<slug>, so two slices get two folders; the shared fake always makes made-wt.
+function perSlicePaseo(known: Parameters<typeof fakePaseo>[0] = {}) {
+  const fake = fakePaseo(known);
+  const slugs: string[] = [];
+  fake.paseo.worktrees = {
+    create: async (request) => {
+      slugs.push(request.slug);
+      const directory = join(request.cwd, `wt-${request.slug}`);
+      mkdirSync(directory, { recursive: true });
+      return { directory };
+    },
+  };
+  delete fake.paseo.steps;
+  return { ...fake, slugs };
+}
+
+test("two independent spec slices each get their own worktree, then their own seat agent in it", async () => {
+  // Arrange: s1 and s2 both runnable, neither has a worktree yet.
+  const first = setup("", "on", "spec");
+  rmSync(first.worktree, { recursive: true });
+  const secondState = addSlice(first.root, "s2", "");
+  const { paseo, created, slugs } = perSlicePaseo();
+
+  // Act: the first pass hands both specs off.
+  const handoff = await runFactoryTick(first.root, paseo);
+
+  // Assert: two worktrees, different slugs and folders, one per slice.
+  assert.equal(handoff.kind, "fan-out");
+  assert.equal(slugs.length, 2);
+  assert.notEqual(slugs[0], slugs[1]);
+  const worktrees = [field(first.stateFile, "worktree"), field(secondState, "worktree")];
+  assert.notEqual(worktrees[0], worktrees[1]);
+  assert.deepEqual(worktrees, slugs.map((slug) => join(first.root, `wt-${slug}`)));
+  assert.equal(created.length, 0);
+
+  // Act: the next pass works the build seats.
+  const seats = await runFactoryTick(first.root, paseo);
+
+  // Assert: one agent per slice, each in that slice's own worktree.
+  assert.equal(seats.kind, "fan-out");
+  assert.deepEqual(created.map((agent) => agent.cwd).sort(), [...(worktrees as string[])].sort());
+  assert.deepEqual(created.map((agent) => agent.labels.slice).sort(), ["s1", "s2"]);
+});
+
+test("a slice that depends on a reviewed slice with an empty proof.md gets no worktree and no agent, while an independent slice does", async () => {
+  // Arrange: s1 is reviewed (`ready: review`) but its proof.md is empty; s2 depends on it; s3 depends on nothing.
+  const { root, worktree } = setup("ready: review", "on", "spec");
+  rmSync(worktree, { recursive: true });
+  const dependentState = addSlice(root, "s2", "depends: s1");
+  const freeState = addSlice(root, "s3", "");
+  writeFileSync(join(sliceDir(root, "m1", "s1"), "proof.md"), "\n");
+  const { paseo, created, slugs } = perSlicePaseo();
+
+  // Act: the handoff pass, then the seat pass.
+  const handoff = await runFactoryTick(root, paseo);
+  const seat = await runFactoryTick(root, paseo);
+
+  // Assert: only the independent s3 moved; s2 waits on s1's proof.
+  assert.deepEqual(handoff, { kind: "advanced", slice: "s3", phase: "build" });
+  assert.equal(seat.kind, "restarted");
+  assert.deepEqual(slugs, ["s3"]);
+  assert.deepEqual(created.map((agent) => agent.labels.slice), ["s3"]);
+  assert.equal(created[0].cwd, field(freeState, "worktree"));
+  assert.equal(field(dependentState, "worktree"), undefined);
+  assert.equal(field(dependentState, "agent"), undefined);
+});
+
+test("when the first slice's agent can't be started, the second still gets its agent and the pass rejects", async () => {
+  // Arrange: two build slices with worktrees; starting an agent in s1's folder always throws.
+  const { root, worktree, stateFile } = setup("", "on", "build");
+  const otherTree = join(root, "wt2");
+  mkdirSync(otherTree);
+  const otherState = addSlice(root, "s2", `worktree: ${otherTree}`, "build");
+  const { paseo, created } = perSlicePaseo();
+  const started = paseo.agents.create;
+  paseo.agents.create = async (request) => {
+    if (request.cwd === worktree) throw new Error("no capacity for s1");
+    return started(request);
+  };
+
+  // Act and assert: the pass rejects with the first slice's error.
+  await assert.rejects(runFactoryTick(root, paseo), /no capacity for s1/);
+
+  // Assert: s2 was still worked, and s1 recorded nothing.
+  assert.deepEqual(created.map((agent) => agent.cwd), [otherTree]);
+  assert.equal(field(otherState, "agent"), "new-1");
+  assert.equal(field(stateFile, "agent"), undefined);
+});
+
+test("when several slices can't start an agent, the pass rejects with every failure", async () => {
+  // Arrange: two build slices with worktrees; starting an agent always throws, with a message naming the folder.
+  const { root, worktree } = setup("", "on", "build");
+  const otherTree = join(root, "wt2");
+  mkdirSync(otherTree);
+  addSlice(root, "s2", `worktree: ${otherTree}`, "build");
+  const { paseo } = perSlicePaseo();
+  paseo.agents.create = async (request) => {
+    throw new Error(`no capacity for ${request.cwd}`);
+  };
+
+  // Act and assert: one AggregateError carrying both errors.
+  await assert.rejects(runFactoryTick(root, paseo), (error: unknown) => {
+    assert.ok(error instanceof AggregateError);
+    assert.deepEqual(error.errors.map((item) => (item as Error).message).sort(), [`no capacity for ${otherTree}`, `no capacity for ${worktree}`].sort());
+    return true;
+  });
+});
+
+// A steer-collecting perSlicePaseo.
+function steeringPaseo(known: Parameters<typeof fakePaseo>[0] = {}) {
+  const fake = perSlicePaseo(known);
+  const steers: string[] = [];
+  fake.paseo.steer = async (line) => steers.push(line);
+  return { ...fake, steers };
+}
+
+test("a run: on slice whose dependency is blocked steers the manager once over two passes and does not start", async () => {
+  // Arrange: s1 is blocked; s2 depends on it.
+  const { root } = setup("ready: blocked", "on", "build");
+  const dependentState = addSlice(root, "s2", "depends: s1");
+  const { paseo, steers, created, slugs } = steeringPaseo();
+
+  // Act: two passes.
+  await runFactoryTick(root, paseo);
+  await runFactoryTick(root, paseo);
+
+  // Assert: one steer naming s2 and its cause, recorded in state.md; s2 got no worktree and no agent.
+  assert.deepEqual(steers, ["Slice s2 can't start: blocked dependency s1."]);
+  assert.equal(field(dependentState, "held"), "blocked dependency s1");
+  assert.deepEqual(slugs, []);
+  assert.equal(created.length, 0);
+});
+
+for (const [name, other] of [
+  ["an unknown id", ""],
+  ["a slice of another mission", "elsewhere"],
+] as const) {
+  test(`a run: on slice that depends on ${name} steers the manager once and does not start`, async () => {
+    // Arrange: s1 depends on an id that is no slice of m1.
+    const { root, worktree, stateFile } = setup(`depends: ${other || "ghost"}`, "on", "spec");
+    rmSync(worktree, { recursive: true });
+    if (other) {
+      put(join(root, ".harness", "factory", "missions", "m2", "mission.md"), "Outcome: elsewhere.\n");
+      put(join(sliceDir(root, "m2", other), "state.md"), "---\nphase: spec\n---\n");
+    }
+    const { paseo, steers, slugs } = steeringPaseo();
+
+    // Act: two passes.
+    await runFactoryTick(root, paseo);
+    await runFactoryTick(root, paseo);
+
+    // Assert: one steer naming the unknown dependency; s1 never got a worktree.
+    assert.deepEqual(steers, [`Slice s1 can't start: unknown dependency ${other || "ghost"}.`]);
+    assert.equal(field(stateFile, "held"), `unknown dependency ${other || "ghost"}`);
+    assert.deepEqual(slugs, []);
+  });
+}
+
+test("a slice waiting on a dependency still in progress does not steer", async () => {
+  // Arrange: s1 is in build with a live agent; s2 depends on it.
+  const { root } = setup("agent: a1", "on", "build");
+  const dependentState = addSlice(root, "s2", "depends: s1");
+  const { paseo, steers } = steeringPaseo({ a1: { status: "running" } });
+
+  // Act
+  const result = await runFactoryTick(root, paseo);
+
+  // Assert: s1 is worked, s2 waits in silence.
+  assert.deepEqual(result, { kind: "alive", slice: "s1", agent: "a1" });
+  assert.deepEqual(steers, []);
+  assert.equal(field(dependentState, "held"), undefined);
+});
+
+test("the held note clears when its cause goes away, and a later cause steers again", async () => {
+  // Arrange: s1 is blocked with a live agent; s2 depends on it.
+  const { root } = setup("agent: a1\nready: blocked", "on", "build");
+  const dependentState = addSlice(root, "s2", "depends: s1");
+  const { paseo, steers } = steeringPaseo({ a1: { status: "running" } });
+
+  // Act: blocked, then the manager unblocks s1, then s1 blocks again.
+  await runFactoryTick(root, paseo);
+  writeSliceState(root, "m1", "s1", { ready: null });
+  await runFactoryTick(root, paseo);
+  const cleared = field(dependentState, "held");
+  writeSliceState(root, "m1", "s1", { ready: "blocked" });
+  await runFactoryTick(root, paseo);
+
+  // Assert: the note cleared in between, and each blocked spell steered once.
+  assert.equal(cleared, undefined);
+  assert.deepEqual(steers, ["Slice s2 can't start: blocked dependency s1.", "Slice s2 can't start: blocked dependency s1."]);
+  assert.equal(field(dependentState, "held"), "blocked dependency s1");
+});
+
+test("a held note the manager never received is not saved, and the next pass with a manager steers once and saves it", async () => {
+  // Arrange: s1 is blocked; s2 depends on it; no manager yet, so steer resolves false.
+  const { root } = setup("ready: blocked", "on", "build");
+  const dependentState = addSlice(root, "s2", "depends: s1");
+  const { paseo, steers } = steeringPaseo();
+  paseo.steer = async () => false;
+
+  // Act: a pass with no manager, then the manager appears and two more passes run.
+  await runFactoryTick(root, paseo);
+  const unsent = field(dependentState, "held");
+  paseo.steer = async (line) => steers.push(line);
+  await runFactoryTick(root, paseo);
+  await runFactoryTick(root, paseo);
+
+  // Assert: nothing saved until a steer was delivered, then one steer and the note.
+  assert.equal(unsent, undefined);
+  assert.deepEqual(steers, ["Slice s2 can't start: blocked dependency s1."]);
+  assert.equal(field(dependentState, "held"), "blocked dependency s1");
+});
+
+test("with no steer port a held slice saves no note", async () => {
+  // Arrange: s1 is blocked; s2 depends on it; the ports have no steer.
+  const { root } = setup("ready: blocked", "on", "build");
+  const dependentState = addSlice(root, "s2", "depends: s1");
+  const { paseo } = steeringPaseo();
+  delete paseo.steer;
+
+  // Act
+  await runFactoryTick(root, paseo);
+
+  // Assert
+  assert.equal(field(dependentState, "held"), undefined);
+});
+
+test("a steer that throws leaves the held note unsaved, does not stop other slices, and the next pass retries", async () => {
+  // Arrange: s1 is blocked; s2 depends on it; s3 is runnable; the first steer throws.
+  const { root } = setup("ready: blocked", "on", "build");
+  const dependentState = addSlice(root, "s2", "depends: s1");
+  addSlice(root, "s3", "");
+  const { paseo, steers, slugs } = steeringPaseo();
+  paseo.steer = async () => {
+    throw new Error("manager unreachable");
+  };
+
+  // Act: a pass whose steer throws, then a pass whose steer is delivered.
+  await runFactoryTick(root, paseo);
+  const unsent = field(dependentState, "held");
+  const ranOthers = slugs.length;
+  paseo.steer = async (line) => steers.push(line);
+  await runFactoryTick(root, paseo);
+
+  // Assert: the throw saved nothing and s3 still ran; the retry steered once and saved the note.
+  assert.equal(unsent, undefined);
+  assert.ok(ranOthers > 0);
+  assert.deepEqual(steers, ["Slice s2 can't start: blocked dependency s1."]);
+  assert.equal(field(dependentState, "held"), "blocked dependency s1");
 });
