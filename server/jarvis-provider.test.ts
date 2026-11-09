@@ -218,10 +218,10 @@ test("close and interrupt complete their requests", async () => {
   assert.deepEqual(completed, ["q2", "q3"]);
 });
 
-test("the provider registers as Jarvis with one model", async () => {
+test("the provider registers as Sulti with one model", async () => {
   const provider = createJarvisProvider({ route: async () => ({ spoken: [], note: null }) });
   assert.equal(provider.id, "jarvis");
-  assert.equal(provider.label, "Jarvis");
+  assert.equal(provider.label, "Sulti");
   assert.equal(provider.description, "Talk to your sessions hands-free with Paseo voice mode.");
   const connection = await provider.connect({ versions: [1], capabilities: [] });
   const events: ProviderEvent[] = [];
@@ -231,6 +231,15 @@ test("the provider registers as Jarvis with one model", async () => {
   const catalog = events[0];
   assert.ok(catalog.type === "catalog");
   assert.deepEqual(catalog.catalog.models.map((m) => m.id), ["router"]);
+});
+
+test("a prompt on a session that is not open fails with an error that names Sulti", async () => {
+  const { connection, events } = connect({ spoken: [], note: null });
+  await connection.send({ type: "session.prompt", sessionId: "nope", prompt: prompt(SPOKEN) });
+  await settle(events, (e) => e.type === "session.prompt_result");
+  const result = events.find((e) => e.type === "session.prompt_result");
+  assert.ok(result && result.type === "session.prompt_result");
+  assert.deepEqual(result.result, { type: "failed", error: { message: "This Sulti session is not open." } });
 });
 
 test("a new prompt while a turn is open completes the earlier turn first", async () => {

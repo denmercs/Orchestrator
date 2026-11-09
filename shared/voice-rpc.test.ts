@@ -27,7 +27,7 @@ test("the wake model RPC is named orchestration.voice.wake-model and only accept
   assert.equal(voiceWakeModel.name, "orchestration.voice.wake-model");
   assert.equal(voiceWakeModel.input.safeParse({ model: "melspectrogram" }).success, true);
   assert.equal(voiceWakeModel.input.safeParse({ model: "embedding" }).success, true);
-  assert.equal(voiceWakeModel.input.safeParse({ model: "hey_jarvis" }).success, true);
+  assert.equal(voiceWakeModel.input.safeParse({ model: "hey_sulti" }).success, true);
   assert.equal(voiceWakeModel.input.safeParse({ model: "other" }).success, false);
 });
 

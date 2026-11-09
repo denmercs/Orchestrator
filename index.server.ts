@@ -840,7 +840,7 @@ export default function contribute(
       void jarvis
         .event(event)
         .then((byRouter) => Promise.all(Object.entries(byRouter).map(([routerId, lines]) => jarvisConnection?.say(routerId, lines))))
-        .catch((error) => console.warn("orchestrator: Jarvis event failed", error));
+        .catch((error) => console.warn("orchestrator: Sulti event failed", error));
     }
   };
   // The long poll (and brief/status below) leave their Paseo handle too, so the router can list sessions before any
