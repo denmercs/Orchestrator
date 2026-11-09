@@ -72,7 +72,7 @@ test("start creates one Claude Sonnet helper with no MCP servers, no tools, the 
   assert.equal(mcpScopeFor(CWD), "all", "scope is released after create");
 });
 
-test("start with cursor creates a Composer helper in Ask mode, with no options", async () => {
+test("start with cursor passes the Cursor config through (not tool-free, not supported yet)", async () => {
   const fake = fakePorts();
   const helper = createVoiceHelper(fake.ports);
   await helper.start("cursor");

@@ -3,7 +3,7 @@ import { VOICE_HELPER_KIND } from "../shared/voice-loop";
 import { withMcpScope } from "./mcp-scope";
 import { voiceHelperConfig, type VoiceHelperPorts, type VoiceProvider } from "./voice-helper";
 
-// The reply summariser (see CONTEXT.md, "Voice helper"): a second small agent (same model as the helper) next to the interpret helper,
+// The reply summariser (see CONTEXT.md, "Voice helper"): a second small agent (same model and config as the helper) next to the interpret helper,
 // same ports, same cwd and kind label (so it is never a target and never replies into the loop), its own prompt.
 // It talks to Paseo only through the ports, so tests use fakes.
 

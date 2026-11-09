@@ -121,6 +121,7 @@ export const voiceSettings = defineSettings({
     // On: the hands-free mic adapter stays closed; the drawer's mic toggle persists here.
     micOff: z.boolean().default(false),
     // Which provider runs the two voice helper agents (interpret and reply summary); read at the next voice-on.
+    // "cursor" is not tool-free and not supported yet (see CONTEXT.md, Voice helper).
     provider: z.enum(["claude", "cursor"]).default("claude"),
   }),
 });

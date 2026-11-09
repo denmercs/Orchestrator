@@ -6,14 +6,15 @@ import { VOICE_HELPER_KIND, type InterpretResult, type VoiceSession } from "../s
 import { withMcpScope } from "./mcp-scope";
 
 // The Voice helper's agent lifecycle (see CONTEXT.md, "Voice helper"): one small agent per voice-on
-// period (Claude Sonnet or Cursor Composer, by `voice.provider`), created with MCP scope "none" and no tools, reused, and archived on stop. It talks
+// period (Claude Sonnet or Cursor Composer, by `voice.provider`), created with MCP scope "none", reused, and archived on stop.
+// No tools holds on Claude only; Cursor is not tool-free (see the Cursor note below). It talks
 // to Paseo only through the ports, so tests use fakes.
 
 export type VoiceProvider = "claude" | "cursor";
-export const VOICE_HELPER_MODELS: Record<VoiceProvider, string> = {
+export const VOICE_HELPER_MODELS = {
   claude: "claude/claude-sonnet-5-5",
   cursor: "cursor/composer-2.5",
-};
+} as const satisfies Record<VoiceProvider, string>;
 // Shared, so the Voice loop can keep the helper out of its targets.
 export { VOICE_HELPER_KIND } from "../shared/voice-loop";
 
@@ -23,7 +24,8 @@ export { VOICE_HELPER_KIND } from "../shared/voice-loop";
 export const NO_TOOLS_OPTIONS = { extraArgs: { tools: "" } };
 
 // The one source of the model and its no-tools setup, for the interpret helper and the reply summariser:
-// Claude gets `--tools ""`; Cursor runs in Ask mode (Q&A only: no edits, no commands).
+// Claude gets `--tools ""`. Cursor runs in Ask mode, which blocks writes but not read-only tools or shell
+// reads, so Cursor is not tool-free and not supported yet (see CONTEXT.md, "Voice helper").
 export function voiceHelperConfig(provider: VoiceProvider): Pick<VoiceHelperSpec, "provider" | "options" | "modeId"> {
   return provider === "cursor"
     ? { provider: VOICE_HELPER_MODELS.cursor, modeId: "ask" }
@@ -31,7 +33,7 @@ export function voiceHelperConfig(provider: VoiceProvider): Pick<VoiceHelperSpec
 }
 
 export type VoiceHelperSpec = {
-  provider: string;
+  provider: (typeof VOICE_HELPER_MODELS)[VoiceProvider];
   systemPrompt: string;
   options?: typeof NO_TOOLS_OPTIONS;
   modeId?: string;
