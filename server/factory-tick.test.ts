@@ -1110,12 +1110,25 @@ test("a running Fix agent is left alone, and a dead one is relaunched with RESTA
   assert.equal((await runFactoryTick(dead.ctx.root, b.paseo)).kind, "restarted");
   assert.deepEqual(b.created[0].labels, sliceLabels("fix"));
   assert.ok(b.created[0].prompt.includes(RESTART_LINE));
+});
 
+test("a Fix agent that reads error once and idle on the second read is not relaunched", async () => {
   const stale = shipSlice({ pr: "7", story: "agent: f-1\nfixed_sha: abc\nfix_attempts: 1", marker: "fix-running" });
   writeFileSync(stale.ctx.stateFile, readFileSync(stale.ctx.stateFile, "utf8").replace("---\n", "---\nagent: f-1\n"));
   const c = fakePaseo({ "f-1": { status: "idle" } }, { stale: { "f-1": [{ status: "error" }] } });
   shipPorts(c.paseo, prAt("failing", "abc", FAILED));
   assert.equal((await runFactoryTick(stale.ctx.root, c.paseo)).kind, "waiting");
+  assert.equal(c.created.length, 0);
+});
+
+test("a dead Fix agent is not confirmed while CI isn't failing", async () => {
+  const stale = shipSlice({ pr: "7", story: "agent: f-1\nfixed_sha: abc\nfix_attempts: 1", marker: "fix-running" });
+  writeFileSync(stale.ctx.stateFile, readFileSync(stale.ctx.stateFile, "utf8").replace("---\n", "---\nagent: f-1\n"));
+  const queue = { "f-1": [{ status: "error" }, { status: "idle" }] };
+  const c = fakePaseo({ "f-1": { status: "error" } }, { stale: queue });
+  shipPorts(c.paseo, prAt("pending", "abc"));
+  await runFactoryTick(stale.ctx.root, c.paseo);
+  assert.equal(queue["f-1"].length, 1);
   assert.equal(c.created.length, 0);
 });
 

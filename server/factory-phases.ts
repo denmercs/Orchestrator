@@ -30,12 +30,12 @@ export const REFOCUS = "Does this step still serve the spec, the mission outcome
 
 export const refocusLines = (mission: string, project: string) => [`Mission outcome: ${mission}`, `Project intent: ${project}`, REFOCUS];
 
-const isDead = (session: { status?: string; archivedAt?: string | null } | undefined | null) =>
+type Session = { status?: string; archivedAt?: string | null } | undefined | null;
+
+const isDead = (session: Session) =>
   !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
 
 const LIVE = new Set(["running", "initializing", "idle"]);
-
-type Session = { status?: string; archivedAt?: string | null } | undefined | null;
 
 // Whether a session the first read called dead really is. One empty or stale daemon answer would start a second agent in the
 // same worktree, so a dead read is read once more and the agent list is checked; a read or list that throws isn't a
@@ -423,7 +423,7 @@ export async function leaveShip(
   const round = Number(meta.round) || 1;
   const failing = () => (ports.failureReport ?? failureReport)(cwd, pr.failing);
   // A Fix agent that died mid-step starts again on the same head, not as a new attempt.
-  if (fixing && (await confirmDead(ports.agents, state.agent, fixer)) && action.kind === "wait" && action.ci === "failing") {
+  if (fixing && action.kind === "wait" && action.ci === "failing" && (await confirmDead(ports.agents, state.agent, fixer))) {
     return launch("fix", round, { attempt: state.attempt + 1, failing: await failing() });
   }
   const ci = "ci" in action ? action.ci : null;
