@@ -28,10 +28,10 @@ export function applyFactoryManager<T extends VoiceRequest>(request: T): T {
 }
 
 // The models the manager runs on, in order: the create falls through to the next when one fails (provider missing or
-// signed out).
+// signed out). The client wants config.provider as "provider/model", like `materializeProfile` builds it.
 export const MANAGER_MODELS = [
-  { provider: "claude", model: "claude-opus-5-5" },
-  { provider: "cursor", model: "grok-4.7" },
+  { provider: "claude/claude-opus-5-5" },
+  { provider: "cursor/grok-4.7" },
 ];
 
 // The slice of Paseo the manager needs; tests pass a fake.
@@ -43,7 +43,7 @@ export type ManagerPaseo = {
     };
     create(request: {
       cwd: string;
-      config: { provider: string; model: string };
+      config: { provider: string };
       env: Record<string, string>;
       title: string;
       labels: Record<string, string>;
