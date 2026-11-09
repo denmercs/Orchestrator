@@ -69,7 +69,7 @@ test("voiceStatusLine labels the indirect voice signal as a best guess and never
 test("openChatView is enabled with a Jarvis agent id and navigation, else disabled with a reason", () => {
   assert.deepEqual(openChatView("j1", true), { label: "Open in Paseo chat", disabled: false, reason: null });
   assert.equal(openChatView(null, true).disabled, true);
-  assert.match(openChatView(null, true).reason ?? "", /no Jarvis session/i);
+  assert.match(openChatView(null, true).reason ?? "", /no Sulti session/i);
   assert.equal(openChatView("j1", false).disabled, true);
   assert.match(openChatView("j1", false).reason ?? "", /can't open/i);
 });
@@ -84,4 +84,12 @@ test("while the saved value is being checked the switch claims neither state", (
   assert.match(view.status ?? "", /checking voice settings/i);
   assert.doesNotMatch(view.status ?? "", /heard|listening/i);
   assert.equal(ignoreMeView(true, true).on, true, "a known ON still shows");
+});
+
+test("every line the drawer shows says Sulti and never Jarvis", () => {
+  assert.match(ignoreMeView(true).status ?? "", /Sulti/);
+  assert.match(PASEO_STOP_HINT, /Sulti/);
+  assert.match(PASEO_VOICE_LINE, /Sulti/);
+  const lines = [ignoreMeView(true).status, ignoreMeView(false).status, PASEO_STOP_HINT, PASEO_VOICE_LINE, openChatView(null, true).reason, openChatView("j1", false).reason];
+  for (const line of lines) assert.doesNotMatch(line ?? "", /jarvis/i);
 });

@@ -5,14 +5,14 @@ import type { VoiceMode, VoiceSession } from "../shared/voice-loop";
 export type VoicePillView = { label: string; title: string };
 
 const MODE_TITLES: Record<VoiceMode, string> = {
-  asleep: 'Voice is on, asleep. Say "Hey Jarvis"',
+  asleep: 'Voice is on, asleep. Say "Hey Sulti"',
   listening: "Voice is listening to this session",
   confirming: "Voice is waiting for you to confirm",
   waiting: "Voice is waiting for this session to reply",
   speaking: "Voice is speaking a reply",
 };
 
-// Shared with the Jarvis router, which names sessions the same way.
+// Shared with the Sulti router, which names sessions the same way.
 export { canTarget, sessionName, splitSessions, voiceSessions } from "../shared/voice-loop";
 
 const SPEAK_MODES: readonly SpeakMode[] = ["off", "short", "medium", "full"];

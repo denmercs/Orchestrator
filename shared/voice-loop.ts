@@ -7,8 +7,8 @@ import { choiceNumber, exactSessions, matchSessions, shortName } from "./voice-n
 
 export type VoiceMode = "asleep" | "listening" | "confirming" | "waiting" | "speaking";
 export type VoiceSession = { id: string; name: string };
-export type NoticeKind = "finished" | "needsYou" | "error" | "costCap";
-export type Notice = { kind: NoticeKind; sessionId: string; name: string };
+export type NoticeKind = "finished" | "needsYou" | "error" | "costCap" | "roundCap";
+export type Notice = { kind: NoticeKind; sessionId: string; name: string; detail?: string };
 
 export type VoiceState = {
   mode: VoiceMode;
@@ -54,9 +54,9 @@ export type VoiceEvent =
   | { type: "sessions"; list: VoiceSession[]; blocked?: VoiceSession[] }
   /** A numbered list unanswered for `CONFIRM_TIMEOUT_MS` (the runner's timer, or Jarvis on the next words) is forgotten. */
   | { type: "choicesExpired" }
-  | { type: "notice"; kind: string; sessionId: string }
+  | { type: "notice"; kind: string; sessionId: string; detail?: string }
   | { type: "interrupt" }
-  /** Sleep from the drawer (the runner's off switch): same as "Jarvis, ignore me". */
+  /** Sleep from the drawer (the runner's off switch): same as "Sulti, ignore me". */
   | { type: "sleep" };
 
 export type VoiceEffect =
@@ -89,7 +89,10 @@ export function initialVoiceState(): VoiceState {
   return { mode: "asleep", session: null, sessions: [], blocked: [], talking: false, pending: null, confirm: null, choices: null, held: null, queue: [], heard: [], seq: 0 };
 }
 
-const NAMES = "jarvis|jervis|javis|travis|jarvus|service";
+/** The name's spellings: the only words that wake the loop asleep (a mishearing must not wake it). */
+export const ASLEEP_NAMES = "sulti|sultee|sulty|sultie|sultey";
+/** Awake, the spellings plus the likely mishearings count as the name. */
+export const AWAKE_NAMES = `${ASLEEP_NAMES}|salty|sulky|sully|sultan`;
 const NEVER_MIND = new Set(["never mind", "nevermind", "cancel that", "forget it", "belay that"]);
 // A confirm is answered only by these exact words (or the critical word said back); anything else asks again.
 // "to"/"too" are how "two" is often heard: cancelling on a mishearing is safe, sending on one is not.
@@ -102,23 +105,35 @@ const LIST_SESSIONS = /^(?:(?:list|show|read|which|what)(?: me)?(?: the| all| my
 // "switch to X" (and "go/talk/change/move to X"), or "use/pick/open/choose/select X".
 const SWITCH_TO = /^(?:(switch|go|talk|change|move) to|(use|pick|open|choose|select)) (.+)$/;
 const NEW_SESSION = /^(?:start |create |open )?(?:a )?new (?:voice )?session$/;
-const NOTICE_ORDER: NoticeKind[] = ["finished", "needsYou", "error", "costCap"];
-const NOTICE_ONE: Record<NoticeKind, string> = { finished: "finished", needsYou: "needs you", error: "hit an error", costCap: "hit the cost cap" };
-const NOTICE_MANY: Record<NoticeKind, string> = { finished: "finished", needsYou: "need you", error: "hit an error", costCap: "hit the cost cap" };
+const NOTICE_ORDER: NoticeKind[] = ["finished", "needsYou", "error", "costCap", "roundCap"];
+const NOTICE_ONE: Record<NoticeKind, string> = {
+  finished: "finished",
+  needsYou: "needs you",
+  error: "hit an error",
+  costCap: "hit the cost cap",
+  roundCap: "is on round 3, near the cap on rounds and spend",
+};
+const NOTICE_MANY: Record<NoticeKind, string> = {
+  finished: "finished",
+  needsYou: "need you",
+  error: "hit an error",
+  costCap: "hit the cost cap",
+  roundCap: "are on round 3, near the cap on rounds and spend",
+};
 const NUMBER_WORDS = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
 // Said after the name to wake the loop with nothing else to do.
 const WAKE_WORDS = new Set(["", "wake up", "wake", "i m back", "im back", "listen", "you there", "are you there"]);
 
 const norm = (text: string): string => text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
-const stripName = (text: string): string => text.replace(new RegExp(`^(?:(?:hey|ok|okay) )?(?:${NAMES})(?: |$)`), "").trim();
-/** Asleep, only the name itself wakes the loop ("Jarvis", "hey Jarvis, …"), not a mishearing like "travis". */
-const calledByName = (text: string): boolean => /^(?:(?:hey|ok|okay) )?jarvis(?: |$)/.test(norm(text));
+const stripName = (text: string): string => text.replace(new RegExp(`^(?:(?:hey|ok|okay) )?(?:${AWAKE_NAMES})(?: |$)`), "").trim();
+/** Asleep, only the name's spellings wake the loop ("Sulti", "hey Sulti, …"), not a mishearing like "salty". */
+const calledByName = (text: string): boolean => new RegExp(`^(?:(?:hey|ok|okay) )?(?:${ASLEEP_NAMES})(?: |$)`).test(norm(text));
 const isBlocked = (state: VoiceState, id: string): boolean => state.blocked.some((s) => s.id === id);
-/** True when the words start with the name (or a close mishearing), as in "Jarvis, wake up". */
+/** True when the words start with the name (or a close mishearing), as in "Sulti, wake up". */
 export const addressed = (text: string): boolean => stripName(norm(text)) !== norm(text);
-/** The words without a leading "Jarvis," (or "hey Jarvis"), punctuation and case kept. */
+/** The words without a leading "Sulti," (or "hey Sulti"), punctuation and case kept. */
 export const withoutName = (text: string): string =>
-  text.replace(new RegExp(`^\\s*(?:(?:hey|ok|okay)[\\s,]+)?(?:${NAMES})\\b[\\s,.!?]*`, "i"), "").trim() || text.trim();
+  text.replace(new RegExp(`^\\s*(?:(?:hey|ok|okay)[\\s,]+)?(?:${AWAKE_NAMES})\\b[\\s,.!?]*`, "i"), "").trim() || text.trim();
 const out = (state: VoiceState, ...effects: VoiceEffect[]): VoiceStep => ({ state, effects });
 
 function sentTo(state: VoiceState, text: string): VoiceStep {
@@ -190,7 +205,7 @@ function pickNumber(state: VoiceState, choices: VoiceSession[], n: number): Voic
 function onUtterance(state: VoiceState, text: string, typed = false): VoiceStep {
   const heard = norm(text);
   const cleaned = stripName(heard);
-  const ignore = new RegExp(`^(?:(?:hey|ok|okay) )?(?:(${NAMES}) )?(?:ignor(?:e|ing)( me)?|(silent mode))$`).exec(heard);
+  const ignore = new RegExp(`^(?:(?:hey|ok|okay) )?(?:(${AWAKE_NAMES}) )?(?:ignor(?:e|ing)( me)?|(silent mode))$`).exec(heard);
   if (ignore && (ignore[1] || ignore[2] || ignore[3])) return sleep(state);
   if (NEVER_MIND.has(cleaned)) return state.confirm ? cancelled(state) : out({ ...state, pending: null, choices: null });
   // A pending confirm is the latest numbered question, and only an exact answer settles it.
@@ -265,13 +280,13 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
   if (state.mode === "asleep") {
     if (event.type === "wake") return out({ ...state, mode: "listening" }, { type: "listen" });
     if (event.type === "pick") return out({ ...state, session: event.session });
-    // The name itself wakes it (only Jarvis hears while asleep: the drawer's mic is closed).
+    // The name itself wakes it (only Sulti hears while asleep: the drawer's mic is closed).
     if (event.type === "utterance" && calledByName(event.text)) {
       const awake: VoiceState = { ...state, mode: "listening" };
       const rest = norm(withoutName(event.text));
       if (!addressed(rest) && !WAKE_WORDS.has(rest)) {
         const r = onUtterance(awake, event.text);
-        // "Jarvis, ignore me" while asleep just stays asleep.
+        // "Sulti, ignore me" while asleep just stays asleep.
         return r.state.mode === "asleep" ? out(state) : { state: r.state, effects: [{ type: "listen" }, ...r.effects] };
       }
       return out(awake, { type: "listen" }, { type: "speak", line: WAKE_LINE });
@@ -325,7 +340,7 @@ function core(state: VoiceState, event: VoiceEvent): VoiceStep {
       if (!NOTICE_ORDER.includes(kind) || (kind === "finished" && event.sessionId === state.session?.id)) return out(state);
       const found = state.sessions.find((s) => s.id === event.sessionId);
       const name = found ? shortName(found.name) : "A session";
-      return out({ ...state, queue: [...state.queue, { kind, sessionId: event.sessionId, name }] });
+      return out({ ...state, queue: [...state.queue, { kind, sessionId: event.sessionId, name, detail: event.detail }] });
     }
   }
 }
@@ -344,8 +359,10 @@ function flush(r: VoiceStep): VoiceStep {
 function mergeNotices(queue: Notice[]): string {
   const parts: string[] = [];
   for (const kind of NOTICE_ORDER) {
-    const names = [...new Map(queue.filter((n) => n.kind === kind).map((n) => [n.sessionId, n.name])).values()];
-    if (names.length === 1) parts.push(`${names[0]} ${NOTICE_ONE[kind]}`);
+    const of = [...new Map(queue.filter((n) => n.kind === kind).map((n) => [n.sessionId, n])).values()];
+    const names = of.map((n) => n.name);
+    // A detail (the spend) belongs to one session, so only a lone name speaks it.
+    if (names.length === 1) parts.push(`${names[0]} ${NOTICE_ONE[kind]}${of[0].detail ? ` (${of[0].detail})` : ""}`);
     else if (names.length > 1) parts.push(`${NUMBER_WORDS[names.length] ?? names.length} sessions ${NOTICE_MANY[kind]}`);
   }
   return parts.map((p, i) => (i === 0 ? p[0].toUpperCase() + p.slice(1) : p)).join(". ") + ".";

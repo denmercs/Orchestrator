@@ -64,7 +64,7 @@ export const voiceInterpret = defineRpc({
 // the client cannot fetch GitHub directly (S0 lesson 4).
 export const voiceWakeModel = defineRpc({
   name: "orchestration.voice.wake-model",
-  input: z.object({ model: z.enum(["melspectrogram", "embedding", "hey_jarvis"]) }),
+  input: z.object({ model: z.enum(["melspectrogram", "embedding", "hey_sulti"]) }),
   output: z.object({ bytes: z.string() }),
 });
 
@@ -85,7 +85,8 @@ export const voiceSpeak = defineRpc({
 export const voiceEvents = defineRpc({
   name: "orchestration.voice.events",
   // `target`: the Mac's current voice target (the pill's pick), so the server knows its replies get a spoken summary.
-  input: z.object({ after: z.number().int().min(0), target: z.string().max(200).optional() }),
+  // `awake`: the Mac's loop isn't asleep, so a notice published now gets spoken; absent counts as asleep.
+  input: z.object({ after: z.number().int().min(0), target: z.string().max(200).optional(), awake: z.boolean().optional() }),
   output: z.object({
     cursor: z.number().int().min(0),
     events: z.array(z.custom<VoiceEvent>((v) => v !== null && typeof v === "object" && typeof (v as { type?: unknown }).type === "string")),

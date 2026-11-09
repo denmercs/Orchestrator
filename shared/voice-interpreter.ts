@@ -51,10 +51,10 @@ export type Interpreter = { interpret(text: string, ctx?: InterpretContext): Pro
 
 export const passThrough: Interpreter = { interpret: async (text) => ({ type: "send", text }) };
 
-/** Pass-through without a leading "Jarvis," (or "hey Jarvis"): Jarvis's default, and its fallback behind a helper. */
+/** Pass-through without a leading "Sulti," (or "hey Sulti"): Sulti's default, and its fallback behind a helper. */
 export const namelessPassThrough: Interpreter = { interpret: async (text) => ({ type: "send", text: withoutName(text) }) };
 
-export const VOICE_VOCABULARY = ["merge", "Orchestrator", "Paseo", "Jarvis"];
+export const VOICE_VOCABULARY = ["merge", "Orchestrator", "Paseo", "Sulti"];
 
 const RECENT_LIMIT = 4;
 const RECENT_CHARS = 300;

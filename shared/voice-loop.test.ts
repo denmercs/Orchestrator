@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { ASLEEP_NOTE, PASEO_VOICE_LINE, SLEEP_LINE } from "./voice-lines";
 import { ROUTER_PROVIDER_ID } from "./voice-loop";
 import { addressed, initialVoiceState, jarvisSessions, step, withoutName, type VoiceEffect, type VoiceEvent, type VoiceMode, type VoiceSession, type VoiceState } from "./voice-loop";
 
@@ -56,7 +57,7 @@ test("shared/voice-loop.ts imports only its wording, and that imports nothing", 
 
 // Cycle 2
 test("fragments produce no effect", () => {
-  for (const text of ["uh", "Jarvis", "hmm."]) assert.deepEqual(say(awake(), text).effects, [], text);
+  for (const text of ["uh", "Sulti", "hmm."]) assert.deepEqual(say(awake(), text).effects, [], text);
 });
 
 test("'never mind' is matched locally and never reaches the interpreter", () => {
@@ -64,8 +65,8 @@ test("'never mind' is matched locally and never reaches the interpreter", () => 
   assert.deepEqual(r.effects, []);
 });
 
-test("'Jarvis, ignore me' and close mishearings put the loop to sleep", () => {
-  for (const text of ["Jarvis, ignore me", "Jervis ignore me", "travis, ignoring me", "ignore me", "Hey Jarvis, ignore me", "Jarvis, silent mode", "silent mode"]) {
+test("'Sulti, ignore me' and close mishearings put the loop to sleep", () => {
+  for (const text of ["Sulti, ignore me", "Salty ignore me", "sultan, ignoring me", "ignore me", "Hey Sulti, ignore me", "Sulti, silent mode", "silent mode"]) {
     const r = say(awake({ pending: { seq: 4, heard: "x" } }), text);
     assert.deepEqual(r.effects, [{ type: "sleep" }], text);
     assert.equal(r.state.mode, "asleep");
@@ -191,12 +192,13 @@ test("playbackEnded returns to listening and speechStart while speaking only sto
 });
 
 // Cycle 7
-test("finished, needsYou, error and costCap speak; progress does not; the target's own finished is dropped", () => {
+test("finished, needsYou, error, costCap and roundCap speak; progress does not; the target's own finished is dropped", () => {
   for (const [kind, line] of [
     ["finished", "Docs finished."],
     ["needsYou", "Docs needs you."],
     ["error", "Docs hit an error."],
     ["costCap", "Docs hit the cost cap."],
+    ["roundCap", "Docs is on round 3, near the cap on rounds and spend."],
   ]) {
     assert.deepEqual(step(awake(), { type: "notice", kind, sessionId: "s2" }).effects, [{ type: "speak", line }], kind);
   }
@@ -256,18 +258,18 @@ test("pick resets to listening for the new session from every awake mode and kee
   }
 });
 
-test("'Jarvis, switch to <name>' picks the match, asks when several match, and reports none", () => {
+test("'Sulti, switch to <name>' picks the match, asks when several match, and reports none", () => {
   const known = awake({ sessions: [api, docs, apiTwo] });
-  const one = say(known, "Jarvis, switch to docs");
+  const one = say(known, "Sulti, switch to docs");
   assert.deepEqual(one.effects, [{ type: "speak", line: "Now on docs." }]);
   assert.equal(one.state.session, docs);
-  const partial = say(awake({ sessions: [api, docs] }), "Jarvis, switch to api");
+  const partial = say(awake({ sessions: [api, docs] }), "Sulti, switch to api");
   assert.deepEqual(partial.effects, [{ type: "speak", line: "Now on api-refactor." }]);
   assert.equal(partial.state.session, api);
-  const many = say(known, "Jarvis, switch to api");
+  const many = say(known, "Sulti, switch to api");
   assert.deepEqual(many.effects, [{ type: "speak", line: "Did you mean: one, api-refactor; two, api-docs? Say a number." }]);
   assert.equal(many.state.session, api);
-  assert.deepEqual(say(known, "Jarvis, switch to billing").effects, [
+  assert.deepEqual(say(known, "Sulti, switch to billing").effects, [
     { type: "speak", line: "No session called billing. One, api-refactor. Two, docs. Three, api-docs. Say a number, or switch to and a name." },
   ]);
   const plain = say(known, "switch to strict mode");
@@ -296,8 +298,8 @@ test("every mode × event: steers send with no receipt, only interrupt interrupt
     { type: "utterance", text: "stop" },
     { type: "utterance", text: "merge" },
     { type: "utterance", text: "never mind" },
-    { type: "utterance", text: "Jarvis, ignore me" },
-    { type: "utterance", text: "Jarvis, switch to docs" },
+    { type: "utterance", text: "Sulti, ignore me" },
+    { type: "utterance", text: "Sulti, switch to docs" },
     { type: "interpreted", seq: 1, result: { type: "send", text: "Fix the login bug" } },
     { type: "interpreted", seq: 1, result: { type: "send", text: "Merge the branch" } },
     { type: "interpreted", seq: 1, result: { type: "switch", name: "docs" } },
@@ -325,8 +327,8 @@ test("every mode × event: steers send with no receipt, only interrupt interrupt
         if (e.type === "send") assert.equal(e.behavior, "steer", label);
         if (e.type === "interrupt") assert.equal(event.type, "interrupt", label);
       });
-      // Asleep, only wake and words addressed to Jarvis do anything.
-      const named = event.type === "utterance" && /^jarvis, (?!ignore)/i.test(event.text);
+      // Asleep, only wake and words addressed to Sulti do anything.
+      const named = event.type === "utterance" && /^sulti, (?!ignore)/i.test(event.text);
       if (mode === "asleep" && event.type !== "wake" && !named) assert.deepEqual(effects, [], label);
     }
   }
@@ -366,39 +368,39 @@ test("notices from unknown sessions say 'A session' and merge by session id", ()
 });
 
 test("addressed spots a leading name; withoutName drops it and keeps the rest as said", () => {
-  assert.equal(addressed("Jarvis, wake up"), true);
-  assert.equal(addressed("hey Jervis"), true);
+  assert.equal(addressed("Sulti, wake up"), true);
+  assert.equal(addressed("hey salty"), true);
   assert.equal(addressed("run the tests"), false);
-  assert.equal(withoutName("Jarvis, run the tests."), "run the tests.");
-  assert.equal(withoutName("Hey Jarvis, Merge it"), "Merge it");
+  assert.equal(withoutName("Sulti, run the tests."), "run the tests.");
+  assert.equal(withoutName("Hey Sulti, Merge it"), "Merge it");
   assert.equal(withoutName("run the tests"), "run the tests");
-  assert.equal(withoutName("Jarvis"), "Jarvis");
+  assert.equal(withoutName("Sulti"), "Sulti");
 });
 
 test("asleep, words that start with the name wake it; the rest is then heard as usual", () => {
   const asleep = { ...awake(), mode: "asleep" as const };
-  const woke = say(asleep, "Jarvis, wake up");
+  const woke = say(asleep, "Sulti, wake up");
   assert.deepEqual(woke.effects, [{ type: "listen" }, { type: "speak", line: "I'm listening." }]);
   assert.equal(woke.state.mode, "listening");
-  assert.deepEqual(say(asleep, "Jarvis").effects, [{ type: "listen" }, { type: "speak", line: "I'm listening." }]);
-  const ask = say(asleep, "Jarvis, run the tests");
+  assert.deepEqual(say(asleep, "Sulti").effects, [{ type: "listen" }, { type: "speak", line: "I'm listening." }]);
+  const ask = say(asleep, "Sulti, run the tests");
   assert.deepEqual(types(ask.effects), ["listen", "interpret"]);
-  assert.deepEqual(say(asleep, "Jarvis, ignore me").state.mode, "asleep");
+  assert.deepEqual(say(asleep, "Sulti, ignore me").state.mode, "asleep");
   assert.deepEqual(say(asleep, "run the tests").effects, []);
 });
 
 test("Voice's own sessions are never a target: pick, switch by name, a stale target and a send are refused", () => {
-  const jarvis: VoiceSession = { id: "j1", name: "Jarvis phone" };
-  const line = "Jarvis phone is a voice session, so it can't be the target. Pick another session.";
-  const state = awake({ blocked: [jarvis] });
-  const picked = step(state, { type: "pick", session: jarvis });
+  const sulti: VoiceSession = { id: "j1", name: "Sulti phone" };
+  const line = "Sulti phone is a voice session, so it can't be the target. Pick another session.";
+  const state = awake({ blocked: [sulti] });
+  const picked = step(state, { type: "pick", session: sulti });
   assert.deepEqual(picked.effects, [{ type: "speak", line }]);
   assert.equal(picked.state.session?.id, "s1");
-  assert.deepEqual(step({ ...state, mode: "asleep" }, { type: "pick", session: jarvis }).state.session?.id, "s1");
-  assert.deepEqual(say(state, "Jarvis, switch to jarvis phone").effects, [{ type: "speak", line }]);
-  const dropped = step(awake({ session: jarvis }), { type: "sessions", list: [api, docs], blocked: [jarvis] });
+  assert.deepEqual(step({ ...state, mode: "asleep" }, { type: "pick", session: sulti }).state.session?.id, "s1");
+  assert.deepEqual(say(state, "Sulti, switch to sulti phone").effects, [{ type: "speak", line }]);
+  const dropped = step(awake({ session: sulti }), { type: "sessions", list: [api, docs], blocked: [sulti] });
   assert.equal(dropped.state.session, null);
-  const sneaked = heardAs({ ...awake({ session: jarvis }), blocked: [jarvis] }, "run the tests", { type: "send", text: "run the tests" });
+  const sneaked = heardAs({ ...awake({ session: sulti }), blocked: [sulti] }, "run the tests", { type: "send", text: "run the tests" });
   assert.deepEqual(sneaked.effects, [{ type: "speak", line }]);
   assert.equal(sneaked.state.session, null);
 });
@@ -409,12 +411,37 @@ test("'one' with nothing to confirm says so", () => {
 
 test("asleep, only the name itself wakes it, not a mishearing", () => {
   const asleep = { ...awake(), mode: "asleep" as const };
-  for (const heard of ["Travis, wake up", "service the car", "Jervis", "javis run the tests"]) {
+  for (const heard of ["Salty, wake up", "sultan the car", "salty", "sulky run the tests"]) {
     assert.deepEqual(say(asleep, heard).effects, [], heard);
   }
-  assert.equal(say(asleep, "OK Jarvis").state.mode, "listening");
+  assert.equal(say(asleep, "OK Sulti").state.mode, "listening");
   // Awake, the mishearings still count as the name.
-  assert.deepEqual(say(awake(), "Travis, ignore me").effects, [{ type: "sleep" }]);
+  assert.deepEqual(say(awake(), "Salty, ignore me").effects, [{ type: "sleep" }]);
+});
+
+test("asleep, Sulti and its spellings wake it, with or without 'hey'", () => {
+  const asleep = { ...awake(), mode: "asleep" as const };
+  for (const heard of ["Sulti", "hey Sulti, wake up", "Sultee", "ok sulty, run the tests", "Sultie", "hey sultey"]) {
+    assert.equal(say(asleep, heard).state.mode, "listening", heard);
+  }
+  assert.equal(say(asleep, "salty").state.mode, "asleep");
+});
+
+test("awake, a mishearing like 'salty' addresses the loop and the name is stripped", () => {
+  assert.equal(addressed("Salty, status"), true);
+  assert.equal(addressed("Sulti, status"), true);
+  assert.equal(withoutName("Sulti, status"), "status");
+  assert.equal(withoutName("hey salty, status"), "status");
+  assert.deepEqual(say(awake(), "Salty, ignore me").effects, [{ type: "sleep" }]);
+});
+
+test("Jarvis is no longer a name: it does not wake, and awake it is not addressed and is sent as said", () => {
+  const asleep = { ...awake(), mode: "asleep" as const };
+  assert.deepEqual(say(asleep, "Jarvis, wake up").effects, []);
+  assert.deepEqual(say(asleep, "hey Jarvis").effects, []);
+  assert.equal(addressed("Jarvis, wake up"), false);
+  assert.equal(withoutName("Jarvis, run the tests"), "Jarvis, run the tests");
+  assert.deepEqual(say(awake(), "Jarvis, ignore me").effects.map((e) => e.type), ["interpret"]);
 });
 
 // Session picking, from real phone transcripts.
@@ -454,7 +481,7 @@ test("a bare session name switches only when there is no target; with one it is 
 });
 
 test("switch phrasings: switch to, go to, talk to, use, pick, open", () => {
-  for (const heard of ["switch to check", "go to check", "talk to check", "use check", "pick check", "open check", "Jarvis, go to the check session please"]) {
+  for (const heard of ["switch to check", "go to check", "talk to check", "use check", "pick check", "open check", "Sulti, go to the check session please"]) {
     const r = say(phone({ session: s4 }), heard);
     assert.deepEqual(r.effects, [{ type: "speak", line: "Now on Check." }], heard);
     assert.equal(r.state.session, check, heard);
@@ -465,7 +492,7 @@ test("switch phrasings: switch to, go to, talk to, use, pick, open", () => {
 
 test("'list sessions' reads up to six short names, numbered; a bare number then picks one", () => {
   const many = [phase, check, s4, s6, spike, docs, api];
-  for (const heard of ["list sessions", "which sessions", "what sessions are open", "sessions", "Jarvis, list the sessions"]) {
+  for (const heard of ["list sessions", "which sessions", "what sessions are open", "sessions", "Sulti, list the sessions"]) {
     const r = say(phone({ sessions: many, session: s4 }), heard);
     assert.deepEqual(
       r.effects,
@@ -541,7 +568,7 @@ test("a list ignores sound-alikes, expires, and is forgotten by any other words;
   const expired = step(listed, { type: "choicesExpired" });
   assert.deepEqual(expired.effects, []);
   assert.equal(say(expired.state, "two").state.session, api, "an expired list picks nothing");
-  // Jarvis hearing its own list read back.
+  // Sulti hearing its own list read back.
   const echo = say(listed, "Two, docs.");
   assert.equal(echo.state.session, api);
   assert.equal(echo.state.choices, null);
@@ -571,11 +598,11 @@ test("interpreted sendTo with merge in the text sends it straight away, no confi
 });
 
 test("interpreted sendTo naming one of Voice's own sessions says so and sends nothing", () => {
-  const jarvis: VoiceSession = { id: "j1", name: "Jarvis phone" };
-  const state = awake({ blocked: [jarvis] });
-  const asked = say(state, "send that to jarvis phone, run the tests");
-  const r = step(asked.state, { type: "interpreted", seq: asked.state.pending?.seq ?? -1, result: { type: "sendTo", session: "jarvis phone", text: "run the tests" } });
-  assert.deepEqual(r.effects, [{ type: "speak", line: "Jarvis phone is a voice session, so it can't be the target. Pick another session." }]);
+  const sulti: VoiceSession = { id: "j1", name: "Sulti phone" };
+  const state = awake({ blocked: [sulti] });
+  const asked = say(state, "send that to sulti phone, run the tests");
+  const r = step(asked.state, { type: "interpreted", seq: asked.state.pending?.seq ?? -1, result: { type: "sendTo", session: "sulti phone", text: "run the tests" } });
+  assert.deepEqual(r.effects, [{ type: "speak", line: "Sulti phone is a voice session, so it can't be the target. Pick another session." }]);
   assert.equal(r.state.session, api);
 });
 
@@ -618,7 +645,7 @@ test("other words or choicesExpired forget a sendTo list and its text; a plain s
 
 // S16 Cycle 4
 test("'new session' with a target creates a voice session in its workspace; with none it asks to pick first", () => {
-  for (const heard of ["new session", "start a new session", "Jarvis, new session", "Jarvis, start a new session"]) {
+  for (const heard of ["new session", "start a new session", "Sulti, new session", "Sulti, start a new session"]) {
     const r = say(awake(), heard);
     assert.deepEqual(r.effects, [{ type: "create", session: api }, { type: "speak", line: "Starting a voice session in api-refactor." }], heard);
   }
@@ -716,20 +743,45 @@ test("typed text skips the helper: no interpret effect, so a helper drop cannot 
   assert.deepEqual(types(say(awake(), "please run the tests").effects), ["interpret"]);
 });
 
-test("jarvisSessions picks only the Jarvis provider's sessions", () => {
+test("jarvisSessions picks only the Sulti provider's sessions", () => {
   const agents = [
     { id: "a1", title: "Alpha", provider: "claude" },
-    { id: "j1", title: "Jarvis", provider: ROUTER_PROVIDER_ID },
+    { id: "j1", title: "Sulti", provider: ROUTER_PROVIDER_ID },
   ];
-  assert.deepEqual(jarvisSessions(agents), [{ id: "j1", name: "Jarvis" }]);
+  assert.deepEqual(jarvisSessions(agents), [{ id: "j1", name: "Sulti" }]);
   assert.deepEqual(jarvisSessions([agents[0]]), []);
 });
 
-test("jarvisSessions lists the most recently active Jarvis session first", () => {
+test("jarvisSessions lists the most recently active Sulti session first", () => {
   const agents = [
-    { id: "old", title: "Jarvis", provider: ROUTER_PROVIDER_ID, lastActivityAt: "2026-10-14T10:00:00Z" },
-    { id: "new", title: "Jarvis", provider: ROUTER_PROVIDER_ID, lastActivityAt: "2026-10-14T12:00:00Z" },
-    { id: "none", title: "Jarvis", provider: ROUTER_PROVIDER_ID },
+    { id: "old", title: "Sulti", provider: ROUTER_PROVIDER_ID, lastActivityAt: "2026-10-14T10:00:00Z" },
+    { id: "new", title: "Sulti", provider: ROUTER_PROVIDER_ID, lastActivityAt: "2026-10-14T12:00:00Z" },
+    { id: "none", title: "Sulti", provider: ROUTER_PROVIDER_ID },
   ];
   assert.deepEqual(jarvisSessions(agents).map((s) => s.id), ["new", "old", "none"]);
+});
+
+test("the going-to-sleep and asleep lines name Sulti, never Jarvis", () => {
+  for (const line of [SLEEP_LINE, ASLEEP_NOTE, PASEO_VOICE_LINE]) {
+    assert.match(line, /Sulti/);
+    assert.doesNotMatch(line, /jarvis/i);
+  }
+});
+
+test("a lone roundCap notice speaks its spend detail; merged roundCap notices drop it", () => {
+  const detail = "$4.20 of $5";
+  assert.deepEqual(step(awake(), { type: "notice", kind: "roundCap", sessionId: "s2", detail }).effects, [
+    { type: "speak", line: "Docs is on round 3, near the cap on rounds and spend ($4.20 of $5)." },
+  ]);
+  // Two sessions on round 3 merge into one line that doesn't pick one session's spend.
+  const talking = awake({ talking: true, sessions: [api, docs, apiTwo] });
+  const queued = step(step(talking, { type: "notice", kind: "roundCap", sessionId: "s2", detail }).state, {
+    type: "notice",
+    kind: "roundCap",
+    sessionId: "s3",
+    detail: "$1 of $5",
+  }).state;
+  const [speak] = say(queued, "uh").effects.filter((e) => e.type === "speak");
+  assert.match(JSON.stringify(speak), /two sessions are on round 3, near the cap on rounds and spend\./i);
+  assert.doesNotMatch(JSON.stringify(speak), /\$/);
 });

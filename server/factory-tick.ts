@@ -1,16 +1,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { FactoryPhase, FactorySlice } from "../shared/factory";
+import { type FactoryPhase, type FactorySeat, type FactorySlice, heldBy } from "../shared/factory";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
-import type { AgentCreateConfig } from "../shared/agent-runner";
+import { type AgentCreateConfig, type AgentProfile, materializeProfile, seatProfile } from "../shared/agent-runner";
 import type { Phase, SkillSource } from "../shared/pipeline";
 import { branchName } from "../shared/naming";
 import type { LoopStep, StoryContext } from "../shared/story-method";
 import { type ManagerPaseo, MANAGER_MODELS } from "./factory-manager";
 import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from "./factory-layout";
-import { REFOCUS, TEST_DONE, TEST_FAILED, leaveBuild, leaveReview, leaveShip, leaveTest } from "./factory-phases";
+import { REFOCUS, TEST_DONE, TEST_FAILED, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge, sliceCostCap, sliceSpendKey } from "./factory-phases";
 import { frontmatter, slugOf, writeFrontmatter } from "./harness-layout";
 import type { FailingCheck, PrStatus } from "./pr-checks";
+import type { ReadCost } from "./initiative-loop";
 import type { OpenedPr } from "./story-git";
 
 // The seat that works each phase. The manager owns `spec`, which the tick doesn't deliver.
@@ -36,6 +37,8 @@ export type TickPaseo = {
     // The runner config for a step: the loop picks a per-step profile, so the step is passed.
     readAgentConfig: (step: LoopStep) => Promise<AgentCreateConfig>;
   };
+  // The telemetry rows and base cap a slice's spend and cap are read from, for the round 3 nudge and the build, test and review cost cap. Absent: the nudge leaves spend out and the slice is not capped.
+  cost?: ReadCost;
   // Commits a finished Implement's work (`commitStory` when absent).
   commit?: (cwd: string, message: string) => Promise<boolean>;
   // The ship phase's git and gh, each defaulting to the real one (`openStoryPr`, `prStatus`, `failureReport`, `pushStoryFix`). There is no merge port: the tick never merges.
@@ -47,8 +50,10 @@ export type TickPaseo = {
   steer?: (line: string) => Promise<unknown>;
   // A message to a slice agent's session, for the plan gate's approval.
   send?: (agentId: string, text: string) => Promise<unknown>;
+  // The Paseo agent profiles and the runner's profile id, to resolve a seat's profile. Absent or failing: seats start on MANAGER_MODELS.
+  profiles?: () => Promise<{ list: AgentProfile[]; runnerProfileId: string }>;
   agents: {
-    ref(id: string): { refresh(): Promise<{ agent: { status?: string; archivedAt?: string | null } } | null> };
+    ref(id: string): { refresh(): Promise<{ agent: { status?: string; archivedAt?: string | null; lastUsage?: { totalCostUsd?: number } | null } } | null> };
     create(request: Omit<Parameters<ManagerPaseo["agents"]["create"]>[0], "config"> & { prompt: string; config: AgentCreateConfig }): Promise<{ id: string }>;
   };
 };
@@ -58,9 +63,10 @@ export type TickResult =
   | { kind: "waiting"; slice: string; why: string }
   | { kind: "advanced"; slice: string; phase: FactoryPhase }
   | { kind: "alive"; slice: string; agent: string }
-  | { kind: "restarted"; slice: string; agent: string };
+  | { kind: "restarted"; slice: string; agent: string }
+  | { kind: "fan-out"; results: TickResult[] };
 
-const isDead = (session: { status?: string; archivedAt?: string | null } | undefined | null) =>
+export const isDead = (session: { status?: string; archivedAt?: string | null } | undefined | null) =>
   !session || Boolean(session.archivedAt) || session.status === "closed" || session.status === "error";
 
 // The QA seat's brief: run the checks the spec names (they're in the spec above), fill proof.md, and give a verdict where the
@@ -89,7 +95,7 @@ export function seatPrompt(seat: string, slice: FactorySlice, mission: string, p
 
 let running = false;
 
-// One factory pass: finds the one runnable slice and, when its seat's agent is missing, archived, closed or in error,
+// One factory pass: walks every runnable slice and, when its seat's agent is missing, archived, closed or in error,
 // starts one fresh agent in the slice's worktree and records its id. A live agent (a permission wait included) is left
 // alone, and so is a story whose loop session is still live: one owner per story. Never throws on a missing factory.
 export async function runFactoryTick(root: string, ports: TickPaseo): Promise<TickResult> {
@@ -107,6 +113,11 @@ export async function runFactoryTick(root: string, ports: TickPaseo): Promise<Ti
 async function advanceSlice(root: string, slice: FactorySlice, ports: TickPaseo): Promise<TickResult | null> {
   if (slice.state.phase === "spec") return (await adoptStory(root, slice)) ?? leaveSpec(root, slice, ports);
   if (slice.state.phase === "design") return leaveDesign(root, slice, ports);
+  if (["build", "test", "review"].includes(slice.state.phase)) {
+    await retryRoundNudge(slice, ports);
+    const capped = await sliceCostCap(root, slice, ports);
+    if (capped) return capped;
+  }
   if (slice.state.phase === "build") return leaveBuild(root, slice, ports, buildContext(slice));
   if (slice.state.phase === "test") return leaveTest(root, slice, ports, buildContext(slice));
   if (slice.state.phase === "review") return leaveReview(root, slice, ports, buildContext(slice));
@@ -192,9 +203,62 @@ async function leaveSpec(root: string, slice: FactorySlice, ports: TickPaseo): P
   return { kind: "advanced", slice: id, phase };
 }
 
+// The seat's own model config (its file's profile, else its role's tier), or none to start on MANAGER_MODELS.
+async function seatConfig(seat: FactorySeat | undefined, role: string, ports: TickPaseo): Promise<AgentCreateConfig[]> {
+  if (!ports.profiles) return [];
+  try {
+    const { list, runnerProfileId } = await ports.profiles();
+    const profile = seatProfile(seat, role, list, runnerProfileId);
+    return profile ? [materializeProfile(profile)] : [];
+  } catch {
+    return [];
+  }
+}
+
+// One pass over every runnable slice, one after another so the seat file and the slice files never get two writers.
+// Each slice has its own try: one slice's failure doesn't stop the others, and once all have run a lone error is rethrown as is, several as one AggregateError.
 async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
-  const slice = factoryTick(root);
-  if (!slice) return { kind: "idle" };
+  const results: TickResult[] = [];
+  const failures: unknown[] = [];
+  try {
+    await noteHeld(root, ports);
+  } catch (error) {
+    failures.push(error);
+  }
+  for (const slice of factoryTick(root)) {
+    try {
+      results.push(await passSlice(root, slice, ports));
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, failures.map(String).join("; "));
+  if (results.length === 0) return { kind: "idle" };
+  return results.length === 1 ? results[0] : { kind: "fan-out", results };
+}
+
+// A slice held by a blocked or unknown dependency would wait in silence: the manager hears once per cause, and `held` in
+// state.md remembers it across passes and restarts. It clears when the cause goes away, so a later cause steers again.
+// `held` is saved only when the steer was delivered (the round 3 nudge's rule): no steer, a `false` or a throw leaves it
+// unchanged, so the next pass tries again.
+async function noteHeld(root: string, ports: TickPaseo) {
+  const { steer } = ports;
+  for (const mission of readFactory(root).missions) {
+    for (const slice of mission.slices) {
+      const cause = heldBy(slice, mission);
+      if ((cause ?? "") === slice.state.held) continue;
+      if (cause) {
+        const line = `Slice ${slice.id} can't start: ${cause}.`;
+        const delivered = steer && (await Promise.resolve().then(() => steer(line)).catch(() => false)) !== false;
+        if (!delivered) continue;
+      }
+      writeSliceState(root, mission.id, slice.id, { held: cause });
+    }
+  }
+}
+
+async function passSlice(root: string, slice: FactorySlice, ports: TickPaseo): Promise<TickResult> {
   const moved = await advanceSlice(root, slice, ports);
   if (moved) return moved;
   const seat = SEATS[slice.state.phase];
@@ -219,8 +283,9 @@ async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
   const factory = readFactory(root);
   const mission = factory.missions.find((item) => item.id === slice.mission);
   const prompt = seatPrompt(seat, slice, mission?.outcome ?? "", factory.project, sliceDir(root, slice.mission, slice.id));
+  const spend = sliceSpendKey(slice);
   let failure: unknown;
-  for (const config of MANAGER_MODELS) {
+  for (const config of [...(await seatConfig(factory.seats.find((item) => item.role === seat), seat, ports)), ...MANAGER_MODELS]) {
     try {
       const { id } = await ports.agents.create({
         cwd: state.worktree,
@@ -228,7 +293,7 @@ async function pass(root: string, ports: TickPaseo): Promise<TickResult> {
         prompt,
         env: {},
         title: `${seat}: ${slice.id}`,
-        labels: { kind: "factory-seat", seat, slice: slice.id, mission: slice.mission },
+        labels: { kind: "factory-seat", seat, slice: slice.id, mission: slice.mission, "loop-initiative": spend.initiative, "loop-story": spend.story },
       });
       writeSliceState(root, slice.mission, slice.id, { seat, agent: id, attempt: state.attempt + 1 });
       const seatFile = join(factoryDir(root), "seats", `${seat}.md`);

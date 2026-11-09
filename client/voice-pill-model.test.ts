@@ -95,3 +95,10 @@ test("voicePill with no voice runner is just the speak pill", () => {
   assert.equal(voicePill(target, null, "off").label, "Speak replies");
   assert.equal(voicePill(target, null, "full").label, "Speak · full");
 });
+
+test("the asleep pill's hint names Sulti, never Jarvis", () => {
+  const session = { id: target.id, name: "Build" };
+  const view = voicePill(target, { mode: "asleep", session, micOn: true });
+  assert.match(view.title, /Sulti/);
+  for (const text of [view.label, view.title]) assert.doesNotMatch(text, /jarvis/i);
+});

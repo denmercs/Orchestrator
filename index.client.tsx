@@ -27,7 +27,7 @@ export default function contribute(client: PluginClientContext) {
     transcriber: createVoiceTranscriber(client.rpc),
     helper: createVoiceHelperClient(client.rpc),
     // Each poll carries the pill's pick, so the server summarises the Mac target's long replies.
-    events: { read: (after) => client.rpc(voiceEvents, { after, target: voice.getState().session?.id }) },
+    events: { read: (after) => client.rpc(voiceEvents, { after, target: voice.getState().session?.id, awake: voice.getState().mode !== "asleep" }) },
     brief: async (text) => (await client.rpc(voiceBrief, { text }))?.spoken ?? null,
     status: async (text) => (await client.rpc(voiceStatus, { text }))?.spoken ?? null,
     speaker: createVoiceSpeaker(client.rpc, client.playAudio),

@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { type Factory, type FactoryMission, type FactorySlice, type SliceState, parseSeat, parseSliceState, runnableSlice } from "../shared/factory";
+import { type Factory, type FactoryMission, type FactorySlice, type SliceState, parseSeat, parseSliceState, runnableSlices } from "../shared/factory";
 import { dirsIn, frontmatter, writeFrontmatter } from "./harness-layout";
 
 export const factoryDir = (root: string) => join(root, ".harness", "factory");
@@ -52,8 +52,8 @@ export function readFactory(root: string): Factory {
   };
 }
 
-// The one slice that should run now, or null (no factory, or nothing set to run).
-export const factoryTick = (root: string): FactorySlice | null => runnableSlice(readFactory(root));
+// Every slice that should run now (empty: no factory, or nothing runnable).
+export const factoryTick = (root: string): FactorySlice[] => runnableSlices(readFactory(root));
 
 // A story file's identity for the one-owner rule: resolved against `base`, then through symlinks when the file exists.
 export function storyKey(file: string, base = "") {

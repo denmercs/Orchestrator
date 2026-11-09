@@ -1,4 +1,3 @@
-import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import {
   materializeProfile,
   pickProfile,
@@ -9,9 +8,10 @@ import {
 } from "../shared/agent-runner";
 import type { LoopConfig, LoopStep } from "../shared/initiative-loop";
 
-type PaseoApi = PluginHandlerContext["paseo"];
+// All the runner helpers read from the host: the daemon's config. Paseo satisfies it; any other host can too.
+export type RunnerProfiles = { config: { get(): Promise<unknown> } };
 
-export async function loadRunnerConfig(paseo: PaseoApi, profileId: string): Promise<AgentCreateConfig> {
+export async function loadRunnerConfig(paseo: RunnerProfiles, profileId: string): Promise<AgentCreateConfig> {
   try {
     const got = await paseo.config.get();
     return resolveRunnerConfig(profilesFromConfigGet(got), profileId).config;
@@ -23,7 +23,7 @@ export async function loadRunnerConfig(paseo: PaseoApi, profileId: string): Prom
 
 // A pipeline phase's own profile, or `fallback` (the runner's config) when it names none or none is found.
 export async function loadPhaseConfig(
-  paseo: PaseoApi,
+  paseo: RunnerProfiles,
   profileId: string | undefined,
   fallback: AgentCreateConfig,
 ): Promise<AgentCreateConfig> {
@@ -39,7 +39,7 @@ export async function loadPhaseConfig(
 }
 
 export async function loadStepConfig(
-  paseo: PaseoApi,
+  paseo: RunnerProfiles,
   loop: Pick<LoopConfig, "profiles">,
   step: LoopStep,
   runnerProfileId: string,

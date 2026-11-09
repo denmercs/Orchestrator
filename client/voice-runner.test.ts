@@ -155,7 +155,7 @@ test("subscribers hear each change with a new snapshot", () => {
 test("speak lines are appended to lines", () => {
   const { runner } = setup();
   runner.on();
-  runner.dispatch({ type: "utterance", text: "Jarvis switch to nobody" });
+  runner.dispatch({ type: "utterance", text: "Sulti switch to nobody" });
   assert.deepEqual(runner.getState().lines, ["No session called nobody."]);
 });
 
@@ -216,7 +216,8 @@ test("tap to talk: speechStart, record, transcribe with hints, then the transcri
   assert.deepEqual(calls, ["start", "stop", "transcribe"]);
   assert.equal(runner.getState().talking, false);
   assert.deepEqual(said, [["a1", "please run the tests"]]);
-  for (const word of ["merge", "Orchestrator", "Paseo", "Jarvis", "Alpha"]) assert.ok(hintsSeen[0].includes(word), word);
+  for (const word of ["merge", "Orchestrator", "Paseo", "Sulti", "Alpha"]) assert.ok(hintsSeen[0].includes(word), word);
+  assert.ok(!hintsSeen[0].includes("Jarvis"));
   assert.deepEqual(runner.getState().transcripts, [{ text: "please run the tests", outcome: "sent" }]);
 });
 
@@ -267,10 +268,10 @@ test("transcripts keep the last five with how each ended", async () => {
   runner.dispatch({ type: "utterance", text: "merge it" });
   await flush();
   assert.deepEqual(runner.getState().transcripts, [{ text: "merge it", outcome: "sent" }]);
-  for (let i = 0; i < 6; i++) runner.dispatch({ type: "utterance", text: `Jarvis switch to nobody ${i}` });
+  for (let i = 0; i < 6; i++) runner.dispatch({ type: "utterance", text: `Sulti switch to nobody ${i}` });
   const t = runner.getState().transcripts;
   assert.equal(t.length, 5);
-  assert.deepEqual(t.at(-1), { text: "Jarvis switch to nobody 5", outcome: "dropped" });
+  assert.deepEqual(t.at(-1), { text: "Sulti switch to nobody 5", outcome: "dropped" });
 });
 
 test("setSessions and pick reach the loop", () => {
@@ -787,14 +788,14 @@ test("ears wake moves to listening and tells the ears it is awake", async () => 
   assert.deepEqual(awakeCalls.slice(-1), [true]);
 });
 
-test('an ears utterance is transcribed and sent, "Hey Jarvis," dropped by the default interpreter', async () => {
+test('an ears utterance is transcribed and sent, "Hey Sulti," dropped by the default interpreter', async () => {
   const { prefs } = prefsSetup(false);
   const transcriptCalls: Array<[string, string[]]> = [];
   const { runner, emit, said } = earsSetup({
     prefs,
     transcriber: async (audio, hints) => {
       transcriptCalls.push([audio, hints]);
-      return "Hey Jarvis, run the tests";
+      return "Hey Sulti, run the tests";
     },
   });
   await runner.start();
@@ -809,9 +810,9 @@ test('an ears utterance is transcribed and sent, "Hey Jarvis," dropped by the de
   assert.deepEqual(said, [["a1", "run the tests"]]);
 });
 
-test('"Jarvis, ignore me" goes back to asleep, sends nothing, and tells the ears it is asleep', async () => {
+test('"Sulti, ignore me" goes back to asleep, sends nothing, and tells the ears it is asleep', async () => {
   const { prefs } = prefsSetup(false);
-  const { runner, emit, awakeCalls, said } = earsSetup({ prefs, transcriber: async () => "Jarvis, ignore me" });
+  const { runner, emit, awakeCalls, said } = earsSetup({ prefs, transcriber: async () => "Sulti, ignore me" });
   await runner.start();
   emit({ type: "wake" });
   emit({ type: "speechStart" });
@@ -1006,13 +1007,13 @@ test("a status ask is answered by the status port: its line is spoken and shown 
   const { runner, said } = setup({
     status: async (text) => {
       asked.push(text);
-      return text === "Jarvis, status" ? ["docs needs you."] : null;
+      return text === "Sulti, status" ? ["docs needs you."] : null;
     },
     speaker: { speak: async (text) => (spoken.push(text), "ended" as const), stop: () => {} },
   });
   runner.on();
   runner.pick(alpha);
-  runner.dispatch({ type: "utterance", text: "Jarvis, status" });
+  runner.dispatch({ type: "utterance", text: "Sulti, status" });
   await flush();
   assert.deepEqual(spoken, ["docs needs you."]);
   assert.deepEqual(runner.getState().lines, ["docs needs you."]);

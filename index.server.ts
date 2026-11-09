@@ -1,8 +1,9 @@
-import type { PluginServerContext } from "@getpaseo/plugin/server";
+import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import type { RpcInput } from "@getpaseo/plugin";
 import { loadDailyVerse } from "./server/bible-verse";
 import { listMergedPrs } from "./server/github-prs";
 import { pickMcpServers, readHostMcpServers } from "./server/host-mcp";
+import { voiceNudgeLive } from "./server/round-nudge";
 import { mcpScopeFor, registerMcpScope, scopeWorkerWorkspace } from "./server/mcp-scope";
 import {
   listAccessibleJiraBoards,
@@ -20,7 +21,9 @@ import { stopPlanServer } from "./server/plan-server";
 import { createHarnessEpic, listHarness } from "./server/harness-layout";
 import { advancePipeline, closeMergedStories, startStory, watchPipelinePrs } from "./server/pipeline-advance";
 import { createLoopAdvance } from "./server/loop-advance";
-import { createInitiativeLoop } from "./server/initiative-loop";
+import { factorySeatTurnEnded } from "./server/factory-slice-stuck";
+import { createInitiativeLoop, type ReadCost } from "./server/initiative-loop";
+import { loopPermissionRequested, loopPermissionResolved, loopTurnEnded, paseoLoopHost } from "./server/loop-host-paseo";
 import { startLocalTicket, startTicket } from "./server/ticket-start";
 import { promoteSessionToStory } from "./shared/promote";
 import { readBranchInitials } from "./server/git-identity";
@@ -43,7 +46,7 @@ import { readPlanUsage } from "./server/plan-usage";
 import { planUsageRpc } from "./shared/plan-usage";
 import { createMemoryReplay, DEFAULT_COST_CAP_USD } from "./server/memory-replay";
 import { readArms, readCorpus, readCostCap, readRunName, realReplayPorts } from "./server/replay-start";
-import { askUnavailable } from "./server/ask";
+import { askUnavailable, defaultAsk } from "./server/ask";
 import { startMemoryReplay } from "./shared/replay-rpc";
 import { createTranscriber, realTranscribePorts } from "./server/voice-transcribe";
 import { createWakeModelLoader, realWakeModelPorts } from "./server/voice-wake-models";
@@ -75,7 +78,8 @@ import { createVoiceHub, realHubPorts } from "./server/voice-turns";
 import { createMicOffGate } from "./server/mic-off-gate";
 import { createJarvisProvider, type JarvisConnection } from "./server/jarvis-provider";
 import { applyFactoryManager, ensureManager, steerManager } from "./server/factory-manager";
-import { runFactoryTick, type TickPaseo } from "./server/factory-tick";
+import { isDead, runFactoryTick, type TickPaseo } from "./server/factory-tick";
+import { factoryStatus } from "./server/factory-status";
 import { commitStory } from "./server/story-git";
 import { MARK } from "./server/story-steps";
 import { namedStories } from "./server/factory-layout";
@@ -211,7 +215,7 @@ export default function contribute(
   server.handle(getBranchInitials, async () => ({ initials: await readInitials() }));
   server.handle(getEpicBoards, async ({ repos }, { paseo }) => {
     // The board polls every few seconds, so this keeps the loop's Paseo handle fresh for its timer.
-    initiativeLoop.rememberPaseo(paseo);
+    initiativeLoop.rememberHost(paseoLoopHost(paseo));
     return loadHarnessBoards(repos, await readHarness());
   });
   server.handle(deleteEpicInitiative, deleteInitiative);
@@ -256,6 +260,9 @@ export default function contribute(
       .then(async () => publishVoice(await make()))
       .catch((error) => console.warn("orchestrator: voice publish failed", error));
   };
+  // Voice is live when a phone router is awake or the Mac's loop was awake at a poll lately; a notice published to
+  // neither would be lost, so `voiceNudgeLive` is what lets a nudge count as delivered.
+  let lastAwakeMacPoll = 0;
   const loopSettings = server.registerSettings(initiativeLoopSettings);
   const readLoopConfig = async () => {
     const state = await loopSettings.read();
@@ -266,18 +273,21 @@ export default function contribute(
     const values = await readPipelineValues();
     return values ? { phases: values.phases, sources: values.sources } : { phases: DEFAULT_PHASES, sources: [] };
   };
+  // What the cost cap and the round 3 nudge read: the base cap and the telemetry rows. The loop and the factory share it.
+  const readCost: ReadCost = {
+    cap: async () => {
+      const state = await budget.read();
+      return (state.status === "ready" ? state.values : budgetSettings.schema.parse({})).storyCapUsd;
+    },
+    rows: () => readTelemetry(),
+  };
   const initiativeLoop = createInitiativeLoop(
     readLoopConfig,
-    async (paseo, step, loop) => loadStepConfig(paseo, loop, step, await readRunnerProfileId()),
+    async (host, step, loop) =>
+      loadStepConfig({ config: { get: () => host.readRunnerProfiles() } }, loop, step, await readRunnerProfileId()),
     readLoopPipeline,
     readInitials,
-    {
-      cap: async () => {
-        const state = await budget.read();
-        return (state.status === "ready" ? state.values : budgetSettings.schema.parse({})).storyCapUsd;
-      },
-      rows: () => readTelemetry(),
-    },
+    readCost,
     (sessionId) => publishVoice([{ type: "notice", kind: "costCap", sessionId }]),
     // The loop leaves a story to the factory tick when a slice of the harness repo's factory names it.
     async () => {
@@ -286,16 +296,22 @@ export default function contribute(
     },
     // A slice agent's labels name its slice; its factory is the harness repo's.
     async () => (await readHarness()).repo ?? null,
+    // The round 3 nudge: said through Voice only while someone is listening, else it stays pending and the loop tries again.
+    (sessionId, _line, detail) => {
+      if (!voiceNudgeLive(Date.now(), jarvis.listening(), lastAwakeMacPoll)) return false;
+      publishVoice([{ type: "notice", kind: "roundCap", sessionId, ...(detail ? { detail } : {}) }]);
+      return true;
+    },
   );
   // The Initiatives tab and the loop start file both start the loop here.
-  const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: Parameters<typeof initiativeLoop.start>[0]) =>
-    initiativeLoop.start(paseo, input);
+  const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: PluginHandlerContext["paseo"]) =>
+    initiativeLoop.start(paseoLoopHost(paseo), input);
   server.handle(startInitiativeLoop, (input, { paseo }) => startLoop(input, paseo));
   server.handle(stopInitiativeLoop, (input) => initiativeLoop.stop(input));
   server.handle(startTicketRpc, (input, { paseo }) =>
     startTicket(input, {
       readIssue: async (key) => (await readIssueStatuses([key])).get(key),
-      startLoop: (loop) => initiativeLoop.start(paseo, loop),
+      startLoop: (loop) => initiativeLoop.start(paseoLoopHost(paseo), loop),
     }),
   );
   server.handle(promoteSessionToStory, async (input, { paseo }) => {
@@ -306,7 +322,7 @@ export default function contribute(
       if (!repo) return fail("That workspace has no directory on disk.");
       const result = await startLocalTicket(
         { repo, title: input.title, kind: input.kind },
-        { startLoop: (loop) => initiativeLoop.start(paseo, loop) },
+        { startLoop: (loop) => initiativeLoop.start(paseoLoopHost(paseo), loop) },
       );
       return { ok: result.ok, error: result.error, ticketKey: result.key, agentId: result.agentId };
     } catch (cause) {
@@ -320,8 +336,8 @@ export default function contribute(
     return { ok: true as const };
   });
   const context = server.registerSettings(contextSettings);
-  let contextPaseo: Parameters<typeof loadRunnerConfig>[0] | null = null;
-  let replayPaseo: Parameters<typeof loadRunnerConfig>[0] | null = null;
+  let contextPaseo: PluginHandlerContext["paseo"] | null = null;
+  let replayPaseo: PluginHandlerContext["paseo"] | null = null;
   const memoryReplay =
     deps.replay ??
     createMemoryReplay(
@@ -646,9 +662,19 @@ export default function contribute(
     void advancePipeline(paseo, event, readPipeline, readAgentConfig).catch((error) => {
       console.warn("orchestrator: pipeline advance failed", error);
     });
-    void initiativeLoop.onTurnEnded(paseo, event).catch((error) => {
-      console.warn("orchestrator: initiative loop failed", error);
+    // A factory slice's seat first: the stuck check on its story. The initiative loop ignores those agents.
+    void factorySeatTurnEnded(paseo, event, {
+      readFactoryRoot: async () => (await readHarness()).repo ?? null,
+      readConfig: readLoopConfig,
+    }).catch((error) => {
+      console.warn("orchestrator: factory seat check failed", error);
     });
+    // Mapped inside the chain, so an event the loop can't read is a warning, not a throw in the hook.
+    void Promise.resolve()
+      .then(() => initiativeLoop.onTurnEnded(paseoLoopHost(paseo), loopTurnEnded(event)))
+      .catch((error) => {
+        console.warn("orchestrator: initiative loop failed", error);
+      });
     contextPaseo = paseo;
     void contextWatch.onTurnEnded(event).catch((error) => {
       console.warn("orchestrator: context watch failed", error);
@@ -659,7 +685,7 @@ export default function contribute(
   // opens or starts a turn, not only at the next turn end.
   const arm = (paseo: Parameters<typeof loop.rememberPaseo>[0]) => {
     loop.rememberPaseo(paseo);
-    initiativeLoop.rememberPaseo(paseo);
+    initiativeLoop.rememberHost(paseoLoopHost(paseo));
     pipelinePaseo = paseo;
   };
   const offSessionOpen = server.before("agent.session_open", (_input, { paseo }) => {
@@ -674,13 +700,16 @@ export default function contribute(
   const offPermissionRequested = server.on("agent.permission_requested", (event, { paseo }) => {
     arm(paseo);
     publishInOrder(() => permissionEvents(event));
-    void initiativeLoop.onPermissionRequested(paseo, event).catch((error) => {
-      console.warn("orchestrator: loop permission request failed", error);
-    });
+    // Mapped inside the chain, so an event the loop can't read is a warning, as before, not a throw in the hook.
+    void Promise.resolve()
+      .then(() => initiativeLoop.onPermissionRequested(paseoLoopHost(paseo), loopPermissionRequested(event)))
+      .catch((error) => {
+        console.warn("orchestrator: loop permission request failed", error);
+      });
   });
   const offPermissionResolved = server.on("agent.permission_resolved", (event, { paseo }) => {
     arm(paseo);
-    void initiativeLoop.onPermissionResolved(paseo, event).catch((error) => {
+    void initiativeLoop.onPermissionResolved(paseoLoopHost(paseo), loopPermissionResolved(event)).catch((error) => {
       console.warn("orchestrator: loop permission resolve failed", error);
     });
   });
@@ -713,6 +742,9 @@ export default function contribute(
       readAgentConfig: async (step) => loadStepConfig(paseo, await readLoopConfig(), step, await readRunnerProfileId()),
     },
     commit: commitStory,
+    cost: readCost,
+    // A seat runs on its file's profile, else its role's tier; the tick falls back to the manager's models without one.
+    profiles: async () => ({ list: profilesFromConfigGet(await paseo.config.get()), runnerProfileId: await readRunnerProfileId() }),
     steer: (line) => steerManager(repo, line, paseo),
     send: (agentId, text) => paseo.agents.ref(agentId).send(text),
     worktrees: {
@@ -777,6 +809,16 @@ export default function contribute(
       const id = await ensureManager(repo, jarvisPaseo());
       return id ? { id, name: "Factory manager" } : null;
     },
+    // "Where are we": a cheap one-shot over the factory's files, so the manager isn't woken. Null when there is no factory.
+    factoryStatus: async () => {
+      const { repo } = await readHarness();
+      if (!repo) return null;
+      return factoryStatus(repo, {
+        ask: defaultAsk(),
+        unavailable: deps.askUnavailable ?? (() => askUnavailable()),
+        alive: async (id) => !isDead((await jarvisPaseo().agents.ref(id).refresh())?.agent),
+      });
+    },
     // "Good morning, Jarvis": weather, the verse, your Jira stories and the priority initiative, one beat at a time.
     brief: createMorningBrief({
       weather: () => fetchWeather(),
@@ -798,12 +840,13 @@ export default function contribute(
       void jarvis
         .event(event)
         .then((byRouter) => Promise.all(Object.entries(byRouter).map(([routerId, lines]) => jarvisConnection?.say(routerId, lines))))
-        .catch((error) => console.warn("orchestrator: Jarvis event failed", error));
+        .catch((error) => console.warn("orchestrator: Sulti event failed", error));
     }
   };
   // The long poll (and brief/status below) leave their Paseo handle too, so the router can list sessions before any
   // turn event arrives.
-  server.handle(voiceEvents, async ({ after, target }, { paseo }) => {
+  server.handle(voiceEvents, async ({ after, target, awake }, { paseo }) => {
+    if (awake) lastAwakeMacPoll = Date.now();
     helperPaseo = paseo;
     macTarget = target ?? null;
     return { ...(await voiceHub.read(after)), phoneActive: jarvisConnection?.isActive(Date.now()) ?? false, voice: jarvisConnection?.voiceState(Date.now()) ?? "unknown", settingsUnreadable: micOffGate.unreadable(), settingsChecking: micOffGate.checking() };
