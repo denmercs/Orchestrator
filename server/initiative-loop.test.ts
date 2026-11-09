@@ -2995,6 +2995,24 @@ test("pr-done resolves an open Block in the story's Outcome", async (t) => {
   assert.doesNotMatch(text, /### Blocked\n/);
 });
 
+test("pr-done with no PR yet on a tick leaves the open Blocked entry open", async (t) => {
+  t.after(() => ghPr(null));
+  ghPr(null);
+  const fx = fixture("a1");
+  writeFrontmatter(fx.story, { status: "reviewing", step: "pr" });
+  writeFileSync(fx.story, `${readFileSync(fx.story, "utf8")}\n## Outcome\n\n### Blocked\n- Open PR finished but there is no open PR for feature/s1.\n`, "utf8");
+  writeFileSync(join(fx.worktree, ".harness", "state.md"), "# S1 — Demo story\n\n## Status\npr-done\nhttps://pr/45\n", "utf8");
+  const { api } = fakePaseo([{ id: "a1", labels: { ...fx.labels, "loop-step": "pr" } }]);
+  const initiative = loop();
+  // A turn end for an unrelated agent only hands the loop its host; the tick then sees pr-done without a turn end.
+  await initiative.onTurnEnded(api, ended("other", { kind: "completed" }));
+
+  await initiative.tick();
+
+  const titles = readOutcome(readFileSync(fx.story, "utf8")).entries.map((entry) => entry.title);
+  assert.deepEqual(titles, ["Blocked"]);
+});
+
 test("a pr step that wrote pr-done records the open PR; at turn end with no PR the story blocks", async (t) => {
   t.after(() => ghPr(null));
   const prStep = () => {

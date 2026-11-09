@@ -570,7 +570,9 @@ export function createInitiativeLoop(
     // ## Outcome. A step whose own transition blocked the story again has not.
     if (marker && STEP_DONE[meta.step ?? ""]?.includes(marker)) {
       const current = readStoryFiles(phaseDir).find((item) => item.id === story.id);
-      if (current && current.meta.status !== "blocked") recordOutcome(current, { kind: "resolved", step: STEP_LABELS[step] });
+      // The pr step moves the story only once it found the PR; until then its Blocked note still stands.
+      const moved = step === "pr" ? current?.meta.status === "pr-open" : current?.meta.status !== "blocked";
+      if (current && moved) recordOutcome(current, { kind: "resolved", step: STEP_LABELS[step] });
     }
   }
 
