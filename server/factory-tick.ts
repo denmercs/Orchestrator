@@ -40,7 +40,7 @@ export type TickPaseo = {
     api: PluginHandlerContext["paseo"];
     readPipeline: () => Promise<{ phases: Phase[]; sources: SkillSource[] }>;
     // The runner config for a step: the loop picks a per-step profile, so the step is passed.
-    readAgentConfig: (step: LoopStep) => Promise<AgentCreateConfig>;
+    readAgentConfig: (step: LoopStep, mission?: string) => Promise<AgentCreateConfig>;
   };
   // The telemetry rows and base cap a slice's spend and cap are read from, for the round 3 nudge and the build, test and review cost cap. Absent: the nudge leaves spend out and the slice is not capped.
   cost?: ReadCost;

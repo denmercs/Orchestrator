@@ -106,7 +106,7 @@ function launcher(root: string, slice: FactorySlice, ports: TickPaseo, ctx: Para
         ...(extra.cycles ? { "loop-cycles": "subagents" } : {}),
       },
       readPipeline: steps.readPipeline,
-      readAgentConfig: () => steps.readAgentConfig(step),
+      readAgentConfig: () => steps.readAgentConfig(step, mission),
       create: (spec) =>
         startSeat(slice, ports, {
           config: spec.config,

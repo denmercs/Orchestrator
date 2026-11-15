@@ -80,7 +80,7 @@ import { createMicOffGate } from "./server/mic-off-gate";
 import { createSultiProvider, type SultiConnection } from "./server/sulti-provider";
 import { type Filed, fileInitiative, fileSlice } from "./server/factory-file";
 import { fileInitiativeRpc, fileSliceRpc } from "./shared/factory-file";
-import { applyFactoryManager, steerManager } from "./server/factory-manager";
+import { applyFactoryManager, hearthplayStepConfig, steerManager } from "./server/factory-manager";
 import { applySultiSession, ensureSulti, readSultiId } from "./server/sulti-session";
 import { isDead, runFactoryTick, type TickPaseo } from "./server/factory-tick";
 import { factoryStatus } from "./server/factory-status";
@@ -787,7 +787,9 @@ export default function contribute(
     steps: {
       api: paseo,
       readPipeline: readLoopPipeline,
-      readAgentConfig: async (step) => loadStepConfig(paseo, await readLoopConfig(), step, await readRunnerProfileId()),
+      readAgentConfig: async (step, mission) =>
+        hearthplayStepConfig(step, mission, paseo, async () =>
+          loadStepConfig(paseo, await readLoopConfig(), step, await readRunnerProfileId())),
     },
     commit: commitStory,
     cost: readCost,

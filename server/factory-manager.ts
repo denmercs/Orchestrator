@@ -1,9 +1,40 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { materializeProfile, pickProfile, profilesFromConfigGet, type AgentCreateConfig } from "../shared/agent-runner";
+import type { LoopStep } from "../shared/story-method";
 import type { VoiceRequest } from "../shared/voice-session";
 import { factoryDir, readFactory } from "./factory-layout";
 import { writeFrontmatter } from "./harness-layout";
+
+export const HEARTHPLAY_E4_MISSION = "hearthplay-e4";
+
+// Cursor-only loop steps for Hearthplay factory slices (Den / Gamer, 2026-11-15).
+const HEARTHPLAY_CURSOR_PROFILE: Partial<Record<LoopStep, string>> = {
+  plan: "Business - Thinker",
+  diagnose: "Business - Thinker",
+  review: "Business - Thinker",
+  implement: "Business - Coder",
+  fix: "Business - Coder",
+};
+
+export async function hearthplayStepConfig(
+  step: LoopStep,
+  mission: string | undefined,
+  profilesPort: { config: { get(): Promise<unknown> } },
+  fallback: () => Promise<AgentCreateConfig>,
+): Promise<AgentCreateConfig> {
+  if (mission !== HEARTHPLAY_E4_MISSION) return fallback();
+  const name = HEARTHPLAY_CURSOR_PROFILE[step] ?? "Business - Coder";
+  try {
+    const profile = pickProfile(profilesFromConfigGet(await profilesPort.config.get()), name);
+    if (profile) return materializeProfile(profile);
+  } catch {
+    // Fall through to explicit Cursor providers.
+  }
+  const deep = step === "plan" || step === "review" || step === "diagnose";
+  return { provider: deep ? "cursor/grok-4.7" : "cursor/composer-2.5" };
+}
 
 // Env marker the factory puts on the manager session it creates; the agent.create hook looks for it.
 export const FACTORY_MANAGER_ENV = "ORCHESTRATOR_FACTORY_MANAGER";
