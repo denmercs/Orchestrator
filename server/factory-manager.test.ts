@@ -116,7 +116,7 @@ const dead: [string, string | undefined, Record<string, { status: string; archiv
   ["a session in error", "old", { old: { status: "error" } }],
 ];
 for (const [name, agent, known] of dead) {
-  test(`ensureManager creates one manager on Claude Sonnet and records it when manager.md has ${name}`, async () => {
+  test(`ensureManager creates one manager on Cursor Composer 2.5 and records it when manager.md has ${name}`, async () => {
     const root = tempRoot(true, agent);
     const { paseo, created } = fakePaseo(known);
     assert.equal(await ensureManager(root, paseo), "new-1");
@@ -148,12 +148,29 @@ test("ensureManager falls back to Cursor Composer 2.5 when the Claude create fai
   assert.match(managerFile(root), /^agent: new-2$/m);
 });
 
-test("ensureManager throws and leaves manager.md alone when both creates fail", async () => {
-  const root = tempRoot(true, "old");
-  const { paseo, created } = fakePaseo({ old: { status: "closed" } }, ["claude", "cursor"]);
-  await assert.rejects(ensureManager(root, paseo), /cursor is unavailable/);
-  assert.equal(created.length, 2);
-  assert.match(managerFile(root), /^agent: old$/m);
+const withModel = (root: string, model: string) => writeFileSync(join(root, ".harness", "factory", "manager.md"), `---\nmodel: ${model}\n---\n`);
+
+test("ensureManager creates on manager.md's model, then that provider's defaults only", async () => {
+  const root = tempRoot(true);
+  withModel(root, "cursor/grok-4.7");
+  const { paseo, created } = fakePaseo({}, []);
+  paseo.agents.create = async (request) => {
+    created.push(request);
+    if (request.config.provider === "cursor/grok-4.7") throw new Error("grok is unavailable");
+    return { id: `new-${created.length}` };
+  };
+  assert.equal(await ensureManager(root, paseo), "new-2");
+  assert.deepEqual(created.map((request) => request.config), [{ provider: "cursor/grok-4.7" }, { provider: "cursor/composer-2.5" }]);
+  assert.match(managerFile(root), /^agent: new-2$/m);
+  assert.match(managerFile(root), /^model: cursor\/grok-4\.7$/m);
+});
+
+test("ensureManager runs a Claude model from manager.md in auto mode, with no Cursor fallback", async () => {
+  const root = tempRoot(true);
+  withModel(root, "claude/claude-sonnet-5-5");
+  const { paseo, created } = fakePaseo({}, ["claude"]);
+  await assert.rejects(ensureManager(root, paseo), /claude is unavailable/);
+  assert.deepEqual(created.map((request) => request.config), [{ provider: "claude/claude-sonnet-5-5", modeId: "auto" }]);
 });
 
 test("ensureManager throws instead of creating a second manager when Paseo does not answer", async () => {

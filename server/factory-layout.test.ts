@@ -15,7 +15,7 @@ test("readFactory reads every file of the tree into typed values", () => {
   try {
     const home = factoryDir(root);
     put(join(home, "project.md"), "# Project\n\nShip the thing.\n");
-    put(join(home, "manager.md"), "---\nagent: agent-m\n---\n\nManager notes.\n");
+    put(join(home, "manager.md"), "---\nagent: agent-m\nmodel: cursor/composer-2.5\npaths: ~/e2e\nprompt_minutes: 15\n---\n\nManager notes.\n");
     put(join(home, "culture.md"), "Small diffs.\n");
     put(join(home, "seats", "builder.md"), "---\nprofile: fast\nskills: tdd, review\nagent: agent-b\n---\n\nBuilds.\n");
     put(join(home, "missions", "01-first", "mission.md"), "# Outcome\n\nFirst outcome.\n");
@@ -27,7 +27,7 @@ test("readFactory reads every file of the tree into typed values", () => {
 
     const factory = readFactory(root);
     assert.equal(factory.project, "# Project\n\nShip the thing.");
-    assert.deepEqual(factory.manager, { agent: "agent-m" });
+    assert.deepEqual(factory.manager, { agent: "agent-m", model: "cursor/composer-2.5", paths: ["~/e2e"], promptMinutes: 15 });
     assert.equal(factory.culture, "Small diffs.");
     assert.deepEqual(factory.seats, [
       { role: "builder", profile: "fast", skills: ["tdd", "review"], agent: "agent-b", notes: "Builds." },
@@ -81,7 +81,7 @@ test("a factory with no project, manager, culture or seats reads those as empty"
 test("a repo with no .harness/factory reads as an empty factory and the tick returns no slices", () => {
   const root = mkdtempSync(join(tmpdir(), "factory-layout-"));
   try {
-    assert.deepEqual(readFactory(root), { project: "", manager: { agent: "" }, culture: "", seats: [], missions: [] });
+    assert.deepEqual(readFactory(root), { project: "", manager: { agent: "", model: "", paths: [], promptMinutes: 10 }, culture: "", seats: [], missions: [] });
     assert.deepEqual(factoryTick(root), []);
   } finally {
     rmSync(root, { recursive: true, force: true });

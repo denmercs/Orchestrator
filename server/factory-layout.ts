@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { type Factory, type FactoryMission, type FactorySlice, type SliceState, parseSeat, parseSliceState, runnableSlices } from "../shared/factory";
+import { type Factory, type FactoryMission, type FactorySlice, type SliceState, parseManager, parseSeat, parseSliceState, runnableSlices } from "../shared/factory";
 import { dirsIn, frontmatter, writeFrontmatter } from "./harness-layout";
 
 export const factoryDir = (root: string) => join(root, ".harness", "factory");
@@ -45,7 +45,7 @@ export function readFactory(root: string): Factory {
     : [];
   return {
     project: body(readText(join(home, "project.md"))),
-    manager: { agent: frontmatter(readText(join(home, "manager.md"))).agent ?? "" },
+    manager: parseManager(frontmatter(readText(join(home, "manager.md")))),
     culture: body(readText(join(home, "culture.md"))),
     seats,
     missions: dirsIn(join(home, "missions")).map((id) => readMission(root, id)),

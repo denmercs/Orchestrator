@@ -24,6 +24,7 @@ export function renderDigest(factory: Factory): string {
     if (slice.state.ready === "review") return "review is clean";
     if (waiting.has(slice)) return `PR ${slice.state.pr} waits on your merge`;
     if (slice.state.steered === "plan") return "plan awaits your approval";
+    if (slice.state.prompt) return `${slice.state.prompt_steered === "stalled" ? "stalled on" : "waits on"} a permission prompt since ${slice.state.prompt_since}: ${slice.state.prompt_what}`;
     return "";
   };
   const live = new Set(slices.map(({ slice }) => slice));

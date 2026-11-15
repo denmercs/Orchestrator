@@ -2,15 +2,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type FactoryPhase, type FactorySeat, type FactorySlice, heldBy, mergeWatch } from "../shared/factory";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
-import { type AgentCreateConfig, type AgentProfile, materializeProfile, seatProfile } from "../shared/agent-runner";
+import { type AgentCreateConfig, type AgentProfile, materializeProfile, pickProfile, seatProfile } from "../shared/agent-runner";
 import type { Phase, SkillSource } from "../shared/pipeline";
 import { branchName } from "../shared/naming";
 import type { LoopHost } from "../shared/loop-host";
 import type { LoopStep, StoryContext } from "../shared/story-method";
 import { type ManagerPaseo, MANAGER_MODELS } from "./factory-manager";
 import { writeDigest } from "./factory-digest";
+import { answerSeatPrompts, type PromptAnswer, type SeatPrompt } from "./factory-prompts";
 import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from "./factory-layout";
-import { REFOCUS, TEST_DONE, TEST_FAILED, block, confirmDead, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge, sliceCostCap, sliceSpendKey, sliceTicket, startSeat } from "./factory-phases";
+import { REFOCUS, TEST_DONE, TEST_FAILED, UNDO_GUARD, block, confirmDead, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge, sliceCostCap, sliceSpendKey, sliceTicket, startSeat } from "./factory-phases";
 import { closeSlices, runRequestedSweep } from "./factory-workspace";
 import { frontmatter, slugOf, writeFrontmatter } from "./harness-layout";
 import { type FailingCheck, type PrStatus, prStatus } from "./pr-checks";
@@ -60,8 +61,14 @@ export type TickPaseo = {
   send?: (agentId: string, text: string) => Promise<unknown>;
   // The Paseo agent profiles and the runner's profile id, to resolve a seat's profile. Absent or failing: seats start on MANAGER_MODELS.
   profiles?: () => Promise<{ list: AgentProfile[]; runnerProfileId: string }>;
+  // The clock for how long a seat has waited on a permission prompt (`Date.now` when absent).
+  now?: () => number;
   agents: {
-    ref(id: string): { refresh(): Promise<{ agent: { status?: string; archivedAt?: string | null; lastUsage?: { totalCostUsd?: number } | null } } | null> };
+    ref(id: string): {
+      refresh(): Promise<{ agent: { status?: string; archivedAt?: string | null; lastUsage?: { totalCostUsd?: number } | null; pendingPermissions?: SeatPrompt[] | null } } | null>;
+      // Answers one of the agent's permission prompts. Absent: the tick answers none and tells the manager instead.
+      respondToPermission?(answer: PromptAnswer): Promise<unknown>;
+    };
     // The daemon's non-archived agents, as `paseo.agents.list`: a second opinion on a dead read. Absent: two reads decide.
     list?(request: { filter: { includeArchived: boolean }; page: { limit: number } }): Promise<{ entries: { agent: { id: string; status?: string; archivedAt?: string | null } }[] }>;
     create(request: Omit<Parameters<ManagerPaseo["agents"]["create"]>[0], "config"> & { prompt: string; config: AgentCreateConfig }): Promise<{ id: string }>;
@@ -98,6 +105,7 @@ export function seatPrompt(seat: string, slice: FactorySlice, mission: string, p
     `Mission outcome: ${mission}`,
     `Project intent: ${project}`,
     ...(seat === "builder" && slice.design ? [`Design: ${slice.design}`] : []),
+    ...(seat === "builder" ? [UNDO_GUARD] : []),
     ...(seat === "qa" ? qaLines() : []),
     REFOCUS,
   ].join("\n");
@@ -106,8 +114,9 @@ export function seatPrompt(seat: string, slice: FactorySlice, mission: string, p
 let running = false;
 
 // One factory pass: walks every runnable slice and, when its seat's agent is missing, archived, closed or in error,
-// starts one fresh agent in the slice's worktree and records its id. A live agent (a permission wait included) is left
-// alone, and so is a story whose loop session is still live: one owner per story. Never throws on a missing factory.
+// starts one fresh agent in the slice's worktree and records its id. A live agent is left alone, except that its permission
+// prompts in the slice's folders are answered and the rest reported (`answerSeatPrompts`), and so is a story whose loop
+// session is still live: one owner per story. Never throws on a missing factory.
 export async function runFactoryTick(root: string, ports: TickPaseo): Promise<TickResult> {
   if (running) return { kind: "idle" };
   running = true;
@@ -229,15 +238,21 @@ async function leaveSpec(root: string, slice: FactorySlice, ports: TickPaseo): P
   return { kind: "advanced", slice: id, phase };
 }
 
-// The seat's own model config (its file's profile, else its role's tier), or none to start on MANAGER_MODELS.
-async function seatConfig(seat: FactorySeat | undefined, role: string, ports: TickPaseo): Promise<AgentCreateConfig[]> {
-  if (!ports.profiles) return [];
+const providerOf = (config: AgentCreateConfig) => config.provider.split("/")[0];
+
+// The configs a seat is created on, in order: its own (its file's profile, else its role's tier), then MANAGER_MODELS. A run
+// stays on one provider, so once the seat's profile (else the runner's) names one, the fallbacks are that provider's only: a
+// Cursor seat never lands on Claude. Without a profiles port, or with one that fails, it is MANAGER_MODELS as they are.
+async function seatConfigs(seat: FactorySeat | undefined, role: string, ports: TickPaseo): Promise<AgentCreateConfig[]> {
+  if (!ports.profiles) return MANAGER_MODELS;
   try {
     const { list, runnerProfileId } = await ports.profiles();
     const profile = seatProfile(seat, role, list, runnerProfileId);
-    return profile ? [materializeProfile(profile)] : [];
+    const own = profile ? [materializeProfile(profile)] : [];
+    const provider = profile?.provider ?? pickProfile(list, runnerProfileId)?.provider;
+    return [...own, ...MANAGER_MODELS.filter((config) => !provider || providerOf(config) === provider)];
   } catch {
-    return [];
+    return MANAGER_MODELS;
   }
 }
 
@@ -367,7 +382,15 @@ async function passSlice(root: string, slice: FactorySlice, ports: TickPaseo): P
 
   if (state.agent) {
     const session = (await ports.agents.ref(state.agent).refresh())?.agent;
-    if (!(await confirmDead(ports.agents, state.agent, session))) return { kind: "alive", slice: slice.id, agent: state.agent };
+    if (!(await confirmDead(ports.agents, state.agent, session))) {
+      const ref = ports.agents.ref(state.agent);
+      await answerSeatPrompts(root, slice, session, {
+        respond: ref.respondToPermission && ((answer) => ref.respondToPermission!(answer)),
+        steer: ports.steer,
+        now: ports.now,
+      });
+      return { kind: "alive", slice: slice.id, agent: state.agent };
+    }
   }
   // A story the loop's own step session still runs isn't ours yet.
   // Test is the QA seat's, so the builder's finished step session is no loop owner there.
@@ -384,7 +407,9 @@ async function passSlice(root: string, slice: FactorySlice, ports: TickPaseo): P
   const prompt = seatPrompt(seat, slice, mission?.outcome ?? "", factory.project, sliceDir(root, slice.mission, slice.id));
   const spend = sliceSpendKey(slice);
   let failure: unknown;
-  for (const config of [...(await seatConfig(factory.seats.find((item) => item.role === seat), seat, ports)), ...MANAGER_MODELS]) {
+  const configs = await seatConfigs(factory.seats.find((item) => item.role === seat), seat, ports);
+  if (!configs.length) return { kind: "waiting", slice: slice.id, why: `no model of its provider is set for the ${seat} seat` };
+  for (const config of configs) {
     try {
       const { id } = await startSeat(slice, ports, {
         config,
@@ -392,7 +417,8 @@ async function passSlice(root: string, slice: FactorySlice, ports: TickPaseo): P
         title: seatTitle(seat, slice),
         labels: { kind: "factory-seat", seat, slice: slice.id, mission: slice.mission, "loop-initiative": spend.initiative, "loop-story": spend.story },
       });
-      writeSliceState(root, slice.mission, slice.id, { seat, agent: id, attempt: state.attempt + 1 });
+      // A prompt the old seat waited on went with it.
+      writeSliceState(root, slice.mission, slice.id, { seat, agent: id, attempt: state.attempt + 1, prompt: null, prompt_what: null, prompt_since: null, prompt_steered: null });
       const seatFile = join(factoryDir(root), "seats", `${seat}.md`);
       if (existsSync(seatFile)) writeFrontmatter(seatFile, { agent: id });
       return { kind: "restarted", slice: slice.id, agent: id };
