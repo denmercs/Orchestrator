@@ -224,7 +224,7 @@ Each step is done when its check passes. Do not start the next step first.
 5. **Health.** The ceremony block fires on the two signals above, on every seat phase, and does not fire on a turn that edits product code or turns a failing test green.
 6. **Fan-out.** Honor `depends`. Two slices with no dependency both run, each in its own worktree. A slice whose dependency has an empty proof does not start. A slice that can never start (a dependency that is blocked, unknown, idle, or part of a loop) steers once instead of waiting in silence (the repo manager until the Sulti follow-on lands, then Sulti).
 7. **Factory view.** A Factory tab replaces the Initiatives tab and opens by default when the repo has a factory. Today, Todos, Board and Pulse stay. Start only after step 6 has run on a real story, and remove the Initiatives tab only once its Start buttons have moved (S8). The view is read-only and reads the factory files and agent status, nothing new:
-   - One card per seat: role, model (from `seatProfile`), and whether its agent is alive, dead, or none.
+   - One card per seat: role, model (from `seatProfile` for this repo's slices; Cursor tiers for another repo's slice worktree), and whether its agent is alive, dead, or none.
    - The runnable slices drawn as their phases (spec, design, build, test, review, ship), with the current phase and its seat lit.
    - The reviewer's review round and last verdict, in place of a call count.
    - A factory log: the status steers sent to Sulti and the repo manager, and the phase changes, newest first.

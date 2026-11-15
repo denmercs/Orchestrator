@@ -176,3 +176,18 @@ test("seatProfile: null when nothing matches, so the caller falls back", () => {
 test("seatProfile: the tier is searched among the runner's provider only", () => {
   assert.equal(seatProfile(seatOf("reviewer"), "reviewer", [kiroOpus, runner], runner.id), null);
 });
+
+test("seatProfile: another repo's slice keeps Claude out of the seat file and tiers", () => {
+  const composer: AgentProfile = { id: "p_comp", name: "Business - Coder", provider: "cursor", model: "composer-2.5" };
+  const grokDeep: AgentProfile = { id: "p_grok", name: "Business - Thinker", provider: "cursor", model: "grok-4.7" };
+  const grokFast: AgentProfile = { id: "p_fast_grok", name: "Grok fast", provider: "cursor", model: "grok-code-fast" };
+  const cursorProfiles = [composer, grokFast, grokDeep, opus, sonnet, runner];
+  assert.equal(seatProfile(seatOf("builder", sonnet.id), "builder", cursorProfiles, runner.id, false), composer);
+  assert.equal(seatProfile(seatOf("reviewer", opus.id), "reviewer", cursorProfiles, runner.id, false), grokDeep);
+  assert.equal(seatProfile(seatOf("qa", composer.id), "qa", cursorProfiles, runner.id, false), composer);
+});
+
+test("seatProfile: an Orchestrator slice still honors a Claude profile in the seat file", () => {
+  const all = [opus, sonnet, runner];
+  assert.equal(seatProfile(seatOf("qa", sonnet.id), "qa", all, runner.id, true), sonnet);
+});

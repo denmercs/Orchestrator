@@ -3,7 +3,18 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { applyFactoryManager, ensureManager, FACTORY_MANAGER_ENV, MANAGER_SESSION_MODELS, REPO_MANAGER_MODELS, type ManagerPaseo, steerManager, SYSTEM_TAG } from "./factory-manager";
+import {
+  applyFactoryManager,
+  ensureManager,
+  FACTORY_MANAGER_ENV,
+  MANAGER_SESSION_MODELS,
+  REPO_MANAGER_MODELS,
+  isOrchestratorRepo,
+  sliceRepoRoot,
+  type ManagerPaseo,
+  steerManager,
+  SYSTEM_TAG,
+} from "./factory-manager";
 
 const marked = (systemPrompt?: string) => ({
   config: { provider: "claude", ...(systemPrompt ? { systemPrompt } : {}) },
@@ -93,6 +104,16 @@ function fakePaseo(known: Record<string, { status: string; archivedAt?: string |
   };
   return { paseo, created, sent };
 }
+
+test("sliceRepoRoot reads another checkout's package name through a worktree folder", () => {
+  const home = tempRoot(false);
+  const worktree = join(home, "slice-wt");
+  mkdirSync(worktree, { recursive: true });
+  writeFileSync(join(worktree, "package.json"), JSON.stringify({ name: "quickpress" }));
+  assert.equal(sliceRepoRoot(worktree, home), worktree);
+  assert.equal(isOrchestratorRepo(sliceRepoRoot(worktree, home)), false);
+  assert.equal(isOrchestratorRepo(sliceRepoRoot(join(home, "missing"), home)), true);
+});
 
 test("ensureManager returns null and creates nothing when the root has no factory", async () => {
   const root = tempRoot(false);

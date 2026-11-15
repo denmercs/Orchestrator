@@ -35,6 +35,7 @@ const put = (file: string, text: string) => {
 function setup(state: string, run = "on", phase = "build") {
   const root = mkdtempSync(join(tmpdir(), "tick-"));
   roots.push(root);
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@denmercs/orchestrator" }));
   const worktree = join(root, "wt");
   mkdirSync(worktree);
   const home = join(root, ".harness", "factory");
@@ -2427,4 +2428,27 @@ test("a seat with no profile of its own follows the runner's provider: a Cursor 
   await runFactoryTick(root, { ...paseo, profiles: async () => ({ list: [cursorRunner, deep], runnerProfileId: cursorRunner.id }) });
   assert.ok(created.every((item) => (item.config as { provider: string }).provider.startsWith("cursor/")));
   assert.equal(created.length, 1);
+});
+
+test("a slice in another repo's worktree starts its seat on Cursor even with a Claude runner and seat profile", async () => {
+  const composer: AgentProfile = { id: "p_comp", name: "Business - Coder", provider: "cursor", model: "composer-2.5" };
+  const grokDeep: AgentProfile = { id: "p_grok", name: "Business - Thinker", provider: "cursor", model: "grok-4.7" };
+  const { root, worktree } = setup("agent: dead-1", "on", "test");
+  writeFileSync(join(worktree, "package.json"), JSON.stringify({ name: "quickpress" }));
+  seatFile(root, "qa", fast.id);
+  const { paseo, created } = fakePaseo({ "dead-1": { status: "error" } });
+  await runFactoryTick(root, withProfiles(paseo, [composer, grokDeep, deep, fast, runner]));
+  assert.deepEqual(created.map((item) => (item.config as { provider: string }).provider), ["cursor/composer-2.5"]);
+});
+
+test("a slice in another repo's worktree puts the reviewer on the Cursor deep tier", async () => {
+  const composer: AgentProfile = { id: "p_comp", name: "Business - Coder", provider: "cursor", model: "composer-2.5" };
+  const grokDeep: AgentProfile = { id: "p_grok", name: "Business - Thinker", provider: "cursor", model: "grok-4.7" };
+  const grokFast: AgentProfile = { id: "p_fast", name: "Grok fast", provider: "cursor", model: "grok-code-fast" };
+  const { root, worktree, stateFile } = setup("agent: dead-1\nseat: reviewer", "on", "review");
+  writeFileSync(join(worktree, "package.json"), JSON.stringify({ name: "quickpress" }));
+  const { paseo, created } = fakePaseo({ "dead-1": { status: "error" } });
+  await runFactoryTick(root, withProfiles(paseo, [composer, grokFast, grokDeep, deep, fast, runner]));
+  assert.equal(field(stateFile, "seat"), "reviewer");
+  assert.deepEqual(created.map((item) => (item.config as { provider: string }).provider), ["cursor/grok-4.7"]);
 });

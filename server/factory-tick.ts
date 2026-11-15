@@ -7,7 +7,7 @@ import type { Phase, SkillSource } from "../shared/pipeline";
 import { branchName } from "../shared/naming";
 import type { LoopHost } from "../shared/loop-host";
 import type { LoopStep, StoryContext } from "../shared/story-method";
-import { type ManagerPaseo, MANAGER_MODELS } from "./factory-manager";
+import { type ManagerPaseo, MANAGER_MODELS, REPO_SEAT_FALLBACKS, REPO_SEAT_MODELS, isOrchestratorRepo, sliceRepoRoot } from "./factory-manager";
 import { writeDigest } from "./factory-digest";
 import { answerSeatPrompts, type PromptAnswer, type SeatPrompt } from "./factory-prompts";
 import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from "./factory-layout";
@@ -240,19 +240,27 @@ async function leaveSpec(root: string, slice: FactorySlice, ports: TickPaseo): P
 
 const providerOf = (config: AgentCreateConfig) => config.provider.split("/")[0];
 
-// The configs a seat is created on, in order: its own (its file's profile, else its role's tier), then MANAGER_MODELS. A run
+// The configs a seat is created on, in order: its own (its file's profile, else its role's tier), then fallbacks. A run
 // stays on one provider, so once the seat's profile (else the runner's) names one, the fallbacks are that provider's only: a
-// Cursor seat never lands on Claude. Without a profiles port, or with one that fails, it is MANAGER_MODELS as they are.
-async function seatConfigs(seat: FactorySeat | undefined, role: string, ports: TickPaseo): Promise<AgentCreateConfig[]> {
-  if (!ports.profiles) return MANAGER_MODELS;
+// Cursor seat never lands on Claude. Slices in another repo stay on Cursor; this repo keeps today's MANAGER_MODELS.
+async function seatConfigs(
+  seat: FactorySeat | undefined,
+  role: string,
+  factoryHome: string,
+  worktree: string,
+  ports: TickPaseo,
+): Promise<AgentCreateConfig[]> {
+  const orchestratorSlice = isOrchestratorRepo(sliceRepoRoot(worktree, factoryHome));
+  if (!ports.profiles) return orchestratorSlice ? [...MANAGER_MODELS] : [...REPO_SEAT_MODELS];
   try {
     const { list, runnerProfileId } = await ports.profiles();
-    const profile = seatProfile(seat, role, list, runnerProfileId);
+    const profile = seatProfile(seat, role, list, runnerProfileId, orchestratorSlice);
     const own = profile ? [materializeProfile(profile)] : [];
-    const provider = profile?.provider ?? pickProfile(list, runnerProfileId)?.provider;
-    return [...own, ...MANAGER_MODELS.filter((config) => !provider || providerOf(config) === provider)];
+    const provider = orchestratorSlice ? (profile?.provider ?? pickProfile(list, runnerProfileId)?.provider) : "cursor";
+    const fallbacks = orchestratorSlice ? MANAGER_MODELS : profile ? REPO_SEAT_FALLBACKS : REPO_SEAT_MODELS;
+    return [...own, ...fallbacks.filter((config) => !provider || providerOf(config) === provider)];
   } catch {
-    return MANAGER_MODELS;
+    return orchestratorSlice ? [...MANAGER_MODELS] : [...REPO_SEAT_MODELS];
   }
 }
 
@@ -407,7 +415,7 @@ async function passSlice(root: string, slice: FactorySlice, ports: TickPaseo): P
   const prompt = seatPrompt(seat, slice, mission?.outcome ?? "", factory.project, sliceDir(root, slice.mission, slice.id));
   const spend = sliceSpendKey(slice);
   let failure: unknown;
-  const configs = await seatConfigs(factory.seats.find((item) => item.role === seat), seat, ports);
+  const configs = await seatConfigs(factory.seats.find((item) => item.role === seat), seat, root, state.worktree, ports);
   if (!configs.length) return { kind: "waiting", slice: slice.id, why: `no model of its provider is set for the ${seat} seat` };
   for (const config of configs) {
     try {
