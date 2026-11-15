@@ -19,7 +19,7 @@ export async function factoryProjection(root: string, alive: (agent: string) => 
     for (const { id, state, proof } of mission.slices) {
       const agent = state.agent ? ((await alive(state.agent)) ? "alive" : "dead") : "none";
       lines.push(
-        `- ${id}: phase ${state.phase}, run ${state.run ? "on" : "off"}${state.ready ? `, ready ${state.ready}` : ""}, attempt ${state.attempt}, proof ${proof ? "yes" : "no"}, agent ${agent}`,
+        `- ${id}: phase ${state.phase}, run ${state.run ? "on" : "off"}${state.ready ? `, ready ${state.ready}` : ""}, attempt ${state.attempt}, proof ${proof ? "yes" : "no"}, agent ${agent}${state.prompt ? `, waiting on a permission prompt since ${state.prompt_since}` : ""}`,
       );
     }
   }

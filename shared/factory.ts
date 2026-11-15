@@ -35,14 +35,28 @@ export type SliceState = {
   archived: boolean;
   // The manager was told the archive is held back by a running agent.
   archive_held: boolean;
+  // Extra folders (comma list) the slice's seats may work in besides the worktree, such as an E2E build folder. A permission
+  // prompt scoped to these, the worktree or the slice folder is answered by the tick.
+  paths: string[];
+  // The permission prompt the seat waits on that the tick would not answer: its request id, what it asks and why it was not
+  // auto-approved, and when the tick first saw it. Empty when none.
+  prompt: string;
+  prompt_what: string;
+  prompt_since: string;
+  // The last steer about that prompt the manager received: `asked` when first seen, `stalled` once it waited past the limit.
+  prompt_steered: "" | "asked" | "stalled";
 };
 
 export type FactorySlice = { id: string; mission: string; state: SliceState; spec: string; design: string; proof: string };
 export type FactoryMission = { id: string; outcome: string; slices: FactorySlice[] };
 export type FactorySeat = { role: string; profile: string; skills: string[]; agent: string; notes: string };
+// The manager file's settings. `model` is the manager session's `provider/model` (empty: MANAGER_SESSION_MODELS), `paths`
+// the extra folders every slice's seats may work in, and `promptMinutes` how long a seat may wait on a permission prompt
+// before the manager hears it is stalled.
+export type FactoryManager = { agent: string; model: string; paths: string[]; promptMinutes: number };
 export type Factory = {
   project: string;
-  manager: { agent: string };
+  manager: FactoryManager;
   culture: string;
   seats: FactorySeat[];
   missions: FactoryMission[];
@@ -77,6 +91,24 @@ export function parseSliceState(fields: Record<string, string>): SliceState {
     close: fields.close === "on",
     archived: fields.archived === "on",
     archive_held: fields.archive_held === "on",
+    paths: list(fields.paths),
+    prompt: fields.prompt ?? "",
+    prompt_what: fields.prompt_what ?? "",
+    prompt_since: fields.prompt_since ?? "",
+    prompt_steered: fields.prompt_steered === "asked" || fields.prompt_steered === "stalled" ? fields.prompt_steered : "",
+  };
+}
+
+// How long a seat may wait on a permission prompt before the manager hears it is stalled, when manager.md sets none.
+export const PROMPT_MINUTES = 10;
+
+export function parseManager(fields: Record<string, string>): FactoryManager {
+  const minutes = Number(fields.prompt_minutes);
+  return {
+    agent: fields.agent ?? "",
+    model: fields.model ?? "",
+    paths: list(fields.paths),
+    promptMinutes: Number.isFinite(minutes) && minutes > 0 ? minutes : PROMPT_MINUTES,
   };
 }
 

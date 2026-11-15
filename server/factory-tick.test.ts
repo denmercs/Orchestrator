@@ -9,7 +9,9 @@ import { DEFAULT_PHASES } from "../shared/pipeline";
 import { runnableSlices } from "../shared/factory";
 import { namedStories, readFactory, sliceDir, storyKey, writeSliceState } from "./factory-layout";
 import { MANAGER_MODELS, steerManager, type ManagerPaseo } from "./factory-manager";
-import { buildContext, runFactoryTick, type TickPaseo } from "./factory-tick";
+import { buildContext, runFactoryTick, seatPrompt, type TickPaseo } from "./factory-tick";
+import type { PromptAnswer, SeatPrompt } from "./factory-prompts";
+import { UNDO_GUARD } from "./factory-phases";
 import { writeFrontmatter } from "./harness-layout";
 import { APPROVE_MESSAGE } from "./gate-actions";
 import { createInitiativeLoop } from "./initiative-loop";
@@ -44,7 +46,7 @@ function setup(state: string, run = "on", phase = "build") {
   return { root, worktree, stateFile: join(dir, "state.md") };
 }
 
-type Known = Record<string, { status: string; archivedAt?: string | null; lastUsage?: { totalCostUsd?: number } | null }>;
+type Known = Record<string, { status: string; archivedAt?: string | null; lastUsage?: { totalCostUsd?: number } | null; pendingPermissions?: SeatPrompt[] }>;
 // `stale` is a per-id queue of reads served before the real one: a snapshot, `null` (an empty answer) or an Error (a read that throws).
 // `list` is the daemon's agent list; absent, the port has none.
 type Reads = { stale?: Record<string, ({ status: string; archivedAt?: string | null } | null | Error)[]>; list?: { id: string; status: string; archivedAt?: string | null }[] };
@@ -2288,4 +2290,141 @@ test("after a pass the digest reflects the phase the pass left, even when a slic
   // Assert: the digest exists and shows s1 at build.
   const digest = readFileSync(join(root, ".harness", "factory", "digest.md"), "utf8");
   assert.match(digest, /m1\/s1: phase build/);
+});
+
+// Permission prompts on a live seat: answered in the slice's scope, reported to the manager otherwise.
+const bash = (id: string, command: string): SeatPrompt => ({ id, name: "Bash", kind: "tool", detail: { type: "shell", command } });
+
+// A live builder seat `b-1` waiting on `prompts`, with a port that records answers (and removes the answered prompt).
+function promptSlice(prompts: SeatPrompt[], state = "") {
+  const ctx = setup(`agent: b-1\nseat: builder${state ? `\n${state}` : ""}`, "on", "review");
+  const known: Known = { "b-1": { status: "running", pendingPermissions: prompts } };
+  const { paseo, created } = fakePaseo(known);
+  const answers: PromptAnswer[] = [];
+  const steers: string[] = [];
+  let clock = Date.parse("2026-11-14T10:00:00Z");
+  const ref = paseo.agents.ref;
+  paseo.agents.ref = (id) => ({
+    ...ref(id),
+    respondToPermission: async (answer: PromptAnswer) => {
+      answers.push(answer);
+      known[id].pendingPermissions = known[id].pendingPermissions?.filter((item) => item.id !== answer.requestId);
+    },
+  });
+  paseo.steer = async (line) => (steers.push(line), true);
+  paseo.now = () => clock;
+  return { ...ctx, paseo, created, known, answers, steers, advance: (minutes: number) => (clock += minutes * 60_000) };
+}
+
+test("a live seat's prompt inside its worktree is approved once by the tick, with no steer", async () => {
+  const { root, stateFile, paseo, answers, steers, created } = promptSlice([bash("p1", 'find . -name "*.ts"'), { id: "p2", name: "Read", kind: "tool", detail: { type: "read", filePath: "server/a.ts" } }]);
+  assert.deepEqual(await runFactoryTick(root, paseo), { kind: "alive", slice: "s1", agent: "b-1" });
+  assert.deepEqual(answers.map((answer) => answer.requestId), ["p1", "p2"]);
+  assert.deepEqual(answers[0].response, { behavior: "allow" });
+  assert.deepEqual(steers, []);
+  assert.equal(field(stateFile, "prompt"), undefined);
+  assert.equal(created.length, 0);
+});
+
+test("a prompt in a slice's extra paths, or the manager's, is approved too", async () => {
+  const slice = promptSlice([bash("p1", "ls /e2e/build/dist")], "paths: /e2e/build");
+  await runFactoryTick(slice.root, slice.paseo);
+  assert.deepEqual(slice.answers.map((answer) => answer.requestId), ["p1"]);
+
+  const factory = promptSlice([bash("p1", "ls ~/qp-e2e")]);
+  put(join(factory.root, ".harness", "factory", "manager.md"), "---\npaths: ~/qp-e2e\n---\n");
+  await runFactoryTick(factory.root, factory.paseo);
+  assert.deepEqual(factory.answers.map((answer) => answer.requestId), ["p1"]);
+});
+
+test("a destructive or out-of-scope prompt is left for a human: the manager hears once, and the digest lists it", async () => {
+  const { root, stateFile, paseo, answers, steers } = promptSlice([bash("p1", "git push --force origin HEAD")]);
+  await runFactoryTick(root, paseo);
+  assert.deepEqual(answers, []);
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /Slice s1's builder seat waits on a permission prompt the tick won't answer: Bash: git push --force origin HEAD \(pushes to the remote\)\. Answer it in session b-1\./);
+  assert.equal(field(stateFile, "prompt"), "p1");
+  assert.equal(field(stateFile, "prompt_since"), "2026-11-14T10:00:00.000Z");
+  assert.equal(field(stateFile, "prompt_steered"), "asked");
+  assert.match(readFileSync(join(root, ".harness", "factory", "digest.md"), "utf8"), /## Needs you\n- m1\/s1: phase review, waits on a permission prompt since 2026-11-14T10:00:00.000Z: Bash: git push --force/);
+  // The next pass, still within the limit, says nothing more.
+  await runFactoryTick(root, paseo);
+  assert.equal(steers.length, 1);
+});
+
+test("a prompt waiting past prompt_minutes is reported stalled once, and the fields clear once it is answered", async () => {
+  const { root, stateFile, paseo, steers, known, advance } = promptSlice([bash("p1", "docker compose up -d")]);
+  put(join(root, ".harness", "factory", "manager.md"), "---\nprompt_minutes: 5\n---\n");
+  await runFactoryTick(root, paseo);
+  advance(4);
+  await runFactoryTick(root, paseo);
+  assert.equal(steers.length, 1);
+  advance(2);
+  await runFactoryTick(root, paseo);
+  assert.equal(steers.length, 2);
+  assert.match(steers[1], /Slice s1's builder seat has waited 6 minutes on a permission prompt: Bash: docker compose up -d \(starts, stops or removes containers\)/);
+  assert.equal(field(stateFile, "prompt_steered"), "stalled");
+  assert.match(readFileSync(join(root, ".harness", "factory", "digest.md"), "utf8"), /stalled on a permission prompt since/);
+  advance(30);
+  await runFactoryTick(root, paseo);
+  assert.equal(steers.length, 2);
+  // A human answered it: the next pass clears the record.
+  known["b-1"].pendingPermissions = [];
+  await runFactoryTick(root, paseo);
+  for (const name of ["prompt", "prompt_what", "prompt_since", "prompt_steered"]) assert.equal(field(stateFile, name), undefined);
+  assert.doesNotMatch(readFileSync(join(root, ".harness", "factory", "digest.md"), "utf8"), /permission prompt/);
+});
+
+test("an undelivered prompt steer is tried again next pass, and a handle that can't answer escalates a safe prompt", async () => {
+  const { root, stateFile, paseo, steers } = promptSlice([bash("p1", "npm test")]);
+  const ref = paseo.agents.ref;
+  paseo.agents.ref = (id) => ({ refresh: ref(id).refresh });
+  paseo.steer = async (line) => (steers.push(line), false);
+  await runFactoryTick(root, paseo);
+  assert.match(steers[0], /npm test \(this handle can't answer prompts\)/);
+  assert.equal(field(stateFile, "prompt"), "p1");
+  assert.equal(field(stateFile, "prompt_steered"), undefined);
+  paseo.steer = async (line) => (steers.push(line), true);
+  await runFactoryTick(root, paseo);
+  assert.equal(steers.length, 2);
+  assert.equal(field(stateFile, "prompt_steered"), "asked");
+});
+
+test("a seat restarted after waiting on a prompt drops the old prompt record", async () => {
+  const { root, stateFile } = setup("agent: dead-1\nseat: qa\nprompt: p9\nprompt_what: x\nprompt_since: 2026-11-14T10:00:00.000Z\nprompt_steered: asked", "on", "test");
+  const { paseo } = fakePaseo({ "dead-1": { status: "error" } });
+  assert.equal((await runFactoryTick(root, paseo)).kind, "restarted");
+  for (const name of ["prompt", "prompt_what", "prompt_since", "prompt_steered"]) assert.equal(field(stateFile, name), undefined);
+});
+
+test("the builder seat's prompt carries the undo guard; other seats' don't", async () => {
+  const { root } = setup("", "on", "ship");
+  const slice = readFactory(root).missions[0].slices[0];
+  assert.ok(seatPrompt("builder", slice, "o", "p", "/h").includes(UNDO_GUARD));
+  assert.ok(!seatPrompt("qa", slice, "o", "p", "/h").includes(UNDO_GUARD));
+  assert.match(UNDO_GUARD, /never run a whole-file `git checkout`, `git restore` or `git stash` on a file with uncommitted work/i);
+});
+
+test("a seat on a Cursor profile never falls back to a Claude model", async () => {
+  const composer: AgentProfile = { id: "p_comp", name: "Composer", provider: "cursor", model: "composer-2.5" };
+  const { root } = setup("agent: dead-1", "on", "test");
+  seatFile(root, "qa", composer.id);
+  const { paseo } = fakePaseo({ "dead-1": { status: "error" } });
+  const attempted: string[] = [];
+  paseo.agents.create = async (request) => {
+    attempted.push(request.config.provider);
+    throw new Error("down");
+  };
+  await assert.rejects(runFactoryTick(root, withProfiles(paseo, [composer, deep, fast, runner])), /down/);
+  assert.deepEqual(attempted, ["cursor/composer-2.5", ...MANAGER_MODELS.filter((config) => config.provider.startsWith("cursor/")).map((config) => config.provider)]);
+  assert.ok(attempted.every((provider) => provider.startsWith("cursor/")));
+});
+
+test("a seat with no profile of its own follows the runner's provider: a Cursor runner never falls back to Claude", async () => {
+  const cursorRunner: AgentProfile = { id: "p_cr", name: "Runner", provider: "cursor", model: "composer-2.5" };
+  const { root } = setup("agent: dead-1", "on", "test");
+  const { paseo, created } = fakePaseo({ "dead-1": { status: "error" } });
+  await runFactoryTick(root, { ...paseo, profiles: async () => ({ list: [cursorRunner, deep], runnerProfileId: cursorRunner.id }) });
+  assert.ok(created.every((item) => (item.config as { provider: string }).provider.startsWith("cursor/")));
+  assert.equal(created.length, 1);
 });

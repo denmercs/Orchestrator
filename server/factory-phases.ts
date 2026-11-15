@@ -28,6 +28,10 @@ export const TEST_FAILED = "test-failed";
 // The question that points a fresh agent back at what the slice is for.
 export const REFOCUS = "Does this step still serve the spec, the mission outcome and the project intent? If not, stop and say so in `proof.md`, and do not widen the change.";
 
+// The builder's guard for proving a test: undoing a fix by hand must not take uncommitted work with it.
+export const UNDO_GUARD =
+  "When you re-verify a test by undoing a fix, undo only that change by hand. Never run a whole-file `git checkout`, `git restore` or `git stash` on a file with uncommitted work.";
+
 export const refocusLines = (mission: string, project: string) => [`Mission outcome: ${mission}`, `Project intent: ${project}`, REFOCUS];
 
 type Session = { status?: string; archivedAt?: string | null } | undefined | null;
@@ -106,7 +110,7 @@ function launcher(root: string, slice: FactorySlice, ports: TickPaseo, ctx: Para
       create: (spec) =>
         startSeat(slice, ports, {
           config: spec.config,
-          prompt: extra.attempt ? [spec.prompt, ...refocusLines(outcome, factory.project)].join("\n") : spec.prompt,
+          prompt: [spec.prompt, ...(seat === "builder" ? [UNDO_GUARD] : []), ...(extra.attempt ? refocusLines(outcome, factory.project) : [])].join("\n"),
           title: spec.title,
           labels: spec.labels,
         }),

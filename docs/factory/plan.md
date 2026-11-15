@@ -170,8 +170,8 @@ A factory runs on one provider's models: all Cursor or all Claude, never a mix. 
 
 The code mixes today, and these must change before the rule holds:
 
-- `MANAGER_MODELS` and `MANAGER_SESSION_MODELS` fall back from `claude` to `cursor`.
-- A seat with no profile of the runner's provider falls back to `MANAGER_MODELS`.
+- `MANAGER_MODELS` and `MANAGER_SESSION_MODELS` fall back from `claude` to `cursor`. (Since then: other repos' managers run on Cursor Composer 2.5 alone, `model` in `manager.md` overrides the default with same-provider fallbacks only, and a seat falls back only within its profile's provider.)
+- A seat with no profile of the runner's provider falls back to `MANAGER_MODELS`. (Now only to the entries of the runner's provider; with none, the slice waits.)
 - The one-shot calls (status reporter, correction classifier, replay judge) always use the Claude CLI.
 - The Prod Pulse schedule is pinned to `claude/claude-haiku-4-5`.
 
@@ -182,7 +182,7 @@ One pass, owned by the factory. Do not leave the initiative loop's own superviso
 Each pass:
 
 1. Read missions and slices. A slice is runnable when the manager has set `run: on`, every slice it `depends` on has a finished proof and a clean review, and no earlier phase is still open.
-2. Deliver the packet to the seat for this phase: manager for `spec`, design for `design` when `design: on`, builder for `build` and `ship`, QA for `test`, reviewer for `review`. If that seat's agent is missing, archived, closed, or in error, start a fresh agent in the slice's worktree and point `state.md` at the new id. Leave an agent that is waiting on a permission. Prompt from the spec, the current phase, and refocus. The builder prompt also includes `design.md` when that file has content.
+2. Deliver the packet to the seat for this phase: manager for `spec`, design for `design` when `design: on`, builder for `build` and `ship`, QA for `test`, reviewer for `review`. If that seat's agent is missing, archived, closed, or in error, start a fresh agent in the slice's worktree and point `state.md` at the new id. Leave a live agent alone, except its permission prompts: approve once the ones scoped to the slice's worktree and `paths` that are not destructive, and tell the manager about the rest, again when one waits past `prompt_minutes`. Prompt from the spec, the current phase, and refocus. The builder prompt also includes `design.md` when that file has content.
 3. Advance the phase only from evidence: spec written, `design.md` written when `design: on`, build committed, tests green, proof filled, review clean, PR open and CI green. Skip `design` when `design` is not `on`. Advancing hands the packet to the next seat. It does not send a chat from the old seat.
 4. Write the repo's `digest.md` from the files: project intent, each runnable or ready slice with its phase, and any line waiting on the human. The tick is its only writer, and the write needs no model.
 5. On review clean for a scout slice, or green CI for a ship slice, mark the slice ready in `digest.md` and steer Sulti: which slice, and that it is ready for the human. Steer the repo manager only when it must act. Merge stays on the existing permission and PR path, behind the Voice loop's confirm gate (merge, delete, interrupt). The tick does not merge, and a repo's `autoMerge` does not apply to slices.

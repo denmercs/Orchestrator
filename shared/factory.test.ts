@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Factory, type FactorySlice, parseSeat, heldBy, mergeWatch, parseSliceState, runnableSlices } from "./factory";
+import { type Factory, type FactorySlice, parseManager, parseSeat, heldBy, mergeWatch, parseSliceState, runnableSlices } from "./factory";
 
 test("parseSliceState reads an empty frontmatter as an idle scout at the spec phase", () => {
   assert.deepEqual(parseSliceState({}), {
@@ -25,6 +25,11 @@ test("parseSliceState reads an empty frontmatter as an idle scout at the spec ph
     close: false,
     archived: false,
     archive_held: false,
+    paths: [],
+    prompt: "",
+    prompt_what: "",
+    prompt_since: "",
+    prompt_steered: "",
   });
 });
 
@@ -52,6 +57,11 @@ test("parseSliceState reads every field", () => {
       close: "on",
       archived: "on",
       archive_held: "on",
+      paths: "~/e2e, /tmp/build",
+      prompt: "permission:1",
+      prompt_what: "rm -rf /x (outside)",
+      prompt_since: "2026-11-14T10:00:00.000Z",
+      prompt_steered: "stalled",
     }),
     {
       phase: "build",
@@ -75,6 +85,11 @@ test("parseSliceState reads every field", () => {
       close: true,
       archived: true,
       archive_held: true,
+      paths: ["~/e2e", "/tmp/build"],
+      prompt: "permission:1",
+      prompt_what: "rm -rf /x (outside)",
+      prompt_since: "2026-11-14T10:00:00.000Z",
+      prompt_steered: "stalled",
     },
   );
 });
@@ -116,7 +131,7 @@ const slice = (id: string, mission: string, fields: Record<string, string> = {})
 });
 const factoryOf = (...missions: [string, FactorySlice[]][]): Factory => ({
   project: "",
-  manager: { agent: "" },
+  manager: { agent: "", model: "", paths: [], promptMinutes: 10 },
   culture: "",
   seats: [],
   missions: missions.map(([id, slices]) => ({ id, outcome: "", slices })),
@@ -217,4 +232,15 @@ test("mergeWatch returns only ship slices that are ready at ci with a pr and not
     ],
   );
   assert.deepEqual(mergeWatch(factory), [watched]);
+});
+
+test("parseManager reads the manager file's settings, with ten minutes as the prompt limit by default", () => {
+  assert.deepEqual(parseManager({}), { agent: "", model: "", paths: [], promptMinutes: 10 });
+  assert.deepEqual(parseManager({ agent: "m1", model: "cursor/grok-4.7", paths: "~/e2e, /b", prompt_minutes: "5" }), {
+    agent: "m1",
+    model: "cursor/grok-4.7",
+    paths: ["~/e2e", "/b"],
+    promptMinutes: 5,
+  });
+  for (const bad of ["0", "-3", "soon"]) assert.equal(parseManager({ prompt_minutes: bad }).promptMinutes, 10);
 });

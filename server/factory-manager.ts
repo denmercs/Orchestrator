@@ -58,6 +58,18 @@ export function isOrchestratorRepo(root: string): boolean {
   }
 }
 
+// The models a factory manager is created on: manager.md's `model` (`provider/model`), then the entries of `defaults` from
+// that provider only, so a run stays on one provider; `defaults` as they are when it names none. A Claude model runs in
+// auto mode, so the manager never stops to ask permission on a steer.
+export function managerModels(model: string, defaults: readonly { provider: string; modeId?: string }[]): { provider: string; modeId?: string }[] {
+  if (!model) return [...defaults];
+  const provider = model.split("/")[0];
+  return [
+    provider === "claude" ? { provider: model, modeId: "auto" } : { provider: model },
+    ...defaults.filter((config) => config.provider !== model && config.provider.split("/")[0] === provider),
+  ];
+}
+
 // The slice of Paseo the manager needs; tests pass a fake.
 export type ManagerPaseo = {
   agents: {
@@ -67,7 +79,7 @@ export type ManagerPaseo = {
     };
     create(request: {
       cwd: string;
-      config: { provider: string };
+      config: { provider: string; modeId?: string };
       env: Record<string, string>;
       title: string;
       labels: Record<string, string>;
@@ -91,11 +103,12 @@ export function ensureManager(root: string, ports: ManagerPaseo): Promise<string
 
 async function ensure(root: string, ports: ManagerPaseo): Promise<string | null> {
   if (!existsSync(factoryDir(root))) return null;
+  const { manager } = readFactory(root);
   const { id, created } = await liveOrCreate(
-    readFactory(root).manager.agent,
+    manager.agent,
     { cwd: root, env: { [FACTORY_MANAGER_ENV]: "1" }, title: "Factory manager", labels: { kind: "factory-manager" } },
     ports,
-    isOrchestratorRepo(root) ? MANAGER_SESSION_MODELS : REPO_MANAGER_MODELS,
+    managerModels(manager.model, isOrchestratorRepo(root) ? MANAGER_SESSION_MODELS : REPO_MANAGER_MODELS),
   );
   if (created) writeFrontmatter(join(factoryDir(root), "manager.md"), { agent: id });
   return id;
@@ -103,7 +116,7 @@ async function ensure(root: string, ports: ManagerPaseo): Promise<string | null>
 
 // The session id to use for `known`: itself while Paseo reports it live, else a fresh session made from `spec` on the
 // first of `models` (default MANAGER_SESSION_MODELS) that creates (the create falls through to the next on failure; the last failure is
-// thrown). Shared by the factory manager and Sulti. The caller records the id when `created`; a Paseo that doesn't answer throws.
+// thrown). Shared by the factory manager (`managerModels`) and Sulti. The caller records the id when `created`; a Paseo that doesn't answer throws.
 export async function liveOrCreate(
   known: string | undefined,
   spec: { cwd: string; env: Record<string, string>; title: string; labels: Record<string, string> },
