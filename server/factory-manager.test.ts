@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { applyFactoryManager, ensureManager, FACTORY_MANAGER_ENV, MANAGER_SESSION_MODELS, type ManagerPaseo, steerManager, SYSTEM_TAG } from "./factory-manager";
+import { applyFactoryManager, ensureManager, FACTORY_MANAGER_ENV, MANAGER_SESSION_MODELS, REPO_MANAGER_MODELS, type ManagerPaseo, steerManager, SYSTEM_TAG } from "./factory-manager";
 
 const marked = (systemPrompt?: string) => ({
   config: { provider: "claude", ...(systemPrompt ? { systemPrompt } : {}) },
@@ -48,10 +48,12 @@ afterEach(() => {
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-// A real temp root; with `agent` set it also has a factory whose manager.md holds that id.
-function tempRoot(factory: boolean, agent?: string) {
+// A real temp root, a checkout of this repo (by its package name) unless `orchestrator` is false; with `agent` set it
+// also has a factory whose manager.md holds that id.
+function tempRoot(factory: boolean, agent?: string, orchestrator = true) {
   const root = mkdtempSync(join(tmpdir(), "manager-"));
   roots.push(root);
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: orchestrator ? "@denmercs/orchestrator" : "some-other-repo" }));
   if (factory) {
     mkdirSync(join(root, ".harness", "factory"), { recursive: true });
     if (agent) writeFileSync(join(root, ".harness", "factory", "manager.md"), `---\nagent: ${agent}\n---\n`);
@@ -124,6 +126,16 @@ for (const [name, agent, known] of dead) {
     assert.match(managerFile(root), /^agent: new-1$/m);
   });
 }
+
+test("another repo's manager runs on Cursor Composer 2.5 only, and a failed create is not retried on Claude", async () => {
+  const root = tempRoot(true, undefined, false);
+  const { paseo, created } = fakePaseo();
+  assert.equal(await ensureManager(root, paseo), "new-1");
+  assert.deepEqual(created.map((request) => request.config), REPO_MANAGER_MODELS);
+  const failing = fakePaseo({}, ["cursor"]);
+  await assert.rejects(ensureManager(tempRoot(true, undefined, false), failing.paseo), /cursor is unavailable/);
+  assert.deepEqual(failing.created.map((request) => request.config), REPO_MANAGER_MODELS);
+});
 
 test("ensureManager falls back to Cursor Composer 2.5 when the Claude create fails", async () => {
   const root = tempRoot(true);

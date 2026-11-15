@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { VoiceRequest } from "../shared/voice-session";
 import { factoryDir, readFactory } from "./factory-layout";
@@ -46,6 +46,18 @@ export const MANAGER_SESSION_MODELS = [
   { provider: "cursor/composer-2.5" },
 ];
 
+// A repo's factory manager runs on Cursor Composer, except this repo's own, which keeps MANAGER_SESSION_MODELS.
+export const REPO_MANAGER_MODELS = [{ provider: "cursor/composer-2.5" }];
+
+// True when root is a checkout of this repo (any worktree), by its package name.
+export function isOrchestratorRepo(root: string): boolean {
+  try {
+    return JSON.parse(readFileSync(join(root, "package.json"), "utf8")).name === "@denmercs/orchestrator";
+  } catch {
+    return false;
+  }
+}
+
 // The slice of Paseo the manager needs; tests pass a fake.
 export type ManagerPaseo = {
   agents: {
@@ -83,18 +95,20 @@ async function ensure(root: string, ports: ManagerPaseo): Promise<string | null>
     readFactory(root).manager.agent,
     { cwd: root, env: { [FACTORY_MANAGER_ENV]: "1" }, title: "Factory manager", labels: { kind: "factory-manager" } },
     ports,
+    isOrchestratorRepo(root) ? MANAGER_SESSION_MODELS : REPO_MANAGER_MODELS,
   );
   if (created) writeFrontmatter(join(factoryDir(root), "manager.md"), { agent: id });
   return id;
 }
 
 // The session id to use for `known`: itself while Paseo reports it live, else a fresh session made from `spec` on the
-// first of MANAGER_SESSION_MODELS that creates (the create falls through to the next on failure; the last failure is
+// first of `models` (default MANAGER_SESSION_MODELS) that creates (the create falls through to the next on failure; the last failure is
 // thrown). Shared by the factory manager and Sulti. The caller records the id when `created`; a Paseo that doesn't answer throws.
 export async function liveOrCreate(
   known: string | undefined,
   spec: { cwd: string; env: Record<string, string>; title: string; labels: Record<string, string> },
   ports: ManagerPaseo,
+  models: readonly { provider: string; modeId?: string }[] = MANAGER_SESSION_MODELS,
 ): Promise<{ id: string; created: boolean }> {
   if (known) {
     const session = (await ports.agents.ref(known).refresh())?.agent;
@@ -103,7 +117,7 @@ export async function liveOrCreate(
     if (!dead) return { id: known, created: false };
   }
   let failure: unknown;
-  for (const config of MANAGER_SESSION_MODELS) {
+  for (const config of models) {
     try {
       const { id } = await ports.agents.create({ ...spec, config });
       return { id, created: true };
