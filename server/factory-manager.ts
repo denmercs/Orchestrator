@@ -1,5 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { VoiceRequest } from "../shared/voice-session";
 import { factoryDir, readFactory } from "./factory-layout";
 import { writeFrontmatter } from "./harness-layout";
@@ -48,6 +49,34 @@ export const MANAGER_SESSION_MODELS = [
 
 // A repo's factory manager runs on Cursor Composer, except this repo's own, which keeps MANAGER_SESSION_MODELS.
 export const REPO_MANAGER_MODELS = [{ provider: "cursor/composer-2.5" }];
+
+// Seat creates on other repos' slices: Composer for every role (or a named Cursor profile), Grok deep as fallback.
+export const REPO_SEAT_FALLBACKS = [{ provider: "cursor/grok-4.7" }] as const;
+export const REPO_SEAT_MODELS = [{ provider: "cursor/composer-2.5" }, ...REPO_SEAT_FALLBACKS] as const;
+
+// The repo a slice's seats run in: its worktree checkout (git toplevel or package.json there), else the factory home.
+export function sliceRepoRoot(worktree: string, factoryHome: string): string {
+  if (worktree && existsSync(worktree)) {
+    try {
+      const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      if (top) return top;
+    } catch {
+      // not a git checkout
+    }
+    if (existsSync(join(worktree, "package.json"))) return worktree;
+    try {
+      const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+        cwd: worktree,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      if (common) return join(isAbsolute(common) ? common : join(worktree, common), "..");
+    } catch {
+      // no git metadata
+    }
+  }
+  return factoryHome;
+}
 
 // True when root is a checkout of this repo (any worktree), by its package name.
 export function isOrchestratorRepo(root: string): boolean {

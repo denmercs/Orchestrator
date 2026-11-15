@@ -71,6 +71,13 @@ const STEP_TIER: Partial<Record<LoopStep, "deep" | "fast">> = {
   fix: "fast",
 };
 
+// Cursor profiles other repos' factory seats default to: Composer for every role, Grok 4.7 for reviewer.
+function repoSeatDefault(profiles: AgentProfile[], role: string) {
+  const cursor = profiles.filter((candidate) => candidate.provider === "cursor");
+  const model = role === "reviewer" ? "grok-4.7" : "composer-2.5";
+  return cursor.find((candidate) => candidate.model === model) ?? profileForTier(profiles, role === "reviewer" ? "deep" : "fast", "cursor");
+}
+
 // What marks a profile's tier in its name or model, first match wins. The role word works for any provider
 // ("Grok deep", "grok-code-fast") and must stand alone, so "deepseek" is no tier; the Claude model names are the
 // fallback for profiles named before roles existed.
@@ -110,15 +117,18 @@ export function profileForStep(
 
 // A factory seat's profile: the one its file names (id or name), else its role's tier among the runner provider's
 // profiles (the reviewer is deep, every other role fast). Null when neither resolves: there is no runner fallback, so
-// the caller picks its own.
+// the caller picks its own. Slices in another repo keep Claude out: a Claude profile in the seat file is ignored and
+// tiers are chosen among Cursor profiles only.
 export function seatProfile(
   seat: Pick<FactorySeat, "profile"> | undefined,
   role: string,
   profiles: AgentProfile[],
   runnerProfileId: string,
+  orchestratorSlice = true,
 ) {
   const named = seat?.profile ? pickProfile(profiles, seat.profile) : null;
-  if (named) return named;
+  if (named && (orchestratorSlice || named.provider !== "claude")) return named;
+  if (!orchestratorSlice) return repoSeatDefault(profiles, role);
   const provider = pickProfile(profiles, runnerProfileId)?.provider ?? FALLBACK_AGENT_CONFIG.provider;
   return profileForTier(profiles, role === "reviewer" ? "deep" : "fast", provider);
 }
