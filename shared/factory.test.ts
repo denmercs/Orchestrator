@@ -30,6 +30,11 @@ test("parseSliceState reads an empty frontmatter as an idle scout at the spec ph
     prompt_what: "",
     prompt_since: "",
     prompt_steered: "",
+    phase_since: "",
+    idle_since: "",
+    build_nudged: false,
+    stall: "",
+    head: "",
   });
 });
 
@@ -62,6 +67,11 @@ test("parseSliceState reads every field", () => {
       prompt_what: "rm -rf /x (outside)",
       prompt_since: "2026-11-14T10:00:00.000Z",
       prompt_steered: "stalled",
+      phase_since: "2026-11-14T09:00:00.000Z",
+      idle_since: "2026-11-14T10:05:00.000Z",
+      build_nudged: "on",
+      stall: "idle 11m",
+      head: "abc123",
     }),
     {
       phase: "build",
@@ -90,6 +100,11 @@ test("parseSliceState reads every field", () => {
       prompt_what: "rm -rf /x (outside)",
       prompt_since: "2026-11-14T10:00:00.000Z",
       prompt_steered: "stalled",
+      phase_since: "2026-11-14T09:00:00.000Z",
+      idle_since: "2026-11-14T10:05:00.000Z",
+      build_nudged: true,
+      stall: "idle 11m",
+      head: "abc123",
     },
   );
 });

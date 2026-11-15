@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { type FactorySlice, TICKET_KEY } from "../shared/factory";
 import { pipelineSettings } from "../shared/pipeline";
 import { DEFAULT_LOOP_CONFIG } from "../shared/initiative-loop";
@@ -14,10 +16,148 @@ import { storyCap, type ReadCost } from "./initiative-loop";
 import { failureReport, prStatus } from "./pr-checks";
 import { repoMaxFixes, repoPipelineConfig } from "./repo-pipeline";
 import { commitStory, failureText, openStoryPr, pushStoryFix } from "./story-git";
-import { launchStep } from "./story-steps";
+import { launchStep, nudgePrompt } from "./story-steps";
 import { budgetMoney } from "../shared/stats-strip";
 import { ROUND_NUDGE_AT, roundNudgeDetail, roundNudgeDue, roundNudgeLine } from "../shared/round-nudge";
 import { maybeRoundNudge } from "./round-nudge";
+
+const execFileAsync = promisify(execFile);
+
+export const BUILD_DONE = "build-done";
+export const STALL_MINUTES = 10;
+
+export type SeatAgent = {
+  status?: string;
+  archivedAt?: string | null;
+  attentionReason?: string | null;
+  lastMessage?: string | null;
+  labels?: Record<string, string>;
+  pendingPermissions?: unknown[] | null;
+};
+
+export const seatTurnIdle = (session: SeatAgent | undefined | null) =>
+  turnEnded(session) && (session?.status === "idle" || session?.attentionReason === "finished");
+
+const turnEnded = (session: SeatAgent | undefined | null) =>
+  !session || (session.status !== "running" && session.status !== "initializing");
+
+export const seatLabelMismatch = (slice: FactorySlice, seat: string | null, session: SeatAgent | undefined | null) => {
+  const labels = session?.labels;
+  if (!labels || labels.kind !== "factory-seat") return false;
+  const on = labels["factory-slice"] ?? labels.slice;
+  if (on && on !== slice.id) return true;
+  if (seat && labels.seat && labels.seat !== seat) return true;
+  const recorded = slice.state.seat;
+  if (recorded && seat && recorded !== seat) return true;
+  return false;
+};
+
+export async function sliceAgentStale(
+  slice: FactorySlice,
+  seat: string | null,
+  agentId: string,
+  session: SeatAgent | undefined | null,
+  agents: TickPaseo["agents"],
+): Promise<boolean> {
+  if (!session) return await confirmDead(agents, agentId, session);
+  if (await confirmDead(agents, agentId, session)) return true;
+  if (seatLabelMismatch(slice, seat, session)) return true;
+  if ((session?.pendingPermissions?.length ?? 0) > 0) return false;
+  return seatTurnIdle(session);
+}
+
+export function buildDoneSignal(slice: FactorySlice, session: SeatAgent | undefined | null): boolean {
+  const proof = slice.proof.trim();
+  if (proof === BUILD_DONE || proof.startsWith(`${BUILD_DONE}\n`) || new RegExp(`^${BUILD_DONE}$`, "m").test(proof)) return true;
+  const said = session?.lastMessage?.trim() ?? "";
+  return /\bbuild is done\b/i.test(said);
+}
+
+async function headSha(cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd, timeout: 60_000, maxBuffer: 1024 * 1024 });
+  return stdout.trim();
+}
+
+export async function finishBuildSeat(
+  root: string,
+  slice: FactorySlice,
+  ports: TickPaseo,
+  ctx: { title: string },
+  session?: SeatAgent | null,
+): Promise<TickResult | null> {
+  const { id, mission, state } = slice;
+  if (state.phase !== "build" || !state.worktree || !existsSync(state.worktree)) return null;
+  if (!buildDoneSignal(slice, session)) return null;
+
+  const worktreeState = readText(join(state.worktree, ".harness", "state.md"));
+  const subject = commitSubject(worktreeState, ctx.title);
+  await (ports.commit ?? commitStory)(state.worktree, subject);
+  let head = "";
+  try {
+    head = await headSha(state.worktree);
+  } catch {
+  }
+  if (state.story && existsSync(state.story)) {
+    const meta = frontmatter(readText(state.story));
+    writeFrontmatter(state.story, {
+      step: "implement",
+      status: "implementing",
+      ...(meta.agent ? { agent: null } : {}),
+    });
+    const marker = readMarker(worktreeState).marker;
+    if (marker !== MARKERS.implementDone) {
+      writeFileSync(join(state.worktree, ".harness", "state.md"), writeMarker(worktreeState, MARKERS.implementDone), "utf8");
+    }
+  }
+  writeSliceState(root, mission, id, {
+    phase: "test",
+    seat: null,
+    agent: null,
+    idle_since: null,
+    build_nudged: false,
+    ...(head ? { head } : {}),
+  });
+  return { kind: "advanced", slice: id, phase: "test" };
+}
+
+export async function stallEmptyBuild(
+  root: string,
+  slice: FactorySlice,
+  ports: TickPaseo,
+  agentId: string,
+): Promise<TickResult | null> {
+  const { id, mission, state } = slice;
+  if (state.phase !== "build") return null;
+  if (buildDoneSignal(slice, undefined)) return null;
+  if (!state.build_nudged && ports.send) {
+    await ports.send(agentId, nudgePrompt("Write `build-done` in your slice `proof.md` after you commit on the slice branch, or say the build is done.")).catch(() => undefined);
+    writeSliceState(root, mission, id, { build_nudged: true });
+    return { kind: "waiting", slice: id, why: "its builder finished without proof" };
+  }
+  if (state.build_nudged) return block(root, slice, ports, "its builder stopped with no `build-done` in proof.md.");
+  return null;
+}
+
+export function touchIdleSince(root: string, slice: FactorySlice, now: () => number, session: SeatAgent | undefined | null): void {
+  const { mission, id, state } = slice;
+  if (!state.agent || !seatTurnIdle(session)) {
+    if (state.idle_since) writeSliceState(root, mission, id, { idle_since: null });
+    return;
+  }
+  if (!state.idle_since) writeSliceState(root, mission, id, { idle_since: new Date(now()).toISOString() });
+}
+
+export function stallTimedOut(slice: FactorySlice, now: () => number): boolean {
+  const since = slice.state.idle_since;
+  if (!since) return false;
+  const started = Date.parse(since);
+  if (!Number.isFinite(started)) return false;
+  return now() - started >= STALL_MINUTES * 60_000;
+}
+
+export function logStall(root: string, slice: FactorySlice, line: string) {
+  writeSliceState(root, slice.mission, slice.id, { stall: line });
+}
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
 
@@ -110,7 +250,13 @@ function launcher(root: string, slice: FactorySlice, ports: TickPaseo, ctx: Para
       create: (spec) =>
         startSeat(slice, ports, {
           config: spec.config,
-          prompt: [spec.prompt, ...(seat === "builder" ? [UNDO_GUARD] : []), ...(extra.attempt ? refocusLines(outcome, factory.project) : [])].join("\n"),
+          prompt: [
+            spec.prompt,
+            ...(seat === "builder"
+              ? ["Commit your work on the slice branch in the worktree before you stop, then write `build-done` in this slice's `proof.md`.", UNDO_GUARD]
+              : []),
+            ...(extra.attempt ? refocusLines(outcome, factory.project) : []),
+          ].join("\n"),
           title: spec.title,
           labels: spec.labels,
         }),
@@ -249,6 +395,8 @@ export async function leaveBuild(
 
   const session = state.agent ? (await ports.agents.ref(state.agent).refresh())?.agent : undefined;
   if (session?.status === "running" || session?.status === "initializing") return null;
+  const advanced = await finishBuildSeat(root, slice, ports, ctx, session);
+  if (advanced) return advanced;
   const worktreeState = readText(join(state.worktree, ".harness", "state.md"));
   const { marker } = readMarker(worktreeState);
   // The factory has no `subagentCycles` setting, so it acts as if it were on: round 1 is one parent for the open cycles.
@@ -267,9 +415,15 @@ export async function leaveBuild(
   if (marker === MARKERS.diagnoseBlocked || marker === MARKERS.implementBlocked) return block(root, slice, ports, `${step} is blocked.`);
   // No marker and the agent is gone: the same step starts again, told that an earlier session stopped.
   // A subagents parent comes back as a parent, with the cycles still open.
-  if (await confirmDead(ports.agents, state.agent, session)) {
-    const cycles = meta.cycles === "subagents" ? readCycles(worktreeState).filter((item) => !item.done) : undefined;
-    return launch(step, round, { cycles, attempt: state.attempt + 1, failing: storedFailing(meta.failing) });
+  const turnEnded = !session || (session.status !== "running" && session.status !== "initializing");
+  if (turnEnded) {
+    const gone = await confirmDead(ports.agents, state.agent, session);
+    const ended =
+      gone || (step !== "plan" && (session?.status === "idle" || session?.attentionReason === "finished"));
+    if (ended) {
+      const cycles = meta.cycles === "subagents" ? readCycles(worktreeState).filter((item) => !item.done) : undefined;
+      return launch(step, round, { cycles, attempt: state.attempt + 1, failing: storedFailing(meta.failing) });
+    }
   }
   if (step !== "plan") return null;
   // The plan gate: a Plan turn that ended without `plan-done` is the planner asking. The story waits as awaiting-approval
@@ -346,7 +500,9 @@ export async function leaveReview(
   const worktreeState = readText(join(state.worktree, ".harness", "state.md"));
   const { marker } = readMarker(worktreeState);
   if (marker !== MARKERS.reviewDone && marker !== MARKERS.reviewFailed) {
-    return (await confirmDead(ports.agents, state.agent, session)) ? launch("review", round, { attempt: state.attempt + 1 }) : null;
+    const gone = await confirmDead(ports.agents, state.agent, session);
+    const ended = gone || session?.status === "idle" || session?.attentionReason === "finished";
+    return ended ? launch("review", round, { attempt: state.attempt + 1 }) : null;
   }
   const maxRounds = repoPipelineConfig(pipelineSettings.schema.parse({}), state.worktree).reviewRounds;
   const reviewRound = reviewRoundOf(meta);

@@ -1271,7 +1271,7 @@ test("with the loop and the factory tick both running, an adopted story's dead b
       create: async (request: { cwd: string; prompt: string }) => {
         factoryCreated.push({ cwd: request.cwd, prompt: request.prompt });
         const id = `builder-${factoryCreated.length}`;
-        known[id] = { status: "idle" };
+        known[id] = { status: "running" };
         return { id };
       },
     },
@@ -1282,6 +1282,7 @@ test("with the loop and the factory tick both running, an adopted story's dead b
 
   await Promise.all([initiative.tick(), runFactoryTick(root, tickPaseo)]);
   await initiative.tick();
+  assert.equal(factoryCreated.length, 1);
   await runFactoryTick(root, tickPaseo);
 
   assert.equal(created.length, 0, "the loop must not replace a story the factory owns");
