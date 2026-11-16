@@ -289,7 +289,7 @@ export async function block(
   why: string,
   how = "Clear `ready` in its state.md once it is sorted out.",
 ): Promise<TickResult> {
-  await ports.steer?.(`Slice ${slice.id} is blocked: ${why} ${how}`);
+  await ports.steer?.(`Slice ${slice.id} is blocked: ${why} ${how}`, slice.mission);
   writeSliceState(root, slice.mission, slice.id, { ready: "blocked" });
   return { kind: "waiting", slice: slice.id, why };
 }
@@ -322,7 +322,7 @@ async function sliceNudge(slice: FactorySlice, ports: TickPaseo, reviewRound: nu
   const meta = frontmatter(readText(file));
   if (!roundNudgeDue(meta, reviewRound)) return;
   const spend = cost && (await sliceSpend(slice, meta, cost).catch(() => undefined));
-  await maybeRoundNudge(file, reviewRound, roundNudgeLine(slice.id, undefined, spend), async (line) => (await steer(line)) !== false);
+  await maybeRoundNudge(file, reviewRound, roundNudgeLine(slice.id, undefined, spend), async (line) => (await steer(line, slice.mission)) !== false);
 }
 
 // A nudge nobody received is still pending: each tick tries again while the slice's review round stays at 3 or more.
@@ -433,7 +433,7 @@ export async function leaveBuild(
   if (state.steered !== "plan") {
     const line = `Slice ${id} has a plan waiting for approval. Write \`approve: plan\` in its state.md to approve it.`;
     const steer = ports.steer;
-    const delivered = steer && (await Promise.resolve().then(() => steer(line)).catch(() => false)) !== false;
+    const delivered = steer && (await Promise.resolve().then(() => steer(line, mission)).catch(() => false)) !== false;
     if (delivered) writeSliceState(root, mission, id, { steered: "plan" });
   }
   if (meta.status !== "awaiting-approval") {
@@ -517,7 +517,7 @@ export async function leaveReview(
   }
   if (state.kind === "scout") {
     // The manager hears once: `ready` takes the slice out of the runnable set, so no later pass steers again.
-    await ports.steer?.(`Slice ${id} passed review and is ready for you. Nothing was pushed and no PR was opened.`);
+    await ports.steer?.(`Slice ${id} passed review and is ready for you. Nothing was pushed and no PR was opened.`, mission);
     writeSliceState(root, mission, id, { ready: "review" });
     return { kind: "waiting", slice: id, why: "it is ready for the manager" };
   }
@@ -558,7 +558,7 @@ export async function leaveShip(
         unfixed: after?.kind === "pr" ? after.unfixed : [],
       });
       if (!pr) {
-        await ports.steer?.(`Slice ${id} has nothing to ship: its work is already on ${ctx.base}.`);
+        await ports.steer?.(`Slice ${id} has nothing to ship: its work is already on ${ctx.base}.`, mission);
         writeSliceState(root, mission, id, { ready: "ci" });
         return { kind: "waiting", slice: id, why: "it has nothing to ship" };
       }
@@ -595,7 +595,7 @@ export async function leaveShip(
   // A PR that can't merge as it stands is the manager's to sort out: no Fix agent, no "ready" report.
   if (pr.conflicting && pr.state !== "merged" && pr.state !== "closed") {
     const why = `PR #${pr.number} conflicts with its base and needs the branch updated`;
-    await ports.steer?.(`Slice ${id}: ${why}. PR ${pr.url} needs you.`);
+    await ports.steer?.(`Slice ${id}: ${why}. PR ${pr.url} needs you.`, mission);
     writeSliceState(root, mission, id, { ready: "ci" });
     return { kind: "waiting", slice: id, why };
   }
@@ -615,12 +615,12 @@ export async function leaveShip(
     return { kind: "waiting", slice: id, why: `PR #${pr.number} is merged` };
   }
   if (action.kind === "skip" || action.kind === "give-up") {
-    await ports.steer?.(`Slice ${id}: ${action.reason}. PR ${pr.url} needs you.`);
+    await ports.steer?.(`Slice ${id}: ${action.reason}. PR ${pr.url} needs you.`, mission);
     writeSliceState(root, mission, id, { ready: "ci" });
     return { kind: "waiting", slice: id, why: action.reason };
   }
   if (action.kind === "wait" && action.ci === "green") {
-    await ports.steer?.(`Slice ${id} is ready for you: PR ${pr.url} is open and CI is green. It is not merged.`);
+    await ports.steer?.(`Slice ${id} is ready for you: PR ${pr.url} is open and CI is green. It is not merged.`, mission);
     writeSliceState(root, mission, id, { ready: "ci" });
     return { kind: "waiting", slice: id, why: "CI is green and the PR awaits a merge" };
   }

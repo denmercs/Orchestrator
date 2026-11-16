@@ -287,3 +287,53 @@ test("steerManager returns false and sends nothing when the root has no factory"
   assert.equal(sent.length, 0);
   assert.equal(created.length, 0);
 });
+
+function missionFactory(root: string, globalAgent: string, missions: Record<string, string | undefined>) {
+  writeFileSync(join(root, ".harness", "factory", "manager.md"), `---\nagent: ${globalAgent}\n---\n`);
+  for (const [id, manager] of Object.entries(missions)) {
+    const dir = join(root, ".harness", "factory", "missions", id);
+    mkdirSync(dir, { recursive: true });
+    const head = manager ? `---\nmanager: ${manager}\n---\n\n` : "";
+    writeFileSync(join(dir, "mission.md"), `${head}Outcome for ${id}.\n`);
+  }
+}
+
+test("steerManager routes to a mission manager when mission.md sets manager", async () => {
+  const root = tempRoot(true);
+  missionFactory(root, "repo-mgr", { "quickpress-rea": "qp-mgr" });
+  const { paseo, sent } = fakePaseo({ "repo-mgr": { status: "idle" }, "qp-mgr": { status: "idle" } });
+  assert.equal(await steerManager(root, "Slice s1 is ready.", paseo, "quickpress-rea"), true);
+  assert.deepEqual(sent, [{ id: "qp-mgr", text: `[system] Slice s1 is ready.`, options: steer }]);
+});
+
+test("steerManager without a mission routes to manager.md", async () => {
+  const root = tempRoot(true);
+  missionFactory(root, "repo-mgr", { m1: "qp-mgr" });
+  const { paseo, sent } = fakePaseo({ "repo-mgr": { status: "idle" }, "qp-mgr": { status: "idle" } });
+  await steerManager(root, "Swept stray slice workspaces: archived 0.", paseo);
+  assert.deepEqual(sent.map((item) => item.id), ["repo-mgr"]);
+});
+
+test("steerManager falls back to manager.md when the mission manager field is unset or empty", async () => {
+  const root = tempRoot(true);
+  missionFactory(root, "repo-mgr", { "no-mgr": undefined, "blank-mgr": "" });
+  writeFileSync(join(root, ".harness", "factory", "missions", "blank-mgr", "mission.md"), "---\nmanager:\n---\n\nBlank.\n");
+  const { paseo, sent } = fakePaseo({ "repo-mgr": { status: "idle" } });
+  await steerManager(root, "Slice a held.", paseo, "no-mgr");
+  await steerManager(root, "Slice b held.", paseo, "blank-mgr");
+  assert.deepEqual(sent.map((item) => item.id), ["repo-mgr", "repo-mgr"]);
+});
+
+test("steerManager can reach two mission managers and the repo manager in one session", async () => {
+  const root = tempRoot(true);
+  missionFactory(root, "repo-mgr", { m1: "mgr-one", m2: "mgr-two" });
+  const { paseo, sent } = fakePaseo({
+    "repo-mgr": { status: "idle" },
+    "mgr-one": { status: "idle" },
+    "mgr-two": { status: "idle" },
+  });
+  await steerManager(root, "Slice s1 held.", paseo, "m1");
+  await steerManager(root, "Slice s2 held.", paseo, "m2");
+  await steerManager(root, "Sweep done.", paseo);
+  assert.deepEqual(sent.map((item) => item.id), ["mgr-one", "mgr-two", "repo-mgr"]);
+});

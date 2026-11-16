@@ -24,9 +24,12 @@ function readSlice(root: string, mission: string, id: string): FactorySlice {
 
 function readMission(root: string, id: string): FactoryMission {
   const dir = join(factoryDir(root), "missions", id);
+  const text = readText(join(dir, "mission.md"));
+  const fields = frontmatter(text);
   return {
     id,
-    outcome: body(readText(join(dir, "mission.md"))),
+    manager: fields.manager ?? "",
+    outcome: body(text),
     slices: dirsIn(join(dir, "slices")).map((slice) => readSlice(root, id, slice)),
   };
 }

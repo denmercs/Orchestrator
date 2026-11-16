@@ -1929,6 +1929,45 @@ function steeringPaseo(known: Parameters<typeof fakePaseo>[0] = {}) {
   return { ...fake, steers };
 }
 
+test("held slices in two missions steer each mission's manager when set", async () => {
+  const root = mkdtempSync(join(tmpdir(), "tick-"));
+  roots.push(root);
+  put(join(root, ".harness", "factory", "manager.md"), "---\nagent: repo-mgr\n---\n");
+  put(join(root, ".harness", "factory", "missions", "m1", "mission.md"), "---\nmanager: mission-a-mgr\n---\n\nM1.\n");
+  put(join(root, ".harness", "factory", "missions", "m2", "mission.md"), "M2.\n");
+  put(join(sliceDir(root, "m1", "s1"), "state.md"), "---\nphase: build\nrun: on\nready: blocked\n---\n");
+  put(join(sliceDir(root, "m1", "s1"), "spec.md"), "Blocked.\n");
+  put(join(sliceDir(root, "m1", "s2"), "state.md"), "---\nphase: spec\nrun: on\ndepends: s1\n---\n");
+  put(join(sliceDir(root, "m1", "s2"), "spec.md"), "Waits on s1.\n");
+  put(join(sliceDir(root, "m2", "s1"), "state.md"), "---\nphase: build\nrun: on\nready: blocked\n---\n");
+  put(join(sliceDir(root, "m2", "s1"), "spec.md"), "Blocked.\n");
+  put(join(sliceDir(root, "m2", "s2"), "state.md"), "---\nphase: spec\nrun: on\ndepends: s1\n---\n");
+  put(join(sliceDir(root, "m2", "s2"), "spec.md"), "Waits on s1.\n");
+  const sent: { id: string; text: string }[] = [];
+  const managerPaseo: ManagerPaseo = {
+    agents: {
+      ref: (id) => ({
+        refresh: async () => ({ agent: { status: "idle" } }),
+        send: async (text) => {
+          sent.push({ id, text });
+        },
+      }),
+      create: async () => {
+        throw new Error("unexpected create");
+      },
+    },
+  };
+  const { paseo } = perSlicePaseo();
+  paseo.steer = (line, mission) => steerManager(root, line, managerPaseo, mission);
+
+  await runFactoryTick(root, paseo);
+  await runFactoryTick(root, paseo);
+
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent.map((item) => item.id).sort(), ["mission-a-mgr", "repo-mgr"]);
+  for (const item of sent) assert.match(item.text, /can't start: blocked dependency s1/);
+});
+
 test("a run: on slice whose dependency is blocked steers the manager once over two passes and does not start", async () => {
   // Arrange: s1 is blocked; s2 depends on it.
   const { root } = setup("ready: blocked", "on", "build");

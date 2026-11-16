@@ -149,7 +149,7 @@ const factoryOf = (...missions: [string, FactorySlice[]][]): Factory => ({
   manager: { agent: "", model: "", paths: [], promptMinutes: 10 },
   culture: "",
   seats: [],
-  missions: missions.map(([id, slices]) => ({ id, outcome: "", slices })),
+  missions: missions.map(([id, slices]) => ({ id, outcome: "", manager: "", slices })),
 });
 
 const ids = (factory: Factory) => runnableSlices(factory).map((found) => found.id);
@@ -204,7 +204,7 @@ test("runnableSlices does not hold a later mission for an earlier mission that i
 test("heldBy names a blocked or unknown dependency, and nothing for one still in progress", () => {
   const blocked = slice("a", "m1", { run: "on", ready: "blocked" });
   const working = slice("w", "m1", { run: "on" });
-  const held = (fields: Record<string, string>, mission = { id: "m1", outcome: "", slices: [blocked, working] }) =>
+  const held = (fields: Record<string, string>, mission = { id: "m1", outcome: "", manager: "", slices: [blocked, working] }) =>
     heldBy(slice("b", "m1", fields), mission);
   assert.equal(held({ run: "on", depends: "w, a" }), "blocked dependency a");
   assert.equal(held({ run: "on", depends: "ghost" }), "unknown dependency ghost");
@@ -221,10 +221,13 @@ test("heldBy names a dependency loop, a self-dependency, and an idle dependency 
   const idle = slice("idle", "m1", {});
   const doneIdle = slice("doneIdle", "m1", { ready: "review" });
   doneIdle.proof = "ran it";
-  const mission = { id: "m1", outcome: "", slices: [a, b, c, idle, doneIdle] };
+  const mission = { id: "m1", outcome: "", manager: "", slices: [a, b, c, idle, doneIdle] };
   assert.equal(heldBy(a, mission), "dependency loop a -> b -> c -> a");
   assert.equal(heldBy(b, mission), "dependency loop b -> c -> a -> b");
-  assert.equal(heldBy(slice("s", "m1", { run: "on", depends: "s" }), { ...mission, slices: [slice("s", "m1", { run: "on", depends: "s" })] }), "dependency loop s -> s");
+  assert.equal(
+    heldBy(slice("s", "m1", { run: "on", depends: "s" }), { ...mission, slices: [slice("s", "m1", { run: "on", depends: "s" })] }),
+    "dependency loop s -> s",
+  );
   assert.equal(heldBy(slice("x", "m1", { run: "on", depends: "idle" }), mission), "idle dependency idle");
   // A done slice that is not run: on is finished, not idle.
   assert.equal(heldBy(slice("y", "m1", { run: "on", depends: "doneIdle" }), mission), null);

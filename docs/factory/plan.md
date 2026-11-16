@@ -61,7 +61,7 @@ Because the tree is not in git, archiving or cleaning up the home worktree delet
 | `digest.md` | Tick, its only writer | A few lines for Sulti: the project intent, for each runnable or ready slice its id, phase and `ready`, and any line waiting on the human. Sulti reads the digests for cross-repo status. |
 | `culture.md` | Manager, after the human accepts a proposed line | Short standing law. Workers may read the lines the tick selects. |
 | `seats/<role>.md` | Manager | Role, model profile, skills, Paseo agent id, and notes from corrections. |
-| `mission.md` | Manager | Outcome, slice order, and which slices `depends` on which. |
+| `mission.md` | Manager | Outcome, slice order, and which slices `depends` on which. Optional frontmatter `manager` names this mission's Paseo agent; slice steers use it when set, else `manager.md`. |
 | `spec.md` | Manager | What this change must do, and what "done" means. A seat that finds the spec wrong says so in `proof.md` and stops. It does not edit the spec. |
 | `design.md` | Design seat, only when `design: on` | The screens, states, and what to look at. Empty when this slice is not visual. The builder implements it. The design seat does not edit product code. |
 | `proof.md` | Seat | Evidence the spec holds. Empty until the seat records it. |

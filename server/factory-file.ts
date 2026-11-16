@@ -37,9 +37,9 @@ export function writeSlice(root: string, { title, link, story }: SliceRequest, n
 export type Filed = { ids: string[]; warning: string | null };
 
 // The slices are already on disk when the steer goes out, so a steer that fails is a warning, not a failure.
-async function steer(root: string, line: string, ports: FilePorts) {
+async function steer(root: string, line: string, ports: FilePorts, mission = INBOX) {
   try {
-    return (await steerManager(root, line, ports.paseo)) ? null : "No factory manager could be reached.";
+    return (await steerManager(root, line, ports.paseo, mission)) ? null : "No factory manager could be reached.";
   } catch (cause) {
     return cause instanceof Error ? cause.message : String(cause);
   }

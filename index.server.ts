@@ -703,6 +703,7 @@ export default function contribute(
     void factorySeatTurnEnded(paseo, event, {
       readFactoryRoot: async () => (await readHarness()).repo ?? null,
       readConfig: readLoopConfig,
+      steer: (root, line, api, mission) => steerManager(root, line, neverSulti(api), mission),
     }).catch((error) => {
       console.warn("orchestrator: factory seat check failed", error);
     });
@@ -795,7 +796,7 @@ export default function contribute(
     cost: readCost,
     // A seat runs on its file's profile, else its role's tier; the tick falls back to the manager's models without one.
     profiles: async () => ({ list: profilesFromConfigGet(await paseo.config.get()), runnerProfileId: await readRunnerProfileId() }),
-    steer: (line) => steerManager(repo, line, neverSulti(paseo)),
+    steer: (line, mission) => steerManager(repo, line, neverSulti(paseo), mission),
     // A merged slice closes its Jira ticket the way a merged Story does: the user's setting with the slice's repo override, read even when the Story pipeline is off.
     closeTicket: closeIssue,
     closeOnMerge: async (cwd) => repoPipelineConfig((await readPipelineValues()) ?? pipelineSettings.schema.parse({}), cwd).closeOnMerge,
