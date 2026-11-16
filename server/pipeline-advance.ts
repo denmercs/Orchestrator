@@ -36,7 +36,9 @@ import type { McpScope } from "./host-mcp";
 import { closeIssue } from "./jira";
 import { withMcpScope } from "./mcp-scope";
 import { failureReport, prStatus } from "./pr-checks";
-import { loadPhaseConfig } from "./agent-runner";
+import { loadPhaseConfig, profilesFromConfigGet, withProductPlanReviewStepConfig } from "./agent-runner";
+import { sliceRepoRoot, usesProductPlanReviewDefaults } from "./factory-manager";
+import type { LoopStep } from "../shared/story-method";
 import { repoPipelineConfig, repoReviewMode } from "./repo-pipeline";
 import { installSkills } from "./skill-sources";
 import { prepareTestingSkill } from "./testing-skill";
@@ -369,9 +371,25 @@ async function startPhase(
           testingSkill: testing.path,
           reviewMode,
         });
+    let agentConfig = await loadPhaseConfig(paseo, phase.profile, target.agentConfig);
+    if (cwd && (phase.id === "plan" || phase.id === "review")) {
+      const repoRoot = sliceRepoRoot(cwd, cwd);
+      if (usesProductPlanReviewDefaults(repoRoot)) {
+        try {
+          agentConfig = withProductPlanReviewStepConfig(
+            true,
+            phase.id as LoopStep,
+            profilesFromConfigGet(await paseo.config.get()),
+            agentConfig,
+          );
+        } catch (error) {
+          console.warn("orchestrator: product plan/review defaults", ticket.key, error);
+        }
+      }
+    }
     const options = {
       title: phaseTitle(ticket.key, ticket.title, label),
-      config: await loadPhaseConfig(paseo, phase.profile, target.agentConfig),
+      config: agentConfig,
       prompt,
       labels,
     };

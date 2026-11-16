@@ -2480,6 +2480,17 @@ test("a slice in another repo's worktree puts the reviewer on the Cursor deep ti
   assert.deepEqual(created.map((item) => (item.config as { provider: string }).provider), ["cursor/grok-4.7"]);
 });
 
+test("a product repo reviewer seat stays on Grok when the seat file names Business - Coder", async () => {
+  const composer: AgentProfile = { id: "p_comp", name: "Business - Coder", provider: "cursor", model: "composer-2.5" };
+  const grokDeep: AgentProfile = { id: "p_grok", name: "Business - Thinker", provider: "cursor", model: "grok-4.7" };
+  const { root, worktree } = setup("agent: dead-1\nseat: reviewer", "on", "review");
+  writeFileSync(join(worktree, "package.json"), JSON.stringify({ name: "quickpress" }));
+  seatFile(root, "reviewer", composer.id);
+  const { paseo, created } = fakePaseo({ "dead-1": { status: "error" } });
+  await runFactoryTick(root, withProfiles(paseo, [composer, grokDeep, deep, fast, runner]));
+  assert.deepEqual(created.map((item) => (item.config as { provider: string }).provider), ["cursor/grok-4.7"]);
+});
+
 test("A: a build slice with another slice's idle agent id gets a fresh builder", async () => {
   const ctx = setup("agent: scout-1\nphase: build");
   const { paseo, created } = fakePaseo({

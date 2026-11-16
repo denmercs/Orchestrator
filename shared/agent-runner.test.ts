@@ -3,9 +3,11 @@ import { test } from "node:test";
 import {
   FALLBACK_AGENT_CONFIG,
   pickProfile,
+  productStepConfig,
   profileCaption,
   profilesFromConfigGet,
   resolveRunnerConfig,
+  withProductPlanReviewStepConfig,
   type AgentProfile,
 } from "./agent-profiles";
 import { profileForStep, seatProfile } from "./agent-runner";
@@ -190,4 +192,40 @@ test("seatProfile: another repo's slice keeps Claude out of the seat file and ti
 test("seatProfile: an Orchestrator slice still honors a Claude profile in the seat file", () => {
   const all = [opus, sonnet, runner];
   assert.equal(seatProfile(seatOf("qa", sonnet.id), "qa", all, runner.id, true), sonnet);
+});
+
+test("productStepConfig: quickpress plan/diagnose use Cursor Opus and review uses Grok", () => {
+  const composer: AgentProfile = { id: "p_comp", name: "Business - Coder", provider: "cursor", model: "composer-2.5" };
+  const grokDeep: AgentProfile = { id: "p_grok", name: "Business - Thinker", provider: "cursor", model: "grok-4.7" };
+  const cursorOpus: AgentProfile = { id: "p_c_opus", name: "Opus", provider: "cursor", model: "claude-opus-5-5" };
+  const profiles = [composer, grokDeep, cursorOpus, opus, sonnet];
+  assert.deepEqual(productStepConfig("plan", profiles), { provider: "cursor/claude-opus-5-5" });
+  assert.deepEqual(productStepConfig("diagnose", profiles), { provider: "cursor/claude-opus-5-5" });
+  assert.deepEqual(productStepConfig("review", profiles), { provider: "cursor/grok-4.7" });
+  assert.equal(productStepConfig("implement", profiles), null);
+});
+
+test("withProductPlanReviewStepConfig: pipeline Business - Thinker does not win on product repos", () => {
+  const grokDeep: AgentProfile = { id: "p_grok", name: "Business - Thinker", provider: "cursor", model: "grok-4.7" };
+  const cursorOpus: AgentProfile = { id: "p_c_opus", name: "Opus", provider: "cursor", model: "claude-opus-5-5" };
+  const fromPipeline = { provider: "cursor/grok-4.7" };
+  assert.deepEqual(withProductPlanReviewStepConfig(true, "plan", [grokDeep, cursorOpus], fromPipeline), {
+    provider: "cursor/claude-opus-5-5",
+  });
+  assert.deepEqual(withProductPlanReviewStepConfig(false, "plan", [grokDeep, cursorOpus], fromPipeline), fromPipeline);
+});
+
+test("seatProfile: product repo reviewer stays on Grok when the seat names Business - Thinker", () => {
+  const composer: AgentProfile = { id: "p_comp", name: "Business - Coder", provider: "cursor", model: "composer-2.5" };
+  const grokDeep: AgentProfile = { id: "p_grok", name: "Business - Thinker", provider: "cursor", model: "grok-4.7" };
+  const profiles = [composer, grokDeep, sonnet, runner];
+  assert.equal(seatProfile(seatOf("reviewer", grokDeep.id), "reviewer", profiles, runner.id, false, true), grokDeep);
+  assert.equal(seatProfile(seatOf("reviewer", composer.id), "reviewer", profiles, runner.id, false, true), grokDeep);
+});
+
+test("seatProfile: gihimo keeps a named Cursor profile on the reviewer seat", () => {
+  const composer: AgentProfile = { id: "p_comp", name: "Business - Coder", provider: "cursor", model: "composer-2.5" };
+  const grokDeep: AgentProfile = { id: "p_grok", name: "Business - Thinker", provider: "cursor", model: "grok-4.7" };
+  const profiles = [composer, grokDeep, runner];
+  assert.equal(seatProfile(seatOf("reviewer", composer.id), "reviewer", profiles, runner.id, false, false), composer);
 });

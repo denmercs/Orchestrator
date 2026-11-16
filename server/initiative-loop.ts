@@ -12,7 +12,8 @@ import { phaseLabel } from "../shared/orchestration";
 import { budgetMoney } from "../shared/stats-strip";
 import { storyCost, type TelemetryRow } from "./context-telemetry";
 import { DEFAULT_PHASES, STEP_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
-import { loadPhaseConfig, type RunnerProfiles } from "./agent-runner";
+import { loadPhaseConfig, profilesFromConfigGet, withProductPlanReviewStepConfig, type RunnerProfiles } from "./agent-runner";
+import { loopRepoRoot, usesProductPlanReviewDefaults } from "./factory-manager";
 import { repoAutoMerge, repoMaxFixes, repoReviewMode } from "./repo-pipeline";
 import type { ToolItem } from "../shared/exploration";
 import { midTurnCheck, toolRunningSince, type TimelineEntry } from "../shared/stuck";
@@ -331,7 +332,13 @@ export function createInitiativeLoop(
   // `.orchestrator/pipeline.json` in `cwd` when that checkout exists), else the runner config `readAgentConfig`
   // returns. The same lookup `startStep` uses, so a Plan set to Cursor isn't gated by a Claude window.
   // Null when the runner config can't be read. A model-qualified provider ("cursor/grok-4.7") counts as its provider.
-  async function stepProviderId(loopHost: LoopHost, config: LoopConfig, step: LoopStep, cwd: string | null) {
+  async function stepProviderId(
+    loopHost: LoopHost,
+    config: LoopConfig,
+    step: LoopStep,
+    cwd: string | null,
+    loopRepo: string | null = null,
+  ) {
     let fallback: AgentCreateConfig;
     try {
       fallback = await readAgentConfig(loopHost, step, config);
@@ -340,21 +347,40 @@ export function createInitiativeLoop(
     }
     const piped = await readPipeline().catch(() => ({ phases: DEFAULT_PHASES, sources: [] }));
     const phases = repoPhases(piped.phases, cwd);
-    const agentConfig = await loadPhaseConfig(
+    let agentConfig = await loadPhaseConfig(
       profilesOf(loopHost),
       phases.find((phase) => phase.id === STEP_PHASES[step])?.profile,
       fallback,
     );
+    const root = loopRepoRoot(cwd, loopRepo);
+    if (root && usesProductPlanReviewDefaults(root)) {
+      try {
+        agentConfig = withProductPlanReviewStepConfig(
+          true,
+          step,
+          profilesFromConfigGet(await loopHost.readRunnerProfiles()),
+          agentConfig,
+        );
+      } catch {
+        // keep pipeline / loop fallback
+      }
+    }
     return agentConfig.provider.split("/")[0] || null;
   }
 
   // The plan limit the provider a step will start on is at, or null when it isn't (or its config can't be read).
   // `cwd` is the checkout whose pipeline file applies: the repo for a story that has no worktree yet, the
   // worktree once it does. A model-qualified provider ("claude/opus") is gated by its provider's limit.
-  async function limitFor(loopHost: LoopHost, config: LoopConfig, step: LoopStep, cwd: string | null = null) {
+  async function limitFor(
+    loopHost: LoopHost,
+    config: LoopConfig,
+    step: LoopStep,
+    cwd: string | null = null,
+    loopRepo: string | null = null,
+  ) {
     if (!limits.size) return null;
-    const key = `${step}\0${cwd ?? ""}`;
-    if (!stepProviders.has(key)) stepProviders.set(key, await stepProviderId(loopHost, config, step, cwd));
+    const key = `${step}\0${cwd ?? ""}\0${loopRepo ?? ""}`;
+    if (!stepProviders.has(key)) stepProviders.set(key, await stepProviderId(loopHost, config, step, cwd, loopRepo));
     const provider = stepProviders.get(key);
     const limit = provider ? limits.get(provider) : undefined;
     // A limit that has reset no longer gates, even if the usage read hasn't confirmed it yet.
@@ -471,7 +497,7 @@ export function createInitiativeLoop(
     const step = fresh.meta.track === "diagnose" ? "diagnose" : "plan";
     // The worktree's pipeline file is the one this step runs with. Recheck here: the gate in advance
     // ran before this checkout existed, against the repo root.
-    const limit = await limitFor(loopHost, config, step, worktree);
+    const limit = await limitFor(loopHost, config, step, worktree, init.root);
     if (limit) {
       writeFrontmatter(story.path, { paused_until: limit.until.toISOString(), paused_for: limit.provider });
       return null;
@@ -815,7 +841,7 @@ export function createInitiativeLoop(
     if (!dead && !meta.stalled && !resuming && !waitedOut) return;
     // Its provider is at its plan limit (or still is, past an earlier pause): wait out the reset rather
     // than nudge or restart into it. Not a retry.
-    const limit = await limitFor(loopHost, config, step, meta.worktree || null);
+    const limit = await limitFor(loopHost, config, step, meta.worktree || null, init.root);
     if (limit) {
       writeFrontmatter(story.path, { paused_until: limit.until.toISOString(), paused_for: limit.provider, stalled: null });
       return;
@@ -957,12 +983,12 @@ export function createInitiativeLoop(
   // from well before the limit began (30 minutes' grace) had another cause and stays. `since` is when
   // this process first saw the limit, so after a restart only blocks from then on are recovered. Each
   // story is recovered once per limit (limit_recovered), so a long weekly limit can't loop it.
-  async function recoverLimitBlock(loopHost: LoopHost, config: LoopConfig, story: StoryFile) {
+  async function recoverLimitBlock(loopHost: LoopHost, config: LoopConfig, init: Initiative, story: StoryFile) {
     const { meta } = story;
     const step = meta.step as LoopStep;
     if (meta.status !== "blocked" || meta.block_kind !== "retry-limit" || !SUPERVISED_STEPS.has(step)) return false;
     const blockedAt = Date.parse(meta.blocked_at ?? "");
-    const limit = Number.isNaN(blockedAt) ? null : await limitFor(loopHost, config, step, meta.worktree || null);
+    const limit = Number.isNaN(blockedAt) ? null : await limitFor(loopHost, config, step, meta.worktree || null, init.root);
     if (!limit || blockedAt < limit.since - LIMIT_GRACE_MS) return false;
     // Once per limit episode: a story that blocks again in the same one is broken, not caught by it.
     const episode = new Date(limit.since).toISOString();
@@ -994,7 +1020,7 @@ export function createInitiativeLoop(
           else if (initiativeLoopState(init.dir) === "on") {
             await reconcile(loopHost, config, init, phaseDir, story, false);
             let fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id);
-            if (fresh && (await recoverLimitBlock(loopHost, config, fresh))) {
+            if (fresh && (await recoverLimitBlock(loopHost, config, init, fresh))) {
               fresh = readStoryFiles(phaseDir).find((item) => item.id === story.id);
             }
             if (fresh) await supervise(loopHost, config, init, phaseDir, fresh, owned);

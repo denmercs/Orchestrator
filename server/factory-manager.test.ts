@@ -9,8 +9,12 @@ import {
   FACTORY_MANAGER_ENV,
   MANAGER_SESSION_MODELS,
   REPO_MANAGER_MODELS,
+  hearthplayStepConfig,
+  HEARTHPLAY_E4_MISSION,
+  isGihimoRepo,
   isOrchestratorRepo,
   sliceRepoRoot,
+  usesProductPlanReviewDefaults,
   type ManagerPaseo,
   steerManager,
   SYSTEM_TAG,
@@ -113,6 +117,43 @@ test("sliceRepoRoot reads another checkout's package name through a worktree fol
   assert.equal(sliceRepoRoot(worktree, home), worktree);
   assert.equal(isOrchestratorRepo(sliceRepoRoot(worktree, home)), false);
   assert.equal(isOrchestratorRepo(sliceRepoRoot(join(home, "missing"), home)), true);
+});
+
+test("isGihimoRepo and usesProductPlanReviewDefaults", () => {
+  const gihimoPkg = tempRoot(false, undefined, false);
+  writeFileSync(join(gihimoPkg, "package.json"), JSON.stringify({ name: "gihimo" }));
+  assert.equal(isGihimoRepo(gihimoPkg), true);
+  assert.equal(usesProductPlanReviewDefaults(gihimoPkg), false);
+  const quickpress = tempRoot(false, undefined, false);
+  writeFileSync(join(quickpress, "package.json"), JSON.stringify({ name: "quickpress" }));
+  assert.equal(usesProductPlanReviewDefaults(quickpress), true);
+  const orchestrator = tempRoot(false, undefined, true);
+  assert.equal(usesProductPlanReviewDefaults(orchestrator), false);
+  const noPkgRoot = tempRoot(false, undefined, false);
+  const gihimoPath = join(noPkgRoot, "gihimo");
+  mkdirSync(gihimoPath, { recursive: true });
+  assert.equal(isGihimoRepo(gihimoPath), true);
+});
+
+test("hearthplayStepConfig: plan on Opus, review on Grok, implement on Composer", async () => {
+  const profiles = {
+    config: {
+      get: async () => ({
+        daemon: {
+          agentProfiles: [
+            { id: "thinker", name: "Business - Thinker", provider: "cursor", model: "grok-4.7" },
+            { id: "coder", name: "Business - Coder", provider: "cursor", model: "composer-2.5" },
+            { id: "opus", name: "Opus", provider: "cursor", model: "claude-opus-5-5" },
+          ],
+        },
+      }),
+    },
+  };
+  const fallback = async () => ({ provider: "claude" });
+  assert.deepEqual(await hearthplayStepConfig("plan", HEARTHPLAY_E4_MISSION, profiles, fallback), { provider: "cursor/claude-opus-5-5" });
+  assert.deepEqual(await hearthplayStepConfig("review", HEARTHPLAY_E4_MISSION, profiles, fallback), { provider: "cursor/grok-4.7" });
+  assert.deepEqual(await hearthplayStepConfig("implement", HEARTHPLAY_E4_MISSION, profiles, fallback), { provider: "cursor/composer-2.5" });
+  assert.deepEqual(await hearthplayStepConfig("plan", "other-mission", profiles, fallback), { provider: "claude" });
 });
 
 test("ensureManager returns null and creates nothing when the root has no factory", async () => {

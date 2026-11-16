@@ -7,7 +7,15 @@ import type { Phase, SkillSource } from "../shared/pipeline";
 import { branchName } from "../shared/naming";
 import type { LoopHost } from "../shared/loop-host";
 import type { LoopStep, StoryContext } from "../shared/story-method";
-import { type ManagerPaseo, MANAGER_MODELS, REPO_SEAT_FALLBACKS, REPO_SEAT_MODELS, isOrchestratorRepo, sliceRepoRoot } from "./factory-manager";
+import {
+  type ManagerPaseo,
+  MANAGER_MODELS,
+  REPO_SEAT_FALLBACKS,
+  REPO_SEAT_MODELS,
+  isOrchestratorRepo,
+  sliceRepoRoot,
+  usesProductPlanReviewDefaults,
+} from "./factory-manager";
 import { writeDigest } from "./factory-digest";
 import { answerSeatPrompts, type PromptAnswer, type SeatPrompt } from "./factory-prompts";
 import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from "./factory-layout";
@@ -292,11 +300,13 @@ async function seatConfigs(
   worktree: string,
   ports: TickPaseo,
 ): Promise<AgentCreateConfig[]> {
-  const orchestratorSlice = isOrchestratorRepo(sliceRepoRoot(worktree, factoryHome));
+  const sliceRoot = sliceRepoRoot(worktree, factoryHome);
+  const orchestratorSlice = isOrchestratorRepo(sliceRoot);
+  const productDefaults = usesProductPlanReviewDefaults(sliceRoot);
   if (!ports.profiles) return orchestratorSlice ? [...MANAGER_MODELS] : [...REPO_SEAT_MODELS];
   try {
     const { list, runnerProfileId } = await ports.profiles();
-    const profile = seatProfile(seat, role, list, runnerProfileId, orchestratorSlice);
+    const profile = seatProfile(seat, role, list, runnerProfileId, orchestratorSlice, productDefaults);
     const own = profile ? [materializeProfile(profile)] : [];
     const provider = orchestratorSlice ? (profile?.provider ?? pickProfile(list, runnerProfileId)?.provider) : "cursor";
     const fallbacks = orchestratorSlice ? MANAGER_MODELS : profile ? REPO_SEAT_FALLBACKS : REPO_SEAT_MODELS;

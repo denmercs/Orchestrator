@@ -4,8 +4,11 @@ import {
   profileForStep,
   profilesFromConfigGet,
   resolveRunnerConfig,
+  withProductPlanReviewStepConfig,
   type AgentCreateConfig,
 } from "../shared/agent-runner";
+
+export { profilesFromConfigGet, withProductPlanReviewStepConfig };
 import type { LoopConfig, LoopStep } from "../shared/initiative-loop";
 
 // All the runner helpers read from the host: the daemon's config. Paseo satisfies it; any other host can too.

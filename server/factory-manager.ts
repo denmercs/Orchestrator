@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
-import { materializeProfile, pickProfile, profilesFromConfigGet, type AgentCreateConfig } from "../shared/agent-runner";
+import { basename, isAbsolute, join } from "node:path";
+import { materializeProfile, pickProfile, productStepConfig, profilesFromConfigGet, type AgentCreateConfig } from "../shared/agent-runner";
 import type { LoopStep } from "../shared/story-method";
 import type { VoiceRequest } from "../shared/voice-session";
 import { factoryDir, readFactory } from "./factory-layout";
@@ -9,15 +9,7 @@ import { writeFrontmatter } from "./harness-layout";
 
 export const HEARTHPLAY_E4_MISSION = "hearthplay-e4";
 
-// Cursor-only loop steps for Hearthplay factory slices (Den / Gamer, 2026-11-15).
-const HEARTHPLAY_CURSOR_PROFILE: Partial<Record<LoopStep, string>> = {
-  plan: "Business - Thinker",
-  diagnose: "Business - Thinker",
-  review: "Business - Thinker",
-  implement: "Business - Coder",
-  fix: "Business - Coder",
-};
-
+// Hearthplay factory slices are product repos: Plan/Diagnose on Cursor Opus, Review on Grok, build steps on Composer.
 export async function hearthplayStepConfig(
   step: LoopStep,
   mission: string | undefined,
@@ -25,15 +17,17 @@ export async function hearthplayStepConfig(
   fallback: () => Promise<AgentCreateConfig>,
 ): Promise<AgentCreateConfig> {
   if (mission !== HEARTHPLAY_E4_MISSION) return fallback();
-  const name = HEARTHPLAY_CURSOR_PROFILE[step] ?? "Business - Coder";
   try {
-    const profile = pickProfile(profilesFromConfigGet(await profilesPort.config.get()), name);
-    if (profile) return materializeProfile(profile);
+    const profiles = profilesFromConfigGet(await profilesPort.config.get());
+    const forced = productStepConfig(step, profiles);
+    if (forced) return forced;
+    const composer = pickProfile(profiles, "Business - Coder") ?? profiles.find((item) => item.model === "composer-2.5");
+    if (composer) return materializeProfile(composer);
   } catch {
     // Fall through to explicit Cursor providers.
   }
   const deep = step === "plan" || step === "review" || step === "diagnose";
-  return { provider: deep ? "cursor/grok-4.7" : "cursor/composer-2.5" };
+  return { provider: deep ? "cursor/claude-opus-5-5" : "cursor/composer-2.5" };
 }
 
 // Env marker the factory puts on the manager session it creates; the agent.create hook looks for it.
@@ -116,6 +110,28 @@ export function isOrchestratorRepo(root: string): boolean {
   } catch {
     return false;
   }
+}
+
+// True for the gihimo product repo (by package name, or path basename when package.json is missing).
+export function isGihimoRepo(root: string): boolean {
+  try {
+    if (JSON.parse(readFileSync(join(root, "package.json"), "utf8")).name === "gihimo") return true;
+  } catch {
+    // fall through to basename
+  }
+  return basename(root) === "gihimo";
+}
+
+// Product repos default Plan to Cursor Opus and Review to Grok; Orchestrator and gihimo keep their own rules.
+export function usesProductPlanReviewDefaults(root: string): boolean {
+  return !isOrchestratorRepo(root) && !isGihimoRepo(root);
+}
+
+// Loop and Story steps: the initiative repo root when it has a package.json, else the worktree checkout.
+export function loopRepoRoot(worktree: string | null, loopRepo: string | null | undefined): string {
+  if (loopRepo && existsSync(join(loopRepo, "package.json"))) return loopRepo;
+  if (worktree) return sliceRepoRoot(worktree, loopRepo ?? worktree);
+  return loopRepo ?? "";
 }
 
 // The models a factory manager is created on: manager.md's `model` (`provider/model`), then the entries of `defaults` from
