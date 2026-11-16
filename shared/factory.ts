@@ -45,6 +45,16 @@ export type SliceState = {
   prompt_since: string;
   // The last steer about that prompt the manager received: `asked` when first seen, `stalled` once it waited past the limit.
   prompt_steered: "" | "asked" | "stalled";
+  // When the slice entered its current phase; the stall timeout compares against this.
+  phase_since: string;
+  // When the tick first saw the seat agent idle while the slice still expected work.
+  idle_since: string;
+  // Set after a build seat is nudged once for missing proof.
+  build_nudged: boolean;
+  // The last stall recovery the tick logged for the digest.
+  stall: string;
+  // The worktree HEAD after the tick committed a finished build.
+  head: string;
 };
 
 export type FactorySlice = { id: string; mission: string; state: SliceState; spec: string; design: string; proof: string };
@@ -96,6 +106,11 @@ export function parseSliceState(fields: Record<string, string>): SliceState {
     prompt_what: fields.prompt_what ?? "",
     prompt_since: fields.prompt_since ?? "",
     prompt_steered: fields.prompt_steered === "asked" || fields.prompt_steered === "stalled" ? fields.prompt_steered : "",
+    phase_since: fields.phase_since ?? "",
+    idle_since: fields.idle_since ?? "",
+    build_nudged: fields.build_nudged === "on",
+    stall: fields.stall ?? "",
+    head: fields.head ?? "",
   };
 }
 

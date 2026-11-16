@@ -11,7 +11,32 @@ import { type ManagerPaseo, MANAGER_MODELS, REPO_SEAT_FALLBACKS, REPO_SEAT_MODEL
 import { writeDigest } from "./factory-digest";
 import { answerSeatPrompts, type PromptAnswer, type SeatPrompt } from "./factory-prompts";
 import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from "./factory-layout";
-import { REFOCUS, TEST_DONE, TEST_FAILED, UNDO_GUARD, block, confirmDead, leaveBuild, leaveReview, leaveShip, leaveTest, retryRoundNudge, sliceCostCap, sliceSpendKey, sliceTicket, startSeat } from "./factory-phases";
+import {
+  REFOCUS,
+  STALL_MINUTES,
+  TEST_DONE,
+  TEST_FAILED,
+  UNDO_GUARD,
+  block,
+  confirmDead,
+  finishBuildSeat,
+  leaveBuild,
+  leaveReview,
+  leaveShip,
+  leaveTest,
+  logStall,
+  retryRoundNudge,
+  seatLabelMismatch,
+  seatTurnIdle,
+  sliceAgentStale,
+  sliceCostCap,
+  sliceSpendKey,
+  sliceTicket,
+  stallEmptyBuild,
+  stallTimedOut,
+  startSeat,
+  touchIdleSince,
+} from "./factory-phases";
 import { closeSlices, runRequestedSweep } from "./factory-workspace";
 import { frontmatter, slugOf, writeFrontmatter } from "./harness-layout";
 import { type FailingCheck, type PrStatus, prStatus } from "./pr-checks";
@@ -65,7 +90,17 @@ export type TickPaseo = {
   now?: () => number;
   agents: {
     ref(id: string): {
-      refresh(): Promise<{ agent: { status?: string; archivedAt?: string | null; lastUsage?: { totalCostUsd?: number } | null; pendingPermissions?: SeatPrompt[] | null } } | null>;
+      refresh(): Promise<{
+        agent: {
+          status?: string;
+          archivedAt?: string | null;
+          attentionReason?: string | null;
+          lastMessage?: string | null;
+          labels?: Record<string, string>;
+          lastUsage?: { totalCostUsd?: number } | null;
+          pendingPermissions?: SeatPrompt[] | null;
+        };
+      } | null>;
       // Answers one of the agent's permission prompts. Absent: the tick answers none and tells the manager instead.
       respondToPermission?(answer: PromptAnswer): Promise<unknown>;
     };
@@ -104,8 +139,15 @@ export function seatPrompt(seat: string, slice: FactorySlice, mission: string, p
     `Spec: ${slice.spec}`,
     `Mission outcome: ${mission}`,
     `Project intent: ${project}`,
+    ...(slice.state.kind === "scout" && seat === "builder"
+      ? [
+          "You coordinate factory slices: never write `agent:`, `seat:` or `worktree:` into another slice's `state.md`. Only flip `run` and `phase` and clear `held` when appropriate.",
+        ]
+      : []),
     ...(seat === "builder" && slice.design ? [`Design: ${slice.design}`] : []),
-    ...(seat === "builder" ? [UNDO_GUARD] : []),
+    ...(seat === "builder"
+      ? ["Commit your work on the slice branch in the worktree before you stop, then write `build-done` in this slice's `proof.md`.", UNDO_GUARD]
+      : []),
     ...(seat === "qa" ? qaLines() : []),
     REFOCUS,
   ].join("\n");
@@ -380,17 +422,41 @@ function seatTitle(seat: string, slice: FactorySlice): string {
   return `${MARK} ${id} · ${step} — ${title}`.slice(0, 60);
 }
 
-async function passSlice(root: string, slice: FactorySlice, ports: TickPaseo): Promise<TickResult> {
+async function passSlice(root: string, started: FactorySlice, ports: TickPaseo): Promise<TickResult> {
+  let slice = started;
   const moved = await advanceSlice(root, slice, ports);
   if (moved) return moved;
   const seat = SEATS[slice.state.phase];
   if (!seat) return { kind: "waiting", slice: slice.id, why: `${slice.state.phase} is the manager's` };
-  const { state } = slice;
+  let { state } = slice;
   if (!state.worktree || !existsSync(state.worktree)) return { kind: "waiting", slice: slice.id, why: "its worktree is missing" };
 
+  const now = ports.now ?? (() => Date.now());
   if (state.agent) {
     const session = (await ports.agents.ref(state.agent).refresh())?.agent;
-    if (!(await confirmDead(ports.agents, state.agent, session))) {
+    touchIdleSince(root, slice, now, session);
+    const timedOut = stallTimedOut(slice, now);
+    const stale = await sliceAgentStale(slice, seat, state.agent, session, ports.agents);
+    if (stale || timedOut) {
+      if (timedOut) logStall(root, slice, `seat idle ${STALL_MINUTES}+ minutes without a phase change`);
+      if (slice.state.phase === "build") {
+        const finished = await finishBuildSeat(root, slice, ports, buildContext(slice), session);
+        if (finished) return finished;
+        const misplaced = seatLabelMismatch(slice, seat, session);
+        if (!misplaced && !timedOut && seatTurnIdle(session)) {
+          const empty = await stallEmptyBuild(root, slice, ports, state.agent);
+          if (empty) return empty;
+        }
+      }
+      const prior = state.agent;
+      writeSliceState(root, slice.mission, slice.id, { agent: null, seat: null, idle_since: null });
+      if (prior && state.story && existsSync(state.story)) {
+        const storyMeta = frontmatter(readFileSync(state.story, "utf8"));
+        if (storyMeta.agent === prior) writeFrontmatter(state.story, { agent: null });
+      }
+      slice = { ...slice, state: { ...slice.state, agent: "", seat: "" } };
+      state = slice.state;
+    } else if (!(await confirmDead(ports.agents, state.agent, session))) {
       const ref = ports.agents.ref(state.agent);
       await answerSeatPrompts(root, slice, session, {
         respond: ref.respondToPermission && ((answer) => ref.respondToPermission!(answer)),
