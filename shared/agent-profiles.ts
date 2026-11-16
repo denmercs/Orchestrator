@@ -82,8 +82,9 @@ export function cursorModelConfig(profiles: AgentProfile[], model: string): Agen
 
 // Plan, Diagnose and Review on product repos (not Orchestrator, not gihimo): Opus for planning, Grok for review.
 export function productStepConfig(step: LoopStep, profiles: AgentProfile[]): AgentCreateConfig | null {
-  if (step === "plan" || step === "diagnose") return cursorModelConfig(profiles, PRODUCT_PLAN_MODEL);
-  if (step === "review") return cursorModelConfig(profiles, PRODUCT_REVIEW_MODEL);
+  // Den, 2026-11-15: Opus is strictly Plan; Grok reviews and diagnoses.
+  if (step === "plan") return cursorModelConfig(profiles, PRODUCT_PLAN_MODEL);
+  if (step === "review" || step === "diagnose") return cursorModelConfig(profiles, PRODUCT_REVIEW_MODEL);
   return null;
 }
 

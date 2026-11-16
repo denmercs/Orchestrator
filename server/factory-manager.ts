@@ -9,7 +9,7 @@ import { writeFrontmatter } from "./harness-layout";
 
 export const HEARTHPLAY_E4_MISSION = "hearthplay-e4";
 
-// Hearthplay factory slices are product repos: Plan/Diagnose on Cursor Opus, Review on Grok, build steps on Composer.
+// Hearthplay factory slices are product repos: Plan on Cursor Opus, Review and Diagnose on Grok, build steps on Composer.
 export async function hearthplayStepConfig(
   step: LoopStep,
   mission: string | undefined,
@@ -26,8 +26,9 @@ export async function hearthplayStepConfig(
   } catch {
     // Fall through to explicit Cursor providers.
   }
-  const deep = step === "plan" || step === "review" || step === "diagnose";
-  return { provider: deep ? "cursor/claude-opus-5-5" : "cursor/composer-2.5" };
+  if (step === "plan") return { provider: "cursor/claude-opus-5-5" };
+  if (step === "review" || step === "diagnose") return { provider: "cursor/grok-4.7" };
+  return { provider: "cursor/composer-2.5" };
 }
 
 // Env marker the factory puts on the manager session it creates; the agent.create hook looks for it.
