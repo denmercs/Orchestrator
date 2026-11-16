@@ -105,10 +105,9 @@ test("writeSliceState sets and removes machine fields and leaves every other lin
     const file = join(sliceDir(root, "01-first", "01-a"), "state.md");
     put(file, "---\nphase: spec\nagent: old\nworktree: /tmp/w\nrun: on\n---\n\nNotes stay.\n");
     writeSliceState(root, "01-first", "01-a", { phase: "build", agent: "new", worktree: null, depends: ["a", "b"], design: true });
-    assert.equal(
-      readFileSync(file, "utf8"),
-      "---\nphase: build\nagent: new\nrun: on\ndepends: a, b\ndesign: on\n---\n\nNotes stay.\n",
-    );
+    const text = readFileSync(file, "utf8");
+    assert.match(text, /^---\nphase: build\nagent: new\nrun: on\ndepends: a, b\ndesign: on\nphase_since: /);
+    assert.match(text, /---\n\nNotes stay\.\n$/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

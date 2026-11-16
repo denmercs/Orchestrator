@@ -79,10 +79,17 @@ type SliceStatePatch = { [K in keyof SliceState]?: SliceState[K] | null };
 
 // Sets (or, with null, removes) machine fields in a slice's state.md; every other line stays as it was.
 export function writeSliceState(root: string, mission: string, slice: string, patch: SliceStatePatch) {
+  const file = join(sliceDir(root, mission, slice), "state.md");
+  const prior = parseSliceState(frontmatter(readText(file)));
   const fields: Record<string, string | number | null> = {};
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue;
     fields[key] = value === null ? null : Array.isArray(value) ? value.join(", ") : typeof value === "boolean" ? (value ? "on" : "off") : value;
   }
-  writeFrontmatter(join(sliceDir(root, mission, slice), "state.md"), fields);
+  if ("phase" in patch && patch.phase !== undefined && patch.phase !== prior.phase) {
+    fields.phase_since = new Date().toISOString();
+    fields.idle_since = null;
+    fields.stall = null;
+  }
+  writeFrontmatter(file, fields);
 }

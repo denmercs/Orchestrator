@@ -47,7 +47,18 @@ function setup(state: string, run = "on", phase = "build") {
   return { root, worktree, stateFile: join(dir, "state.md") };
 }
 
-type Known = Record<string, { status: string; archivedAt?: string | null; lastUsage?: { totalCostUsd?: number } | null; pendingPermissions?: SeatPrompt[] }>;
+type Known = Record<
+  string,
+  {
+    status: string;
+    archivedAt?: string | null;
+    attentionReason?: string | null;
+    lastMessage?: string | null;
+    labels?: Record<string, string>;
+    lastUsage?: { totalCostUsd?: number } | null;
+    pendingPermissions?: SeatPrompt[];
+  }
+>;
 // `stale` is a per-id queue of reads served before the real one: a snapshot, `null` (an empty answer) or an Error (a read that throws).
 // `list` is the daemon's agent list; absent, the port has none.
 type Reads = { stale?: Record<string, ({ status: string; archivedAt?: string | null } | null | Error)[]>; list?: { id: string; status: string; archivedAt?: string | null }[] };
@@ -98,7 +109,7 @@ function fakePaseo(known: Known = {}, { stale = {}, list }: Reads = {}) {
         created.push({ cwd: request.cwd, prompt: request.prompt, title: request.title, labels: request.labels, config: request.config });
         await new Promise((resolve) => setImmediate(resolve));
         const id = `new-${created.length}`;
-        known[id] = { status: "idle" };
+        known[id] = { status: "running" };
         return { id };
       },
     },
@@ -182,7 +193,7 @@ test("a spec slice that already has a story keeps it", async () => {
 const writeDesign = (root: string, text: string) => writeFileSync(join(sliceDir(root, "m1", "s1"), "design.md"), text);
 
 test("a design slice waits while design.md is empty, whether its seat is idle or mid-turn", async () => {
-  for (const status of ["idle", "running", "initializing"]) {
+  for (const status of ["running", "initializing"]) {
     const { root, stateFile } = setup("agent: d-1", "on", "design");
     writeDesign(root, "\n");
     const { paseo, created } = fakePaseo({ "d-1": { status } });
@@ -190,6 +201,12 @@ test("a design slice waits while design.md is empty, whether its seat is idle or
     assert.equal(field(stateFile, "phase"), "design");
     assert.equal(created.length, 0);
   }
+  const { root, stateFile } = setup("agent: d-1", "on", "design");
+  writeDesign(root, "\n");
+  const { paseo, created } = fakePaseo({ "d-1": { status: "idle", labels: { kind: "factory-seat", seat: "design", "factory-slice": "s1", "factory-mission": "m1" } } });
+  assert.equal((await runFactoryTick(root, paseo)).kind, "restarted");
+  assert.equal(field(stateFile, "phase"), "design");
+  assert.equal(created.length, 1);
 });
 
 test("a design slice waits while its seat is mid-turn, even with design.md written", async () => {
@@ -265,20 +282,24 @@ test("a build slice whose agent is dead gets one builder in its worktree, with t
   assert.match(state, /seat: builder/);
 });
 
-test("a live agent is left alone, whatever it is doing", async () => {
-  for (const status of ["idle", "running", "initializing"]) {
+test("a live agent is left alone only while its turn is in progress", async () => {
+  for (const status of ["running", "initializing"]) {
     const { root } = setup("agent: live-1");
     const { paseo, created } = fakePaseo({ "live-1": { status } });
     assert.deepEqual(await runFactoryTick(root, paseo), { kind: "alive", slice: "s1", agent: "live-1" });
     assert.equal(created.length, 0);
   }
+  const { root } = setup("agent: live-1");
+  const { paseo, created } = fakePaseo({ "live-1": { status: "idle", labels: { kind: "factory-seat", seat: "builder", "factory-slice": "s1", "factory-mission": "m1" } } });
+  assert.equal((await runFactoryTick(root, paseo)).kind, "restarted");
+  assert.equal(created.length, 1);
 });
 
-test("a live agent whose first read is empty is left alone once the second read finds it", async () => {
+test("a first read that is empty still leads to a respawn when the agent is idle", async () => {
   const { root } = setup("agent: live-1");
-  const { paseo, created } = fakePaseo({ "live-1": { status: "idle" } }, { stale: { "live-1": [null] } });
-  assert.deepEqual(await runFactoryTick(root, paseo), { kind: "alive", slice: "s1", agent: "live-1" });
-  assert.equal(created.length, 0);
+  const { paseo, created } = fakePaseo({}, { stale: { "live-1": [null] } });
+  assert.equal((await runFactoryTick(root, paseo)).kind, "restarted");
+  assert.equal(created.length, 1);
 });
 
 test("a first read that is dead and a second that throws waits for the next tick", async () => {
@@ -614,13 +635,13 @@ test("a dead build agent is relaunched on its current step with RESTART_LINE and
   assert.equal(field(ctx.stateFile, "attempt"), "2");
 });
 
-test("a build agent that reads error once and idle on the second read is not relaunched", async () => {
+test("a build agent that reads error once and idle on the second read is stale and relaunched", async () => {
   const ctx = setup("agent: i-1\nattempt: 1");
   withStory(ctx, "step: implement\nround: 2\nagent: i-1\nstatus: implementing", "implement-running", cycles(false));
   const { paseo, created } = fakePaseo({ "i-1": { status: "idle" } }, { stale: { "i-1": [{ status: "error" }] } });
-  assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "alive", slice: "s1", agent: "i-1" });
-  assert.equal(created.length, 0);
-  assert.equal(field(ctx.stateFile, "attempt"), "1");
+  assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "restarted", slice: "s1", agent: "new-1" });
+  assert.equal(created.length, 1);
+  assert.equal(field(ctx.stateFile, "attempt"), "2");
 });
 
 // Adoption: the manager names a story already in flight on a slice that is still in `spec`. `withStory` seeds `status: todo`, so
@@ -633,7 +654,7 @@ function adoptedStory(ctx: Parameters<typeof withStory>[0], story: string, marke
 test("an adopted in-flight story with a dead agent maps to build, then the tick relaunches it once and never twice", async () => {
   const ctx = setup("agent: i-1\nattempt: 1", "on", "spec");
   const story = adoptedStory(ctx, "step: implement\nround: 2\nagent: i-1\nstatus: implementing", "implement-running", cycles(false));
-  const known: Record<string, { status: string }> = { "i-1": { status: "error" } };
+  const known: Record<string, { status: string; labels?: Record<string, string> }> = { "i-1": { status: "error" } };
   const { paseo, created } = fakePaseo(known);
   assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "advanced", slice: "s1", phase: "build" });
   assert.equal(field(ctx.stateFile, "phase"), "build");
@@ -642,6 +663,7 @@ test("an adopted in-flight story with a dead agent maps to build, then the tick 
   assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "restarted", slice: "s1", agent: "new-1" });
   assert.deepEqual(created[0].labels, sliceLabels("implement", "2"));
   assert.ok(created[0].prompt.includes(RESTART_LINE));
+  known["new-1"] = { status: "running", labels: sliceLabels("implement", "2") };
   assert.equal((await runFactoryTick(ctx.root, paseo)).kind, "alive");
   assert.equal(created.length, 1);
 });
@@ -669,12 +691,13 @@ test("a named story with no step falls through to the normal spec handling", asy
   assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "advanced", slice: "s1", phase: "build" });
 });
 
-test("a build story with no step marker and a live idle agent is left alone", async () => {
+test("an idle build agent on implement-running is relaunched on the same step", async () => {
   const ctx = setup("agent: i-1");
   withStory(ctx, "step: implement\nround: 1\nagent: i-1\nstatus: implementing", "implement-running", cycles(false));
-  const { paseo, created, commits } = fakePaseo({ "i-1": { status: "idle" } });
-  assert.equal((await runFactoryTick(ctx.root, paseo)).kind, "alive");
-  assert.equal(created.length + commits.length, 0);
+  const { paseo, created, commits } = fakePaseo({ "i-1": { status: "idle", labels: { kind: "factory-seat", seat: "builder", "factory-slice": "s1", "factory-mission": "m1", "loop-step": "implement" } } });
+  assert.equal((await runFactoryTick(ctx.root, paseo)).kind, "restarted");
+  assert.equal(commits.length, 0);
+  assert.equal(created.length, 1);
 });
 
 // A plan turn that ended without plan-done, with a live idle planner, and the manager steers and approvals the tick sends.
@@ -846,13 +869,14 @@ test("test-done waits while proof.md is empty or the QA seat is mid-turn", async
   assert.equal(field(running.ctx.stateFile, "phase"), "test");
 });
 
-test("no verdict leaves the QA seat to finish", async () => {
+test("no verdict respawns an idle QA seat", async () => {
   const { ctx } = testSlice("implement-done");
   writeProof(ctx.root, "All checks pass.\n");
   const { paseo, created } = fakePaseo({ "q-1": { status: "idle" } });
-  assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "alive", slice: "s1", agent: "q-1" });
+  assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "restarted", slice: "s1", agent: "new-1" });
   assert.equal(field(ctx.stateFile, "phase"), "test");
-  assert.equal(created.length, 0);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].labels.seat, "qa");
 });
 
 test("test-failed goes back to build as Implement round 2 with the failing checks in its prompt, never fix", async () => {
@@ -942,13 +966,16 @@ test("a clean review on a ship slice goes to ship, with no steer and no seat", a
 });
 
 test("a review waits while the reviewer is mid-turn or has written no marker", async () => {
-  for (const [marker, status] of [["review-done", "running"], ["review-running", "idle"]]) {
-    const { ctx } = reviewSlice(marker, { findings: OPEN });
-    const { paseo, created } = fakePaseo({ "r-1": { status } });
-    assert.equal((await runFactoryTick(ctx.root, paseo)).kind, "alive");
-    assert.equal(field(ctx.stateFile, "phase"), "review");
-    assert.equal(created.length, 0);
-  }
+  const running = reviewSlice("review-done", { findings: OPEN });
+  const a = fakePaseo({ "r-1": { status: "running" } });
+  assert.equal((await runFactoryTick(running.ctx.root, a.paseo)).kind, "alive");
+  assert.equal(a.created.length, 0);
+
+  const idle = reviewSlice("review-running", { findings: OPEN });
+  const b = fakePaseo({ "r-1": { status: "idle", labels: { kind: "factory-seat", seat: "reviewer", "factory-slice": "s1", "factory-mission": "m1", "loop-step": "review" } } });
+  assert.equal((await runFactoryTick(idle.ctx.root, b.paseo)).kind, "restarted");
+  assert.equal(field(idle.ctx.stateFile, "phase"), "review");
+  assert.equal(b.created.length, 1);
 });
 
 test("a review still blocking at the round limit waits and moves nothing", async () => {
@@ -969,11 +996,11 @@ test("a dead reviewer is relaunched on Review in the same round with RESTART_LIN
   assert.ok(created[0].prompt.includes(RESTART_LINE));
 });
 
-test("a reviewer that reads error once and idle on the second read is not relaunched", async () => {
+test("a reviewer that reads error once and idle on the second read is relaunched", async () => {
   const { ctx } = reviewSlice("review-running", { round: 2 });
   const { paseo, created } = fakePaseo({ "r-1": { status: "idle" } }, { stale: { "r-1": [{ status: "error" }] } });
-  assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "alive", slice: "s1", agent: "r-1" });
-  assert.equal(created.length, 0);
+  assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "restarted", slice: "s1", agent: "new-1" });
+  assert.equal(created.length, 1);
 });
 
 test("a restart of an Implement round after test-failed still lists the failing checks", async () => {
@@ -1211,7 +1238,7 @@ test("after a fresh compact hands the story to the new agent, the next pass star
   const ctx = setup("agent: a1\nattempt: 1");
   const story = withStory(ctx, "step: implement\nround: 1\nagent: a1\nstatus: implementing", "implement-running", cycles(false));
   // The compact archived a1; f1 is the live replacement, carrying a1's labels.
-  const { paseo, created } = fakePaseo({ a1: { status: "closed", archivedAt: "now" }, f1: { status: "idle" } });
+  const { paseo, created } = fakePaseo({ a1: { status: "closed", archivedAt: "now" }, f1: { status: "running" } });
   const initiative = createInitiativeLoop(
     async () => DEFAULT_LOOP_CONFIG,
     async () => FALLBACK_AGENT_CONFIG,
@@ -2462,4 +2489,48 @@ test("a product repo reviewer seat stays on Grok when the seat file names Busine
   const { paseo, created } = fakePaseo({ "dead-1": { status: "error" } });
   await runFactoryTick(root, withProfiles(paseo, [composer, grokDeep, deep, fast, runner]));
   assert.deepEqual(created.map((item) => (item.config as { provider: string }).provider), ["cursor/grok-4.7"]);
+});
+
+test("A: a build slice with another slice's idle agent id gets a fresh builder", async () => {
+  const ctx = setup("agent: scout-1\nphase: build");
+  const { paseo, created } = fakePaseo({
+    "scout-1": {
+      status: "idle",
+      attentionReason: "finished",
+      labels: { kind: "factory-seat", seat: "builder", "factory-slice": "scout-1", "factory-mission": "m1" },
+    },
+  });
+  assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "restarted", slice: "s1", agent: "new-1" });
+  assert.equal(created[0].labels.slice, "s1");
+});
+
+test("B: build-done in proof commits, syncs the story and moves to test when the loop marker is missing", async () => {
+  const ctx = setup("agent: b-1\nseat: builder");
+  withStory(ctx, "step: plan\nround: 1\nagent: b-1\nstatus: planning", "plan-running", cycles(true));
+  writeProof(ctx.root, "build-done");
+  writeFileSync(join(ctx.worktree, "widget.ts"), "export const w = 1;\n");
+  const { paseo, commits, created } = fakePaseo({
+    "b-1": { status: "idle", attentionReason: "finished", labels: { kind: "factory-seat", seat: "builder", "factory-slice": "s1", "factory-mission": "m1" } },
+  });
+  assert.deepEqual(await runFactoryTick(ctx.root, paseo), { kind: "advanced", slice: "s1", phase: "test" });
+  assert.equal(commits.length, 1);
+  assert.equal(field(ctx.stateFile, "phase"), "test");
+  assert.equal(field(field(ctx.stateFile, "story")!, "step"), "implement");
+  assert.equal(created.length, 0);
+});
+
+test("D: a long idle seat is recovered and named in the digest", async () => {
+  const now = new Date("2026-11-15T12:00:00.000Z").getTime();
+  const idleSince = new Date(now - 11 * 60_000).toISOString();
+  const { root, stateFile } = setup(`agent: b-1\nidle_since: ${idleSince}`);
+  const { paseo, created } = fakePaseo({ "b-1": { status: "idle" } });
+  paseo.now = () => now;
+  const sent: string[] = [];
+  paseo.send = async (_id, text) => {
+    sent.push(text);
+  };
+  assert.equal((await runFactoryTick(root, paseo)).kind, "restarted");
+  assert.equal(created.length, 1);
+  assert.match(field(stateFile, "stall")!, /idle 10\+ minutes/);
+  assert.match(readFileSync(join(root, ".harness", "factory", "digest.md"), "utf8"), /idle 10\+ minutes/);
 });
