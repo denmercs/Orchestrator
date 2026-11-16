@@ -57,6 +57,7 @@ function fixture(agent = "a1") {
   mkdirSync(join(worktree, ".harness"), { recursive: true });
   // The loop commits each finished step in the worktree, so it has to be a repo.
   execFileSync("git", ["init", "-q"], { cwd: worktree });
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@denmercs/orchestrator" }));
   writeFileSync(join(init, "initiative.md"), "---\nloop: on\n---\n# Initiative: Demo\n", "utf8");
   writeFileSync(join(phase, "phase.md"), "---\nphase: 1\ntitle: Meter\n---\n", "utf8");
   const story = join(phase, "stories", "01-story.md");
@@ -1942,6 +1943,7 @@ async function startNewStory(
     profiles?: { id: string; name: string; provider: string; model?: string | null }[];
     // Written to `.orchestrator/pipeline.json` and copied into the new worktree, as a committed file would be.
     repoPipeline?: unknown;
+  packageName?: string;
   } = {},
 ) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "loop-start-")));
@@ -1950,6 +1952,7 @@ async function startNewStory(
   git("config", "user.email", "test@example.com");
   git("config", "user.name", "Test");
   git("commit", "-q", "--allow-empty", "-m", "init");
+  if (options.packageName) writeFileSync(join(root, "package.json"), JSON.stringify({ name: options.packageName }));
   for (const name of options.existing ?? []) git("branch", name);
   const init = join(root, ".harness", "initiatives", "demo");
   const phase = join(init, "phases", "1-meter");
@@ -1978,6 +1981,8 @@ async function startNewStory(
       mkdirSync(join(directory, ".orchestrator"), { recursive: true });
       writeFileSync(join(directory, ".orchestrator", "pipeline.json"), readFileSync(pipelineFile));
     }
+    const pkg = join(root, "package.json");
+    if (existsSync(pkg)) writeFileSync(join(directory, "package.json"), readFileSync(pkg));
     return { id: "ws-new", directory };
   };
   if (options.profiles) {
@@ -2033,80 +2038,107 @@ test("a story without a track starts on Plan", async () => {
 });
 
 test("no story starts while its first step's provider is at its plan limit", async () => {
-  const { created, meta, reason } = await startNewStory({ usage: claudeAt(100) });
+  const { created, meta, reason } = await startNewStory({ usage: claudeAt(100), packageName: "@denmercs/orchestrator" });
   assert.deepEqual(created, []);
   assert.equal(meta.status, "todo");
   assert.match(reason, /^paused for the Claude limit until \d{1,2}:\d{2}/);
 });
 
 const grokProfile = { id: "grok", name: "Grok", provider: "cursor", model: "grok-4.7" };
+const cursorOpusProfile = { id: "c_opus", name: "Opus", provider: "cursor", model: "claude-opus-5-5" };
 const claudeProfile = { id: "opus", name: "Opus", provider: "claude", model: "claude-opus-4" };
+
+test("a product repo still starts Plan on Cursor Opus while Claude is at its plan limit", async () => {
+  const { created, meta } = await startNewStory({
+    usage: claudeAt(100),
+    profiles: [cursorOpusProfile],
+    packageName: "quickpress",
+  });
+  assert.equal(created.length, 1);
+  assert.equal(created[0].config?.provider, "cursor/claude-opus-5-5");
+  assert.equal(meta.status, "planning");
+});
 const withPlanProfile = (profile: string) =>
   DEFAULT_PHASES.map((phase) => (phase.id === "plan" ? { ...phase, profile } : phase));
 
-test("a Plan step whose pipeline profile is grok starts while the default profile's Claude window is full", async () => {
+test("a product repo Plan step uses Cursor Opus even when the pipeline profile is grok", async () => {
   const { created, meta, reason } = await startNewStory({
     usage: claudeAt(100),
     agentConfig: async () => ({ provider: "claude" }),
-    profiles: [claudeProfile, grokProfile],
+    profiles: [claudeProfile, grokProfile, cursorOpusProfile],
     pipeline: async () => ({ phases: withPlanProfile("grok"), sources: [] }),
+    packageName: "quickpress",
   });
   assert.deepEqual(
     created.map((agent) => [agent.labels["loop-step"], agent.config]),
-    [["plan", { provider: "cursor/grok-4.7" }]],
+    [["plan", { provider: "cursor/claude-opus-5-5" }]],
   );
   assert.equal(meta.status, "planning");
   assert.equal(meta.paused_for, undefined);
   assert.doesNotMatch(reason, /Claude/);
 });
 
-test("a Plan step whose repo pipeline profile is grok starts while the default profile's Claude window is full", async () => {
+test("a product repo ignores repo pipeline grok for Plan and uses Cursor Opus", async () => {
   const { created, meta } = await startNewStory({
     usage: claudeAt(100),
     agentConfig: async () => ({ provider: "claude" }),
-    profiles: [claudeProfile, grokProfile],
+    profiles: [claudeProfile, grokProfile, cursorOpusProfile],
     repoPipeline: { phases: { plan: { profile: "grok" } } },
+    packageName: "quickpress",
   });
   assert.deepEqual(
     created.map((agent) => [agent.labels["loop-step"], agent.config]),
-    [["plan", { provider: "cursor/grok-4.7" }]],
+    [["plan", { provider: "cursor/claude-opus-5-5" }]],
   );
   assert.equal(meta.status, "planning");
   assert.equal(meta.paused_for, undefined);
 });
 
-test("a Plan step whose pipeline profile is Claude stays paused while Claude is limited, even when the default profile is Cursor", async () => {
+test("a product repo Plan starts on Cursor Opus while Claude is limited, even when the pipeline profile is Claude", async () => {
   const { created, meta, reason } = await startNewStory({
     usage: claudeAt(100),
     agentConfig: async () => ({ provider: "cursor/grok-4.7" }),
-    profiles: [claudeProfile, grokProfile],
+    profiles: [claudeProfile, grokProfile, cursorOpusProfile],
     pipeline: async () => ({ phases: withPlanProfile("opus"), sources: [] }),
+    packageName: "quickpress",
   });
-  assert.deepEqual(created, []);
-  assert.equal(meta.status, "todo");
-  assert.match(reason, /^paused for the Claude limit until \d{1,2}:\d{2}/);
+  assert.deepEqual(created.map((agent) => agent.config?.provider), ["cursor/claude-opus-5-5"]);
+  assert.equal(meta.status, "planning");
+  assert.doesNotMatch(reason, /Claude/);
 });
 
-test("a repo pipeline Claude profile blocks Plan while Claude is limited, even when the host pipeline profile is grok", async () => {
-  const { created, meta, reason } = await startNewStory({
+test("a product repo ignores repo pipeline Claude for Plan and starts on Cursor Opus", async () => {
+  const { created, meta } = await startNewStory({
     usage: claudeAt(100),
     agentConfig: async () => ({ provider: "cursor/grok-4.7" }),
-    profiles: [claudeProfile, grokProfile],
+    profiles: [claudeProfile, grokProfile, cursorOpusProfile],
     pipeline: async () => ({ phases: withPlanProfile("grok"), sources: [] }),
     repoPipeline: { phases: { plan: { profile: "opus" } } },
+    packageName: "quickpress",
   });
-  assert.deepEqual(created, []);
-  assert.equal(meta.status, "todo");
-  assert.match(reason, /^paused for the Claude limit until \d{1,2}:\d{2}/);
+  assert.deepEqual(created.map((agent) => agent.config?.provider), ["cursor/claude-opus-5-5"]);
+  assert.equal(meta.status, "planning");
 });
 
-test("a Plan step on grok is paused when Cursor's window is full", async () => {
+test("Orchestrator still honors a grok pipeline profile for Plan", async () => {
+  const { created } = await startNewStory({
+    usage: claudeAt(100),
+    agentConfig: async () => ({ provider: "claude" }),
+    profiles: [claudeProfile, grokProfile],
+    pipeline: async () => ({ phases: withPlanProfile("grok"), sources: [] }),
+    packageName: "@denmercs/orchestrator",
+  });
+  assert.deepEqual(created.map((agent) => agent.config?.provider), ["cursor/grok-4.7"]);
+});
+
+test("a Plan step on Cursor Opus is paused when Cursor's window is full", async () => {
   const resetsAt = new Date(Date.now() + 3_600_000).toISOString();
   const { created, meta, reason } = await startNewStory({
     usage: [{ providerId: "cursor", status: "available", planLabel: "Pro", windows: [{ id: "five_hour", label: "5h", usedPct: 100, resetsAt }] }],
     agentConfig: async () => ({ provider: "claude" }),
-    profiles: [claudeProfile, grokProfile],
+    profiles: [claudeProfile, grokProfile, cursorOpusProfile],
     pipeline: async () => ({ phases: withPlanProfile("grok"), sources: [] }),
+    packageName: "quickpress",
   });
   assert.deepEqual(created, []);
   assert.equal(meta.status, "todo");

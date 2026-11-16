@@ -3,14 +3,19 @@ import { z } from "zod";
 
 export {
   FALLBACK_AGENT_CONFIG,
+  PRODUCT_PLAN_MODEL,
+  PRODUCT_REVIEW_MODEL,
+  cursorModelConfig,
   materializeProfile,
   pickProfile,
+  productStepConfig,
   profileCaption,
   profileForStep,
   profileForTier,
   seatProfile,
   profilesFromConfigGet,
   resolveRunnerConfig,
+  withProductPlanReviewStepConfig,
   type AgentCreateConfig,
   type AgentProfile,
 } from "./agent-profiles";

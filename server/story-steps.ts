@@ -13,7 +13,8 @@ import {
   type LoopStep,
   type StoryContext,
 } from "../shared/story-method";
-import { loadPhaseConfig, type RunnerProfiles } from "./agent-runner";
+import { loadPhaseConfig, profilesFromConfigGet, withProductPlanReviewStepConfig, type RunnerProfiles } from "./agent-runner";
+import { loopRepoRoot, usesProductPlanReviewDefaults } from "./factory-manager";
 import { briefTag, installBrief } from "./brief-install";
 import { writeFrontmatter } from "./harness-layout";
 import { withMcpScope } from "./mcp-scope";
@@ -115,7 +116,22 @@ export async function launchStep(input: LaunchInput): Promise<string> {
   const phases = repoPhases(piped.phases, worktree);
   // A repo can give each story phase its own model; the default tier (Opus for Plan and Review, Sonnet for Implement and Fix CI) applies when it doesn't.
   const phaseId = STEP_PHASES[step];
-  const agentConfig = await loadPhaseConfig(api, phases.find((p) => p.id === phaseId)?.profile, await input.readAgentConfig());
+  const fallback = await input.readAgentConfig();
+  let agentConfig = await loadPhaseConfig(api, phases.find((p) => p.id === phaseId)?.profile, fallback);
+  const repoRoot = loopRepoRoot(worktree, labels["loop-repo"]);
+  const productDefaults = repoRoot ? usesProductPlanReviewDefaults(repoRoot) : false;
+  if (productDefaults) {
+    try {
+      agentConfig = withProductPlanReviewStepConfig(
+        true,
+        step,
+        profilesFromConfigGet(await api.config.get()),
+        agentConfig,
+      );
+    } catch (error) {
+      console.warn("orchestrator: product plan/review defaults", ctx.id, error);
+    }
+  }
   // A repo's light Review drops the full-diff review skills after round 1 (shared/pipeline.ts reviewRoundSkills).
   const reviewMode = step === "review" ? repoReviewMode(worktree) : "full";
   const extras = stepSkills(step, phases, { mode: reviewMode, round });

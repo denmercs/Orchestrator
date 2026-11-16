@@ -71,10 +71,36 @@ const STEP_TIER: Partial<Record<LoopStep, "deep" | "fast">> = {
   fix: "fast",
 };
 
+export const PRODUCT_PLAN_MODEL = "claude-opus-5-5";
+export const PRODUCT_REVIEW_MODEL = "grok-4.7";
+
+// Prefer a Cursor agent profile for `model`, else a qualified cursor provider string.
+export function cursorModelConfig(profiles: AgentProfile[], model: string): AgentCreateConfig {
+  const profile = profiles.find((candidate) => candidate.provider === "cursor" && candidate.model === model);
+  return profile ? materializeProfile(profile) : { provider: `cursor/${model}` };
+}
+
+// Plan, Diagnose and Review on product repos (not Orchestrator, not gihimo): Opus for planning, Grok for review.
+export function productStepConfig(step: LoopStep, profiles: AgentProfile[]): AgentCreateConfig | null {
+  if (step === "plan" || step === "diagnose") return cursorModelConfig(profiles, PRODUCT_PLAN_MODEL);
+  if (step === "review") return cursorModelConfig(profiles, PRODUCT_REVIEW_MODEL);
+  return null;
+}
+
+export function withProductPlanReviewStepConfig(
+  productDefaults: boolean,
+  step: LoopStep,
+  profiles: AgentProfile[],
+  config: AgentCreateConfig,
+): AgentCreateConfig {
+  if (!productDefaults) return config;
+  return productStepConfig(step, profiles) ?? config;
+}
+
 // Cursor profiles other repos' factory seats default to: Composer for every role, Grok 4.7 for reviewer.
 function repoSeatDefault(profiles: AgentProfile[], role: string) {
   const cursor = profiles.filter((candidate) => candidate.provider === "cursor");
-  const model = role === "reviewer" ? "grok-4.7" : "composer-2.5";
+  const model = role === "reviewer" ? PRODUCT_REVIEW_MODEL : "composer-2.5";
   return cursor.find((candidate) => candidate.model === model) ?? profileForTier(profiles, role === "reviewer" ? "deep" : "fast", "cursor");
 }
 
@@ -125,7 +151,9 @@ export function seatProfile(
   profiles: AgentProfile[],
   runnerProfileId: string,
   orchestratorSlice = true,
+  productPlanReviewDefaults = false,
 ) {
+  if (productPlanReviewDefaults && role === "reviewer") return repoSeatDefault(profiles, role);
   const named = seat?.profile ? pickProfile(profiles, seat.profile) : null;
   if (named && (orchestratorSlice || named.provider !== "claude")) return named;
   if (!orchestratorSlice) return repoSeatDefault(profiles, role);
