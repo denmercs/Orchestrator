@@ -194,13 +194,13 @@ test("seatProfile: an Orchestrator slice still honors a Claude profile in the se
   assert.equal(seatProfile(seatOf("qa", sonnet.id), "qa", all, runner.id, true), sonnet);
 });
 
-test("productStepConfig: quickpress plan/diagnose use Cursor Opus and review uses Grok", () => {
+test("productStepConfig: quickpress plan uses Cursor Opus; review and diagnose use Grok", () => {
   const composer: AgentProfile = { id: "p_comp", name: "Business - Coder", provider: "cursor", model: "composer-2.5" };
   const grokDeep: AgentProfile = { id: "p_grok", name: "Business - Thinker", provider: "cursor", model: "grok-4.7" };
   const cursorOpus: AgentProfile = { id: "p_c_opus", name: "Opus", provider: "cursor", model: "claude-opus-5-5" };
   const profiles = [composer, grokDeep, cursorOpus, opus, sonnet];
   assert.deepEqual(productStepConfig("plan", profiles), { provider: "cursor/claude-opus-5-5" });
-  assert.deepEqual(productStepConfig("diagnose", profiles), { provider: "cursor/claude-opus-5-5" });
+  assert.deepEqual(productStepConfig("diagnose", profiles), { provider: "cursor/grok-4.7" });
   assert.deepEqual(productStepConfig("review", profiles), { provider: "cursor/grok-4.7" });
   assert.equal(productStepConfig("implement", profiles), null);
 });
