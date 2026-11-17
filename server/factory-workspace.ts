@@ -3,6 +3,7 @@ import { basename, join, resolve } from "node:path";
 import type { FactorySlice } from "../shared/factory";
 import type { LoopHost } from "../shared/loop-host";
 import { factoryDir, readFactory, writeSliceState } from "./factory-layout";
+import { configuredRepoFolders } from "./factory-repo";
 import { frontmatter, writeFrontmatter } from "./harness-layout";
 import { prStatus } from "./pr-checks";
 import type { TickPaseo } from "./factory-tick";
@@ -23,7 +24,10 @@ async function ended(slice: FactorySlice, ports: TickPaseo): Promise<boolean> {
 export async function closeSlices(root: string, ports: TickPaseo) {
   const { host, steer } = ports;
   if (!host) return;
-  for (const mission of readFactory(root).missions) {
+  const missions = readFactory(root).missions;
+  // The repo root, and any repo a mission or slice names, is never archived.
+  const repoFolders = configuredRepoFolders(root, missions.flatMap((item) => item.slices));
+  for (const mission of missions) {
     for (const slice of mission.slices) {
       const { workspace, archived, archive_held } = slice.state;
       if (!workspace || archived) continue;
@@ -31,7 +35,7 @@ export async function closeSlices(root: string, ports: TickPaseo) {
         if (!(await ended(slice, ports))) continue;
         const found = (await host.listWorkspaces()).find((item) => item.id === workspace);
         // Not listed (a failed list answers []): try again next pass rather than archive a workspace that may be busy.
-        if (!found || resolve(found.directory) === resolve(root)) continue;
+        if (!found || repoFolders.includes(resolve(found.directory))) continue;
         if (found.busy) {
           if (archive_held) continue;
           const line = `Slice ${slice.id} is finished but an agent is still running in its workspace, so it was not archived.`;
@@ -64,8 +68,9 @@ const factoryNamed = (folder: string) => {
 // and neither is a busy one. A failed archive is ignored and not counted.
 export async function sweepStrayWorkspaces(root: string, host: LoopHost): Promise<number> {
   const ids = new Set<string>();
-  const folders = new Set<string>([resolve(root)]);
-  for (const mission of readFactory(root).missions) {
+  const missions = readFactory(root).missions;
+  const folders = new Set<string>(configuredRepoFolders(root, missions.flatMap((item) => item.slices)));
+  for (const mission of missions) {
     for (const { state } of mission.slices) {
       if (state.workspace) ids.add(state.workspace);
       if (state.worktree) folders.add(resolve(state.worktree));
