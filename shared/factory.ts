@@ -58,7 +58,8 @@ export type SliceState = {
 };
 
 export type FactorySlice = { id: string; mission: string; state: SliceState; spec: string; design: string; proof: string };
-export type FactoryMission = { id: string; outcome: string; slices: FactorySlice[] };
+// `manager` is an optional Paseo agent id for this mission's manager; empty uses `manager.md`.
+export type FactoryMission = { id: string; outcome: string; manager: string; slices: FactorySlice[] };
 export type FactorySeat = { role: string; profile: string; skills: string[]; agent: string; notes: string };
 // The manager file's settings. `model` is the manager session's `provider/model` (empty: MANAGER_SESSION_MODELS), `paths`
 // the extra folders every slice's seats may work in, and `promptMinutes` how long a seat may wait on a permission prompt

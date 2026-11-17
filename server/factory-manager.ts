@@ -167,27 +167,49 @@ export type ManagerPaseo = {
 
 const creating = new Map<string, Promise<string | null>>();
 
+const ensureKey = (root: string, mission?: string) => (mission ? `${root}:${mission}` : root);
+
+const missionManagerFile = (root: string, mission: string) => join(factoryDir(root), "missions", mission, "mission.md");
+
+// The Paseo agent id in a mission's `manager` frontmatter when set; empty means fall back to manager.md.
+export function missionManagerAgent(root: string, mission: string | undefined): string | undefined {
+  if (!mission) return undefined;
+  const agent = readFactory(root).missions.find((item) => item.id === mission)?.manager.trim();
+  return agent || undefined;
+}
+
 // The factory manager's session id for the factory at root: the one in manager.md while it is live, else a fresh one
-// (written to manager.md). Null when root has no factory. A Paseo that doesn't answer throws rather than risk a second
-// manager; two callers at once share one create.
-export function ensureManager(root: string, ports: ManagerPaseo): Promise<string | null> {
-  const pending = creating.get(root);
+// (written to manager.md). With `mission`, a non-empty `manager:` on that mission's mission.md is used instead and
+// written back there on create. Null when root has no factory. A Paseo that doesn't answer throws rather than risk a
+// second manager; two callers at once share one create (per mission when routed).
+export function ensureManager(root: string, ports: ManagerPaseo, mission?: string): Promise<string | null> {
+  const key = ensureKey(root, missionManagerAgent(root, mission) ? mission : undefined);
+  const pending = creating.get(key);
   if (pending) return pending;
-  const run = ensure(root, ports).finally(() => creating.delete(root));
-  creating.set(root, run);
+  const run = ensure(root, ports, mission).finally(() => creating.delete(key));
+  creating.set(key, run);
   return run;
 }
 
-async function ensure(root: string, ports: ManagerPaseo): Promise<string | null> {
+async function ensure(root: string, ports: ManagerPaseo, mission?: string): Promise<string | null> {
   if (!existsSync(factoryDir(root))) return null;
-  const { manager } = readFactory(root);
+  const factory = readFactory(root);
+  const override = missionManagerAgent(root, mission);
   const { id, created } = await liveOrCreate(
-    manager.agent,
-    { cwd: root, env: { [FACTORY_MANAGER_ENV]: "1" }, title: "Factory manager", labels: { kind: "factory-manager" } },
+    override ?? factory.manager.agent,
+    {
+      cwd: root,
+      env: { [FACTORY_MANAGER_ENV]: "1" },
+      title: override && mission ? `Factory manager (${mission})` : "Factory manager",
+      labels: override && mission ? { kind: "factory-manager", "factory-mission": mission } : { kind: "factory-manager" },
+    },
     ports,
-    managerModels(manager.model, isOrchestratorRepo(root) ? MANAGER_SESSION_MODELS : REPO_MANAGER_MODELS),
+    managerModels(factory.manager.model, isOrchestratorRepo(root) ? MANAGER_SESSION_MODELS : REPO_MANAGER_MODELS),
   );
-  if (created) writeFrontmatter(join(factoryDir(root), "manager.md"), { agent: id });
+  if (created) {
+    if (override && mission) writeFrontmatter(missionManagerFile(root, mission), { manager: id });
+    else writeFrontmatter(join(factoryDir(root), "manager.md"), { agent: id });
+  }
   return id;
 }
 
@@ -219,9 +241,10 @@ export async function liveOrCreate(
 }
 
 // The status steer: one line, prefixed with SYSTEM_TAG, sent as a steer to the factory manager (replaced first if it is dead), and to no other
-// session. False, with nothing sent, when root has no factory.
-export async function steerManager(root: string, line: string, ports: ManagerPaseo): Promise<boolean> {
-  const id = await ensureManager(root, ports);
+// session. With `mission`, routes to that mission's `manager:` agent when set, else manager.md. False, with nothing sent,
+// when root has no factory.
+export async function steerManager(root: string, line: string, ports: ManagerPaseo, mission?: string): Promise<boolean> {
+  const id = await ensureManager(root, ports, mission);
   if (!id) return false;
   await ports.agents.ref(id).send(`${SYSTEM_TAG} ${line}`, { activeTurnBehavior: "steer" });
   return true;

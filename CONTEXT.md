@@ -448,7 +448,7 @@ The `.harness/factory/` tree in a repo: the files a project's factory runs from.
 
 **Project** (`project.md`): the prose describing what the factory builds. **Manager file** (`manager.md`): its frontmatter `agent` names the manager's session; `model` (a `provider/model`) is the model a fresh manager is created on, `paths` (comma list, `~` allowed) the extra folders every slice's seats may work in, and `prompt_minutes` (default 10) how long a seat may wait on a permission prompt before the manager hears it is stalled. **Culture** (`culture.md`): prose house rules every seat follows. A missing file reads as empty.
 
-**Mission** (`missions/<id>/mission.md`): one outcome, its body. Missions and their slices are read in directory order (numeric-aware, so `01-…` before `02-…`); folders starting with `.` are skipped.
+**Mission** (`missions/<id>/mission.md`): one outcome, its body. Frontmatter `manager` (optional) names a Paseo agent id for this mission's factory manager; slice steers go there when set, otherwise to `manager.md`. Missions and their slices are read in directory order (numeric-aware, so `01-…` before `02-…`); folders starting with `.` are skipped.
 
 **Filed slice**: a slice every start path writes into mission `inbox` of the harness repo's factory instead of starting the loop: ticket start, promote, the loop start file, the Start input and the Initiatives Start buttons (the morning brief starts nothing). `spec.md` holds the title (and link); `state.md` names the story file when there is one and leaves `run` off. The manager gets one steer listing what was filed and sets `run: on`. A story a slice already names is skipped, so filing twice is harmless. Code: `fileSlice`, `fileInitiative` in `server/factory-file.ts`.
 

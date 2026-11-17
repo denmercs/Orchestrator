@@ -15,8 +15,8 @@ type PaseoApi = PluginHandlerContext["paseo"];
 export type FactorySeatDeps = {
   readFactoryRoot: () => Promise<string | null>;
   readConfig: () => Promise<LoopConfig>;
-  // One line to the factory manager at `root` as a steer. Absent, `steerManager`.
-  steer?: (root: string, line: string, paseo: PaseoApi) => Promise<unknown>;
+  // One line to the factory manager at `root` as a steer. Absent, `steerManager`. The mission id routes per-mission managers.
+  steer?: (root: string, line: string, paseo: PaseoApi, mission?: string) => Promise<unknown>;
 };
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
@@ -64,6 +64,6 @@ export async function factorySeatTurnEnded(
   }
   // A reopen starts the counters clean, as a reopened loop story does.
   writeFrontmatter(story.path, STUCK_CLEAR);
-  const steer = (line: string) => (deps.steer ?? steerManager)(found.root, line, paseo);
+  const steer = (line: string) => (deps.steer ?? ((r, l, p, m) => steerManager(r, l, p, m)))(found.root, line, paseo, found.slice.mission);
   await blockSlice(found.root, found.slice, { steer }, `stuck: ${evidence}.`);
 }

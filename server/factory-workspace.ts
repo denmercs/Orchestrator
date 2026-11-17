@@ -35,7 +35,7 @@ export async function closeSlices(root: string, ports: TickPaseo) {
         if (found.busy) {
           if (archive_held) continue;
           const line = `Slice ${slice.id} is finished but an agent is still running in its workspace, so it was not archived.`;
-          const delivered = steer && (await Promise.resolve().then(() => steer(line)).catch(() => false)) !== false;
+          const delivered = steer && (await Promise.resolve().then(() => steer(line, mission.id)).catch(() => false)) !== false;
           if (delivered) writeSliceState(root, mission.id, slice.id, { archive_held: true });
           continue;
         }

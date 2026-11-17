@@ -88,8 +88,9 @@ export type TickPaseo = {
   closeTicket?: (key: string) => Promise<{ ok: boolean; error: string | null }>;
   // Whether a merge closes its ticket, for the repo the slice's worktree is in (the user's `closeOnMerge` setting with the repo's override). Absent: no ticket is closed.
   closeOnMerge?: (cwd: string) => boolean | Promise<boolean>;
-  // One line to the factory manager as a steer (`steerManager` in the real wiring). Absent: the slice still records its state, nothing is sent.
-  steer?: (line: string) => Promise<unknown>;
+  // One line to the factory manager as a steer (`steerManager` in the real wiring). The optional mission id routes to that
+  // mission's manager when set. Absent: the slice still records its state, nothing is sent.
+  steer?: (line: string, mission?: string) => Promise<unknown>;
   // A message to a slice agent's session, for the plan gate's approval.
   send?: (agentId: string, text: string) => Promise<unknown>;
   // The Paseo agent profiles and the runner's profile id, to resolve a seat's profile. Absent or failing: seats start on MANAGER_MODELS.
@@ -370,7 +371,7 @@ async function noteHeld(root: string, ports: TickPaseo) {
       if ((cause ?? "") === slice.state.held) continue;
       if (cause) {
         const line = `Slice ${slice.id} can't start: ${cause}.`;
-        const delivered = steer && (await Promise.resolve().then(() => steer(line)).catch(() => false)) !== false;
+        const delivered = steer && (await Promise.resolve().then(() => steer(line, mission.id)).catch(() => false)) !== false;
         if (!delivered) continue;
       }
       writeSliceState(root, mission.id, slice.id, { held: cause });
@@ -418,7 +419,7 @@ async function noteMergedSlice(root: string, slice: FactorySlice, ports: TickPas
   if (state.story && existsSync(state.story)) writeFrontmatter(state.story, { status: "merged", merged_at: mergedAt });
   // The merge is already recorded: a steer that throws must not undo it or stop the pass.
   await Promise.resolve()
-    .then(() => ports.steer?.(`Slice ${id} merged: PR ${pr.url} is on the base branch.${closed ? ` ${key} closed.` : ""}`))
+    .then(() => ports.steer?.(`Slice ${id} merged: PR ${pr.url} is on the base branch.${closed ? ` ${key} closed.` : ""}`, mission))
     .catch(() => undefined);
 }
 
