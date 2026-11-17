@@ -29,6 +29,7 @@ function readMission(root: string, id: string): FactoryMission {
   return {
     id,
     manager: fields.manager ?? "",
+    repo: fields.repo ?? "",
     outcome: body(text),
     slices: dirsIn(join(dir, "slices")).map((slice) => readSlice(root, id, slice)),
   };

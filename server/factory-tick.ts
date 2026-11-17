@@ -17,6 +17,7 @@ import {
   usesProductPlanReviewDefaults,
 } from "./factory-manager";
 import { writeDigest } from "./factory-digest";
+import { resolveSliceRepo, sliceRepoFolder } from "./factory-repo";
 import { answerSeatPrompts, type PromptAnswer, type SeatPrompt } from "./factory-prompts";
 import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from "./factory-layout";
 import {
@@ -259,11 +260,17 @@ async function leaveSpec(root: string, slice: FactorySlice, ports: TickPaseo): P
   if (!worktree || !existsSync(worktree)) {
     if (!ports.host) return { kind: "waiting", slice: id, why: "its worktree is missing and this handle can't create one" };
     const names = buildContext(slice);
+    // The slice's `repo`, else its mission's, else the factory root. A bad one blocks the slice with the cause: no silent fallback.
+    const repo = resolveSliceRepo(root, slice);
+    if (!repo.ok) {
+      const blocked = await block(root, slice, ports, `its repo cannot be used, so no workspace was made: ${repo.error}`, "Fix `repo` (an absolute or ~ path to a git repo) and clear `ready` in its state.md.");
+      return blocked;
+    }
     const projects = await ports.host.listProjects();
-    const project = projects.find((item) => resolve(item.projectRootPath) === resolve(root));
+    const project = projects.find((item) => resolve(item.projectRootPath) === resolve(repo.path));
     const created = await ports.host.createStoryWorkspace({
       title: (names.title === names.id ? `${MARK} ${names.id}` : `${MARK} ${names.id} — ${names.title}`).slice(0, 60),
-      repoRoot: root,
+      repoRoot: repo.path,
       ...(project ? { projectId: project.projectId } : {}),
       baseBranch: "origin/main",
       branchName: branchName({ title: id }),
@@ -396,7 +403,7 @@ async function noteMerged(root: string, ports: TickPaseo) {
 
 async function noteMergedSlice(root: string, slice: FactorySlice, ports: TickPaseo) {
   const { id, mission, state } = slice;
-  const cwd = state.worktree && existsSync(state.worktree) ? state.worktree : root;
+  const cwd = state.worktree && existsSync(state.worktree) ? state.worktree : sliceRepoFolder(root, slice);
   const pr = await (ports.prStatus ?? prStatus)(cwd, state.pr);
   if (pr?.state === "closed") {
     await block(root, slice, ports, `PR #${pr.number} was closed without merging.`);

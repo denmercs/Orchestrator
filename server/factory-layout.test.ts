@@ -19,7 +19,7 @@ test("readFactory reads every file of the tree into typed values", () => {
     put(join(home, "culture.md"), "Small diffs.\n");
     put(join(home, "seats", "builder.md"), "---\nprofile: fast\nskills: tdd, review\nagent: agent-b\n---\n\nBuilds.\n");
     put(join(home, "missions", "01-first", "mission.md"), "# Outcome\n\nFirst outcome.\n");
-    put(join(home, "missions", "02-managed", "mission.md"), "---\nmanager: agent-mm\n---\n\nManaged outcome.\n");
+    put(join(home, "missions", "02-managed", "mission.md"), "---\nmanager: agent-mm\nrepo: ~/Desktop/Projects/Hearthplay\n---\n\nManaged outcome.\n");
     const slice = sliceDir(root, "01-first", "01-a");
     put(join(slice, "spec.md"), "the spec\n");
     put(join(slice, "design.md"), "the design\n");
@@ -39,6 +39,8 @@ test("readFactory reads every file of the tree into typed values", () => {
     assert.equal(factory.missions[0].manager, "");
     assert.equal(factory.missions[1].id, "02-managed");
     assert.equal(factory.missions[1].manager, "agent-mm");
+    assert.equal(factory.missions[1].repo, "~/Desktop/Projects/Hearthplay");
+    assert.equal(factory.missions[0].repo, "");
     const [read] = factory.missions[0].slices;
     assert.equal(read.id, "01-a");
     assert.equal(read.mission, "01-first");

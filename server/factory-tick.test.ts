@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
@@ -167,6 +169,111 @@ test("a spec slice with no worktree gets a workspace from the host, found throug
   assert.equal(field(stateFile, "phase"), "build");
   // The story file made in that folder carries the workspace too.
   assert.equal(field(field(stateFile, "story")!, "workspace"), workspaces[0].id);
+});
+
+// A spec slice with no worktree whose repo settings the test names: `missionRepo` goes in mission.md, `sliceRepo` in state.md.
+function repoSetup(missionRepo: string, sliceRepo: string) {
+  const { root, worktree, stateFile } = setup(sliceRepo ? `repo: ${sliceRepo}` : "", "on", "spec");
+  rmSync(worktree, { recursive: true });
+  if (missionRepo) put(join(root, ".harness", "factory", "missions", "m1", "mission.md"), `---\nrepo: ${missionRepo}\n---\nOutcome: one slice lands.\n`);
+  return { root, stateFile };
+}
+
+const gitRepo = () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "repo-")));
+  roots.push(dir);
+  execFileSync("git", ["init", "-q"], { cwd: dir });
+  return dir;
+};
+
+test("a mission's repo is where its new slice workspace is made, found through that repo's project", async () => {
+  const other = gitRepo();
+  const { root, stateFile } = repoSetup(other, "");
+  const { paseo, worktrees, projects } = fakePaseo();
+  projects.push({ projectId: "proj-other-repo", projectRootPath: other });
+
+  assert.equal((await runFactoryTick(root, paseo)).kind, "advanced");
+
+  assert.equal(worktrees.length, 1);
+  assert.equal(worktrees[0].repoRoot, other);
+  assert.equal(worktrees[0].projectId, "proj-other-repo");
+  assert.equal(field(stateFile, "worktree"), join(other, "made-wt"));
+});
+
+test("a slice's own repo overrides its mission's repo", async () => {
+  const missionRepo = gitRepo();
+  const sliceRepo = gitRepo();
+  const { root } = repoSetup(missionRepo, sliceRepo);
+  const { paseo, worktrees } = fakePaseo();
+
+  assert.equal((await runFactoryTick(root, paseo)).kind, "advanced");
+
+  assert.equal(worktrees.length, 1);
+  assert.equal(worktrees[0].repoRoot, sliceRepo);
+});
+
+test("a ~ repo expands to the home folder", async () => {
+  const home = gitRepo();
+  const previous = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const { root } = repoSetup("~", "");
+    const { paseo, worktrees } = fakePaseo();
+    assert.equal((await runFactoryTick(root, paseo)).kind, "advanced");
+    assert.equal(worktrees[0].repoRoot, home);
+  } finally {
+    if (previous === undefined) delete process.env.HOME;
+    else process.env.HOME = previous;
+  }
+});
+
+test("with no repo set anywhere the workspace is made from the factory root, as before", async () => {
+  const { root } = repoSetup("", "");
+  const { paseo, worktrees } = fakePaseo();
+
+  assert.equal((await runFactoryTick(root, paseo)).kind, "advanced");
+
+  assert.equal(worktrees[0].repoRoot, root);
+});
+
+for (const [name, repo, why] of [
+  ["a folder that is not a git repo", () => mkdtempSync(join(tmpdir(), "plain-")), /not a git repo/],
+  ["a path that does not exist", () => join(tmpdir(), "no-such-repo-folder"), /does not exist/],
+  ["a relative path", () => "some/relative/path", /not an absolute or ~ path/],
+] as const) {
+  test(`${name} as the repo makes no workspace and tells the manager, with no fallback to the factory root`, async () => {
+    const value = repo();
+    roots.push(value);
+    const { root, stateFile } = repoSetup(value, "");
+    const { paseo, worktrees, workspaces } = fakePaseo();
+    const steers: { line: string; mission?: string }[] = [];
+    paseo.steer = async (line, mission) => {
+      steers.push({ line, mission });
+    };
+
+    const result = await runFactoryTick(root, paseo);
+
+    assert.equal(result.kind, "waiting");
+    assert.equal(worktrees.length, 0);
+    assert.equal(workspaces.length, 0);
+    assert.equal(existsSync(field(stateFile, "worktree")!), false);
+    assert.equal(field(stateFile, "workspace"), undefined);
+    assert.equal(field(stateFile, "ready"), "blocked");
+    assert.equal(steers.length, 1);
+    assert.equal(steers[0].mission, "m1");
+    assert.match(steers[0].line, /its repo cannot be used, so no workspace was made/);
+    assert.match(steers[0].line, why);
+  });
+}
+
+test("a slice's own invalid repo is not rescued by a valid mission repo", async () => {
+  const good = gitRepo();
+  const { root } = repoSetup(good, join(tmpdir(), "no-such-slice-repo"));
+  const { paseo, worktrees } = fakePaseo();
+  paseo.steer = async () => {};
+
+  assert.equal((await runFactoryTick(root, paseo)).kind, "waiting");
+  assert.equal(worktrees.length, 0);
 });
 
 test("a spec slice with no story gets <worktree>/.harness/story.md written from its spec", async () => {

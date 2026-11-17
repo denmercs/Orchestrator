@@ -55,11 +55,14 @@ export type SliceState = {
   stall: string;
   // The worktree HEAD after the tick committed a finished build.
   head: string;
+  // The git repo this slice's workspace is made from (absolute or `~` path); empty uses its mission's `repo`, else the factory root.
+  repo: string;
 };
 
 export type FactorySlice = { id: string; mission: string; state: SliceState; spec: string; design: string; proof: string };
 // `manager` is an optional Paseo agent id for this mission's manager; empty uses `manager.md`.
-export type FactoryMission = { id: string; outcome: string; manager: string; slices: FactorySlice[] };
+// `repo` is an optional absolute or `~` path to the git repo its slices are built in; empty uses the factory root.
+export type FactoryMission = { id: string; outcome: string; manager: string; repo: string; slices: FactorySlice[] };
 export type FactorySeat = { role: string; profile: string; skills: string[]; agent: string; notes: string };
 // The manager file's settings. `model` is the manager session's `provider/model` (empty: MANAGER_SESSION_MODELS), `paths`
 // the extra folders every slice's seats may work in, and `promptMinutes` how long a seat may wait on a permission prompt
@@ -112,6 +115,7 @@ export function parseSliceState(fields: Record<string, string>): SliceState {
     build_nudged: fields.build_nudged === "on",
     stall: fields.stall ?? "",
     head: fields.head ?? "",
+    repo: fields.repo ?? "",
   };
 }
 
