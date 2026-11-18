@@ -3327,9 +3327,11 @@ test("with the default pipeline the engine's Plan, Implement and Review prompts 
   const prompts = await stepPrompts();
 
   for (const prompt of [prompts.plan, prompts.implement, prompts.review]) {
-    assert.doesNotMatch(prompt, /Also use these skills/);
     assert.doesNotMatch(prompt, /story-plan|story-impl|story-review/);
   }
+  assert.match(prompts.plan, /Also use these skills: stacked-prs\./);
+  assert.doesNotMatch(prompts.implement, /Also use these skills/);
+  assert.doesNotMatch(prompts.review, /Also use these skills/);
   assert.equal(prompts.implementMeta.step_skills, undefined);
 });
 

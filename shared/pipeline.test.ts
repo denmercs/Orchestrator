@@ -123,7 +123,7 @@ test("a picked phase skill is named in the prompt, and auto Plan skips approval"
   const ticket = { key: "KEY-1", title: "Example", url: null };
   const plan = { ...DEFAULT_PHASES[0], runs: { name: "my-planner", source: "team-skills" }, then: "auto" as const };
   const prompt = phasePrompt(plan, ticket);
-  assert.match(prompt, /Also use these skills: my-planner\./);
+  assert.match(prompt, /Also use these skills: my-planner, stacked-prs\./);
   assert.match(prompt, /without waiting/);
 });
 
@@ -141,9 +141,22 @@ test("diagnose loads the saved Plan extras", () => {
   assert.deepEqual(stepSkills("diagnose", phases), extras);
 });
 
-test("plan and pr load no extras with the default phases", () => {
-  assert.deepEqual(stepSkills("plan", DEFAULT_PHASES), []);
+test("plan and diagnose load stacked-prs by default, not required, and pr loads no extras", () => {
+  const stacked = [{ name: "stacked-prs", source: MACHINE_SOURCE }];
+  assert.deepEqual(stepSkills("plan", DEFAULT_PHASES), stacked);
+  assert.deepEqual(stepSkills("diagnose", DEFAULT_PHASES), stacked);
   assert.deepEqual(stepSkills("pr", DEFAULT_PHASES), []);
+});
+
+test("saved Plan settings without stacked-prs keep it dropped", () => {
+  const phases = DEFAULT_PHASES.map((p) => (p.id === "plan" ? { ...p, extras: [] } : p));
+  assert.deepEqual(stepSkills("plan", phases), []);
+});
+
+test("the default Plan prompt names stacked-prs", () => {
+  const plan = DEFAULT_PHASES.find((p) => p.id === "plan");
+  assert.ok(plan);
+  assert.match(phasePrompt(plan, { key: "KEY-1", title: "Example", url: null }), /Also use these skills: story-plan, stacked-prs\./);
 });
 
 test("a custom extra added to Done shows up for pr", () => {

@@ -51,6 +51,8 @@ The extra skills a Story pipeline phase loads on top of the skill it runs. Code:
 
 An extra marked `required` in `DEFAULT_PHASES` is always loaded, even if saved settings removed it. `phaseSkills` adds it back. The defaults have none today. Plan, Implement and Review run the kit's `story-plan`, `story-impl` and `story-review` (`Phase.runs` is a `kit` Skill ref); Done runs its built-in step from `shared/story-method.ts`, and its `Phase.runs` is `null` unless you pick a skill.
 
+Plan's default extra is `stacked-prs` from `installed` (This machine), not required: it sizes the story's PRs and has Plan add a `## Slices` checklist after `## Cycles` when the work is more than one idea or about 1,000 source lines. The skill lives in this repo at `skills/stacked-prs/`; `~/.claude/skills/stacked-prs` links to it. Saved pipeline settings replace the defaults, so a machine with saved settings adds it once on Plan in the Skills drawer. An `installed` ref missing from the machine is skipped without a warning, and the prompt still names it. Diagnose loads it too, as a Plan step.
+
 The initiative loop uses the same extras: each loop step loads the extras of the phase it maps to (see Loop step skills).
 
 _Avoid_: add-ons, plugins, secondary skills.
