@@ -66,8 +66,10 @@ export type Extra = z.infer<typeof extra>;
 export type Phase = z.infer<typeof phase>;
 export type SkillSource = z.infer<typeof source>;
 
+// stacked-prs is a machine skill (~/.claude/skills links to skills/stacked-prs in this repo). Not required,
+// so saved settings can drop it. A machine without it gets no warning: the prompt still names it.
 export const DEFAULT_PHASES: Phase[] = [
-  { id: "plan", label: "Plan", runs: { ...DEFAULT_PLAN_SKILL }, extras: [], then: "you" },
+  { id: "plan", label: "Plan", runs: { ...DEFAULT_PLAN_SKILL }, extras: [{ name: "stacked-prs", source: MACHINE_SOURCE }], then: "you" },
   { id: "implement", label: "Implement", runs: { ...DEFAULT_IMPLEMENT_SKILL }, extras: [], then: "auto" },
   { id: "review", label: "Review", runs: { ...DEFAULT_REVIEW_SKILL }, extras: [], then: "pass" },
   { id: "done", label: "Done", runs: null, extras: [], then: "merge" },
