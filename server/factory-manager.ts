@@ -1,7 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
-import { materializeProfile, pickProfile, productStepConfig, profilesFromConfigGet, type AgentCreateConfig } from "../shared/agent-runner";
+import {
+  cursorModelConfig,
+  materializeProfile,
+  pickProfile,
+  productStepConfig,
+  profilesFromConfigGet,
+  type AgentCreateConfig,
+} from "../shared/agent-runner";
 import type { LoopStep } from "../shared/story-method";
 import type { VoiceRequest } from "../shared/voice-session";
 import { factoryDir, readFactory } from "./factory-layout";
@@ -29,6 +36,28 @@ export async function hearthplayStepConfig(
   if (step === "plan") return { provider: "cursor/claude-opus-5-5" };
   if (step === "review" || step === "diagnose") return { provider: "cursor/grok-4.7" };
   return { provider: "cursor/composer-2.5" };
+}
+
+// Initiative-loop and Story-pipeline steps on this repo (package @denmercs/orchestrator): Cursor only.
+export async function orchestratorStepConfig(
+  step: LoopStep,
+  root: string,
+  profilesPort: { config: { get(): Promise<unknown> } },
+  fallback: AgentCreateConfig,
+): Promise<AgentCreateConfig> {
+  if (!isOrchestratorRepo(root)) return fallback;
+  try {
+    const profiles = profilesFromConfigGet(await profilesPort.config.get());
+    const forced = productStepConfig(step, profiles);
+    if (forced) return forced;
+    if (step === "implement" || step === "fix") return cursorModelConfig(profiles, "composer-2.5");
+  } catch {
+    // fall through to explicit Cursor providers
+  }
+  if (step === "plan" || step === "diagnose") return { provider: "cursor/claude-opus-5-5" };
+  if (step === "review") return { provider: "cursor/grok-4.7" };
+  if (step === "implement" || step === "fix") return { provider: "cursor/composer-2.5" };
+  return fallback;
 }
 
 // Env marker the factory puts on the manager session it creates; the agent.create hook looks for it.

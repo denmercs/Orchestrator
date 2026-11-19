@@ -81,7 +81,7 @@ import { createMicOffGate } from "./server/mic-off-gate";
 import { createSultiProvider, type SultiConnection } from "./server/sulti-provider";
 import { type Filed, fileInitiative, fileSlice } from "./server/factory-file";
 import { fileInitiativeRpc, fileSliceRpc } from "./shared/factory-file";
-import { applyFactoryManager, hearthplayStepConfig, steerManager } from "./server/factory-manager";
+import { applyFactoryManager, hearthplayStepConfig, orchestratorStepConfig, steerManager } from "./server/factory-manager";
 import { applySultiSession, ensureSulti, readSultiId, steerSulti } from "./server/sulti-session";
 import { isDead, runFactoryTick, type TickPaseo } from "./server/factory-tick";
 import { factoryStatus } from "./server/factory-status";
@@ -206,6 +206,17 @@ export default function contribute(
   };
   const readAgentConfig = async (paseo: Parameters<typeof loadRunnerConfig>[0]) =>
     loadRunnerConfig(paseo, await readRunnerProfileId());
+  const readLoopStepAgentConfig = async (
+    paseo: Parameters<typeof loadRunnerConfig>[0],
+    repo: string,
+    step: import("./shared/story-method").LoopStep,
+  ) =>
+    orchestratorStepConfig(
+      step,
+      repo,
+      paseo,
+      await loadStepConfig(paseo, await readLoopConfig(), step, await readRunnerProfileId()),
+    );
   const boardSettings = server.registerSettings(jiraBoardSettings);
   const pulseSettings = server.registerSettings(prodPulseSettings);
   const harness = server.registerSettings(harnessSettings);
@@ -239,13 +250,13 @@ export default function contribute(
     const started = await startPhaseArchitect(
       paseo,
       { repo: input.repo, epic: created.epic },
-      await readAgentConfig(paseo),
+      await readLoopStepAgentConfig(paseo, input.repo, "plan"),
     );
     return { ...created, agentId: started.agentId, warning: started.error };
   };
   server.handle(createHarnessEpicRpc, (input, { paseo }) => createPhase(input, paseo));
   server.handle(planHarnessPhaseRpc, async (input, { paseo }) =>
-    startPhaseArchitect(paseo, input, await readAgentConfig(paseo)),
+    startPhaseArchitect(paseo, input, await readLoopStepAgentConfig(paseo, input.repo, "plan")),
   );
   const pipeline = server.registerSettings(pipelineSettings);
   const readPipelineValues = async () => {

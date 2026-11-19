@@ -48,7 +48,7 @@ const { createInitiativeLoop, RESUME_LINE, RESTART_LINE } = await import("./init
 type Agent = FakeAgent;
 
 // A repo with one initiative (loop on), one phase and one story mid-Implement in a worktree.
-function fixture(agent = "a1") {
+function fixture(agent = "a1", packageName = "@denmercs/orchestrator") {
   const root = mkdtempSync(join(tmpdir(), "loop-repo-"));
   const worktree = join(root, "wt");
   const init = join(root, ".harness", "initiatives", "demo");
@@ -57,7 +57,7 @@ function fixture(agent = "a1") {
   mkdirSync(join(worktree, ".harness"), { recursive: true });
   // The loop commits each finished step in the worktree, so it has to be a repo.
   execFileSync("git", ["init", "-q"], { cwd: worktree });
-  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@denmercs/orchestrator" }));
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: packageName }));
   writeFileSync(join(init, "initiative.md"), "---\nloop: on\n---\n# Initiative: Demo\n", "utf8");
   writeFileSync(join(phase, "phase.md"), "---\nphase: 1\ntitle: Meter\n---\n", "utf8");
   const story = join(phase, "stories", "01-story.md");
@@ -213,7 +213,7 @@ test("a started step's agent gets the config readAgentConfig returns for that st
   assert.deepEqual(asked, [["review", DEFAULT_LOOP_CONFIG]]);
   assert.deepEqual(
     created.map((agent) => [agent.labels["loop-step"], agent.config]),
-    [["review", { provider: "claude/review-model", modeId: "auto" }]],
+    [["review", { provider: "cursor/grok-4.7" }]],
   );
 });
 
@@ -821,11 +821,14 @@ test("a pause that ended inside the hold window waits for the window to close", 
 const claudeAt = (usedPct: number, resetsAt = new Date(Date.now() + 3_600_000)) => [
   { providerId: "claude", status: "available", planLabel: "Max", windows: [{ id: "five_hour", label: "5h", usedPct, resetsAt: resetsAt.toISOString() }] },
 ];
+const cursorAt = (usedPct: number, resetsAt = new Date(Date.now() + 3_600_000)) => [
+  { providerId: "cursor", status: "available", planLabel: "Pro", windows: [{ id: "five_hour", label: "5h", usedPct, resetsAt: resetsAt.toISOString() }] },
+];
 
 test("a stalled step whose provider is at its plan limit is paused, not nudged: no retry counted", async () => {
   const { story, labels } = fixture("a1");
   writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker.", retries: 1 });
-  const { api, created, sent } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100) });
+  const { api, created, sent } = fakePaseo([{ id: "a1", labels }], { providers: cursorAt(100) });
   const initiative = loop();
   initiative.rememberHost(api);
 
@@ -835,7 +838,7 @@ test("a stalled step whose provider is at its plan limit is paused, not nudged: 
   assert.deepEqual([sent, created], [[], []]);
   const meta = storyMeta(story);
   assert.ok(Date.parse(meta.paused_until ?? "") > Date.now() + 3_600_000);
-  assert.equal(meta.paused_for, "claude");
+  assert.equal(meta.paused_for, "cursor");
   assert.equal(meta.stalled, undefined);
   assert.equal(meta.retries, "1");
   assert.equal(meta.status, "implementing");
@@ -843,14 +846,14 @@ test("a stalled step whose provider is at its plan limit is paused, not nudged: 
 
 test("a dead session whose provider is at its plan limit isn't restarted into it", async () => {
   const { story } = fixture("a1");
-  const { api, created } = fakePaseo([], { providers: claudeAt(99.5) });
+  const { api, created } = fakePaseo([], { providers: cursorAt(99.5) });
   const initiative = loop();
   initiative.rememberHost(api);
 
   await initiative.tick();
 
   assert.deepEqual(created, []);
-  assert.equal(storyMeta(story).paused_for, "claude");
+  assert.equal(storyMeta(story).paused_for, "cursor");
   assert.equal(storyMeta(story).retries, undefined);
 });
 
@@ -858,7 +861,7 @@ test("a pause whose reset passed while the limit still holds is paused again, no
   const { story, labels } = fixture("a1");
   writeFrontmatter(story, { paused_until: new Date(Date.now() - 1000).toISOString() });
   const weekly = new Date(Date.now() + 3 * 86_400_000);
-  const { api, sent } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100, weekly) });
+  const { api, sent } = fakePaseo([{ id: "a1", labels }], { providers: cursorAt(100, weekly) });
   const initiative = loop();
   initiative.rememberHost(api);
 
@@ -882,7 +885,7 @@ test("only the step's own provider gates it: a Claude limit leaves a Cursor step
 });
 
 test("a model-qualified provider (claude/opus) is gated by its provider's limit", async () => {
-  const { story, labels } = fixture("a1");
+  const { story, labels } = fixture("a1", "quickpress");
   writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker." });
   const { api, sent } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100) });
   const initiative = createInitiativeLoop(async () => DEFAULT_LOOP_CONFIG, async () => ({ provider: "claude/opus" }), noExtras);
@@ -896,7 +899,7 @@ test("a model-qualified provider (claude/opus) is gated by its provider's limit"
 
 test("a daemon that can't answer leaves the last known limit in place", async () => {
   const { story, labels } = fixture("a1");
-  const usage: { providers: unknown[] | null } = { providers: claudeAt(100) };
+  const usage: { providers: unknown[] | null } = { providers: cursorAt(100) };
   const { api, sent } = fakePaseo([{ id: "a1", labels }], usage);
   const initiative = loop();
   initiative.rememberHost(api);
@@ -907,7 +910,7 @@ test("a daemon that can't answer leaves the last known limit in place", async ()
   await initiative.tick();
   assert.deepEqual(sent, []);
 
-  usage.providers = claudeAt(20);
+  usage.providers = cursorAt(20);
   writeFrontmatter(story, { paused_until: new Date(Date.now() - 1000).toISOString() });
   await initiative.tick();
   assert.deepEqual(sent, [{ id: "a1", text: nudgePrompt("The usage limit has reset.") }]);
@@ -917,7 +920,7 @@ test("a daemon that can't answer leaves the last known limit in place", async ()
 test("a retry-limit block makes the block time and the step's provider at its limit turns it back into a pause", async () => {
   const { story, labels } = fixture("a1");
   writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker.", retries: 2 });
-  const usage: { providers: unknown[] | null } = { providers: claudeAt(10) };
+  const usage: { providers: unknown[] | null } = { providers: cursorAt(10) };
   const { api, sent } = fakePaseo([{ id: "a1", labels }], usage);
   const initiative = loop();
   initiative.rememberHost(api);
@@ -926,17 +929,17 @@ test("a retry-limit block makes the block time and the step's provider at its li
   assert.equal(storyMeta(story).block_kind, "retry-limit");
   assert.ok(Date.parse(storyMeta(story).blocked_at ?? "") <= Date.now());
 
-  usage.providers = claudeAt(100);
+  usage.providers = cursorAt(100);
   await initiative.tick();
 
   const meta = storyMeta(story);
   assert.equal(meta.status, "implementing");
   assert.deepEqual([meta.blocked_reason, meta.blocked_from, meta.block_kind, meta.retries], [undefined, undefined, undefined, undefined]);
-  assert.equal(meta.paused_for, "claude");
+  assert.equal(meta.paused_for, "cursor");
   assert.ok(Date.parse(meta.paused_until ?? "") > Date.now());
   assert.deepEqual(sent, []);
 
-  usage.providers = claudeAt(5);
+  usage.providers = cursorAt(5);
   writeFrontmatter(story, { paused_until: new Date(Date.now() - 1000).toISOString() });
   await initiative.tick();
   assert.deepEqual(sent, [{ id: "a1", text: nudgePrompt("The usage limit has reset.") }]);
@@ -948,7 +951,7 @@ test("a limit whose reset passed while the daemon can't answer is dropped: the s
   execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: root });
   const next = join(dirname(story), "02-next.md");
   writeFileSync(next, "---\nid: S2\ntitle: Next\nstatus: todo\n---\n\n## Goal\n\nLater.\n", "utf8");
-  const usage: { providers: unknown[] | null } = { providers: claudeAt(100) };
+  const usage: { providers: unknown[] | null } = { providers: cursorAt(100) };
   const { api, created, sent } = fakePaseo([{ id: "a1", labels }], usage);
   api.listProjects = async () => [];
   api.createStoryWorkspace = async () => ({ id: "ws-new", directory: join(root, "wt2") });
@@ -977,14 +980,14 @@ test("a limit whose reset passed while the daemon can't answer is dropped: the s
 test("a story recovered from a retry-limit block once stays blocked when it blocks again in the same limit", async () => {
   const { story, labels } = fixture("a1");
   writeFrontmatter(story, { stalled: "It ended its turn without writing the step's marker.", retries: 2 });
-  const usage: { providers: unknown[] | null } = { providers: claudeAt(10) };
+  const usage: { providers: unknown[] | null } = { providers: cursorAt(10) };
   const { api } = fakePaseo([{ id: "a1", labels }], usage);
   const initiative = loop();
   initiative.rememberHost(api);
   await initiative.tick();
   assert.equal(storyMeta(story).block_kind, "retry-limit");
 
-  usage.providers = claudeAt(100);
+  usage.providers = cursorAt(100);
   await initiative.tick();
   assert.equal(storyMeta(story).status, "implementing");
   assert.ok(storyMeta(story).limit_recovered);
@@ -1004,7 +1007,7 @@ test("a retry-limit block from well before the limit started stays blocked", asy
     block_kind: "retry-limit",
     blocked_at: new Date(Date.now() - 2 * 3_600_000).toISOString(),
   });
-  const { api } = fakePaseo([{ id: "a1", labels }], { providers: claudeAt(100) });
+  const { api } = fakePaseo([{ id: "a1", labels }], { providers: cursorAt(100) });
   const initiative = loop();
   initiative.rememberHost(api);
 
@@ -2039,10 +2042,10 @@ test("a story without a track starts on Plan", async () => {
 });
 
 test("no story starts while its first step's provider is at its plan limit", async () => {
-  const { created, meta, reason } = await startNewStory({ usage: claudeAt(100), packageName: "@denmercs/orchestrator" });
+  const { created, meta, reason } = await startNewStory({ usage: cursorAt(100), packageName: "@denmercs/orchestrator" });
   assert.deepEqual(created, []);
   assert.equal(meta.status, "todo");
-  assert.match(reason, /^paused for the Claude limit until \d{1,2}:\d{2}/);
+  assert.match(reason, /^paused for the Cursor limit until \d{1,2}:\d{2}/);
 });
 
 const grokProfile = { id: "grok", name: "Grok", provider: "cursor", model: "grok-4.7" };
@@ -2121,15 +2124,15 @@ test("a product repo ignores repo pipeline Claude for Plan and starts on Cursor 
   assert.equal(meta.status, "planning");
 });
 
-test("Orchestrator still honors a grok pipeline profile for Plan", async () => {
+test("Orchestrator forces Cursor Opus for Plan, not the pipeline profile or Claude runner", async () => {
   const { created } = await startNewStory({
     usage: claudeAt(100),
     agentConfig: async () => ({ provider: "claude" }),
-    profiles: [claudeProfile, grokProfile],
+    profiles: [claudeProfile, grokProfile, cursorOpusProfile],
     pipeline: async () => ({ phases: withPlanProfile("grok"), sources: [] }),
     packageName: "@denmercs/orchestrator",
   });
-  assert.deepEqual(created.map((agent) => agent.config?.provider), ["cursor/grok-4.7"]);
+  assert.deepEqual(created.map((agent) => agent.config?.provider), ["cursor/claude-opus-5-5"]);
 });
 
 test("a Plan step on Cursor Opus is paused when Cursor's window is full", async () => {

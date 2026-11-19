@@ -13,7 +13,7 @@ import { budgetMoney } from "../shared/stats-strip";
 import { storyCost, type TelemetryRow } from "./context-telemetry";
 import { DEFAULT_PHASES, STEP_PHASES, stepSkills, type Phase, type SkillSource } from "../shared/pipeline";
 import { loadPhaseConfig, profilesFromConfigGet, withProductPlanReviewStepConfig, type RunnerProfiles } from "./agent-runner";
-import { loopRepoRoot, usesProductPlanReviewDefaults } from "./factory-manager";
+import { isOrchestratorRepo, loopRepoRoot, orchestratorStepConfig, usesProductPlanReviewDefaults } from "./factory-manager";
 import { repoAutoMerge, repoMaxFixes, repoReviewMode } from "./repo-pipeline";
 import type { ToolItem } from "../shared/exploration";
 import { midTurnCheck, toolRunningSince, type TimelineEntry } from "../shared/stuck";
@@ -363,6 +363,13 @@ export function createInitiativeLoop(
         );
       } catch {
         // keep pipeline / loop fallback
+      }
+    }
+    if (root && isOrchestratorRepo(root)) {
+      try {
+        agentConfig = await orchestratorStepConfig(step, root, profilesOf(loopHost), agentConfig);
+      } catch {
+        // keep earlier config
       }
     }
     return agentConfig.provider.split("/")[0] || null;
