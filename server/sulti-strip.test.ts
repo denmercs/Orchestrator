@@ -22,6 +22,20 @@ test("latestReply is null when there is no assistant message", () => {
   assert.equal(latestReply([]), null);
 });
 
+test("latestReply includes a factory [system] steer when it is the newest line", () => {
+  const system = typed("[system] orchestrator factory: PR merged.", "2026-11-09T10:03:00Z");
+  const entries = [said("Earlier.", "2026-11-09T10:00:00Z"), system];
+  assert.deepEqual(latestReply(entries), { text: system.item.text, at: "2026-11-09T10:03:00Z" });
+});
+
+test("latestReply prefers a newer assistant reply over an older factory steer", () => {
+  const entries = [
+    typed("[system] orchestrator factory: ready.", "2026-11-09T10:00:00Z"),
+    said("On it.", "2026-11-09T10:01:00Z"),
+  ];
+  assert.deepEqual(latestReply(entries), { text: "On it.", at: "2026-11-09T10:01:00Z" });
+});
+
 test("latestReply gives a null time for a reply with no timestamp", () => {
   assert.deepEqual(latestReply([{ item: { type: "assistant_message", text: "Hi." } }]), { text: "Hi.", at: null });
 });

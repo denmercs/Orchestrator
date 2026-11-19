@@ -1,18 +1,24 @@
 // The Sulti strip's server logic, kept apart from Paseo so it can be unit-tested.
+import { SYSTEM_TAG } from "./factory-manager";
 import { DASHBOARD_ROUTER, type RouteResult } from "./sulti-router";
 
 export type StripEntry = { item?: { type?: string; text?: unknown }; timestamp?: string };
 
 export type LatestReply = { text: string; at: string | null };
 
-// The last assistant message in a page of timeline entries (oldest first), with its timestamp.
-// Tool calls and user messages are skipped. Null when the page holds no reply.
+// The last line the sidebar should surface: newest assistant reply or factory `[system]` steer.
+// Other user messages and tool calls are skipped. Null when none.
+function stripLine(item: StripEntry["item"]): string | null {
+  if (typeof item?.text !== "string") return null;
+  if (item.type === "assistant_message") return item.text;
+  if (item.type === "user_message" && item.text.startsWith(SYSTEM_TAG)) return item.text;
+  return null;
+}
+
 export function latestReply(entries: readonly StripEntry[]): LatestReply | null {
   for (let i = entries.length - 1; i >= 0; i--) {
-    const { item, timestamp } = entries[i];
-    if (item?.type === "assistant_message" && typeof item.text === "string") {
-      return { text: item.text, at: timestamp ?? null };
-    }
+    const text = stripLine(entries[i].item);
+    if (text) return { text, at: entries[i].timestamp ?? null };
   }
   return null;
 }
