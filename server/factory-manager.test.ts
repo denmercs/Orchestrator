@@ -135,6 +135,29 @@ test("isGihimoRepo and usesProductPlanReviewDefaults", () => {
   assert.equal(isGihimoRepo(gihimoPath), true);
 });
 
+test("orchestratorStepConfig: plan on Opus, review on Grok, implement on Composer", async () => {
+  const root = tempRoot(false, undefined, true);
+  const profiles = {
+    config: {
+      get: async () => ({
+        daemon: {
+          agentProfiles: [
+            { id: "thinker", name: "Business - Thinker", provider: "cursor", model: "grok-4.7" },
+            { id: "coder", name: "Business - Coder", provider: "cursor", model: "composer-2.5" },
+            { id: "opus", name: "Opus", provider: "cursor", model: "claude-opus-5-5" },
+          ],
+        },
+      }),
+    },
+  };
+  const fallback = { provider: "claude" };
+  const { orchestratorStepConfig } = await import("./factory-manager");
+  assert.deepEqual(await orchestratorStepConfig("plan", root, profiles, fallback), { provider: "cursor/claude-opus-5-5" });
+  assert.deepEqual(await orchestratorStepConfig("review", root, profiles, fallback), { provider: "cursor/grok-4.7" });
+  assert.deepEqual(await orchestratorStepConfig("implement", root, profiles, fallback), { provider: "cursor/composer-2.5" });
+  assert.deepEqual(await orchestratorStepConfig("plan", tempRoot(false, undefined, false), profiles, fallback), { provider: "claude" });
+});
+
 test("hearthplayStepConfig: plan on Opus, review on Grok, implement on Composer", async () => {
   const profiles = {
     config: {

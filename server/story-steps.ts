@@ -14,7 +14,7 @@ import {
   type StoryContext,
 } from "../shared/story-method";
 import { loadPhaseConfig, profilesFromConfigGet, withProductPlanReviewStepConfig, type RunnerProfiles } from "./agent-runner";
-import { loopRepoRoot, usesProductPlanReviewDefaults } from "./factory-manager";
+import { isOrchestratorRepo, loopRepoRoot, orchestratorStepConfig, usesProductPlanReviewDefaults } from "./factory-manager";
 import { briefTag, installBrief } from "./brief-install";
 import { writeFrontmatter } from "./harness-layout";
 import { withMcpScope } from "./mcp-scope";
@@ -130,6 +130,13 @@ export async function launchStep(input: LaunchInput): Promise<string> {
       );
     } catch (error) {
       console.warn("orchestrator: product plan/review defaults", ctx.id, error);
+    }
+  }
+  if (repoRoot && isOrchestratorRepo(repoRoot)) {
+    try {
+      agentConfig = await orchestratorStepConfig(step, repoRoot, api, agentConfig);
+    } catch (error) {
+      console.warn("orchestrator: loop step models", ctx.id, error);
     }
   }
   // A repo's light Review drops the full-diff review skills after round 1 (shared/pipeline.ts reviewRoundSkills).
