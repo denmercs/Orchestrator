@@ -8,6 +8,19 @@ A step between Review and PR. It helps the person steering the agents understand
 
 AI-written code can ship faster than anyone understands it. In Anthropic's 2026 trial ([summary](https://www.anthropic.com/research/AI-assistance-coding-skills)), developers who handed the work to AI scored lowest on understanding, debugging worst of all. Those who checked their own understanding scored highest. Reading a summary isn't enough. The page asks you to guess, run and trace instead.
 
+## Where it sits
+
+```
+Plan ──► Implement ──► Review ──pass──► Debrief ──you press Done──► PR ──► CI watch ──► you merge
+                         ▲   │ findings      │
+                         └───┘ fix rounds    └─ starts on its own
+```
+
+- **Automatic.** Debrief starts by itself when Review is final: where `afterReview` (`shared/story-method.ts`) returns `pr` today, it starts Debrief instead. There's no button, and a repo turns it off with `"debrief": false` in `.orchestrator/pipeline.json` (on by default).
+- **After the last review round, not alongside it.** Fix rounds change the code, so notes written earlier would describe code that no longer exists.
+- **Its own fresh agent.** Review stays a critic. A small Debrief agent writes `notes.json` from the diff, the story's plan and the review findings, and then the script renders the page. Non-blocking findings left unfixed become **Watch** notes on their lines.
+- **Waits for you.** The story waits at `debrief-pending`, with a 🔔 bell entry, until you press Done. Then the plugin opens the PR as before.
+
 ## The page
 
 1. **See it run.** A graph of the changed code paths. Pick a scenario (one of the story's tests), guess the ending, and watch the path it takes. A "before (main)" view compares with the old code.
