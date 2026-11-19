@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { VoiceRequest } from "../shared/voice-session";
-import { liveOrCreate, type ManagerPaseo } from "./factory-manager";
+import { liveOrCreate, type ManagerPaseo, SYSTEM_TAG } from "./factory-manager";
 
 // Env marker the plugin puts on the Sulti session it creates; the agent.create hook looks for it.
 export const SULTI_SESSION_ENV = "ORCHESTRATOR_SULTI_SESSION";
@@ -11,6 +11,8 @@ export const SULTI_SESSION_ENV = "ORCHESTRATOR_SULTI_SESSION";
 export const SULTI_PROMPT = [
   "Sulti:",
   "You are Sulti, the global manager. You talk to the human, use the Paseo tools to list and read sessions across all repos, and steer a repo's factory manager when the human asks.",
+  `Lines starting with ${SYSTEM_TAG} come from a repo's factory tick, not the human, and name the repo. Tell the human what needs them, in a sentence or two.`,
+  "A change to a factory file (approving a plan, clearing `ready`) is that repo's manager's to write: steer the manager (its id is `agent` in the repo's `.harness/factory/manager.md`, or `manager` in the mission's `mission.md`) with the human's decision, never on your own.",
   "Limits:",
   "- Never send a prompt to your own session, whose id is `$PASEO_AGENT_ID`.",
   "- You do not edit product code.",
@@ -57,4 +59,18 @@ async function ensure(ports: ManagerPaseo, home: string): Promise<string> {
   const { id, created } = await liveOrCreate(known, { cwd, env: { [SULTI_SESSION_ENV]: "1" }, title: "Sulti", labels: { kind: "sulti" } }, ports);
   if (created) writeFileSync(idFile, JSON.stringify({ agent: id }));
   return id;
+}
+
+// A factory status line to the Sulti session, tagged with SYSTEM_TAG and the repo (and mission) it came from. Sulti is never
+// created for it: false, with nothing sent, when sulti.json names no session or that session is dead, so the caller can
+// fall back to the repo's manager.
+export async function steerSulti(root: string, line: string, ports: ManagerPaseo, mission?: string, home = join(homedir(), ".orchestrator")): Promise<boolean> {
+  const id = readSultiId(home);
+  if (!id) return false;
+  const session = (await ports.agents.ref(id).refresh())?.agent;
+  // Same test as `liveOrCreate`'s.
+  if (!session || session.archivedAt || session.status === "closed" || session.status === "error") return false;
+  const from = mission ? `${basename(root)} factory, mission ${mission}` : `${basename(root)} factory`;
+  await ports.agents.ref(id).send(`${SYSTEM_TAG} ${from}: ${line}`, { activeTurnBehavior: "steer" });
+  return true;
 }

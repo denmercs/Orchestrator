@@ -237,9 +237,9 @@ Rig templates (saved seat arrangements plus culture) and a second machine are af
 After the steps above, in this order. Each reuses the names in this file.
 
 - The Sulti session in `~/.orchestrator/sulti`, with the router targeting it by default and the Voice loop in front (confirm gate: merge, delete, interrupt; fast paths: switch, list, never mind, wake word). (Landed.)
-- The tick writes `digest.md` in each repo's factory home.
-- Status steers go to Sulti, not the repo manager.
-- The status reporter reads the digests for cross-repo status.
+- The tick writes `digest.md` in each repo's factory home. (Landed.)
+- Status steers go to Sulti, not the repo manager. (Landed: lines for the human go to Sulti, the manager hears what it must act on; see **Sulti report** in CONTEXT.md.)
+- The status reporter reads the digests for cross-repo status. (Landed.)
 
 ## First finished path
 

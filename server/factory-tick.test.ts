@@ -2701,3 +2701,82 @@ test("D: a long idle seat is recovered and named in the digest", async () => {
   assert.match(field(stateFile, "stall")!, /idle 10\+ minutes/);
   assert.match(readFileSync(join(root, ".harness", "factory", "digest.md"), "utf8"), /idle 10\+ minutes/);
 });
+
+// Sulti's port on a fake handle: records each line; `live` false makes it decline, as `steerSulti` does with no live Sulti.
+function sultiPort(paseo: TickPaseo, live = true) {
+  const reports: { line: string; mission?: string }[] = [];
+  paseo.report = async (line, mission) => (reports.push({ line, mission }), live);
+  return reports;
+}
+
+test("with a live Sulti, green CI goes to Sulti alone and the manager hears nothing", async () => {
+  const { ctx } = shipSlice({ pr: "7" });
+  const { paseo } = fakePaseo();
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  const reports = sultiPort(paseo);
+  shipPorts(paseo, prAt("green"));
+  for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, paseo);
+  assert.equal(reports.length, 1);
+  assert.match(reports[0].line, /is ready for you: PR https:\/\/example\.test\/pr\/7/);
+  assert.equal(reports[0].mission, "m1");
+  assert.deepEqual(steers, []);
+  assert.equal(field(ctx.stateFile, "ready"), "ci");
+});
+
+test("with a live Sulti, a clean scout review goes to Sulti alone", async () => {
+  const { ctx } = reviewSlice("review-done", { kind: "scout", findings: "- [x] blocking: server/x.ts:1 — wrong — fixed" });
+  const { paseo } = fakePaseo({ "r-1": { status: "idle" } });
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  const reports = sultiPort(paseo);
+  shipPorts(paseo, null);
+  for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, paseo);
+  assert.equal(reports.length, 1);
+  assert.match(reports[0].line, /passed review/);
+  assert.deepEqual(steers, []);
+});
+
+test("with no live Sulti, green CI falls back to the manager once", async () => {
+  const { ctx } = shipSlice({ pr: "7" });
+  const { paseo } = fakePaseo();
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  const reports = sultiPort(paseo, false);
+  shipPorts(paseo, prAt("green"));
+  for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, paseo);
+  assert.equal(reports.length, 1);
+  assert.equal(steers.length, 1);
+  assert.equal(steers[0], reports[0].line);
+});
+
+test("a plan gate steers the manager once and Sulti gets one copy", async () => {
+  const { ctx, fake, steers } = planGate();
+  const reports = sultiPort(fake.paseo);
+  for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, fake.paseo);
+  assert.equal(steers.length, 1);
+  assert.deepEqual(reports.map((r) => r.line), steers);
+});
+
+test("a block steers the manager and Sulti gets one copy", async () => {
+  const { ctx } = waitingSlice();
+  const { paseo } = fakePaseo();
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  const reports = sultiPort(paseo);
+  shipPorts(paseo, prAt("closed"));
+  for (let pass = 0; pass < 2; pass++) await runFactoryTick(ctx.root, paseo);
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /closed without merging/);
+  assert.deepEqual(reports.map((r) => r.line), steers);
+});
+
+test("a held dependency is the manager's alone: Sulti hears nothing", async () => {
+  const { root, worktree } = setup("depends: ghost", "on", "spec");
+  rmSync(worktree, { recursive: true });
+  const { paseo, steers } = steeringPaseo();
+  const reports = sultiPort(paseo);
+  await runFactoryTick(root, paseo);
+  assert.deepEqual(steers, ["Slice s1 can't start: unknown dependency ghost."]);
+  assert.deepEqual(reports, []);
+});

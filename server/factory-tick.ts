@@ -48,6 +48,7 @@ import {
   touchIdleSince,
 } from "./factory-phases";
 import { closeSlices, runRequestedSweep } from "./factory-workspace";
+import { toHuman } from "./factory-report";
 import { frontmatter, writeFrontmatter } from "./harness-layout";
 import { type FailingCheck, type PrStatus, prStatus } from "./pr-checks";
 import type { ReadCost } from "./initiative-loop";
@@ -93,6 +94,9 @@ export type TickPaseo = {
   // One line to the factory manager as a steer (`steerManager` in the real wiring). The optional mission id routes to that
   // mission's manager when set. Absent: the slice still records its state, nothing is sent.
   steer?: (line: string, mission?: string) => Promise<unknown>;
+  // One status line to the Sulti session (`steerSulti` in the real wiring), resolving false when no Sulti is live. Lines for
+  // the human go here first and to `steer` only without it (`toHuman`). Absent: every line goes to `steer`, as before Sulti.
+  report?: (line: string, mission?: string) => Promise<unknown>;
   // A message to a slice agent's session, for the plan gate's approval.
   send?: (agentId: string, text: string) => Promise<unknown>;
   // The Paseo agent profiles and the runner's profile id, to resolve a seat's profile. Absent or failing: seats start on MANAGER_MODELS.
@@ -422,7 +426,7 @@ async function noteMergedSlice(root: string, slice: FactorySlice, ports: TickPas
   if (state.story && existsSync(state.story)) writeFrontmatter(state.story, { status: "merged", merged_at: mergedAt });
   // The merge is already recorded: a steer that throws must not undo it or stop the pass.
   await Promise.resolve()
-    .then(() => ports.steer?.(`Slice ${id} merged: PR ${pr.url} is on the base branch.${closed ? ` ${key} closed.` : ""}`, mission))
+    .then(() => toHuman(ports)?.(`Slice ${id} merged: PR ${pr.url} is on the base branch.${closed ? ` ${key} closed.` : ""}`, mission))
     .catch(() => undefined);
 }
 
@@ -475,6 +479,7 @@ async function passSlice(root: string, started: FactorySlice, ports: TickPaseo):
       await answerSeatPrompts(root, slice, session, {
         respond: ref.respondToPermission && ((answer) => ref.respondToPermission!(answer)),
         steer: ports.steer,
+        report: ports.report,
         now: ports.now,
       });
       return { kind: "alive", slice: slice.id, agent: state.agent };
