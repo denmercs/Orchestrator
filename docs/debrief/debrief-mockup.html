@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Debrief · Stop CI watch after three red runs</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<style>
+  .spec { display: none; }
+  body.show-spec .spec { display: block; }
+
+  /* flow graph */
+  .node { cursor: pointer; }
+  .node rect { fill: #18181b; stroke: #3f3f46; stroke-width: 1.5; transition: all .2s; }
+  .node.decision rect { stroke: #6d28d9; }
+  .node text { fill: #d4d4d8; font-size: 13px; text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
+  .node:hover rect { stroke: #a1a1aa; }
+  .node.visited rect { stroke: #71717a; }
+  .node.active rect { stroke: #38bdf8; fill: #0c4a6e; stroke-width: 2.5; }
+  .node.active.good rect { stroke: #34d399; fill: #064e3b; }
+  .node.active.bad rect { stroke: #fb7185; fill: #4c0519; }
+  .node.off { opacity: .15; }
+  .edge { fill: none; stroke: #3f3f46; stroke-width: 1.5; marker-end: url(#arrow); transition: all .2s; }
+  .edge.active { stroke: #38bdf8; stroke-width: 2.5; marker-end: url(#arrow-on); }
+  .edge.off { opacity: .1; }
+  .edge-label { fill: #71717a; font-size: 11px; }
+  .chip { font-size: 12px; padding: 4px 10px; border-radius: 9999px; border: 1px solid #3f3f46; }
+  .chip.on { border-color: #38bdf8; color: #38bdf8; }
+
+  /* code view */
+  .code { position: relative; overflow: auto; background: #0d1117; font: 12.5px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .cl { display: flex; white-space: pre; min-width: max-content; }
+  .cl .ln { width: 3.25rem; flex: none; text-align: right; padding-right: 10px; color: #484f58; user-select: none; }
+  .cl .gut { width: 1.25rem; flex: none; text-align: center; user-select: none; color: #484f58; }
+  .cl code { padding-right: 24px; color: #e6edf3; }
+  .cl.add { background: rgba(46, 160, 67, .15); }
+  .cl.add .gut { color: #3fb950; }
+  .cl.del { background: rgba(248, 81, 73, .15); }
+  .cl.del .gut { color: #f85149; }
+  .cl.del code { opacity: .75; }
+  .cl.stop { box-shadow: inset 3px 0 #38bdf8; }
+  .cl.stop .ln { color: #8b949e; }
+  .cl.exec { background: rgba(250, 204, 21, .22) !important; }
+  .cl.exec .ln { color: #facc15; }
+  .cl.exec .ln::before { content: "▶ "; }
+  .cl.flash { animation: flash 1.4s ease-out; }
+  @keyframes flash { from { background: rgba(56, 189, 248, .45); } }
+  .gap { padding: 2px 0 2px 4.5rem; color: #8b949e; background: #161b22; font-size: 12px; cursor: pointer; }
+  .gap:hover { color: #38bdf8; }
+  .ann { margin: 4px 16px 8px 4.5rem; padding: 8px 12px; border-left: 3px solid; border-radius: 4px; background: #161b22; font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; white-space: normal; max-width: 640px; }
+  .ann.decision { border-color: #34d399; }
+  .ann.risk { border-color: #fbbf24; }
+  .ann.note { border-color: #38bdf8; }
+  .ann.test { border-color: #a78bfa; }
+  .sym { text-decoration: underline dotted #8b949e; text-underline-offset: 3px; cursor: pointer; }
+  .sym:hover { color: #38bdf8; }
+  .tree-item, .stop-item { cursor: pointer; }
+  .tab { padding: 6px 12px; border-right: 1px solid #27272a; color: #a1a1aa; cursor: pointer; white-space: nowrap; }
+  .tab.on { background: #0d1117; color: #f4f4f5; box-shadow: inset 0 2px #38bdf8; }
+  .seg button { padding: 2px 8px; color: #a1a1aa; }
+  .seg button.on { background: #27272a; color: #f4f4f5; border-radius: 4px; }
+</style>
+</head>
+<body class="bg-zinc-950 text-zinc-100 antialiased">
+
+<nav class="sticky top-0 z-10 bg-zinc-950/90 backdrop-blur border-b border-zinc-800 text-xs">
+  <div class="max-w-6xl mx-auto px-6 py-2 flex flex-wrap gap-4 items-center">
+    <span class="text-zinc-400">story 3.2 · dm/ci-watch-limit</span>
+    <a href="#run" class="text-sky-400 font-semibold">See it run</a>
+    <a href="#path" class="text-sky-400 font-semibold">Read the code</a>
+    <a href="#expectations" class="hover:text-white">Expectations</a>
+    <a href="#drift" class="hover:text-white">Drift</a>
+    <a href="#gate" class="hover:text-white">Done</a>
+    <label class="ml-auto flex items-center gap-1 text-amber-400">
+      <input type="checkbox" id="spec-toggle"> show spec notes
+    </label>
+  </div>
+</nav>
+
+<main class="max-w-6xl mx-auto px-6 py-10 space-y-14">
+
+<header class="space-y-3">
+  <p class="text-xs uppercase tracking-widest text-zinc-500">orchestrator · story 3.2 · example</p>
+  <h1 class="font-serif text-4xl">Debrief</h1>
+  <p class="text-sm text-zinc-400">Branch <code>dm/ci-watch-limit</code> · Base <code>main</code> · Review passed round 2 · Updated 2026-11-19</p>
+  <p class="text-lg">The CI watcher now stops after three red runs in a row and blocks the story with a reason, instead of starting Fix CI agents forever.</p>
+  <div class="spec border border-dashed border-amber-500/60 rounded p-3 text-xs text-amber-300">
+    <b>Spec:</b> one sentence on what changes for the user. The story waits at a <code>debrief-pending</code> marker until "Done" is pressed. The story and code on this page are a made-up example.<br>
+    <b>Built by a script:</b> the same commit and notes give the same page. Agents write only <code>.harness/debrief/notes.json</code>, which the script validates. See <code>docs/debrief/README.md</code>.<br>
+    <b>Never committed:</b> the page is written outside the repo, to <code>~/.orchestrator/debriefs/&lt;repo&gt;/&lt;story&gt;/debrief.html</code>. Agents may only write its inputs to <code>.harness/debrief/</code>, which is already excluded from git and unstaged by the plugin's commit. Before pushing, the plugin refuses to open the PR if any commit on the branch touches <code>.harness/</code> or a <code>debrief</code> file.
+  </div>
+</header>
+
+<!-- 1. SEE IT RUN -->
+<section id="run" class="space-y-4">
+  <h2 class="text-2xl font-serif">1 · See it run</h2>
+  <p class="text-sm text-zinc-400">Pick a scenario, guess the ending, then step through it. Each step lights up the box that ran and shows its code below. Click any box to see its code.</p>
+
+  <div class="flex flex-wrap gap-2 items-center" id="scenarios"></div>
+  <div class="flex flex-wrap gap-2 items-center text-xs">
+    <span class="text-zinc-500">Build your own:</span>
+    <button class="chip" data-add="red">+ red run</button>
+    <button class="chip" data-add="green">+ green run</button>
+    <button class="chip" data-add="reload">+ plugin reload</button>
+    <button class="chip" data-add="clear">clear</button>
+    <span id="custom-seq" class="text-zinc-400"></span>
+    <span class="ml-auto flex items-center gap-2">
+      <span class="text-zinc-500">Code:</span>
+      <button class="chip on" data-mode="after">this PR</button>
+      <button class="chip" data-mode="before">before (main)</button>
+    </span>
+  </div>
+
+  <div class="border border-zinc-800 rounded p-3 text-sm flex items-center gap-3">
+    <span>Will the story end up blocked?</span>
+    <button class="chip" data-guess="yes">Yes</button>
+    <button class="chip" data-guess="no">No</button>
+    <span id="guess-result" class="ml-2"></span>
+  </div>
+
+  <div class="grid md:grid-cols-[1fr_260px] gap-4">
+    <svg viewBox="0 0 760 430" class="w-full border border-zinc-800 rounded bg-zinc-950">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3f3f46"/></marker>
+        <marker id="arrow-on" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#38bdf8"/></marker>
+      </defs>
+
+      <path id="e-poll-result" class="edge" d="M380 60 V100"/>
+      <path id="e-result-reset" class="edge" d="M300 120 H150 V190"/>
+      <path id="e-result-inc" class="edge" d="M460 120 H610 V190"/>
+      <path id="e-inc-check" class="edge" d="M610 230 V270"/>
+      <path id="e-check-fix" class="edge" d="M520 290 H390 V360"/>
+      <path id="e-check-block" class="edge" d="M640 310 V360"/>
+      <path id="e-inc-fix-before" class="edge off" d="M520 220 H420 V360"/>
+      <path id="e-fix-wait" class="edge" d="M300 380 H240"/>
+      <path id="e-reset-wait" class="edge" d="M150 230 V360"/>
+      <path id="e-wait-poll" class="edge" d="M60 380 H30 V40 H290"/>
+      <text class="edge-label" x="215" y="112">green</text>
+      <text class="edge-label" x="520" y="112">red</text>
+      <text class="edge-label" x="440" y="282">no</text>
+      <text class="edge-label" x="648" y="340">yes</text>
+
+      <g id="n-poll" class="node"><rect x="290" y="20" width="180" height="40" rx="6"/><text x="380" y="40">CI run finishes</text></g>
+      <g id="n-result" class="node decision"><rect x="300" y="100" width="160" height="40" rx="20"/><text x="380" y="120">Green or red?</text></g>
+      <g id="n-reset" class="node"><rect x="60" y="190" width="180" height="40" rx="6"/><text x="150" y="210">Reset red count to 0</text></g>
+      <g id="n-inc" class="node"><rect x="520" y="190" width="180" height="40" rx="6"/><text x="610" y="210">Red count + 1</text></g>
+      <g id="n-check" class="node decision"><rect x="520" y="270" width="180" height="40" rx="20"/><text x="610" y="290">Count ≥ 3?</text></g>
+      <g id="n-fix" class="node"><rect x="300" y="360" width="180" height="40" rx="6"/><text x="390" y="380">Start Fix CI agent</text></g>
+      <g id="n-block" class="node"><rect x="540" y="360" width="200" height="40" rx="6"/><text x="640" y="380">Block story · bell rings</text></g>
+      <g id="n-wait" class="node"><rect x="60" y="360" width="180" height="40" rx="6"/><text x="150" y="380">Wait for next run</text></g>
+      <g id="n-reload" class="node"><rect x="560" y="20" width="160" height="40" rx="6" stroke-dasharray="4 3"/><text x="640" y="40">Plugin reload</text></g>
+    </svg>
+
+    <aside class="space-y-3 text-sm">
+      <div class="border border-zinc-800 rounded p-3 space-y-1">
+        <div class="flex justify-between"><span class="text-zinc-500">CI run</span><span id="s-run">0</span></div>
+        <div class="flex justify-between"><span class="text-zinc-500">Red count</span><span id="s-count" class="font-semibold">0</span></div>
+        <div class="flex justify-between"><span class="text-zinc-500">Fix CI agents</span><span id="s-fixes">0</span></div>
+        <div class="flex justify-between"><span class="text-zinc-500">Story</span><span id="s-status">watching CI</span></div>
+      </div>
+      <div class="border border-zinc-800 rounded p-3 min-h-[88px]">
+        <p id="caption" class="text-zinc-200">Pick a scenario to start.</p>
+      </div>
+      <div class="flex gap-2">
+        <button id="btn-step" class="flex-1 px-3 py-2 rounded bg-sky-600 text-sm font-semibold disabled:bg-zinc-800 disabled:text-zinc-500">Step ▸</button>
+        <button id="btn-play" class="px-3 py-2 rounded border border-zinc-700 text-sm">Play</button>
+        <button id="btn-reset" class="px-3 py-2 rounded border border-zinc-700 text-sm">↺</button>
+      </div>
+      <p class="text-xs text-zinc-500"><span id="step-no">0</span> / <span id="step-total">0</span> steps</p>
+    </aside>
+  </div>
+
+  <div id="runs" class="flex flex-wrap gap-1 text-xs"></div>
+
+  <div class="border border-zinc-800 rounded overflow-hidden">
+    <div class="flex items-center gap-3 px-3 py-1.5 bg-zinc-900 text-xs text-zinc-400 border-b border-zinc-800">
+      <span id="peek-file">Code for the current step</span>
+      <button id="peek-open" class="ml-auto text-sky-400 hover:underline hidden">Open in the reader ↓</button>
+    </div>
+    <div id="peek" class="code py-2 max-h-56"><p class="px-4 py-3 text-zinc-500 font-sans text-sm">Step through a scenario, or click a box in the graph, to see the code that runs.</p></div>
+  </div>
+
+  <div class="spec border border-dashed border-amber-500/60 rounded p-3 text-xs text-amber-300">
+    <b>Spec:</b> the graph shows only the code paths the diff changed, with up to about 10 boxes. Decisions are pill-shaped. Scenarios come from the story's own tests: the plugin runs them with tracing on and records which lines each test passed through and the state after each step. <b>This mockup uses a hand-written model.</b> The real page must replay recorded traces, never a model an agent wrote, because a model can show behavior the code doesn't have. Always include one scenario that shows the riskiest edge (here, a reload in the middle) and the "before (main)" view. The code window shows the exact lines each step ran.
+  </div>
+</section>
+
+<!-- 2. READ THE CODE -->
+<section id="path" class="space-y-4">
+  <h2 class="text-2xl font-serif">2 · Read the code</h2>
+  <p class="text-sm text-zinc-400">Follow the numbered stops (<kbd class="text-zinc-300">j</kbd> / <kbd class="text-zinc-300">k</kbd>). Click underlined names to jump to where they're defined. About 6 minutes.</p>
+
+  <div class="grid md:grid-cols-[250px_1fr] border border-zinc-800 rounded overflow-hidden h-[600px]">
+    <aside class="bg-zinc-900 border-r border-zinc-800 overflow-y-auto text-sm">
+      <p class="px-3 pt-3 pb-1 text-[11px] uppercase tracking-wider text-zinc-500">Reading path</p>
+      <ol id="stop-list" class="px-2 space-y-1"></ol>
+      <p class="px-3 pt-4 pb-1 text-[11px] uppercase tracking-wider text-zinc-500">Changed files</p>
+      <ul id="tree" class="px-2 pb-3 space-y-0.5 font-mono text-xs"></ul>
+    </aside>
+
+    <div class="flex flex-col min-w-0">
+      <div id="tabs" class="flex bg-zinc-900 border-b border-zinc-800 text-xs overflow-x-auto"></div>
+      <div class="flex items-center gap-3 px-3 py-1.5 text-xs border-b border-zinc-800 bg-[#0d1117]">
+        <span id="crumb" class="text-zinc-400 truncate"></span>
+        <span class="ml-auto seg flex gap-1 bg-zinc-900 rounded p-0.5" id="seg-scope">
+          <button data-scope="changes" class="on">Changes only</button>
+          <button data-scope="full">Full file</button>
+        </span>
+        <span class="seg flex gap-1 bg-zinc-900 rounded p-0.5" id="seg-view">
+          <button data-view="final" class="on">Final</button>
+          <button data-view="diff">Diff</button>
+        </span>
+      </div>
+      <div id="reader" class="code flex-1 py-2"></div>
+      <div class="flex items-center gap-3 px-3 py-1.5 text-xs border-t border-zinc-800 bg-zinc-900 text-zinc-400">
+        <button id="prev-stop" class="hover:text-white">◀ Prev</button>
+        <span id="stop-pos"></span>
+        <button id="next-stop" class="hover:text-white">Next ▶</button>
+        <span class="ml-auto"><span class="text-emerald-400">▍</span> added <span class="text-rose-400 ml-2">▍</span> removed <span class="text-sky-400 ml-2">▍</span> current stop <span class="text-yellow-400 ml-2">▶</span> ran in the scenario</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="spec border border-dashed border-amber-500/60 rounded p-3 text-xs text-amber-300">
+    <b>Spec:</b> real files at the reviewed head sha, with real line numbers and syntax highlighting. At most 5 stops, ordered the way a person would follow the code (entry point first, tests last) and named after the graph box they explain. "Changes only" shows changed lines with 3 lines of context and folds the rest. Notes sit under the line they're about: <span class="text-emerald-300">Decision</span> always gives the rejected alternative, <span class="text-amber-300">Watch</span> is a risk and links to the scenario that shows it, <span class="text-violet-300">Scenario</span> marks the test a section 1 scenario replays. "Go to definition" covers names defined in the changed files; anything else shows "not changed in this PR." Nothing here replaces opening the real repo.
+  </div>
+</section>
+
+<!-- 3. EXPECTATIONS -->
+<section id="expectations" class="space-y-4">
+  <h2 class="text-2xl font-serif">3 · Your expectations vs. what was built</h2>
+  <p class="text-sm text-zinc-400">You wrote the left column at plan approval, before seeing the agent's plan.</p>
+  <table class="w-full text-sm border border-zinc-800">
+    <thead class="bg-zinc-900 text-zinc-400 text-left">
+      <tr><th class="p-2">You expected</th><th class="p-2">Built</th><th class="p-2 w-24">Match</th></tr>
+    </thead>
+    <tbody class="divide-y divide-zinc-800">
+      <tr><td class="p-2">After 3 red runs, the story is blocked with a reason</td><td class="p-2">Yes. <button class="text-sky-400 hover:underline" data-play="0">Play "Red, red, red"</button></td><td class="p-2 text-emerald-400">match</td></tr>
+      <tr><td class="p-2">A green run resets the count</td><td class="p-2">Yes. <button class="text-sky-400 hover:underline" data-play="1">Play "Red, green, red, red"</button></td><td class="p-2 text-emerald-400">match</td></tr>
+      <tr><td class="p-2"><b>Must not change:</b> <code>maxFixes: 0</code> still means "note red, don't fix"</td><td class="p-2">Unchanged, and a test pins it</td><td class="p-2 text-emerald-400">match</td></tr>
+      <tr><td class="p-2">The count survives a restart</td><td class="p-2">No, it lives in memory. <button class="text-sky-400 hover:underline" data-play="2">Play the reload scenario</button></td><td class="p-2 text-amber-400">differs</td></tr>
+    </tbody>
+  </table>
+  <div class="spec border border-dashed border-amber-500/60 rounded p-3 text-xs text-amber-300">
+    <b>Spec:</b> the left column is only the human's own words, saved at plan approval. Each row links to a scenario that proves it, and every "differs" row must have one.
+  </div>
+</section>
+
+<!-- 4. DRIFT -->
+<section id="drift" class="space-y-4">
+  <h2 class="text-2xl font-serif">4 · Drift report</h2>
+  <p class="text-sm text-zinc-400">Everything the change touched beyond what the story asked for.</p>
+  <ul class="space-y-2 text-sm">
+    <li class="flex gap-3"><span class="text-emerald-400 w-36 shrink-0">New dependencies</span><span>none</span></li>
+    <li class="flex gap-3"><span class="text-amber-400 w-36 shrink-0">Shared modules</span><span><code>server/loop/markers.ts</code>: added a <code>ci-exhausted</code> marker used by every story. <button class="text-sky-400 hover:underline" data-open-stop="3">Read it</button></span></li>
+    <li class="flex gap-3"><span class="text-amber-400 w-36 shrink-0">Public interface</span><span><code>pipeline.json</code> accepts a new optional key, <code>maxRedRuns</code>. <button class="text-sky-400 hover:underline" data-open-stop="4">Read it</button></span></li>
+    <li class="flex gap-3"><span class="text-emerald-400 w-36 shrink-0">Outside story scope</span><span>none</span></li>
+  </ul>
+  <div class="spec border border-dashed border-amber-500/60 rounded p-3 text-xs text-amber-300">
+    <b>Spec:</b> made by a script from the diff, not by an agent. Four fixed rows, "none" when empty. Story scope is the paths named in the story's plan. Each amber row links into the reader.
+  </div>
+</section>
+
+<!-- 5. DONE -->
+<section id="gate" class="space-y-4">
+  <h2 class="text-2xl font-serif">5 · Done</h2>
+  <p class="text-sm text-zinc-400">Press this when you could explain the change without this page, say where you'd look if it broke, and know how to reverse it (revert the PR; no data migration).</p>
+  <button id="gate-btn" class="px-4 py-2 rounded bg-sky-600 text-sm font-semibold">Debrief done · open the PR</button>
+  <div class="spec border border-dashed border-amber-500/60 rounded p-3 text-xs text-amber-300">
+    <b>Spec:</b> writes <code>debrief-done</code> to <code>.harness/state.md</code>, and the plugin opens the PR. Records which scenarios were played, which guesses were wrong and which stops were read. Those go to <code>~/.orchestrator/understanding/&lt;repo&gt;/&lt;module&gt;.md</code>, also outside the repo, and stories merged without a debrief are flagged there.
+  </div>
+</section>
+
+</main>
+
+<script>
+// ---------- Example files (made up). "+" added, "-" removed, anything else unchanged. ----------
+const sources = {
+  ci: { path: "server/loop/ci-watch.ts", src: `
+  import { blockStory } from "./markers";
+  import { startFixCi } from "./fix-ci";
+  import { readChecks } from "../github/checks";
+  import type { Story } from "../../shared/types";
+  import type { PipelineLimits } from "./pipeline-config";
+
+  const POLL_MS = 30_000;
+
++ // Red runs in a row, per story. Lives in memory: a plugin reload clears it.
++ const redRuns = new Map<string, number>();
+
+  export function watchCi(story: Story, limits: PipelineLimits) {
+    const timer = setInterval(() => pollOnce(story, limits), POLL_MS);
+    return () => clearInterval(timer);
+  }
+
++ export function resetCiWatch() {
++   redRuns.clear();
++ }
+
+  async function pollOnce(story: Story, limits: PipelineLimits) {
+    const run = await readChecks(story.prNumber);
+    if (run.state === "pending") return;
+    await onRunFinished(story, limits, run.state);
+  }
+
+  export async function onRunFinished(
+    story: Story,
+    limits: PipelineLimits,
+    result: "green" | "red",
+  ) {
+-   if (result === "green") return;
++   if (result === "green") {
++     redRuns.delete(story.id);
++     return;
++   }
++   const count = (redRuns.get(story.id) ?? 0) + 1;
++   redRuns.set(story.id, count);
++   if (count >= limits.maxRedRuns) {
++     return blockStory(story, "ci-exhausted", \`CI red \${count} times in a row\`);
++   }
+    if (limits.maxFixes === 0) return;
+-   await startFixCi(story);
++   await startFixCi(story, { attempt: count });
+  }
+` },
+  mk: { path: "server/loop/markers.ts", src: `
+  import { writeMarker } from "./state-file";
+  import { setStoryStatus } from "../stories/frontmatter";
+  import { ringBell } from "../bell";
+  import type { Story } from "../../shared/types";
+
+  export type Marker =
+    | "plan-done"
+    | "review-failed"
+-   | "ci-red";
++   | "ci-red"
++   | "ci-exhausted";
+
+  export async function blockStory(story: Story, marker: Marker, reason: string) {
+    await writeMarker(story.worktree, marker);
+    await setStoryStatus(story, { status: "blocked", reason });
+    ringBell(story, reason);
+  }
+` },
+  cfg: { path: "server/loop/pipeline-config.ts", src: `
+  export interface PipelineLimits {
+    maxFixes: number;
++   /** Red CI runs in a row before the story is blocked. */
++   maxRedRuns: number;
+  }
+
+  export function readLimits(json: Record<string, unknown>): PipelineLimits {
+    return {
+      maxFixes: num(json.maxFixes, 3),
++     maxRedRuns: num(json.maxRedRuns, 3),
+    };
+  }
+
+  function num(value: unknown, fallback: number) {
+    return typeof value === "number" && value >= 0 ? value : fallback;
+  }
+` },
+  test: { path: "server/loop/ci-watch.test.ts", src: `
++ import { test } from "node:test";
++ import assert from "node:assert/strict";
++ import { onRunFinished, resetCiWatch } from "./ci-watch";
++ import { fakeLoop } from "../../test-support/loop";
++
++ test("blocks after three red runs in a row", async () => {
++   const { story, limits, statusOf } = fakeLoop();
++   for (const r of ["red", "red", "red"]) await onRunFinished(story, limits, r);
++   assert.equal(statusOf(story), "blocked");
++ });
++
++ test("a green run resets the count", async () => {
++   const { story, limits, statusOf } = fakeLoop();
++   for (const r of ["red", "green", "red", "red"]) await onRunFinished(story, limits, r);
++   assert.equal(statusOf(story), "fixing");
++ });
++
++ test("maxFixes 0 notes red without starting a fix", async () => {
++   const { story, limits, fixesStarted } = fakeLoop({ maxFixes: 0 });
++   await onRunFinished(story, limits, "red");
++   assert.equal(fixesStarted(), 0);
++ });
++
++ test("a reload clears the count (known limit)", async () => {
++   const { story, limits, statusOf } = fakeLoop();
++   for (const r of ["red", "red"]) await onRunFinished(story, limits, r);
++   resetCiWatch();
++   for (const r of ["red", "red"]) await onRunFinished(story, limits, r);
++   assert.equal(statusOf(story), "fixing");
++ });
+` },
+};
+
+const files = {};
+for (const [key, { path, src }] of Object.entries(sources)) {
+  let n = 0;
+  const lines = src.replace(/^\n/, "").replace(/\n$/, "").split("\n").map(raw => {
+    const s = raw[0] === "+" ? "add" : raw[0] === "-" ? "del" : "same";
+    return { s, text: raw.slice(2), n: s === "del" ? null : ++n };
+  });
+  files[key] = { path, lines };
+}
+
+// Index of the first line in a file containing `sub`, at or after `from`.
+const find = (key, sub, from = 0) => files[key].lines.findIndex((l, i) => i >= from && l.text.includes(sub));
+const span = (key, a, b) => ({ file: key, from: find(key, a), to: b ? find(key, b, find(key, a)) : find(key, a) });
+
+const refs = {
+  poll: span("ci", "const run = await readChecks", "await onRunFinished(story"),
+  result: span("ci", 'if (result === "green") {'),
+  reset: span("ci", "redRuns.delete"),
+  waitGreen: { file: "ci", from: find("ci", "redRuns.delete") + 1, to: find("ci", "redRuns.delete") + 1 },
+  inc: span("ci", "const count", "redRuns.set"),
+  check: span("ci", "if (count >= limits.maxRedRuns)"),
+  block: span("mk", "await writeMarker", "ringBell("),
+  fix: span("ci", "await startFixCi(story, { attempt"),
+  fixBefore: span("ci", "await startFixCi(story);"),
+  wait: span("ci", "setInterval"),
+  reload: span("ci", "// Red runs", "const redRuns"),
+};
+const nodeRefs = { poll: refs.poll, result: refs.result, reset: refs.reset, inc: refs.inc, check: refs.check,
+  fix: refs.fix, block: refs.block, wait: refs.wait, reload: refs.reload };
+
+const stops = [
+  { title: "Green or red?", sub: "Entry point. A green run clears the count.", ...span("ci", "export async function onRunFinished"), to: find("ci", "redRuns.delete") + 2 },
+  { title: "Red count + 1 → Count ≥ 3?", sub: "The new limit.", ...span("ci", "const count"), to: find("ci", "blockStory(story") + 1 },
+  { title: "Where the count lives", sub: "In memory. The main risk.", ...span("ci", "// Red runs", "const redRuns") },
+  { title: "Block story · bell rings", sub: "The new marker.", ...span("mk", "export async function blockStory"), to: find("mk", "ringBell(") + 1 },
+  { title: "The new setting", sub: "maxRedRuns in pipeline.json.", ...span("cfg", "/** Red CI", "maxRedRuns: num") },
+];
+
+const notes = [
+  { file: "ci", at: find("ci", "export async function onRunFinished"), kind: "note", text: "pollOnce, just above, calls this once a run stops being pending. This is the function the graph draws." },
+  { file: "ci", at: find("ci", "const count"), kind: "decision", text: "Count red runs in a row, per story.", rejected: "Count every red run in the story. One flaky test early on would use up the budget." },
+  { file: "ci", at: find("ci", "const redRuns"), kind: "risk", text: "In memory, so a plugin reload sets it back to 0. You expected it to survive a restart.", rejected: "Store it in story frontmatter. Rejected to avoid writing the file on every 30-second poll.", play: 2 },
+  { file: "mk", at: find("mk", '| "ci-exhausted"'), kind: "note", text: "New marker. Any story can now end in this state. This is the shared-module item in the drift report." },
+  { file: "cfg", at: find("cfg", "maxRedRuns: num"), kind: "risk", text: "0 passes the check, so maxRedRuns: 0 blocks on the first red run. No test covers it." },
+  { file: "test", at: find("test", "blocks after three red runs"), kind: "test", text: 'The "Red, red, red" scenario replays this test.', play: 0 },
+  { file: "test", at: find("test", "a green run resets"), kind: "test", text: 'The "Red, green, red, red" scenario replays this test.', play: 1 },
+  { file: "test", at: find("test", "a reload clears"), kind: "test", text: "The reload scenario replays this test. It pins the known limit rather than hiding it.", play: 2 },
+];
+
+const symbols = {
+  blockStory: { file: "mk", at: find("mk", "export async function blockStory") },
+  onRunFinished: { file: "ci", at: find("ci", "export async function onRunFinished") },
+  redRuns: { file: "ci", at: find("ci", "const redRuns") },
+  maxRedRuns: { file: "cfg", at: find("cfg", "maxRedRuns: number") },
+  resetCiWatch: { file: "ci", at: find("ci", "export function resetCiWatch") },
+  PipelineLimits: { file: "cfg", at: find("cfg", "export interface PipelineLimits") },
+  startFixCi: null,
+  readChecks: null,
+};
+
+// ---------- Code rendering ----------
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const symRe = new RegExp(`\\b(${Object.keys(symbols).join("|")})\\b`, "g");
+function highlight(text) {
+  const html = window.hljs ? hljs.highlight(text, { language: "typescript", ignoreIllegals: true }).value : esc(text);
+  return html.replace(symRe, (m) => `<span class="sym" data-sym="${m}" title="${symbols[m] ? "Go to definition" : "Not changed in this PR"}">${m}</span>`);
+}
+const inRange = (r, file, i) => r && r.file === file && i >= r.from && i <= r.to;
+function refLabel(r) {
+  const L = files[r.file].lines, a = L[r.from].n, b = L[r.to].n;
+  return files[r.file].path + (a ? `:${a}${b && b !== a ? "-" + b : ""}` : " (removed line)");
+}
+
+function row(key, i, { stop, exec, flash }) {
+  const l = files[key].lines[i];
+  const cls = ["cl", l.s === "same" ? "" : l.s, inRange(stop, key, i) ? "stop" : "", inRange(exec, key, i) ? "exec" : "", flash === i ? "flash" : ""].join(" ");
+  let html = `<div class="${cls}" data-i="${i}"><span class="ln">${l.n ?? ""}</span><span class="gut">${l.s === "add" ? "+" : l.s === "del" ? "−" : ""}</span><code>${highlight(l.text) || " "}</code></div>`;
+  for (const a of notes.filter(a => a.file === key && a.at === i && opts.notes)) {
+    const label = { decision: ["Decision", "text-emerald-300"], risk: ["Watch", "text-amber-300"], note: ["Note", "text-sky-300"], test: ["Scenario", "text-violet-300"] }[a.kind];
+    html += `<div class="ann ${a.kind}"><span class="${label[1]} font-semibold">${label[0]}</span> ${esc(a.text)}`
+      + (a.rejected ? `<div class="text-zinc-400 mt-1"><span class="text-zinc-500">Rejected:</span> ${esc(a.rejected)}</div>` : "")
+      + (a.play != null ? `<button class="mt-1 text-sky-400 hover:underline" data-play="${a.play}">▶ Play it in the graph</button>` : "")
+      + `</div>`;
+  }
+  return html;
+}
+let opts = { notes: true };
+
+// ---------- Reader ----------
+const reader = { file: "ci", tabs: ["ci"], stop: 0, scope: "changes", view: "final", expanded: new Set(), exec: null, flash: null };
+const $ = id => document.getElementById(id);
+
+function renderReader(scrollTo) {
+  const key = reader.file, L = files[key].lines;
+  const stop = stops[reader.stop].file === key ? stops[reader.stop] : null;
+  const exec = reader.exec && reader.exec.file === key ? reader.exec : null;
+  const diff = reader.view === "diff";
+  const keep = new Set();
+  L.forEach((l, i) => {
+    if (reader.scope === "full" || inRange(stop, key, i) || inRange(exec, key, i) || notes.some(a => a.file === key && a.at === i)) keep.add(i);
+    if (l.s !== "same") for (let k = i - 3; k <= i + 3; k++) keep.add(k);
+  });
+  opts.notes = true;
+  let html = "", gap = [];
+  const flushGap = () => {
+    if (!gap.length) return;
+    const id = `${key}:${gap[0]}`;
+    if (reader.expanded.has(id)) gap.forEach(i => html += row(key, i, { stop, exec, flash: reader.flash }));
+    else html += `<div class="gap" data-gap="${id}">⋯ ${gap.length} unchanged line${gap.length > 1 ? "s" : ""}</div>`;
+    gap = [];
+  };
+  L.forEach((l, i) => {
+    if (l.s === "del" && !diff && !inRange(exec, key, i)) return;
+    if (keep.has(i)) { flushGap(); html += row(key, i, { stop, exec, flash: reader.flash }); }
+    else gap.push(i);
+  });
+  flushGap();
+  $("reader").innerHTML = html;
+
+  $("tabs").innerHTML = reader.tabs.map(k =>
+    `<div class="tab ${k === key ? "on" : ""}" data-tab="${k}">${files[k].path.split("/").pop()}</div>`).join("");
+  $("stop-list").innerHTML = stops.map((s, k) =>
+    `<li class="stop-item rounded px-2 py-1.5 ${k === reader.stop ? "bg-sky-500/15 text-sky-200" : "hover:bg-zinc-800"}" data-stop="${k}">
+      <div><span class="text-zinc-500 mr-1">${k + 1}.</span>${esc(s.title)}</div>
+      <div class="text-xs text-zinc-500 ml-4">${esc(s.sub)} <span class="font-mono">${files[s.file].path.split("/").pop()}</span></div></li>`).join("");
+  $("tree").innerHTML = `<li class="text-zinc-500">server/loop/</li>` + Object.entries(files).map(([k, f]) => {
+    const add = f.lines.filter(l => l.s === "add").length, del = f.lines.filter(l => l.s === "del").length;
+    return `<li class="tree-item rounded px-2 py-1 pl-4 flex gap-2 ${k === key ? "bg-zinc-800 text-white" : "text-zinc-300 hover:bg-zinc-800"}" data-file="${k}">
+      <span class="truncate">${f.path.split("/").pop()}</span><span class="ml-auto text-emerald-400">+${add}</span><span class="text-rose-400">−${del}</span></li>`;
+  }).join("");
+
+  const focus = stop ? stop.from : exec ? exec.from : reader.flash ?? 0;
+  let fn = "";
+  for (let i = focus; i >= 0; i--) { const m = L[i].text.match(/(?:function|interface|type)\s+(\w+)|test\("([^"]+)"/); if (m) { fn = m[1] || `test "${m[2]}"`; break; } }
+  $("crumb").innerHTML = files[key].path.split("/").map(esc).join(' <span class="text-zinc-600">›</span> ') + (fn ? ` <span class="text-zinc-600">›</span> <span class="text-zinc-200">${esc(fn)}</span>` : "");
+  $("stop-pos").textContent = `Stop ${reader.stop + 1} of ${stops.length}`;
+
+  if (scrollTo !== false) {
+    const target = $("reader").querySelector(".cl.flash, .cl.exec, .cl.stop");
+    if (target) $("reader").scrollTop = target.offsetTop - 70;
+  }
+}
+
+function openFile(key) { if (!reader.tabs.includes(key)) reader.tabs.push(key); reader.file = key; }
+function goStop(k) { reader.stop = (k + stops.length) % stops.length; reader.flash = null; openFile(stops[reader.stop].file); renderReader(); }
+function goTo(key, i) { openFile(key); reader.flash = i; renderReader(); setTimeout(() => { reader.flash = null; }, 0); }
+
+$("reader").addEventListener("click", e => {
+  const g = e.target.closest("[data-gap]");
+  if (g) { reader.expanded.add(g.dataset.gap); renderReader(false); return; }
+  const s = e.target.closest(".sym");
+  if (s && symbols[s.dataset.sym]) goTo(symbols[s.dataset.sym].file, symbols[s.dataset.sym].at);
+});
+document.addEventListener("click", e => {
+  const t = e.target.closest("[data-tab],[data-stop],[data-file],[data-scope],[data-view],[data-open-stop],[data-play]");
+  if (!t) return;
+  if (t.dataset.tab) { reader.file = t.dataset.tab; reader.flash = null; renderReader(); }
+  else if (t.dataset.stop) goStop(+t.dataset.stop);
+  else if (t.dataset.file) { openFile(t.dataset.file); reader.flash = null; renderReader(); }
+  else if (t.dataset.scope) { reader.scope = t.dataset.scope; document.querySelectorAll("[data-scope]").forEach(b => b.classList.toggle("on", b === t)); renderReader(); }
+  else if (t.dataset.view) { reader.view = t.dataset.view; document.querySelectorAll("[data-view]").forEach(b => b.classList.toggle("on", b === t)); renderReader(); }
+  else if (t.dataset.openStop) { goStop(+t.dataset.openStop); $("path").scrollIntoView({ behavior: "smooth" }); }
+  else if (t.dataset.play) { scenarioButtons[+t.dataset.play].click(); $("run").scrollIntoView({ behavior: "smooth" }); }
+});
+$("prev-stop").onclick = () => goStop(reader.stop - 1);
+$("next-stop").onclick = () => goStop(reader.stop + 1);
+document.addEventListener("keydown", e => {
+  if (e.target.matches("input, textarea")) return;
+  if (e.key === "j") goStop(reader.stop + 1);
+  if (e.key === "k") goStop(reader.stop - 1);
+});
+
+// ---------- See it run ----------
+// Hand-written model of the change, for the mockup only. The real page replays recorded test traces.
+const scenarios = [
+  { label: "Red, red, red", events: ["red", "red", "red"] },
+  { label: "Red, green, red, red", events: ["red", "green", "red", "red"] },
+  { label: "Red, red, reload, red, red", events: ["red", "red", "reload", "red", "red"], risky: true },
+];
+let mode = "after", custom = [], events = [], steps = [], i = 0, guess = null, timer = null, peekRef = null;
+
+function simulate(evs, mode) {
+  const out = []; let run = 0, count = 0, fixes = 0, status = "watching CI";
+  const push = (node, edge, caption, ref, tone = "") =>
+    out.push({ node, edge, caption, ref, tone, state: { run, count, fixes, status } });
+  for (const ev of evs) {
+    if (status === "blocked") break;
+    if (ev === "reload") {
+      count = 0;
+      push("reload", null, "The plugin reloads. The red count lived in memory, so it's back to 0.", refs.reload, "bad");
+      continue;
+    }
+    run++;
+    push("poll", run > 1 ? "wait-poll" : null, `CI run ${run} finishes ${ev}.`, refs.poll);
+    push("result", "poll-result", `The watcher reads the result: ${ev}.`, refs.result);
+    if (ev === "green") {
+      count = 0;
+      push("reset", "result-reset", "Green resets the red count to 0.", refs.reset, "good");
+      push("wait", "reset-wait", "Nothing to fix. Wait for the next run.", refs.waitGreen);
+      continue;
+    }
+    count++;
+    push("inc", "result-inc", `Red. The count is now ${count}.`, refs.inc);
+    if (mode === "after") {
+      if (count >= 3) {
+        push("check", "inc-check", `${count} ≥ 3, so stop.`, refs.check);
+        status = "blocked";
+        push("block", "check-block", "Story blocked: \"CI red 3 times in a row\". The bell rings. No more Fix CI agents.", refs.block, "good");
+        break;
+      }
+      push("check", "inc-check", `${count} < 3, keep going.`, refs.check);
+      fixes++;
+      push("fix", "check-fix", `Start Fix CI agent #${fixes}.`, refs.fix);
+    } else {
+      fixes++;
+      push("fix", "inc-fix-before", `Start Fix CI agent #${fixes}. Before this PR there's no limit.`, refs.fixBefore, fixes > 3 ? "bad" : "");
+    }
+    push("wait", "fix-wait", "Wait for the agent's push and the next run.", refs.wait);
+  }
+  return out;
+}
+
+const nodes = [...document.querySelectorAll(".node")];
+const edges = [...document.querySelectorAll(".edge")];
+
+function renderPeek(ref) {
+  peekRef = ref;
+  if (!ref) return;
+  const L = files[ref.file].lines;
+  const from = Math.max(0, ref.from - 3), to = Math.min(L.length - 1, ref.to + 3);
+  opts.notes = false;
+  let html = "";
+  for (let k = from; k <= to; k++) {
+    if (L[k].s === "del" && !inRange(ref, ref.file, k)) continue;
+    html += row(ref.file, k, { exec: ref });
+  }
+  opts.notes = true;
+  $("peek").innerHTML = html;
+  $("peek-file").textContent = refLabel(ref);
+  $("peek-open").classList.remove("hidden");
+}
+
+function load(evs) {
+  stop(); events = evs; steps = simulate(events, mode); i = 0; guess = null;
+  $("guess-result").textContent = "";
+  document.querySelectorAll("[data-guess]").forEach(b => b.classList.remove("on"));
+  paint();
+}
+
+function paint() {
+  const before = mode === "before";
+  nodes.forEach(n => n.classList.remove("active", "visited", "good", "bad"));
+  edges.forEach(e => e.classList.remove("active"));
+  ["n-check", "n-block"].forEach(id => $(id).classList.toggle("off", before));
+  ["e-inc-check", "e-check-fix", "e-check-block"].forEach(id => $(id).classList.toggle("off", before));
+  $("e-inc-fix-before").classList.toggle("off", !before);
+
+  steps.slice(0, i).forEach(s => $("n-" + s.node).classList.add("visited"));
+  const s = steps[i - 1];
+  const st = s ? s.state : { run: 0, count: 0, fixes: 0, status: "watching CI" };
+  if (s) {
+    $("n-" + s.node).classList.add("active");
+    if (s.tone) $("n-" + s.node).classList.add(s.tone);
+    if (s.edge) $("e-" + s.edge).classList.add("active");
+    renderPeek(s.ref);
+  }
+  $("caption").textContent = s ? s.caption : (events.length ? "Make your guess, then press Step." : "Pick a scenario to start.");
+  $("s-run").textContent = st.run;
+  $("s-count").textContent = st.count;
+  $("s-fixes").textContent = st.fixes;
+  $("s-status").textContent = st.status;
+  $("s-status").className = st.status === "blocked" ? "text-emerald-400" : "";
+  $("step-no").textContent = i;
+  $("step-total").textContent = steps.length;
+  $("btn-step").disabled = !steps.length || i >= steps.length;
+
+  $("runs").innerHTML = steps.slice(0, i).filter(x => ["inc", "reset", "reload"].includes(x.node))
+    .map(x => x.node === "reload"
+      ? `<span class="chip border-rose-500 text-rose-400">reload · count 0</span>`
+      : `<span class="chip ${x.node === "inc" ? "text-rose-300" : "text-emerald-300"}">run ${x.state.run} ${x.node === "inc" ? "red" : "green"} · count ${x.state.count}</span>`)
+    .join("");
+
+  if (i === steps.length && steps.length) {
+    const blocked = steps[steps.length - 1].state.status === "blocked";
+    const end = blocked ? "It ends blocked." : `It doesn't block. ${st.fixes} Fix CI agents started.`;
+    $("guess-result").innerHTML = guess === null ? end
+      : (guess === blocked ? `<span class="text-emerald-400">You were right.</span> ${end}` : `<span class="text-rose-400">Not what you guessed.</span> ${end}`);
+  }
+}
+
+function step() { if (i < steps.length) { i++; paint(); } else stop(); }
+function stop() { clearInterval(timer); timer = null; $("btn-play").textContent = "Play"; }
+
+const scenarioButtons = scenarios.map(sc => {
+  const b = document.createElement("button");
+  b.className = "chip" + (sc.risky ? " text-amber-300" : "");
+  b.textContent = sc.label + (sc.risky ? " ⚠" : "");
+  b.onclick = () => { scenarioButtons.forEach(x => x.classList.remove("on")); b.classList.add("on"); load(sc.events); };
+  $("scenarios").appendChild(b);
+  return b;
+});
+document.querySelectorAll("[data-add]").forEach(b => b.onclick = () => {
+  const v = b.dataset.add;
+  custom = v === "clear" ? [] : [...custom, v];
+  $("custom-seq").textContent = custom.join(", ");
+  scenarioButtons.forEach(x => x.classList.remove("on"));
+  load(custom);
+});
+document.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => {
+  mode = b.dataset.mode;
+  document.querySelectorAll("[data-mode]").forEach(x => x.classList.toggle("on", x === b));
+  load(events);
+});
+document.querySelectorAll("[data-guess]").forEach(b => b.onclick = () => {
+  if (i > 0) return;
+  guess = b.dataset.guess === "yes";
+  document.querySelectorAll("[data-guess]").forEach(x => x.classList.toggle("on", x === b));
+});
+nodes.forEach(n => n.addEventListener("click", () => renderPeek(nodeRefs[n.id.slice(2)])));
+$("peek-open").onclick = () => {
+  reader.exec = peekRef;
+  if (peekRef.from === refs.fixBefore.from) { reader.view = "diff"; document.querySelectorAll("[data-view]").forEach(b => b.classList.toggle("on", b.dataset.view === "diff")); }
+  openFile(peekRef.file);
+  renderReader();
+  $("path").scrollIntoView({ behavior: "smooth" });
+};
+$("btn-step").onclick = step;
+$("btn-reset").onclick = () => load(events);
+$("btn-play").onclick = () => {
+  if (timer) return stop();
+  if (i >= steps.length) i = 0;
+  $("btn-play").textContent = "Pause";
+  timer = setInterval(step, 700);
+};
+$("spec-toggle").addEventListener("change", e => document.body.classList.toggle("show-spec", e.target.checked));
+$("gate-btn").onclick = () => $("gate-btn").textContent = "Done (mockup)";
+
+paint();
+goStop(0);
+</script>
+</body>
+</html>
