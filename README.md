@@ -40,7 +40,9 @@ Plan ──you approve──► Implement ──► Review ──pass──► P
 
 If an agent stalls, dies or waits on a permission, the loop nudges it, restarts it or blocks the story with a reason. Work an agent finds outside its story becomes a new story. The agent doesn't do it in place.
 
-A Claude session can press **Start** for you: write `{"repo": "/abs/repo", "initiative": "<slug>"}` to `~/.orchestrator/initiative-loop-start.json`. Within about 5 seconds the plugin removes the file, starts the loop and writes the outcome to `~/.orchestrator/initiative-loop-start.result.json`.
+**`/orbit`** does the same from the command line, so a Claude session can run it too: `new`, `plan` (New phase and its architect), `start`, `stop` and `status`. See `skills/plan/orbit/SKILL.md`. Under the hood it writes one request to `~/.orchestrator/orbit.json`. Within about 5 seconds the plugin removes it, does what the Initiatives tab's button does, and writes `~/.orchestrator/orbit.result.json`.
+
+`~/.orchestrator/initiative-loop-start.json` (`{"repo": "/abs/repo", "initiative": "<slug>"}`) is a different thing: it files the initiative's stories as slices for the factory manager. It does not start this loop.
 
 **3. Act on gates.** A story only needs you at three points: a plan to approve, a PR to merge, or a story that's stuck. The 🔔 bell lists them all.
 
