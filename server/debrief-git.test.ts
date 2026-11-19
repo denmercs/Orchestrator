@@ -67,3 +67,19 @@ test("lineCountAt counts lines at the commit, undefined when the file is not the
   assert.equal(await lineCountAt(dir, head, "new.ts"), 3);
   assert.equal(await lineCountAt(dir, head, "gone.ts"), undefined);
 });
+
+test("headInfo names the worktree's current branch for a sha, and detached when none is checked out", async () => {
+  const { dir, head } = repo();
+  assert.equal((await headInfo(dir, head)).branch, "feature");
+  git(dir, "checkout", "-q", "--detach");
+  assert.equal((await headInfo(dir, head)).branch, "detached");
+});
+
+test("a head that is also a file name in the worktree still resolves", async () => {
+  const { dir, base, head } = repo();
+  writeFileSync(join(dir, "feature"), "clash\n"); // ref "feature" and a file "feature"
+  const info = await headInfo(dir, "feature");
+  assert.equal(info.sha, head);
+  assert.equal(info.branch, "feature");
+  assert.equal((await changedFiles(dir, base, "feature")).length, 3);
+});

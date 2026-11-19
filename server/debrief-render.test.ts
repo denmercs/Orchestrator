@@ -61,10 +61,11 @@ test("renderDebrief throws when outDir is the worktree, inside it, or reaches it
   const notesFile = notesIn(tmp("n-"));
   const link = join(tmp("link-"), "sneaky");
   symlinkSync(worktree, link);
-  for (const outDir of [worktree, join(worktree, "out", "debrief"), join(link, "out")]) {
+  for (const outDir of [worktree, join(worktree, "out", "debrief"), join(worktree, "..out"), join(link, "out")]) {
     await assert.rejects(renderDebrief({ worktree, base: "main", head, notesFile, outDir }), /outDir/);
   }
   assert.throws(() => readFileSync(join(worktree, "out", "debrief", "debrief.html")));
+  assert.throws(() => readFileSync(join(worktree, "..out", "debrief.html")));
 });
 
 test("renderDebrief throws when head is not a commit in the worktree", async () => {
@@ -108,6 +109,12 @@ test("a bad entry is dropped with its own line and the rest renders", async () =
   assert.match(problems[1]!, /^notes\[0\]: /);
   assert.ok(html.includes("Adds b."));
   assert.ok(html.includes(problems[0]!) && html.includes(problems[1]!));
+});
+
+test("a notes file that exists but can't be read is not reported as missing", async () => {
+  const dir = tmp("n-"); // a directory where the file should be: EISDIR
+  const { problems } = await render(dir);
+  assert.deepEqual(problems, ["notes.json: couldn't be read"]);
 });
 
 test("a base with no shared history is a problem, not a throw", async () => {

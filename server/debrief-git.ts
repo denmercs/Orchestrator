@@ -13,7 +13,7 @@ async function git(cwd: string, args: string[]) {
 
 const tryGit = (cwd: string, args: string[]) => git(cwd, args).then((out) => out, () => undefined);
 
-export type ChangedFile = { path: string; status: "A" | "M" | "D" | string };
+export type ChangedFile = { path: string; status: string }; // git status letter: A, M or D (renames are off)
 
 export async function resolveCommit(cwd: string, ref: string) {
   return (await tryGit(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]))?.trim() || undefined;
@@ -24,7 +24,7 @@ export async function mergeBase(cwd: string, base: string, head: string) {
 }
 
 export async function changedFiles(cwd: string, from: string, head: string): Promise<ChangedFile[]> {
-  const out = await git(cwd, ["diff", "--name-status", "-z", "--no-renames", `${from}..${head}`]);
+  const out = await git(cwd, ["diff", "--name-status", "-z", "--no-renames", `${from}..${head}`, "--"]);
   const parts = out.split("\0").filter(Boolean);
   const files: ChangedFile[] = [];
   for (let i = 0; i + 1 < parts.length; i += 2) files.push({ status: parts[i]!, path: parts[i + 1]! });
@@ -33,8 +33,8 @@ export async function changedFiles(cwd: string, from: string, head: string): Pro
 
 // `head` itself when it names a branch, else the worktree's current branch, else "detached".
 export async function headInfo(cwd: string, head: string) {
-  const [sha = "", date = ""] = (await git(cwd, ["log", "-1", "--format=%H%n%cI", head])).trim().split("\n");
-  const named = (await tryGit(cwd, ["rev-parse", "--symbolic-full-name", head]))?.trim();
+  const [sha = "", date = ""] = (await git(cwd, ["log", "-1", "--format=%H%n%cI", head, "--"])).trim().split("\n");
+  const named = (await tryGit(cwd, ["rev-parse", "--verify", "--symbolic-full-name", head]))?.trim();
   const current = (await tryGit(cwd, ["symbolic-ref", "--short", "-q", "HEAD"]))?.trim();
   const branch = named?.startsWith("refs/heads/") ? named.slice("refs/heads/".length) : current || "detached";
   return { sha, date, branch };

@@ -1,5 +1,5 @@
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { checkDebriefNotes } from "../shared/debrief-notes";
 import { changedFiles, headInfo, lineCountAt, mergeBase, resolveCommit } from "./debrief-git";
 import { debriefPage } from "./debrief-page";
@@ -21,7 +21,7 @@ async function realTarget(path: string): Promise<string> {
     } catch {
       const parent = dirname(existing);
       if (parent === existing) return resolve(path);
-      rest.unshift(existing.slice(parent.length + 1));
+      rest.unshift(basename(existing));
       existing = parent;
     }
   }
@@ -29,15 +29,16 @@ async function realTarget(path: string): Promise<string> {
 
 async function insideWorktree(worktree: string, outDir: string) {
   const rel = relative(await realpath(worktree), await realTarget(outDir));
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  return rel === "" || (rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel));
 }
 
 async function readNotes(notesFile: string): Promise<{ raw?: unknown; problem?: string }> {
   let text: string;
   try {
     text = await readFile(notesFile, "utf8");
-  } catch {
-    return { problem: "notes.json: file not found" };
+  } catch (error) {
+    const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
+    return { problem: missing ? "notes.json: file not found" : "notes.json: couldn't be read" };
   }
   let raw: unknown;
   try {
