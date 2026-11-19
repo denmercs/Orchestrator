@@ -18,6 +18,7 @@ import {
 } from "./factory-manager";
 import { writeDigest } from "./factory-digest";
 import { resolveSliceRepo, sliceRepoFolder } from "./factory-repo";
+import { ensureSliceWorkspace } from "./factory-slice-workspace";
 import { answerSeatPrompts, type PromptAnswer, type SeatPrompt } from "./factory-prompts";
 import { factoryDir, factoryTick, readFactory, sliceDir, writeSliceState } from "./factory-layout";
 import {
@@ -48,7 +49,7 @@ import {
 } from "./factory-phases";
 import { closeSlices, runRequestedSweep } from "./factory-workspace";
 import { toHuman } from "./factory-report";
-import { frontmatter, slugOf, writeFrontmatter } from "./harness-layout";
+import { frontmatter, writeFrontmatter } from "./harness-layout";
 import { type FailingCheck, type PrStatus, prStatus } from "./pr-checks";
 import type { ReadCost } from "./initiative-loop";
 import type { OpenedPr } from "./story-git";
@@ -259,29 +260,24 @@ function adoptStory(root: string, slice: FactorySlice): TickResult | null {
 async function leaveSpec(root: string, slice: FactorySlice, ports: TickPaseo): Promise<TickResult> {
   const { id, mission, state } = slice;
   if (!slice.spec) return { kind: "waiting", slice: id, why: "its spec is empty" };
-  let worktree = state.worktree;
-  let workspace = state.workspace;
-  if (!worktree || !existsSync(worktree)) {
-    if (!ports.host) return { kind: "waiting", slice: id, why: "its worktree is missing and this handle can't create one" };
-    const names = buildContext(slice);
-    // The slice's `repo`, else its mission's, else the factory root. A bad one blocks the slice with the cause: no silent fallback.
+  const names = buildContext(slice);
+  const workspaceTitle = (names.title === names.id ? `${MARK} ${names.id}` : `${MARK} ${names.id} — ${names.title}`).slice(0, 60);
+  const ensured = await ensureSliceWorkspace(root, slice, ports.host, workspaceTitle);
+  if (!ensured.ok) {
     const repo = resolveSliceRepo(root, slice);
     if (!repo.ok) {
-      const blocked = await block(root, slice, ports, `its repo cannot be used, so no workspace was made: ${repo.error}`, "Fix `repo` (an absolute or ~ path to a git repo) and clear `ready` in its state.md.");
-      return blocked;
+      return block(
+        root,
+        slice,
+        ports,
+        `its repo cannot be used, so no workspace was made: ${repo.error}`,
+        "Fix `repo` (an absolute or ~ path to a git repo) and clear `ready` in its state.md.",
+      );
     }
-    const projects = await ports.host.listProjects();
-    const project = projects.find((item) => resolve(item.projectRootPath) === resolve(repo.path));
-    const created = await ports.host.createStoryWorkspace({
-      title: (names.title === names.id ? `${MARK} ${names.id}` : `${MARK} ${names.id} — ${names.title}`).slice(0, 60),
-      repoRoot: repo.path,
-      ...(project ? { projectId: project.projectId } : {}),
-      baseBranch: "origin/main",
-      branchName: branchName({ title: id }),
-      worktreeSlug: slugOf(id),
-    });
-    worktree = created.directory;
-    workspace = created.id;
+    return { kind: "waiting", slice: id, why: ensured.error };
+  }
+  const { worktree, workspace } = ensured;
+  if (ensured.mode !== "unchanged" || state.worktree !== worktree || state.workspace !== workspace) {
     writeSliceState(root, mission, id, { worktree, workspace });
   }
   if (!state.story || !existsSync(state.story)) {

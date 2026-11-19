@@ -69,7 +69,7 @@ function fakePaseo(known: Known = {}, { stale = {}, list }: Reads = {}) {
   const created: { cwd: string; prompt: string; title: string; labels: Record<string, string>; config: unknown }[] = [];
   const commits: { cwd: string; message: string }[] = [];
   // The loop's host: a workspace create lands in <repoRoot>/made-wt, and the repo is a known project.
-  const { host, workspaces } = fakeLoopHost([]);
+  const { host, workspaces, adopted } = fakeLoopHost([]);
   const worktrees: StoryWorkspaceCreate[] = [];
   const makeWorkspace = host.createStoryWorkspace;
   const projects = [{ projectId: "proj-other", projectRootPath: "/elsewhere" }];
@@ -117,7 +117,7 @@ function fakePaseo(known: Known = {}, { stale = {}, list }: Reads = {}) {
     },
   };
   if (list) paseo.agents.list = async () => ({ entries: list.map((agent) => ({ agent })) });
-  return { paseo, created, started, worktrees, commits, workspaces, projects };
+  return { paseo, created, started, worktrees, commits, workspaces, projects, adopted };
 }
 
 const field = (file: string, name: string) => readFileSync(file, "utf8").match(new RegExp(`^${name}: (.*)$`, "m"))?.[1];
@@ -234,6 +234,25 @@ test("with no repo set anywhere the workspace is made from the factory root, as 
   assert.equal((await runFactoryTick(root, paseo)).kind, "advanced");
 
   assert.equal(worktrees[0].repoRoot, root);
+});
+
+test("a slice whose manager wrote only worktree gets the folder adopted under the mission repo project", async () => {
+  const product = gitRepo();
+  const manual = join(product, "hplay-e5-s10-parent-report-card");
+  mkdirSync(manual);
+  const { root, stateFile } = repoSetup(product, "");
+  writeFrontmatter(stateFile, { worktree: manual });
+  const { paseo, worktrees, adopted, projects } = fakePaseo();
+  projects.push({ projectId: "proj-hp", projectRootPath: product });
+
+  assert.equal((await runFactoryTick(root, paseo)).kind, "advanced");
+
+  assert.equal(worktrees.length, 0);
+  assert.equal(adopted.length, 1);
+  assert.equal(adopted[0].directory, manual);
+  assert.equal(adopted[0].projectId, "proj-hp");
+  assert.equal(field(stateFile, "workspace"), "ws1");
+  assert.equal(field(stateFile, "worktree"), manual);
 });
 
 for (const [name, repo, why] of [
@@ -1471,7 +1490,7 @@ describe("a slice with a workspace seats its agents there", () => {
 
 test("a story the factory writes in spec carries its worktree, so the context watch owns the step and resume reads its state", async () => {
   const ctx = setup("", "on", "spec");
-  const { paseo, created } = fakePaseo();
+  const { paseo, started } = fakePaseo();
   for (let pass = 0; pass < 2; pass++) await runFactoryTick(ctx.root, paseo);
   const story = field(ctx.stateFile, "story")!;
   assert.equal(field(story, "worktree"), ctx.worktree);
@@ -1485,14 +1504,15 @@ test("a story the factory writes in spec carries its worktree, so the context wa
     undefined,
     async () => ctx.root,
   );
-  assert.equal(created.length, 1);
-  assert.equal(await initiative.stepActive(sliceLabels("plan"), "new-1"), true);
+  assert.equal(started.length, 1);
+  assert.equal(field(ctx.stateFile, "agent"), "n1");
+  assert.equal(await initiative.stepActive(sliceLabels("plan"), "n1"), true);
 });
 
 test("a slice naming an existing todo story with no worktree line gets the slice's, so the context watch owns its Plan agent", async () => {
   const ctx = setup("", "on", "spec");
   const story = withStory(ctx, "", "todo");
-  const { paseo, created } = fakePaseo();
+  const { paseo, started } = fakePaseo();
   for (let pass = 0; pass < 2; pass++) await runFactoryTick(ctx.root, paseo);
   assert.equal(field(ctx.stateFile, "phase"), "build");
   assert.equal(field(story, "worktree"), ctx.worktree);
@@ -1506,8 +1526,9 @@ test("a slice naming an existing todo story with no worktree line gets the slice
     undefined,
     async () => ctx.root,
   );
-  assert.equal(created.length, 1);
-  assert.equal(await initiative.stepActive(sliceLabels("plan"), "new-1"), true);
+  assert.equal(started.length, 1);
+  assert.equal(field(ctx.stateFile, "agent"), "n1");
+  assert.equal(await initiative.stepActive(sliceLabels("plan"), "n1"), true);
 });
 
 // A blocked slice tells the manager once and leaves the runnable set, so the next slice can run.
