@@ -26,7 +26,9 @@ Follow-ups:
 
 ## Embedding Paseo's chat
 
-Checked against `@getpaseo/plugin` 0.11.1 (`dist/client/contracts.d.ts`): the client API has `navigation.openAgent`, `openWorkspace` and `openBrowser`, screens, panels, composer pills and timeline transformers, but no component or surface that renders an agent's live chat inside a plugin view. So the dashboard's Sulti strip shows the latest reply, sends typed text through the Sulti router, and links out with "Open in Paseo chat".
+Checked against `@getpaseo/plugin` 0.11.1 (`dist/client/contracts.d.ts`): the client API has `navigation.openAgent`, `openWorkspace` and `openBrowser`, screens, panels, composer pills and timeline transformers, but no component or surface that renders an agent's live chat inside a plugin view. So the Sulti sidebar header item shows the latest reply, sends typed text through the Sulti router, and links out with "Open in Paseo chat" via a one-shot bridge screen (`sulti-chat`) because `PluginSidebarItemProps` does not expose `navigation`.
+
+Sidebar header items: `navigation` on `PluginSidebarItemProps` (same optional block as screens) would drop the bridge screen.
 
 Asks, so the strip could host the chat itself:
 

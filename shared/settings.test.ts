@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { budgetSettings, dashboardSettings, mcpSettings, voiceSettings } from "./settings";
+import { budgetSettings, dashboardSettings, mcpSettings, sultiSidebarSettings, voiceSettings } from "./settings";
 
 test("mcp settings default to excluding nothing", () => {
   assert.deepEqual(mcpSettings.schema.parse({}), { mcpExclude: [] });
@@ -21,6 +21,12 @@ test("dashboard settings default to the initiatives tab", () => {
   assert.deepEqual(dashboardSettings.schema.parse({}), {
     tab: "initiatives",
   });
+});
+
+test("sulti sidebar settings default to expanded with no seen reply", () => {
+  assert.equal(sultiSidebarSettings.id, "sulti-sidebar");
+  assert.equal(sultiSidebarSettings.scope, "host");
+  assert.deepEqual(sultiSidebarSettings.schema.parse({}), { minimized: false, lastSeenReply: "" });
 });
 
 test("dashboard settings drop the old Jarvis panel keys a saved file may still have", () => {

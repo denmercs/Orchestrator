@@ -279,11 +279,11 @@ The bell in the header that lists the current gates, one row per Gate, with a ba
 
 _Avoid_: notifications, inbox, alert (for a context-meter warning).
 
-## Sulti strip
+## Sulti sidebar
 
-The strip under the dashboard header, on every tab. It shows Sulti's latest reply (the last `assistant_message` in the Sulti session's timeline tail, plain text clipped to 3 lines, "No reply from Sulti yet" when there is none), a text box, Send, and **Open in Paseo chat** (`navigation.openAgent` on the Sulti id; hidden without `navigation`). Typed text goes through the Sulti router as typed text under `DASHBOARD_ROUTER`, the same path as Paseo's typed Sulti chat; the router's spoken lines (else its note) show under the box. `DASHBOARD_ROUTER` never counts as listening, speaking or owed, because the strip speaks nothing. The strip reads on mount, every 10 s and right after a send; read errors show inline, send errors toast. Paseo's live chat can't be embedded (see `docs/paseo-upstream-requests.md`). Code: `SultiStrip` in `client/sulti-strip.tsx`, `previewText`/`statusLine`/`canSend` in `client/sulti-strip-model.ts`, `createSultiStrip`/`latestReply` in `server/sulti-strip.ts`, RPCs in `shared/sulti-strip.ts`.
+The sidebar header item on every screen (`addSidebarHeaderItem`). It shows Sulti's latest reply (the last `assistant_message` in the Sulti session's timeline tail, plain text clipped to 3 lines, "No reply from Sulti yet" when there is none), a text box, Send, and **Open in Paseo chat** (opens the `sulti-chat` bridge screen, which calls `navigation.openAgent` on the Sulti id because sidebar items do not get `navigation`). Typed text goes through the Sulti router as typed text under `DASHBOARD_ROUTER`, the same path as Paseo's typed Sulti chat; the router's spoken lines (else its note) show under the box. `DASHBOARD_ROUTER` never counts as listening, speaking or owed, because the item speaks nothing. It reads on mount, every 10 s and right after a send; read errors show inline, send errors toast. An unread dot lights when the reply fingerprint changes while minimized or before the user expands; expanding clears it via `sulti-sidebar` settings (`lastSeenReply`). Minimize collapses to a Sulti chip that still shows the dot; `minimized` persists in the same setting. Paseo's live chat can't be embedded (see `docs/paseo-upstream-requests.md`). Code: `SultiSidebarHeader` in `client/sulti-sidebar-header.tsx`, `useSultiStrip` in `client/use-sulti-strip.ts`, `hasUnread`/`replyFingerprint` in `client/sulti-sidebar-model.ts`, `previewText`/`statusLine`/`canSend` in `client/sulti-strip-model.ts`, `createSultiStrip`/`latestReply` in `server/sulti-strip.ts`, RPCs in `shared/sulti-strip.ts`.
 
-_Avoid_: chat panel, Sulti chat (that is Paseo's own view).
+_Avoid_: chat panel, Sulti chat (that is Paseo's own view), dashboard strip.
 
 ## Start input
 
