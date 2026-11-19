@@ -183,6 +183,23 @@ test("createStoryWorkspace leaves out a missing projectId, and takes the created
   assert.equal(Object.hasOwn((requests[0] as { source: object }).source, "projectId"), false);
 });
 
+test("adoptStoryWorkspace registers an existing folder under a project through the directory source", async () => {
+  const requests: unknown[] = [];
+  const host = hostOver({
+    workspaces: {
+      create: async (request: unknown) => {
+        requests.push(request);
+        return { id: "w-adopt", directory: "/wt/manual", refresh: async () => null };
+      },
+    },
+  });
+
+  const adopted = await host.adoptStoryWorkspace({ title: "S10", directory: "/wt/manual", projectId: "p1" });
+
+  assert.deepEqual(adopted, { id: "w-adopt", directory: "/wt/manual" });
+  assert.deepEqual(requests, [{ title: "S10", source: { kind: "directory", path: "/wt/manual", projectId: "p1" } }]);
+});
+
 test("createStoryWorkspace throws when Paseo reports no folder", async () => {
   const host = hostOver({
     workspaces: {

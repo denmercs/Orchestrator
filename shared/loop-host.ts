@@ -28,6 +28,12 @@ export type StoryWorkspaceCreate = {
   worktreeSlug: string;
 };
 
+export type StoryWorkspaceAdopt = {
+  title: string;
+  directory: string;
+  projectId?: string;
+};
+
 export type StoryWorkspace = {
   id: string;
   directory: string;
@@ -65,6 +71,8 @@ export type LoopHost = {
   startStepAgent(workspaceId: string, input: StepAgentCreate): Promise<{ id: string }>;
   refreshStoryWorkspace(workspaceId: string): Promise<{ directory: string } | null>;
   createStoryWorkspace(input: StoryWorkspaceCreate): Promise<StoryWorkspace>;
+  // Registers an existing checkout folder as a workspace under a project (Paseo `source.kind: directory`).
+  adoptStoryWorkspace(input: StoryWorkspaceAdopt): Promise<StoryWorkspace>;
   // Never rejects: a host with no project list answers [].
   listProjects(): Promise<LoopProject[]>;
   // Never rejects: a host that cannot list answers [].
