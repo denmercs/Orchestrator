@@ -277,45 +277,56 @@ function ContextTab({ styles }: { styles: Styles }) {
       {context.status !== "ready" ? (
         <Text style={styles.muted}>{context.status === "loading" ? "Loading…" : context.error}</Text>
       ) : (
-        POLICY_STEPS.map(({ key, label, note }) => {
-          const policy = context.values[key];
-          const save = (patch: Partial<typeof policy>) =>
-            void context.save({ ...context.values, [key]: { ...policy, ...patch } }, context.revision);
-          return (
-            <View key={key} style={styles.card}>
-              <Text style={styles.cardTitle}>{label}</Text>
-              <ValueRow label="Warn at" styles={styles}>
-                <ValueStepper
-                  text={`${policy.warn}%`}
-                  styles={styles}
-                  onStep={(d) => save({ warn: stepWarn(policy, d) })}
-                />
-              </ValueRow>
-              <ValueRow label="Act at" styles={styles}>
-                <ValueStepper
-                  text={`${policy.act}%`}
-                  styles={styles}
-                  onStep={(d) => save({ act: stepAct(policy, d) })}
-                />
-              </ValueRow>
-              <ValueRow label="Then" styles={styles}>
-                <View style={styles.chipRow}>
-                  {(["compact", "fresh"] as const).map((mode) => (
-                    <Chip
-                      key={mode}
-                      label={MODE_LABEL[mode]}
-                      active={policy.mode === mode}
-                      styles={styles}
-                      onPress={() => policy.mode !== mode && save({ mode })}
-                    />
-                  ))}
-                </View>
-              </ValueRow>
-              {note ? <Text style={styles.muted}>{note}</Text> : null}
-              {context.saveError ? <Text style={[styles.muted, styles.danger]}>{context.saveError}</Text> : null}
-            </View>
-          );
-        })
+        <>
+          {POLICY_STEPS.map(({ key, label, note }) => {
+            const policy = context.values[key];
+            // A press at a limit changes nothing, so it doesn't save.
+            const save = (patch: Partial<typeof policy>) => {
+              const next = { ...policy, ...patch };
+              if (next.warn === policy.warn && next.act === policy.act && next.mode === policy.mode) {
+                return;
+              }
+              void context.save({ ...context.values, [key]: next }, context.revision);
+            };
+            return (
+              <View key={key} style={styles.card}>
+                <Text style={styles.cardTitle}>{label}</Text>
+                <ValueRow label="Warn at" styles={styles}>
+                  <ValueStepper
+                    text={`${policy.warn}%`}
+                    tone={styles.warning}
+                    styles={styles}
+                    onStep={(d) => save({ warn: stepWarn(policy, d) })}
+                  />
+                </ValueRow>
+                <ValueRow label="Act at" styles={styles}>
+                  <ValueStepper
+                    text={`${policy.act}%`}
+                    tone={styles.danger}
+                    styles={styles}
+                    onStep={(d) => save({ act: stepAct(policy, d) })}
+                  />
+                </ValueRow>
+                <ValueRow label="Then" styles={styles}>
+                  <View style={styles.chipRow}>
+                    {(["compact", "fresh"] as const).map((mode) => (
+                      <Chip
+                        key={mode}
+                        label={MODE_LABEL[mode]}
+                        active={policy.mode === mode}
+                        filled
+                        styles={styles}
+                        onPress={() => save({ mode })}
+                      />
+                    ))}
+                  </View>
+                </ValueRow>
+                {note ? <Text style={styles.muted}>{note}</Text> : null}
+              </View>
+            );
+          })}
+          {context.saveError ? <Text style={[styles.muted, styles.danger]}>{context.saveError}</Text> : null}
+        </>
       )}
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Stuck detection</Text>
@@ -328,12 +339,12 @@ function ContextTab({ styles }: { styles: Styles }) {
                 text={String(loop.values.stuckTurns)}
                 suffix="turns"
                 styles={styles}
-                onStep={(d) =>
-                  void loop.save(
-                    { ...loop.values, stuckTurns: stepStuckTurns(loop.values.stuckTurns, d) },
-                    loop.revision,
-                  )
-                }
+                onStep={(d) => {
+                  const stuckTurns = stepStuckTurns(loop.values.stuckTurns, d);
+                  if (stuckTurns !== loop.values.stuckTurns) {
+                    void loop.save({ ...loop.values, stuckTurns }, loop.revision);
+                  }
+                }}
               />
             </ValueRow>
             <ValueRow label="Or" styles={styles}>
@@ -357,12 +368,12 @@ function ContextTab({ styles }: { styles: Styles }) {
                 text={capLabel(budget.values.storyCapUsd)}
                 suffix="per story"
                 styles={styles}
-                onStep={(d) =>
-                  void budget.save(
-                    { ...budget.values, storyCapUsd: stepCap(budget.values.storyCapUsd, d) },
-                    budget.revision,
-                  )
-                }
+                onStep={(d) => {
+                  const storyCapUsd = stepCap(budget.values.storyCapUsd, d);
+                  if (storyCapUsd !== budget.values.storyCapUsd) {
+                    void budget.save({ ...budget.values, storyCapUsd }, budget.revision);
+                  }
+                }}
               />
             </ValueRow>
             <ValueRow label="When hit" styles={styles}>
@@ -385,22 +396,24 @@ function ValueRow({ label, styles, children }: { label: string; styles: Styles; 
   );
 }
 
-// − value + with an optional trailing unit; `onStep` gets +1 or −1.
+// − value + with an optional trailing unit and value colour; `onStep` gets +1 or −1.
 function ValueStepper({
   text,
   suffix,
+  tone,
   styles,
   onStep,
 }: {
   text: string;
   suffix?: string;
+  tone?: Styles["danger"];
   styles: Styles;
   onStep(direction: 1 | -1): void;
 }) {
   return (
     <View style={styles.rowWrap}>
       <Chip label="−" styles={styles} onPress={() => onStep(-1)} />
-      <Text style={[styles.body, styles.stepValue]}>{text}</Text>
+      <Text style={[styles.body, styles.stepValue, tone]}>{text}</Text>
       <Chip label="+" styles={styles} onPress={() => onStep(1)} />
       {suffix ? <Text style={styles.muted}>{suffix}</Text> : null}
     </View>
@@ -1161,25 +1174,30 @@ function sourceLabel(values: PipelineConfig, id: string) {
   return values.sources.find((s) => s.id === id)?.label ?? `${id} (removed)`;
 }
 
+// `filled` makes the active chip solid (foreground fill, inverted text) instead of outlined.
 function Chip({
   label,
   active,
+  filled,
   styles,
   onPress,
 }: {
   label: string;
   active?: boolean;
+  filled?: boolean;
   styles: Styles;
   onPress?(): void;
 }) {
+  const on = active ? (filled ? styles.chipFilled : styles.chipActive) : null;
+  const onText = active ? (filled ? styles.chipTextFilled : styles.chipTextActive) : null;
   return (
     <Pressable
       accessibilityRole="button"
       disabled={!onPress}
       onPress={onPress}
-      style={[styles.chip, active ? styles.chipActive : null]}
+      style={[styles.chip, on]}
     >
-      <Text style={[styles.chipText, active ? styles.chipTextActive : null]}>{label}</Text>
+      <Text style={[styles.chipText, onText]}>{label}</Text>
     </Pressable>
   );
 }
@@ -1266,6 +1284,7 @@ function createStyles(theme: Theme, compact: boolean) {
     headerButtonText: { color: c.foregroundMuted, fontSize: 13 },
     hint: { color: c.foregroundMuted, fontSize: 12, paddingHorizontal: pad },
     danger: { color: c.statusDanger },
+    warning: { color: c.statusWarning },
     hintStrong: { color: c.foreground, fontWeight: "600" as const },
     hintMono: { fontFamily: "monospace" },
     tabRow: {
@@ -1416,6 +1435,8 @@ function createStyles(theme: Theme, compact: boolean) {
     chipActive: { backgroundColor: c.surface2, borderColor: c.foregroundMuted },
     chipText: { color: c.foreground, fontSize: 12 },
     chipTextActive: { color: c.foreground, fontSize: 12, fontWeight: "600" as const },
+    chipFilled: { backgroundColor: c.foreground, borderColor: c.foreground },
+    chipTextFilled: { color: c.surface0, fontSize: 12, fontWeight: "600" as const },
     input: {
       borderWidth: 1,
       borderColor: c.border,

@@ -13,15 +13,16 @@ function clampPolicy(value: number) {
 }
 
 // `direction` is +1 for the plus button, -1 for the minus button. An off-grid saved value steps from
-// where it is and lands in range on the first press.
+// where it is and lands in range on the first press. Plus never lowers Warn and minus never raises Act,
+// even when a saved pair already sits closer than a step.
 export function stepWarn({ warn, act }: Thresholds, direction: 1 | -1) {
   const next = clampPolicy(warn + direction * POLICY_STEP);
-  return direction > 0 ? Math.min(act - POLICY_STEP, next) : next;
+  return direction > 0 ? Math.max(Math.min(warn, POLICY_MAX), Math.min(act - POLICY_STEP, next)) : next;
 }
 
 export function stepAct({ warn, act }: Thresholds, direction: 1 | -1) {
   const next = clampPolicy(act + direction * POLICY_STEP);
-  return direction < 0 ? Math.max(warn + POLICY_STEP, next) : next;
+  return direction < 0 ? Math.min(Math.max(act, POLICY_MIN), Math.max(warn + POLICY_STEP, next)) : next;
 }
 
 const STUCK_MIN = 3;

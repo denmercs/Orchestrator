@@ -85,3 +85,13 @@ test("POLICY_STEPS: only Review carries a note", () => {
 test("MODE_LABEL: compact and fresh session", () => {
   assert.deepEqual(MODE_LABEL, { compact: "Compact", fresh: "Fresh session" });
 });
+
+test("stepWarn: plus never lowers Warn when a saved pair sits too close", () => {
+  assert.equal(stepWarn({ warn: 88, act: 90 }, 1), 88);
+  assert.equal(stepWarn({ warn: 95, act: 50 }, 1), 95);
+});
+
+test("stepAct: minus never raises Act when a saved pair sits too close", () => {
+  assert.equal(stepAct({ warn: 40, act: 42 }, -1), 42);
+  assert.equal(stepAct({ warn: 90, act: 50 }, -1), 50);
+});
