@@ -61,3 +61,59 @@ test("the page stays offline: no urls, no src, no link tags", () => {
   assert.doesNotMatch(html, /\bsrc=/);
   assert.doesNotMatch(html, /<link/i);
 });
+
+const ref = (side: "+" | "-", snippet: string) => ({ file: "client/strip.tsx", side, snippet });
+const motion: NonNullable<DebriefPageData["motion"]> = {
+  file: "/out/motion.md",
+  text: 'Make a 65-second animated explainer.\n\n**Scene 1 (0–8s): Start.** "z 1000" <b>',
+  cut: [{ path: "yarn.lock", reason: "generated" }],
+  problems: ["scenes[2] (Old): decision cites no added line"],
+  motion: {
+    title: "T",
+    subtitle: "S",
+    metaphor: "m",
+    scenes: [
+      {
+        name: "Start",
+        visual: "v",
+        labels: [],
+        beats: [{ caption: "c" }],
+        decision: { text: "Raise the strip.", refs: [ref("+", "zIndex: 1000")] },
+        instead_of: { text: "A portal.", refs: [ref("-", "<Overlay portal />")] },
+        because: null,
+      },
+    ],
+  },
+};
+
+test("with no motion brief the page has no Motion brief section", () => {
+  const html = debriefPage(data);
+  assert.ok(!html.includes('id="motion"'));
+  assert.ok(!html.includes('href="#motion"'));
+});
+
+test("the Motion brief section shows the text to copy, its path, the cut files and each scene's cited lines", () => {
+  const html = debriefPage({ ...data, motion });
+  assert.ok(html.includes('id="motion"') && html.includes('href="#motion"'));
+  assert.match(html, /<h2>Motion brief<\/h2>/);
+  assert.match(html, /<textarea id="motion-text" readonly[^>]*>Make a 65-second animated explainer\.\n\n\*\*Scene 1 \(0–8s\): Start\.\*\* &quot;z 1000&quot; &lt;b&gt;<\/textarea>/);
+  assert.match(html, /<button id="copy-motion" type="button">Copy<\/button>/);
+  for (const text of ["/out/motion.md", "yarn.lock", "generated", "scenes[2] (Old): decision cites no added line", "Raise the strip.", "zIndex: 1000", "A portal.", "&lt;Overlay portal /&gt;", "None shown in the diff."]) {
+    assert.ok(html.includes(text), text);
+  }
+  assert.equal(html.match(/coming soon/gi)?.length, 4);
+  assert.doesNotMatch(html, /https?:|\bsrc=|<link/i);
+});
+
+test("the Copy button works from a local file: clipboard API with a select-and-copy fallback", () => {
+  const html = debriefPage({ ...data, motion });
+  assert.ok(html.includes("navigator.clipboard.writeText"));
+  assert.ok(html.includes('document.execCommand("copy")'));
+});
+
+test("a motion brief that wasn't written says so and still lists its problems", () => {
+  const html = debriefPage({ ...data, motion: { file: null, text: null, cut: [], problems: ["No architectural decision in this diff."], motion: null } });
+  assert.ok(html.includes("No motion brief was written."));
+  assert.ok(html.includes("No architectural decision in this diff."));
+  assert.ok(!html.includes('id="copy-motion"'));
+});

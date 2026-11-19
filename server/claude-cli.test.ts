@@ -68,3 +68,11 @@ test("claudeSignedIn reads `claude auth status`", async () => {
   };
   assert.equal(await claudeSignedIn(missing), false);
 });
+
+test("claudeCli can run another model with the same no-tools flags", async () => {
+  const { run, calls } = fakeRun(envelope({ result: "ok" }));
+  await claudeCli(run, "claude-sonnet-5-5")("SYSTEM", "PROMPT");
+  assert.deepEqual(calls[0].args, cliArgs("SYSTEM", "claude-sonnet-5-5"));
+  assert.equal(calls[0].args[calls[0].args.indexOf("--model") + 1], "claude-sonnet-5-5");
+  assert.equal(calls[0].args[calls[0].args.indexOf("--tools") + 1], "");
+});
