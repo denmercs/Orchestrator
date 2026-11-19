@@ -238,7 +238,7 @@ After the steps above, in this order. Each reuses the names in this file.
 
 - The Sulti session in `~/.orchestrator/sulti`, with the router targeting it by default and the Voice loop in front (confirm gate: merge, delete, interrupt; fast paths: switch, list, never mind, wake word). (Landed.)
 - The tick writes `digest.md` in each repo's factory home.
-- Status steers go to Sulti, not the repo manager.
+- Status steers go to Sulti, not the repo manager. (Landed: ready, merged, nothing-to-ship and block lines go to Sulti, falling back to the manager when Sulti can't be reached; what the manager must act on stays a manager steer.)
 - The status reporter reads the digests for cross-repo status.
 
 ## First finished path

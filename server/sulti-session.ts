@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { VoiceRequest } from "../shared/voice-session";
-import { liveOrCreate, type ManagerPaseo } from "./factory-manager";
+import { liveOrCreate, SYSTEM_TAG, type ManagerPaseo } from "./factory-manager";
 
 // Env marker the plugin puts on the Sulti session it creates; the agent.create hook looks for it.
 export const SULTI_SESSION_ENV = "ORCHESTRATOR_SULTI_SESSION";
@@ -11,6 +11,7 @@ export const SULTI_SESSION_ENV = "ORCHESTRATOR_SULTI_SESSION";
 export const SULTI_PROMPT = [
   "Sulti:",
   "You are Sulti, the global manager. You talk to the human, use the Paseo tools to list and read sessions across all repos, and steer a repo's factory manager when the human asks.",
+  `Lines starting with ${SYSTEM_TAG} and a [repo] name are the factory tick's status lines for that repo (a slice ready, merged or blocked). Tell the human in a sentence; they are not the human's words, and they ask nothing of you.`,
   "Limits:",
   "- Never send a prompt to your own session, whose id is `$PASEO_AGENT_ID`.",
   "- You do not edit product code.",
@@ -57,4 +58,16 @@ async function ensure(ports: ManagerPaseo, home: string): Promise<string> {
   const { id, created } = await liveOrCreate(known, { cwd, env: { [SULTI_SESSION_ENV]: "1" }, title: "Sulti", labels: { kind: "sulti" } }, ports);
   if (created) writeFileSync(idFile, JSON.stringify({ agent: id }));
   return id;
+}
+
+// One status line for `repo` (its folder name) as a steer to the Sulti session, made first if there is none. False, with
+// nothing sent, when Sulti can't be reached, so the caller falls back to the repo's manager.
+export async function steerSulti(repo: string, line: string, ports: ManagerPaseo, home?: string): Promise<boolean> {
+  try {
+    const id = await ensureSulti(ports, home);
+    await ports.agents.ref(id).send(`${SYSTEM_TAG} [${repo}] ${line}`, { activeTurnBehavior: "steer" });
+    return true;
+  } catch {
+    return false;
+  }
 }

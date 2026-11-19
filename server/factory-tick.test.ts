@@ -1061,6 +1061,31 @@ test("a clean review on a scout slice steers once over repeated passes, sets rea
   assert.equal(created.length + commits.length, 0);
 });
 
+test("a clean review on a scout slice reports to Sulti, not the manager, once a status port exists", async () => {
+  const { ctx } = reviewSlice("review-done", { kind: "scout", findings: "- [x] blocking: server/x.ts:1 — wrong — fixed" });
+  const { paseo } = fakePaseo({ "r-1": { status: "idle" } });
+  const steers: string[] = [];
+  const statuses: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  paseo.status = async (line) => void statuses.push(line);
+  for (let pass = 0; pass < 3; pass++) await runFactoryTick(ctx.root, paseo);
+  assert.equal(statuses.length, 1);
+  assert.match(statuses[0], /s1 passed review and is ready for you/);
+  assert.deepEqual(steers, []);
+  assert.equal(field(ctx.stateFile, "ready"), "review");
+});
+
+test("a clean review on a scout slice falls back to the manager when Sulti can't be reached", async () => {
+  const { ctx } = reviewSlice("review-done", { kind: "scout", findings: "- [x] blocking: server/x.ts:1 — wrong — fixed" });
+  const { paseo } = fakePaseo({ "r-1": { status: "idle" } });
+  const steers: string[] = [];
+  paseo.steer = async (line) => void steers.push(line);
+  paseo.status = async () => false;
+  await runFactoryTick(ctx.root, paseo);
+  assert.equal(steers.length, 1);
+  assert.match(steers[0], /s1 passed review/);
+});
+
 test("a clean review on a ship slice goes to ship, with no steer and no seat", async () => {
   const { ctx } = reviewSlice("review-done", { findings: "- [x] blocking: server/x.ts:1 — wrong — fixed" });
   const { paseo, created } = fakePaseo({ "r-1": { status: "idle" } });

@@ -3,8 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { MANAGER_SESSION_MODELS, type ManagerPaseo } from "./factory-manager";
-import { applySultiSession, ensureSulti, SULTI_SESSION_ENV } from "./sulti-session";
+import { MANAGER_SESSION_MODELS, SYSTEM_TAG, type ManagerPaseo } from "./factory-manager";
+import { applySultiSession, ensureSulti, steerSulti, SULTI_SESSION_ENV } from "./sulti-session";
 
 const marked = (systemPrompt?: string) => ({
   config: { provider: "claude", ...(systemPrompt ? { systemPrompt } : {}) },
@@ -18,6 +18,7 @@ const rules = [
   /across (all )?repos/i,
   /steer a repo's (factory )?manager/i,
   /never send[^.]*\$PASEO_AGENT_ID/i,
+  /status lines for that repo/i,
   /do not edit product code/i,
   /do not treat another agent's approval as permission to merge/i,
 ];
@@ -127,4 +128,30 @@ test("ensureSulti shares one create between two callers at once", async () => {
   const ids = await Promise.all([ensureSulti(paseo, home), ensureSulti(paseo, home)]);
   assert.deepEqual(ids, ["new-1", "new-1"]);
   assert.equal(created.length, 1);
+});
+
+test("steerSulti sends the tagged, repo-labelled line to the Sulti session as a steer", async () => {
+  const home = tempHome("live-1");
+  const sent: { id: string; text: string; options?: unknown }[] = [];
+  const paseo: ManagerPaseo = {
+    agents: {
+      ref: (id) => ({ send: async (text, options) => void sent.push({ id, text, options }), refresh: async () => ({ agent: { status: "idle" } }) }),
+      create: async () => assert.fail("a live Sulti must not be recreated"),
+    },
+  };
+  assert.equal(await steerSulti("hearthplay", "Slice s1 is ready for you.", paseo, home), true);
+  assert.deepEqual(sent, [{ id: "live-1", text: `${SYSTEM_TAG} [hearthplay] Slice s1 is ready for you.`, options: { activeTurnBehavior: "steer" } }]);
+});
+
+test("steerSulti returns false, sending nothing, when Sulti can't be reached", async () => {
+  const home = tempHome();
+  const paseo: ManagerPaseo = {
+    agents: {
+      ref: () => ({ send: async () => assert.fail("nothing to send to"), refresh: async () => null }),
+      create: async () => {
+        throw new Error("unavailable");
+      },
+    },
+  };
+  assert.equal(await steerSulti("hearthplay", "Slice s1 is ready for you.", paseo, home), false);
 });
