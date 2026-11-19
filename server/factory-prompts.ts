@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { FactorySlice } from "../shared/factory";
 import { readFactory, sliceDir, writeSliceState } from "./factory-layout";
+import { toHuman } from "./factory-report";
 
 // The part of a Paseo permission request the tick reads (`AgentPermissionRequest`): what the tool is and what it touches.
 export type SeatPrompt = {
@@ -130,6 +131,8 @@ type Session = { pendingPermissions?: SeatPrompt[] | null } | null | undefined;
 export type PromptPorts = {
   respond?: (answer: PromptAnswer) => Promise<unknown>;
   steer?: (line: string, mission?: string) => Promise<unknown>;
+  // Sulti's port: a prompt only a human can answer goes there first (`toHuman`).
+  report?: (line: string, mission?: string) => Promise<unknown>;
   now?: () => number;
 };
 
@@ -137,7 +140,7 @@ const steered = async (steer: PromptPorts["steer"], line: string, mission?: stri
   Boolean(steer) && (await Promise.resolve().then(() => steer!(line, mission)).catch(() => false)) !== false;
 
 // A live seat that waits on a permission prompt: the tick answers a prompt in the slice's scope (`judgePrompt`) and tells the
-// manager about the first one it won't answer, once, recorded as `prompt` in state.md. Once that one has waited
+// human (Sulti, else the manager) about the first one it won't answer, once, recorded as `prompt` in state.md. Once that one has waited
 // `promptMinutes` the manager hears it is stalled, once more. `prompt_steered` is saved only when a steer was delivered, so an
 // undelivered one is tried again next pass. No prompt left clears the fields.
 export async function answerSeatPrompts(root: string, slice: FactorySlice, session: Session, ports: PromptPorts): Promise<void> {
@@ -173,18 +176,18 @@ export async function answerSeatPrompts(root: string, slice: FactorySlice, sessi
   if (first.prompt.id !== state.prompt) {
     writeSliceState(root, mission, id, { prompt: first.prompt.id, prompt_what: what, prompt_since: new Date(now).toISOString(), prompt_steered: null });
     const line = `Slice ${id}'s ${seat} seat waits on a permission prompt the tick won't answer: ${what}. Answer it in session ${state.agent}.`;
-    if (await steered(ports.steer, line, mission)) writeSliceState(root, mission, id, { prompt_steered: "asked" });
+    if (await steered(toHuman(ports), line, mission)) writeSliceState(root, mission, id, { prompt_steered: "asked" });
     return;
   }
   if (!state.prompt_steered) {
     const line = `Slice ${id}'s ${seat} seat waits on a permission prompt the tick won't answer: ${state.prompt_what}. Answer it in session ${state.agent}.`;
-    if (await steered(ports.steer, line, mission)) writeSliceState(root, mission, id, { prompt_steered: "asked" });
+    if (await steered(toHuman(ports), line, mission)) writeSliceState(root, mission, id, { prompt_steered: "asked" });
     return;
   }
   const minutes = readFactory(root).manager.promptMinutes;
   const since = Date.parse(state.prompt_since);
   if (state.prompt_steered === "asked" && Number.isFinite(since) && now - since >= minutes * 60_000) {
     const line = `Slice ${id}'s ${seat} seat has waited ${Math.floor((now - since) / 60_000)} minutes on a permission prompt: ${state.prompt_what}. Answer it in session ${state.agent}.`;
-    if (await steered(ports.steer, line, mission)) writeSliceState(root, mission, id, { prompt_steered: "stalled" });
+    if (await steered(toHuman(ports), line, mission)) writeSliceState(root, mission, id, { prompt_steered: "stalled" });
   }
 }

@@ -17,6 +17,8 @@ export type FactorySeatDeps = {
   readConfig: () => Promise<LoopConfig>;
   // One line to the factory manager at `root` as a steer. Absent, `steerManager`. The mission id routes per-mission managers.
   steer?: (root: string, line: string, paseo: PaseoApi, mission?: string) => Promise<unknown>;
+  // The copy of the block line for Sulti (`steerSulti` in the real wiring). Absent: the manager alone hears it.
+  report?: (root: string, line: string, paseo: PaseoApi, mission?: string) => Promise<unknown>;
 };
 
 const readText = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
@@ -65,5 +67,6 @@ export async function factorySeatTurnEnded(
   // A reopen starts the counters clean, as a reopened loop story does.
   writeFrontmatter(story.path, STUCK_CLEAR);
   const steer = (line: string) => (deps.steer ?? ((r, l, p, m) => steerManager(r, l, p, m)))(found.root, line, paseo, found.slice.mission);
-  await blockSlice(found.root, found.slice, { steer }, `stuck: ${evidence}.`);
+  const report = deps.report && ((line: string) => deps.report!(found.root, line, paseo, found.slice.mission));
+  await blockSlice(found.root, found.slice, { steer, report }, `stuck: ${evidence}.`);
 }

@@ -72,8 +72,9 @@ function sliceFixture(agent = "a1") {
 
 // The seat check with stuckTurns 3, finding the factory at `root`, recording the manager steers instead of sending them.
 // `initiative.onTurnEnded(api, event)` is the hook index.server.ts calls first on every turn end.
-function sliceStuckLoop(root: string) {
+function sliceStuckLoop(root: string, sulti = false) {
   const steers: string[] = [];
+  const reports: string[] = [];
   const initiative = {
     onTurnEnded: (api: PluginHandlerContext["paseo"], event: ReturnType<typeof ended>) =>
       factorySeatTurnEnded(api, event, {
@@ -82,9 +83,10 @@ function sliceStuckLoop(root: string) {
         steer: async (_root, line) => {
           steers.push(line);
         },
+        ...(sulti ? { report: async (_root: string, line: string) => void reports.push(line) } : {}),
       }),
   };
-  return { initiative, steers };
+  return { initiative, steers, reports };
 }
 const harnessEdit = { type: "tool_call", status: "completed", detail: { type: "edit", filePath: "/w/.harness/state.md", newString: "x" } };
 const codeEdit = { type: "tool_call", status: "completed", detail: { type: "edit", filePath: "src/a.ts", newString: "x" } };
@@ -230,4 +232,14 @@ test("a QA seat that wrote test-done or test-failed is neither nudged nor blocke
   writeFileSync(join(worktree, ".harness", "state.md"), "# S1\n\n## Status\nrunning\n", "utf8");
   await sliceTurn(initiative, api, harnessEdit);
   assert.equal(storyMeta(state).ready, "blocked");
+});
+
+test("a stuck block steers the manager and sends Sulti one copy", async () => {
+  const { root, worktree, labels } = sliceFixture("a1");
+  const { api } = fakePaseo([{ id: "a1", labels: { ...labels, seat: "reviewer", "loop-step": "review" } }]);
+  const { initiative, steers, reports } = sliceStuckLoop(root, true);
+  writeFileSync(join(worktree, ".harness", "state.md"), "# S1\n\n## Status\nreview-running\n", "utf8");
+  for (let turn = 0; turn < 4; turn++) await sliceTurn(initiative, api, harnessEdit);
+  assert.equal(steers.length, 1);
+  assert.deepEqual(reports, steers);
 });

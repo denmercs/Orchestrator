@@ -81,7 +81,7 @@ import { createSultiProvider, type SultiConnection } from "./server/sulti-provid
 import { type Filed, fileInitiative, fileSlice } from "./server/factory-file";
 import { fileInitiativeRpc, fileSliceRpc } from "./shared/factory-file";
 import { applyFactoryManager, hearthplayStepConfig, steerManager } from "./server/factory-manager";
-import { applySultiSession, ensureSulti, readSultiId } from "./server/sulti-session";
+import { applySultiSession, ensureSulti, readSultiId, steerSulti } from "./server/sulti-session";
 import { isDead, runFactoryTick, type TickPaseo } from "./server/factory-tick";
 import { factoryStatus } from "./server/factory-status";
 import { commitStory } from "./server/story-git";
@@ -704,6 +704,7 @@ export default function contribute(
       readFactoryRoot: async () => (await readHarness()).repo ?? null,
       readConfig: readLoopConfig,
       steer: (root, line, api, mission) => steerManager(root, line, neverSulti(api), mission),
+      report: (root, line, api, mission) => steerSulti(root, line, api, mission, deps.sultiHome),
     }).catch((error) => {
       console.warn("orchestrator: factory seat check failed", error);
     });
@@ -771,7 +772,8 @@ export default function contribute(
   timer.unref?.();
   // A Claude session starts the replay by writing the start file; any Paseo handle we have seen will do.
   const replayStart = deps.replayStart ?? { file: REPLAY_START_FILE, everyMs: REPLAY_START_POLL_MS };
-  // The tick's Paseo handle, except that it refuses to send to the Sulti session: the tick steers a repo's manager only.
+  // The tick's Paseo handle for manager steers, except that it refuses to send to the Sulti session: a manager.md that
+  // names Sulti must not make the manager steer land there. Status lines reach Sulti through `steerSulti` only.
   const neverSulti = (paseo: NonNullable<typeof pipelinePaseo>): NonNullable<typeof pipelinePaseo> => ({
     ...paseo,
     agents: {
@@ -797,6 +799,8 @@ export default function contribute(
     // A seat runs on its file's profile, else its role's tier; the tick falls back to the manager's models without one.
     profiles: async () => ({ list: profilesFromConfigGet(await paseo.config.get()), runnerProfileId: await readRunnerProfileId() }),
     steer: (line, mission) => steerManager(repo, line, neverSulti(paseo), mission),
+    // A line for the human goes to the Sulti session while it is live; the manager hears only what it must act on.
+    report: (line, mission) => steerSulti(repo, line, paseo, mission, deps.sultiHome),
     // A merged slice closes its Jira ticket the way a merged Story does: the user's setting with the slice's repo override, read even when the Story pipeline is off.
     closeTicket: closeIssue,
     closeOnMerge: async (cwd) => repoPipelineConfig((await readPipelineValues()) ?? pipelineSettings.schema.parse({}), cwd).closeOnMerge,

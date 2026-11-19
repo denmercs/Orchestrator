@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { MANAGER_SESSION_MODELS, type ManagerPaseo } from "./factory-manager";
-import { applySultiSession, ensureSulti, SULTI_SESSION_ENV } from "./sulti-session";
+import { applySultiSession, ensureSulti, steerSulti, SULTI_SESSION_ENV } from "./sulti-session";
 
 const marked = (systemPrompt?: string) => ({
   config: { provider: "claude", ...(systemPrompt ? { systemPrompt } : {}) },
@@ -20,6 +20,8 @@ const rules = [
   /never send[^.]*\$PASEO_AGENT_ID/i,
   /do not edit product code/i,
   /do not treat another agent's approval as permission to merge/i,
+  /\[system\][^.]*factory tick/i,
+  /manager's to write[^\n]*never on your own/i,
 ];
 
 test("applySultiSession gives a marked request the Sulti prompt as its system prompt", () => {
@@ -60,10 +62,11 @@ type Created = Parameters<ManagerPaseo["agents"]["create"]>[0];
 // reject their create.
 function fakePaseo(known: Record<string, { status: string; archivedAt?: string | null }> = {}, failing: string[] = []) {
   const created: Created[] = [];
+  const sent: { id: string; text: string }[] = [];
   const paseo: ManagerPaseo = {
     agents: {
       ref: (id) => ({
-        send: async () => undefined,
+        send: async (text) => void sent.push({ id, text }),
         refresh: async () => (known[id] ? { agent: known[id] } : null),
       }),
       create: async (request) => {
@@ -74,7 +77,7 @@ function fakePaseo(known: Record<string, { status: string; archivedAt?: string |
       },
     },
   };
-  return { paseo, created };
+  return { paseo, created, sent };
 }
 
 test("ensureSulti creates the Sulti session in <home>/sulti on Sonnet and records its id in sulti.json", async () => {
@@ -128,3 +131,31 @@ test("ensureSulti shares one create between two callers at once", async () => {
   assert.deepEqual(ids, ["new-1", "new-1"]);
   assert.equal(created.length, 1);
 });
+
+test("steerSulti sends the live Sulti session one tagged line naming the repo and mission", async () => {
+  const home = tempHome("s-1");
+  const { paseo, created, sent } = fakePaseo({ "s-1": { status: "idle" } });
+  assert.equal(await steerSulti("/repos/hearthplay", "Slice s1 is ready for you.", paseo, "e4", home), true);
+  assert.equal(await steerSulti("/repos/orchestrator", "Swept 2.", paseo, undefined, home), true);
+  assert.deepEqual(sent, [
+    { id: "s-1", text: "[system] hearthplay factory, mission e4: Slice s1 is ready for you." },
+    { id: "s-1", text: "[system] orchestrator factory: Swept 2." },
+  ]);
+  assert.equal(created.length, 0);
+});
+
+for (const [name, known] of [
+  ["no sulti.json", undefined],
+  ["a session Paseo doesn't have", {}],
+  ["a closed session", { "s-1": { status: "closed" } }],
+  ["an errored session", { "s-1": { status: "error" } }],
+  ["an archived session", { "s-1": { status: "idle", archivedAt: "2026-11-01T00:00:00Z" } }],
+] as const) {
+  test(`steerSulti returns false and creates nothing with ${name}`, async () => {
+    const home = tempHome(known ? "s-1" : undefined);
+    const { paseo, created, sent } = fakePaseo(known ?? {});
+    assert.equal(await steerSulti("/repos/hearthplay", "ready", paseo, undefined, home), false);
+    assert.equal(created.length + sent.length, 0);
+    assert.equal(existsSync(join(home, "sulti")), false);
+  });
+}
