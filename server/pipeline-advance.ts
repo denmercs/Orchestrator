@@ -37,7 +37,7 @@ import { closeIssue } from "./jira";
 import { withMcpScope } from "./mcp-scope";
 import { failureReport, prStatus } from "./pr-checks";
 import { loadPhaseConfig, profilesFromConfigGet, withProductPlanReviewStepConfig } from "./agent-runner";
-import { sliceRepoRoot, usesProductPlanReviewDefaults } from "./factory-manager";
+import { isOrchestratorRepo, orchestratorStepConfig, sliceRepoRoot, usesProductPlanReviewDefaults } from "./factory-manager";
 import type { LoopStep } from "../shared/story-method";
 import { repoPipelineConfig, repoReviewMode } from "./repo-pipeline";
 import { installSkills } from "./skill-sources";
@@ -372,9 +372,9 @@ async function startPhase(
           reviewMode,
         });
     let agentConfig = await loadPhaseConfig(paseo, phase.profile, target.agentConfig);
-    if (cwd && (phase.id === "plan" || phase.id === "review")) {
+    if (cwd) {
       const repoRoot = sliceRepoRoot(cwd, cwd);
-      if (usesProductPlanReviewDefaults(repoRoot)) {
+      if (usesProductPlanReviewDefaults(repoRoot) && (phase.id === "plan" || phase.id === "review")) {
         try {
           agentConfig = withProductPlanReviewStepConfig(
             true,
@@ -384,6 +384,14 @@ async function startPhase(
           );
         } catch (error) {
           console.warn("orchestrator: product plan/review defaults", ticket.key, error);
+        }
+      }
+      if (isOrchestratorRepo(repoRoot)) {
+        const step: LoopStep = fix ? "fix" : phase.id === "plan" ? "plan" : phase.id === "review" ? "review" : "implement";
+        try {
+          agentConfig = await orchestratorStepConfig(step, repoRoot, paseo, agentConfig);
+        } catch (error) {
+          console.warn("orchestrator: loop step models", ticket.key, error);
         }
       }
     }

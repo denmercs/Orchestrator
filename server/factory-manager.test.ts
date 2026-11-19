@@ -155,7 +155,17 @@ test("orchestratorStepConfig: plan on Opus, review on Grok, implement on Compose
   assert.deepEqual(await orchestratorStepConfig("plan", root, profiles, fallback), { provider: "cursor/claude-opus-5-5" });
   assert.deepEqual(await orchestratorStepConfig("review", root, profiles, fallback), { provider: "cursor/grok-4.7" });
   assert.deepEqual(await orchestratorStepConfig("implement", root, profiles, fallback), { provider: "cursor/composer-2.5" });
+  assert.deepEqual(await orchestratorStepConfig("fix", root, profiles, fallback), { provider: "cursor/composer-2.5" });
+  assert.deepEqual(await orchestratorStepConfig("diagnose", root, profiles, fallback), { provider: "cursor/grok-4.7" });
   assert.deepEqual(await orchestratorStepConfig("plan", tempRoot(false, undefined, false), profiles, fallback), { provider: "claude" });
+});
+
+test("orchestratorStepConfig: diagnose stays on Grok when profiles are unavailable", async () => {
+  const root = tempRoot(false, undefined, true);
+  const { orchestratorStepConfig } = await import("./factory-manager");
+  assert.deepEqual(await orchestratorStepConfig("diagnose", root, { config: { get: async () => { throw new Error("off"); } } }, { provider: "claude" }), {
+    provider: "cursor/grok-4.7",
+  });
 });
 
 test("hearthplayStepConfig: plan on Opus, review on Grok, implement on Composer", async () => {
