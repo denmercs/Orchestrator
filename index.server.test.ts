@@ -10,7 +10,7 @@ import { sultiStripRead, sultiStripSend } from "./shared/sulti-strip";
 import { voiceEvents, voiceHelperStart, voiceHelperStop, voiceHelperSwitch, voiceInterpret, voiceSpeak, voiceStatus } from "./shared/voice-rpc";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { readFactory } from "./server/factory-layout";
 
 // No test starts the real Speaker: its workers spawn `uv`.
@@ -168,7 +168,7 @@ function wired(
       return () => noop;
     },
   });
-  const stop = contribute(server, { replay: runner, askUnavailable: async () => (signedIn ? null : "Claude Code is not signed in."), replayStart, loopStart, voiceHelperCwd, speakerPorts: quietSpeaker, sultiHome: mkdtempSync(join(tmpdir(), "sulti-home-")), ...extra });
+  const stop = contribute(server, { replay: runner, askUnavailable: async () => (signedIn ? null : "Claude Code is not signed in."), replayStart, loopStart, orbit: { file: join(mkdtempSync(join(tmpdir(), "orbit-")), "orbit.json"), everyMs: 60_000 }, voiceHelperCwd, speakerPorts: quietSpeaker, sultiHome: mkdtempSync(join(tmpdir(), "sulti-home-")), ...extra });
   return { handlers, listeners, providers, fake, stop };
 }
 
@@ -352,6 +352,29 @@ test("a loop start file files slices for that input, once Paseo is known", async
       { ...JSON.parse(readFileSync(result, "utf8")), at: undefined },
       { at: undefined, ok: false, error: `nope is not an initiative in ${repo}.` },
     );
+  } finally {
+    stop();
+  }
+});
+
+test("an orbit file stops the story loop on that initiative, once Paseo is known", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "orbit-")), "orbit.json");
+  const repo = mkdtempSync(join(tmpdir(), "orbit-repo-"));
+  const initiative = join(repo, ".harness", "initiatives", "debrief", "initiative.md");
+  mkdirSync(dirname(initiative), { recursive: true });
+  writeFileSync(initiative, "---\ntracker: local\nloop: on\n---\n\n# Initiative: Debrief\n");
+  const { listeners, stop } = wired([], true, undefined, undefined, undefined, { orbit: { file, everyMs: 5 } });
+  try {
+    writeFileSync(file, JSON.stringify({ action: "stop", repo, initiative: "debrief" }));
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(existsSync(file), true, "the file waits while there is no Paseo API");
+    const created = listeners.get("agent.created");
+    assert.ok(created);
+    created({ agent: { id: "a" } }, { paseo: {} });
+    const result = file.replace(/\.json$/, ".result.json");
+    await until(() => existsSync(result));
+    assert.deepEqual({ ...JSON.parse(readFileSync(result, "utf8")), at: undefined }, { at: undefined, ok: true, error: null, action: "stop" });
+    assert.match(readFileSync(initiative, "utf8"), /^loop: off$/m);
   } finally {
     stop();
   }

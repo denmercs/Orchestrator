@@ -56,6 +56,7 @@ import { createSpeaker, DEFAULT_REFERENCE_CLIP, resolveReferenceClip, type Speak
 import { realSpeakerPorts } from "./server/voice-speaker-workers";
 import { REPLAY_START_FILE, REPLAY_START_POLL_MS, tickReplayStart } from "./server/replay-trigger";
 import { LOOP_START_FILE, LOOP_START_POLL_MS, tickLoopStart } from "./server/loop-trigger";
+import { ORBIT_FILE, ORBIT_POLL_MS, tickOrbit } from "./server/orbit-trigger";
 import { join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -164,7 +165,7 @@ import {
 type ReplayRunner = ReturnType<typeof createMemoryReplay>;
 
 // `deps.replay` and `deps.askUnavailable` let tests stand in for the memory replay runner and the one-shot model check;
-// `deps.replayStart` and `deps.loopStart` move the replay and initiative loop start files and their polls.
+// `deps.replayStart`, `deps.loopStart` and `deps.orbit` move the replay, initiative loop start and orbit files and their polls.
 export default function contribute(
   server: PluginServerContext,
   deps: {
@@ -172,6 +173,7 @@ export default function contribute(
     askUnavailable?: () => Promise<string | null>;
     replayStart?: { file: string; everyMs: number };
     loopStart?: { file: string; everyMs: number };
+    orbit?: { file: string; everyMs: number };
     voiceHelperCwd?: string;
     // The Speaker's workers (tests stand in for the Python ones).
     speakerPorts?: (readClip: () => string | undefined) => SpeakerPorts & { start: () => void; stop: () => void };
@@ -228,7 +230,8 @@ export default function contribute(
   });
   server.handle(deleteEpicInitiative, deleteInitiative);
   server.handle(listHarnessInitiatives, ({ repos }) => listHarness(repos));
-  server.handle(createHarnessEpicRpc, async (input, { paseo }) => {
+  // New phase, from the Initiatives tab or `/orbit plan`: the phase's files, then its architecture session.
+  const createPhase = async (input: RpcInput<typeof createHarnessEpicRpc>, paseo: PluginHandlerContext["paseo"]) => {
     const created = await createHarnessEpic(input);
     if (!created.ok || !created.epic) return { ...created, agentId: null, warning: null };
     const started = await startPhaseArchitect(
@@ -237,7 +240,8 @@ export default function contribute(
       await readAgentConfig(paseo),
     );
     return { ...created, agentId: started.agentId, warning: started.error };
-  });
+  };
+  server.handle(createHarnessEpicRpc, (input, { paseo }) => createPhase(input, paseo));
   server.handle(planHarnessPhaseRpc, async (input, { paseo }) =>
     startPhaseArchitect(paseo, input, await readAgentConfig(paseo)),
   );
@@ -822,6 +826,17 @@ export default function contribute(
     );
   }, loopStart.everyMs);
   loopStartTimer.unref?.();
+  // `/orbit` (skills/plan/orbit): New phase, Start and Stop on the story loop, the same as the Initiatives tab.
+  const orbit = deps.orbit ?? { file: ORBIT_FILE, everyMs: ORBIT_POLL_MS };
+  const orbitTimer = setInterval(() => {
+    void tickOrbit(orbit.file, () => paseoNow() !== null, {
+      plan: ({ repo, initiative, phase, title }) =>
+        createPhase({ repo, initiative, initiativeTitle: title, epicTitle: phase, tracker: "local" }, paseoNow()!),
+      start: ({ repo, initiative }) => startLoop({ repo, initiative }, paseoNow()!),
+      stop: ({ repo, initiative }) => initiativeLoop.stop({ repo, initiative }),
+    }).catch((error) => console.warn("orchestrator: orbit file failed", error));
+  }, orbit.everyMs);
+  orbitTimer.unref?.();
   // Sulti: a provider whose sessions route what you say (Paseo voice mode) to the target each router picks by voice.
   // Providers get no Paseo handle, so it uses the last one any event or RPC gave.
   const sultiPaseo = () => {
@@ -952,6 +967,7 @@ export default function contribute(
     clearInterval(timer);
     clearInterval(replayStartTimer);
     clearInterval(loopStartTimer);
+    clearInterval(orbitTimer);
     voiceResume.stop();
     speakerPorts.stop();
     void voiceInterpretService.stop().catch((error) => console.warn("orchestrator: voice helper stop failed", error));
