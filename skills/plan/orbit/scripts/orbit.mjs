@@ -131,6 +131,11 @@ export async function request(body, { home = join(homedir(), ".orchestrator"), w
   throw new Error(`The Orchestrator plugin didn't answer in ${Math.round(waitMs / 1000)}s. Is Paseo running with the plugin loaded?`);
 }
 
+// The plugin returns `{ story, agentId }[]`; tests may still pass plain story ids.
+function startedLabels(started) {
+  return started.map((item) => (typeof item === "string" ? item : item?.story ?? String(item)));
+}
+
 export function describe(action, result) {
   if (!result.ok) return `${action} failed: ${result.error}`;
   if (action === "plan") {
@@ -141,7 +146,9 @@ export function describe(action, result) {
   }
   if (action === "start") {
     const started = result.started ?? [];
-    return started.length ? `Loop on. Started: ${started.join(", ")}.` : `Loop on. Nothing started${result.reason ? `: ${result.reason}` : "."}`;
+    return started.length
+      ? `Loop on. Started: ${startedLabels(started).join(", ")}.`
+      : `Loop on. Nothing started${result.reason ? `: ${result.reason}` : "."}`;
   }
   return "Loop off. Running steps finish; nothing new starts.";
 }

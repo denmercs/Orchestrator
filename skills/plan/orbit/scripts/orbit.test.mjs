@@ -118,6 +118,16 @@ test("a request already waiting is not overwritten", async () => {
 });
 
 test("results read as plain sentences", () => {
+  assert.equal(
+    describe("start", {
+      ok: true,
+      started: [
+        { story: "S1", agentId: "a1" },
+        { story: "S2", agentId: "a2" },
+      ],
+    }),
+    "Loop on. Started: S1, S2.",
+  );
   assert.equal(describe("start", { ok: true, started: ["S1", "S2"] }), "Loop on. Started: S1, S2.");
   assert.equal(describe("start", { ok: true, started: [], reason: "the initiative has no phases yet" }), "Loop on. Nothing started: the initiative has no phases yet");
   assert.match(describe("plan", { ok: true, epic: "phases/1-v1", agentId: "a1", warning: null }), /Architecture session started \(a1\)/);
