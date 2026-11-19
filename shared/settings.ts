@@ -95,6 +95,17 @@ export const dashboardSettings = defineSettings({
   }),
 });
 
+export const sultiSidebarSettings = defineSettings({
+  id: "sulti-sidebar",
+  scope: "host",
+  version: 1,
+  schema: z.object({
+    minimized: z.boolean().default(false),
+    // Fingerprint of the last reply the user opened the sidebar item on; drives the unread dot.
+    lastSeenReply: z.string().default(""),
+  }),
+});
+
 export const budgetSettings = defineSettings({
   id: "budget",
   scope: "host",

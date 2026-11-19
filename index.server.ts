@@ -142,6 +142,7 @@ import { agentRunnerSettings } from "./shared/agent-runner";
 import {
   budgetSettings,
   dashboardSettings,
+  sultiSidebarSettings,
   voiceSettings,
   gitSettings,
   harnessSettings,
@@ -195,6 +196,7 @@ export default function contribute(
   server.registerUsageSource?.(kiroUsageSource());
   server.registerSettings(standupSettings);
   server.registerSettings(dashboardSettings);
+  server.registerSettings(sultiSidebarSettings);
   const voiceSetting = server.registerSettings(voiceSettings);
   const budget = server.registerSettings(budgetSettings);
   const runnerSettings = server.registerSettings(agentRunnerSettings);

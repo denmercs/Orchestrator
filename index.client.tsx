@@ -4,6 +4,7 @@ import { OrchestrationDashboard } from "./client/orchestration-dashboard";
 import { PromotePanel } from "./client/promote-panel";
 import { contributePromoteEntry } from "./client/promote-entry";
 import { contributeSessionRolePills } from "./client/session-role-pills";
+import { contributeSultiSidebar } from "./client/sulti-sidebar-entry";
 import { attachSkill } from "./shared/pipeline";
 import { INSTALL_LABEL } from "./shared/install";
 import { startMemoryReplay } from "./shared/replay-rpc";
@@ -85,6 +86,7 @@ export default function contribute(client: PluginClientContext) {
     search: attachSkill,
   });
   const offPills = contributeSessionRolePills(client, voice);
+  const offSultiSidebar = contributeSultiSidebar(client);
   const offThemes = CURSOR_THEMES.map((theme) => client.addTheme(theme));
   // Promote: a slash command and a composer pill that open the same form, which starts a Story on a
   // scratch ticket. The screen takes the title (from /promote args) and the workspace via its params.
@@ -92,6 +94,14 @@ export default function contribute(client: PluginClientContext) {
   const offPromote = contributePromoteEntry(client);
   return async () => {
     voice.off();
-    await Promise.all([offVoiceLines(), offAttach(), offPills(), offPromote(), offPromoteScreen(), ...offThemes.map((off) => off())]);
+    await Promise.all([
+      offVoiceLines(),
+      offAttach(),
+      offPills(),
+      offSultiSidebar(),
+      offPromote(),
+      offPromoteScreen(),
+      ...offThemes.map((off) => off()),
+    ]);
   };
 }
