@@ -1,4 +1,4 @@
-// One-shot Claude Haiku calls through the Claude Code CLI the user is already signed into, so no API key is needed.
+// One-shot Claude calls (Haiku unless the caller names a model) through the Claude Code CLI the user is already signed into, so no API key is needed.
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { MAX_TOKENS, MODEL } from "./corrections";
@@ -10,10 +10,10 @@ export type RunCli = (args: string[], input: string) => Promise<string>;
 const TIMEOUT_MS = 120_000;
 
 // No tools, MCP servers, settings, skills or saved session: one plain completion.
-export const cliArgs = (system: string) => [
+export const cliArgs = (system: string, model = MODEL) => [
   "-p",
   "--model",
-  MODEL,
+  model,
   "--output-format",
   "json",
   "--system-prompt",
@@ -30,10 +30,11 @@ export const cliArgs = (system: string) => [
 // Caps the reply at MAX_TOKENS, so the cost cap's worst case holds, and turns thinking off.
 export const CLI_ENV = { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(MAX_TOKENS), MAX_THINKING_TOKENS: "0" };
 
-// Runs from the temp dir so no project CLAUDE.md is read.
-export const runClaude: RunCli = (args, input) =>
+// Runs from the temp dir so no project CLAUDE.md is read. `vars` and `timeoutMs` are for a caller that
+// needs a longer reply than the one-shot cap (the Motion brief writer).
+export const runClaudeWith = (vars: Record<string, string>, timeoutMs = TIMEOUT_MS): RunCli => (args, input) =>
   new Promise((resolve, reject) => {
-    const child = spawn("claude", args, { cwd: tmpdir(), timeout: TIMEOUT_MS, env: { ...process.env, ...CLI_ENV } });
+    const child = spawn("claude", args, { cwd: tmpdir(), timeout: timeoutMs, env: { ...process.env, ...vars } });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => (stdout += chunk));
@@ -46,9 +47,11 @@ export const runClaude: RunCli = (args, input) =>
     child.stdin.end(input);
   });
 
-export function claudeCli(run: RunCli = runClaude): Ask {
+export const runClaude: RunCli = runClaudeWith(CLI_ENV);
+
+export function claudeCli(run: RunCli = runClaude, model = MODEL): Ask {
   return async (system, prompt) => {
-    const raw = await run(cliArgs(system), prompt);
+    const raw = await run(cliArgs(system, model), prompt);
     let reply: { result?: unknown; total_cost_usd?: unknown; is_error?: unknown };
     try {
       reply = JSON.parse(raw);

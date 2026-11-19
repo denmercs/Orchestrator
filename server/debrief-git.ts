@@ -45,3 +45,9 @@ export async function lineCountAt(cwd: string, head: string, file: string) {
   if (text === undefined) return undefined;
   return text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
 }
+
+// `git diff base...head`: what head changed since its merge base with base. Undefined when git can't
+// find that, e.g. a base with no shared history.
+export async function diffSince(cwd: string, base: string, head: string) {
+  return tryGit(cwd, ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-renames", `${base}...${head}`, "--"]);
+}

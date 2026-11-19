@@ -27,7 +27,7 @@ async function realTarget(path: string): Promise<string> {
   }
 }
 
-async function insideWorktree(worktree: string, outDir: string) {
+export async function insideWorktree(worktree: string, outDir: string) {
   const rel = relative(await realpath(worktree), await realTarget(outDir));
   return rel === "" || (rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel));
 }
