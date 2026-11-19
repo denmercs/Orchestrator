@@ -100,6 +100,19 @@ export function paseoLoopHost(paseo: PaseoApi): LoopHost {
       if (!directory) throw new Error("Paseo created the workspace but did not report its folder.");
       return { id: created.id, directory };
     },
+    async adoptStoryWorkspace(input) {
+      const created = await paseo.workspaces.create({
+        title: input.title,
+        source: {
+          kind: "directory",
+          path: input.directory,
+          ...(input.projectId ? { projectId: input.projectId } : {}),
+        },
+      });
+      const directory = created.directory ?? (await created.refresh())?.workspaceDirectory ?? input.directory;
+      if (!directory) throw new Error("Paseo registered the folder but did not report its path.");
+      return { id: created.id, directory };
+    },
     async listProjects() {
       // A handle with no projects API answers like one that fails: no projects.
       try {
