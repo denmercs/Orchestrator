@@ -54,8 +54,8 @@ export async function orchestratorStepConfig(
   } catch {
     // fall through to explicit Cursor providers
   }
-  if (step === "plan" || step === "diagnose") return { provider: "cursor/claude-opus-5-5" };
-  if (step === "review") return { provider: "cursor/grok-4.7" };
+  if (step === "plan") return { provider: "cursor/claude-opus-5-5" };
+  if (step === "review" || step === "diagnose") return { provider: "cursor/grok-4.7" };
   if (step === "implement" || step === "fix") return { provider: "cursor/composer-2.5" };
   return fallback;
 }
