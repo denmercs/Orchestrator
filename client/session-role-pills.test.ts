@@ -27,6 +27,11 @@ function setup(initial: unknown[]) {
   const micCalls: string[] = [];
   const rpcCalls: [string, unknown][] = [];
   const runner = createVoiceRunner({
+    // Real timers that don't keep the test process alive (the runner's 60 s auto-sleep would).
+    clock: {
+      setTimeout: (fn, ms) => setTimeout(fn, ms).unref(),
+      clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    },
     link: { say: async () => {}, interrupt: async () => {} },
     ears: {
       open: () => void micCalls.push("open"),

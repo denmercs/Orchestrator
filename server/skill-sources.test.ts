@@ -114,12 +114,14 @@ test("installed skills carry their frontmatter name, folder and description", as
   const home = await folderSource("home", {
     ".claude/skills/review-folder/SKILL.md": "---\nname: ss-review-skill\ndescription: Review a branch.\n---\n",
     ".agents/skills/plain/SKILL.md": "# no frontmatter\n",
+    ".kiro/skills/kiro-only/SKILL.md": "---\nname: kiro-only\ndescription: Only in Kiro.\n---\n",
     ".claude/commands/ss-plan.md": "---\ndescription: 'Plan a story.'\n---\nPlan it.\n",
   });
   await withHome(home.location, async () => {
     const { skills } = await loadCatalog([]);
 
     assert.deepEqual(skills, [
+      { name: "kiro-only", folder: "kiro-only", description: "Only in Kiro.", source: MACHINE_SOURCE, kind: "skill" },
       { name: "plain", folder: "plain", description: "", source: MACHINE_SOURCE, kind: "skill" },
       { name: "ss-plan", folder: "ss-plan", description: "Plan a story.", source: MACHINE_SOURCE, kind: "command" },
       {
@@ -162,14 +164,16 @@ async function storyWorktree() {
 
 // The copy keeps the skill's folder name, whichever name the ref uses.
 for (const refName of [NAME, FOLDER]) {
-  test(`a ref named "${refName}" installs the skill as .claude/skills/${FOLDER}`, async () => {
+  test(`a ref named "${refName}" installs the skill as <agent>/skills/${FOLDER} for every agent folder`, async () => {
     const cwd = await storyWorktree();
 
     const warnings = await installSkills(cwd, [{ name: refName, source: fixture.id }], [fixture]);
 
     assert.deepEqual(warnings, []);
-    const copied = await readFile(join(cwd, ".claude", "skills", FOLDER, "SKILL.md"), "utf8").catch(() => null);
-    assert.ok(copied?.includes(BODY), `expected .claude/skills/${FOLDER}/SKILL.md in the worktree`);
+    for (const agent of [".claude", ".cursor", ".agents", ".kiro"]) {
+      const copied = await readFile(join(cwd, agent, "skills", FOLDER, "SKILL.md"), "utf8").catch(() => null);
+      assert.ok(copied?.includes(BODY), `expected ${agent}/skills/${FOLDER}/SKILL.md in the worktree`);
+    }
   });
 }
 

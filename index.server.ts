@@ -76,7 +76,7 @@ import {
 import { createReplySummary } from "./server/reply-summary";
 import { createVoiceInterpret } from "./server/voice-interpret";
 import { permissionEvents, turnEvents } from "./server/turn-events";
-import { createVoiceHub, realHubPorts } from "./server/voice-turns";
+import { createVoiceHub, realHubPorts, type HubPorts } from "./server/voice-turns";
 import { createMicOffGate } from "./server/mic-off-gate";
 import { createSultiProvider, type SultiConnection } from "./server/sulti-provider";
 import { type Filed, fileInitiative, fileSlice } from "./server/factory-file";
@@ -190,6 +190,8 @@ export default function contribute(
     prPollMs?: number;
     // Where the Sulti session's folder and id file live (tests use a temp dir, never ~/.orchestrator).
     sultiHome?: string;
+    // The Voice event hub's timer (tests shorten the 20 s long poll).
+    hubPorts?: HubPorts;
   } = {},
 ) {
   // Paseo 0.11.0+ only; on an older host Kiro stays "unavailable" in the stats strip.
@@ -276,7 +278,7 @@ export default function contribute(
   server.handle(importLoopTree, ({ repo, text }) => loopTrees.importTree(repo, text));
   server.handle(copyLoopTree, ({ from, to }) => loopTrees.copyTree(from, to));
   // Turn events, one source: the hub feeds the Mac's long poll and the Sulti router (see publishVoice).
-  const voiceHub = createVoiceHub(realHubPorts());
+  const voiceHub = createVoiceHub(deps.hubPorts ?? realHubPorts());
   let publishVoice: (events: VoiceEvent[]) => void = () => undefined;
   // Events go out in the order they came, even when a reply waits (up to ~3 s) on its summary.
   let publishChain: Promise<void> = Promise.resolve();
@@ -328,7 +330,8 @@ export default function contribute(
       return true;
     },
   );
-  // The Initiatives tab and the loop start file both start the loop here.
+  // `orbit start` starts the loop here. The Initiatives tab's Start buttons and the loop start file file slices for
+  // the factory manager instead (`fileInitiativeRpc`, `fileForManager`).
   const startLoop = (input: RpcInput<typeof startInitiativeLoop>, paseo: PluginHandlerContext["paseo"]) =>
     initiativeLoop.start(paseoLoopHost(paseo), input);
   server.handle(startInitiativeLoop, (input, { paseo }) => startLoop(input, paseo));
@@ -839,7 +842,7 @@ export default function contribute(
     );
   }, loopStart.everyMs);
   loopStartTimer.unref?.();
-  // `/orbit` (skills/plan/orbit): New phase, Start and Stop on the story loop, the same as the Initiatives tab.
+  // `/orbit` (skills/plan/orbit): New phase as on the Initiatives tab; Start and Stop run the story loop directly.
   const orbit = deps.orbit ?? { file: ORBIT_FILE, everyMs: ORBIT_POLL_MS };
   const orbitTimer = setInterval(() => {
     void tickOrbit(orbit.file, () => paseoNow() !== null, {

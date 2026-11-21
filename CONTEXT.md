@@ -18,7 +18,7 @@ A place skills are read from. Code: `SkillSource` in `shared/pipeline.ts` (`id`,
 
 - **git**: an `owner/repo` (taken as GitHub) or a git URL (`https://`, `ssh://`, `git@`). `addSource` clones it and pins it to the current commit.
 - **folder**: an absolute or `~/` path. Read live in place. It has no pin and no checkout.
-- **`installed`** (`MACHINE_SOURCE`): the skills already on this machine. `scanMachine` reads `~/.claude/skills`, `~/.agents/skills` and `~/.claude/commands`. It is never stored in `sources` and nothing is copied for it. The drawer shows it as **This machine**.
+- **`installed`** (`MACHINE_SOURCE`): the skills already on this machine. `scanMachine` reads `~/.claude/skills`, `~/.agents/skills`, `~/.kiro/skills` and `~/.claude/commands`. It is never stored in `sources` and nothing is copied for it. The drawer shows it as **This machine**.
 
 `kind` (`team`, `personal`, `imported`) says who owns the source. It does not say how the source is read. `enabled: false` keeps a source connected but leaves its skills out of the catalog.
 
@@ -51,7 +51,7 @@ The extra skills a Story pipeline phase loads on top of the skill it runs. Code:
 
 An extra marked `required` in `DEFAULT_PHASES` is always loaded, even if saved settings removed it. `phaseSkills` adds it back. The defaults have none today. Plan, Implement and Review run the kit's `story-plan`, `story-impl` and `story-review` (`Phase.runs` is a `kit` Skill ref); Done runs its built-in step from `shared/story-method.ts`, and its `Phase.runs` is `null` unless you pick a skill.
 
-Plan's default extra is `stacked-prs` from `installed` (This machine), not required: it sizes the story's PRs and has Plan add a `## Slices` checklist after `## Cycles` when the work is more than one idea or about 1,000 source lines. The skill lives in this repo at `skills/stacked-prs/`; `~/.claude/skills/stacked-prs` links to it. Saved pipeline settings replace the defaults, so a machine with saved settings adds it once on Plan in the Skills drawer. An `installed` ref missing from the machine is skipped without a warning, and the prompt still names it. Diagnose loads it too, as a Plan step.
+Plan's default extra is `stacked-prs` from `installed` (This machine), not required: it sizes the story's PRs and has Plan add a `## Slices` checklist after `## Cycles` when the work is more than one idea or about 1,000 source lines. The skill lives in this repo at `skills/plan/stacked-prs/`, its line counter in `scripts/count-lines.mjs`; `link-kit` links it into the global agent folders. Saved pipeline settings replace the defaults, so a machine with saved settings adds it once on Plan in the Skills drawer. An `installed` ref missing from the machine is skipped without a warning, and the prompt still names it. Diagnose loads it too, as a Plan step.
 
 The initiative loop uses the same extras: each loop step loads the extras of the phase it maps to (see Loop step skills).
 
@@ -107,7 +107,7 @@ _Avoid_: pipeline (that is the Story pipeline and its drawer phases), workflow.
 
 How drawer skills reach a new story agent, whether a Story pipeline phase or an initiative loop step starts it. `installSkills` copies each non-`installed` Skill ref from its source into the story worktree: for a pipeline phase the `runs` skill and the extras, for a loop step only the extras of its phase (see Loop step skills).
 
-- a skill folder goes to `.claude/skills/<folder>`, `.cursor/skills/<folder>` and `.agents/skills/<folder>`, named after its folder, not its frontmatter `name`;
+- a skill folder goes to `.claude/skills/<folder>`, `.cursor/skills/<folder>`, `.agents/skills/<folder>` and `.kiro/skills/<folder>`, named after its folder, not its frontmatter `name`;
 - a command goes to `.claude/commands/<folder>.md` and `.cursor/commands/<folder>.md`.
 
 The copied paths are added to the worktree's `info/exclude` so they never show up in git. A path the repo already commits is left alone. `installed` refs are skipped because those skills are already global. When two refs in one phase resolve to different skills with the same folder (two sources that both have `review/`, or `engineering/review` and `personal/review` in one source), the first one in ref order keeps the folder and the second is skipped with a warning naming both; the same skill listed twice is copied once, quietly. This copy is the only way skills are "installed", and it happens per worktree.

@@ -40,9 +40,9 @@ Plan ──you approve──► Implement ──► Review ──pass──► P
 
 If an agent stalls, dies or waits on a permission, the loop nudges it, restarts it or blocks the story with a reason. Work an agent finds outside its story becomes a new story. The agent doesn't do it in place.
 
-**`/orbit`** does the same from the command line, so a Claude session can run it too: `new`, `plan` (New phase and its architect), `start`, `stop` and `status`. See `skills/plan/orbit/SKILL.md`. Under the hood it writes one request to `~/.orchestrator/orbit.json`. Within about 5 seconds the plugin removes it, does what the Initiatives tab's button does, and writes `~/.orchestrator/orbit.result.json`.
+**`/orbit`** runs this loop from the command line, so a Claude or Kiro session can drive it too: `new`, `plan` (New phase and its architect), `start`, `stop` and `status`. See `skills/plan/orbit/SKILL.md`. Under the hood it writes one request to `~/.orchestrator/orbit.json`. Within about 5 seconds the plugin removes it, acts on it, and writes `~/.orchestrator/orbit.result.json`.
 
-`~/.orchestrator/initiative-loop-start.json` (`{"repo": "/abs/repo", "initiative": "<slug>"}`) is a different thing: it files the initiative's stories as slices for the factory manager. It does not start this loop.
+`orbit start` turns the loop on directly. The Initiatives tab's Start button and `~/.orchestrator/initiative-loop-start.json` (`{"repo": "/abs/repo", "initiative": "<slug>"}`) are different: they file the initiative's stories as slices for the factory manager and do not start this loop.
 
 **3. Act on gates.** A story only needs you at three points: a plan to approve, a PR to merge, or a story that's stuck. The 🔔 bell lists them all.
 
@@ -70,7 +70,7 @@ rules/                           engineering rules; index.md lists them
 scripts/link-kit.mjs             links the kit into your global agent folders
 ```
 
-Linking is a manual step. Run `node scripts/link-kit.mjs` (add `--dry-run` to preview). It links skills into `~/.claude/skills` and `~/.agents/skills` (the shared folder Codex, OpenCode and other agents read), and rules into `~/.claude/rules` and `~/.kiro/steering`. It skips real files and links it doesn't own, and removes its own stale links.
+Linking is a manual step. Run `node scripts/link-kit.mjs` (add `--dry-run` to preview). It links skills into `~/.claude/skills`, `~/.kiro/skills` and `~/.agents/skills` (the shared folder Codex, OpenCode and other agents read), and rules into `~/.claude/rules` and `~/.kiro/steering`. It skips real files and links it doesn't own, and removes its own stale links.
 
 Convention: keep a dedicated main clone at `~/.orchestrator/kit` and point the global links at it. Run the script from that clone, and `git pull` there to update.
 

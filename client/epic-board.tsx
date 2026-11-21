@@ -694,7 +694,7 @@ function InitiativePanel({
     }
   }
 
-  // Start runs the initiative's stories phase by phase; Stop only stops new work from starting.
+  // Start files the initiative's stories for the factory manager; Stop only stops new work from starting.
   async function loopAction(kind: "start" | "stop") {
     if (!state || busy !== null) return;
     const ref = { repo, initiative: state.initiativeSlug };
