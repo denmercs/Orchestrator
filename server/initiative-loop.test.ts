@@ -2971,7 +2971,14 @@ test("a steered nudge that fails to send is still recorded, so the next evidence
   assert.equal(meta.status, "implementing");
 
   // Three failing runs since the nudge are evidence again: the story blocks instead of nudging again.
-  for (const stamp of ["01", "02", "03"]) failingLog(fx.worktree, `implement-2099-01-01T00-00-${stamp}.log`, "parses a turn");
+  // Their mtimes are set after the nudge: Linux stamps files from a coarser clock than Date.now(), so a log
+  // written in the same millisecond can read as older than the nudge.
+  const afterNudge = new Date(Date.parse(meta.mid_nudged ?? "") + 1_000);
+  for (const stamp of ["01", "02", "03"]) {
+    const name = `implement-2099-01-01T00-00-${stamp}.log`;
+    failingLog(fx.worktree, name, "parses a turn");
+    utimesSync(join(fx.worktree, ".harness", "logs", name), afterNudge, afterNudge);
+  }
   await initiative.tick();
 
   assert.equal(storyMeta(fx.story).status, "blocked");

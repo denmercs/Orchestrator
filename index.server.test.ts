@@ -1053,7 +1053,8 @@ test("a Sulti session opening warms the same helper the drawer's RPCs use", asyn
     config: { cwd: "/repo", env: {}, mcpServers: {}, settings: {}, persist: true },
     history: "skip",
   });
-  await new Promise((r) => setTimeout(r, 20));
+  // Wait for the warm-up, not a fixed time: a slow CI runner can take longer than a few ms.
+  await until(() => calls.filter((c) => c === "create").length >= 2);
   assert.equal(calls.filter((c) => c === "create").length, 2); // the interpret helper and the reply summariser
   // The drawer's start finds it already up.
   await handlers.get(voiceHelperStart.name)!({}, { paseo });
