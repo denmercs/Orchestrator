@@ -15,7 +15,9 @@
   ],
   "scripts": {
     "test": "node --import ./test-support/register.mjs --test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "harness:push": "node scripts/harness-sync.mjs push",
+    "harness:pull": "node scripts/harness-sync.mjs pull"
   },
   "devDependencies": {
     "@getpaseo/plugin": ">=0.11.1",
