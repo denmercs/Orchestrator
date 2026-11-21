@@ -68,9 +68,12 @@ skills/<phase>/<name>/SKILL.md   skills by Story pipeline phase (plan, implement
 skills/<phase>/<name>/scripts/   a skill's own scripts
 rules/                           engineering rules; index.md lists them
 scripts/link-kit.mjs             links the kit into your global agent folders
+scripts/harness-sync.mjs         pushes and pulls .harness to a private repo, to continue work on another device
 ```
 
 Linking is a manual step. Run `node scripts/link-kit.mjs` (add `--dry-run` to preview). It links skills into `~/.claude/skills` and `~/.agents/skills` (the shared folder Codex, OpenCode and other agents read), and rules into `~/.claude/rules` and `~/.kiro/steering`. It skips real files and links it doesn't own, and removes its own stale links.
+
+`.harness` is never committed to this repo. To continue work on another device, run `npm run harness:push` on the first one and `npm run harness:pull` on the second. They copy `initiatives/`, `factory/` and `memory/` (not `replay/`) to the private repo `denmercs/orchestrator-state` (override with `HARNESS_STATE_REMOTE`). Push refuses if the remote moved on, pull refuses if local changes were never pushed, and `--force` overrides either. A guard test fails if any `.harness` file is ever tracked here.
 
 Convention: keep a dedicated main clone at `~/.orchestrator/kit` and point the global links at it. Run the script from that clone, and `git pull` there to update.
 
