@@ -1,7 +1,7 @@
 # Follow-up: open each slice as a stacked PR
 
 Not built. Today one story is one branch and one PR on its base: `openStoryPr` in `server/story-git.ts`
-pushes the story branch and runs `gh pr create --base <base>`. The `stacked-prs` skill (`skills/stacked-prs/`,
+pushes the story branch and runs `gh pr create --base <base>`. The `stacked-prs` skill (`skills/plan/stacked-prs/`,
 a default Plan extra) already has Plan write a `## Slices` checklist after `## Cycles` when the work is more
 than one idea or about 1,000 source lines, and each cycle names its slice. The slices are a proposal the
 human approves with the plan; nothing acts on them yet.

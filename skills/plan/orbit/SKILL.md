@@ -5,9 +5,9 @@ description: Run an initiative through the Orchestrator story loop from the comm
 
 # Orbit
 
-`/orbit` drives the Orchestrator story loop (Plan → Implement → Review → PR) without the Initiatives tab. Each command does what the tab's button does.
+`/orbit` drives the Orchestrator story loop (Plan → Implement → Review → PR) from the command line. `new` and `plan` do what the Initiatives tab's New initiative and New phase do. `start` and `stop` turn the story loop itself on and off. The tab's Start button is different: it files the stories for the factory manager.
 
-Run the script:
+Run the script (any agent can: Claude, Kiro, Codex and others all have the kit at these paths once it is linked):
 
 ```bash
 node .claude/skills/orbit/scripts/orbit.mjs <command> [args]

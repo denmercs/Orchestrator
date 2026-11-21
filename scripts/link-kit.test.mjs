@@ -27,7 +27,7 @@ function runLinkKit(home, kit, ...extra) {
   return spawnSync(process.execPath, ["scripts/link-kit.mjs", "--home", home, "--kit", kit, ...extra], { encoding: "utf8" });
 }
 
-test("links every skill folder holding SKILL.md into <home>/.claude/skills and <home>/.agents/skills", () => {
+test("links every skill folder holding SKILL.md into <home>/.claude/skills, <home>/.agents/skills and <home>/.kiro/skills", () => {
   withRoot((root) => {
     const kit = join(root, "kit");
     const home = join(root, "home");
@@ -41,7 +41,7 @@ test("links every skill folder holding SKILL.md into <home>/.claude/skills and <
     assert.equal(result.status, 0, result.stderr);
 
     const skills = join(home, ".claude/skills");
-    for (const folder of [skills, join(home, ".agents/skills")]) {
+    for (const folder of [skills, join(home, ".agents/skills"), join(home, ".kiro/skills")]) {
       assert.deepEqual(readdirSync(folder).sort(), ["a", "b"]);
       for (const [name, phase] of [["a", "plan"], ["b", "review"]]) {
         const link = join(folder, name);
@@ -51,6 +51,7 @@ test("links every skill folder holding SKILL.md into <home>/.claude/skills and <
     }
     assert.deepEqual(readdirSync(join(home, ".claude")), ["skills"]);
     assert.deepEqual(readdirSync(join(home, ".agents")), ["skills"]);
+    assert.deepEqual(readdirSync(join(home, ".kiro")), ["skills"]);
     assert.match(result.stdout, new RegExp(`linked ${join(skills, "a")} -> ${join(kit, "skills/plan/a")}`));
   });
 });
@@ -73,7 +74,7 @@ test("a second run changes nothing and reports only unchanged lines", () => {
     assert.deepEqual(after, before);
 
     const lines = second.stdout.trim().split("\n").filter((line) => !line.startsWith("no rules/index.md"));
-    assert.equal(lines.length, 4);
+    assert.equal(lines.length, 6); // 2 skills × .claude, .agents, .kiro
     for (const line of lines) assert.match(line, /^unchanged /);
     assert.ok(!lines.some((line) => line.startsWith("linked ")));
   });

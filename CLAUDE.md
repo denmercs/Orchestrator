@@ -10,8 +10,8 @@ Never force-push, and never merge a PR, except by voice as below.
 
 When the user says "merge it" or asks for a review in Paseo voice mode, find the PR (`gh pr view`), check
 conflicts, CI (`gh pr checks`), review decision and draft state, and read the diff (`gh pr diff`). CI runs
-only GitGuardian, so run `npm test` and `npm run typecheck` yourself on the PR's head commit, keeping only
-the counts.
+GitGuardian and the `CI` workflow (`npm run typecheck`, `npm test`). Still run `npm test` and
+`npm run typecheck` yourself on the PR's head commit, keeping only the counts, so you can say them.
 
 They can't see the code, so never read code aloud: describe behaviour. Speak in layers, short sentences:
 

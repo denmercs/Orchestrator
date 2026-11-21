@@ -1,5 +1,6 @@
 // Drives the initiative story loop from a file, so `/orbit` (skills/plan/orbit) can plan a phase, start or stop the
-// loop without the Initiatives tab. It does what the tab's buttons do. The plugin polls the file, removes it, and
+// loop without the Initiatives tab. Plan is the tab's New phase; Start and Stop run the story loop directly (the tab's
+// Start files slices for the factory manager instead). The plugin polls the file, removes it, and
 // writes what happened next to it (`orbit.result.json`).
 import { homedir } from "node:os";
 import { join } from "node:path";

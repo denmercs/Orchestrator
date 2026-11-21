@@ -127,6 +127,14 @@ let voicePhoneAudio = false;
 // Set by a test that needs voice.provider in `wired`; undefined leaves the voice setting loading.
 let voiceProvider: unknown;
 
+// The Voice event hub's long poll, cut from 20 s to 10 ms so an empty read doesn't hold a test up.
+const quickHub = {
+  setTimer: (fn: () => void) => {
+    const id = setTimeout(fn, 10);
+    return () => clearTimeout(id);
+  },
+};
+
 function wired(
   pending: string[] = [],
   signedIn = true,
@@ -168,7 +176,7 @@ function wired(
       return () => noop;
     },
   });
-  const stop = contribute(server, { replay: runner, askUnavailable: async () => (signedIn ? null : "Claude Code is not signed in."), replayStart, loopStart, orbit: { file: join(mkdtempSync(join(tmpdir(), "orbit-")), "orbit.json"), everyMs: 60_000 }, voiceHelperCwd, speakerPorts: quietSpeaker, sultiHome: mkdtempSync(join(tmpdir(), "sulti-home-")), ...extra });
+  const stop = contribute(server, { replay: runner, askUnavailable: async () => (signedIn ? null : "Claude Code is not signed in."), replayStart, loopStart, orbit: { file: join(mkdtempSync(join(tmpdir(), "orbit-")), "orbit.json"), everyMs: 60_000 }, voiceHelperCwd, speakerPorts: quietSpeaker, sultiHome: mkdtempSync(join(tmpdir(), "sulti-home-")), hubPorts: quickHub, ...extra });
   return { handlers, listeners, providers, fake, stop };
 }
 
@@ -1045,7 +1053,8 @@ test("a Sulti session opening warms the same helper the drawer's RPCs use", asyn
     config: { cwd: "/repo", env: {}, mcpServers: {}, settings: {}, persist: true },
     history: "skip",
   });
-  await new Promise((r) => setTimeout(r, 20));
+  // Wait for the warm-up, not a fixed time: a slow CI runner can take longer than a few ms.
+  await until(() => calls.filter((c) => c === "create").length >= 2);
   assert.equal(calls.filter((c) => c === "create").length, 2); // the interpret helper and the reply summariser
   // The drawer's start finds it already up.
   await handlers.get(voiceHelperStart.name)!({}, { paseo });

@@ -236,7 +236,7 @@ async function scan(root: string): Promise<Found[]> {
 async function scanMachine(): Promise<Found[]> {
   const home = homedir();
   const found = new Map<string, Found>();
-  for (const root of [join(home, ".claude", "skills"), join(home, ".agents", "skills")]) {
+  for (const root of [join(home, ".claude", "skills"), join(home, ".agents", "skills"), join(home, ".kiro", "skills")]) {
     for (const folder of await readdir(root).catch(() => [] as string[])) {
       const dir = join(root, folder);
       if (await exists(join(dir, "SKILL.md"))) {
@@ -526,7 +526,7 @@ async function resolveSkills(refs: SkillRef[], sources: SkillSource[]): Promise<
     }
     const targets =
       entry.kind === "skill"
-        ? [".claude/skills", ".cursor/skills", ".agents/skills"].map((d) => `${d}/${entry.folder}`)
+        ? [".claude/skills", ".cursor/skills", ".agents/skills", ".kiro/skills"].map((d) => `${d}/${entry.folder}`)
         : [".claude/commands", ".cursor/commands"].map((d) => `${d}/${entry.folder}.md`);
     const key = `${entry.kind}:${entry.folder}`;
     const first = claimed.get(key);

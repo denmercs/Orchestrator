@@ -20,11 +20,11 @@ Count **source lines only**, added plus deleted:
 - Above **1,000**, the PR body must say why this is still one idea, or the PR is split.
 - Tests, snapshots, lockfiles and generated files never count.
 
-Count with the helper in this folder (it reads `git diff --numstat <base>...<head>`):
+Count with the skill's helper (it reads `git diff --numstat <base>...<head>`). If the first path is missing, use `~/.claude/skills/stacked-prs/scripts/count-lines.mjs`:
 
 ```sh
-node <this skill's folder>/count-lines.mjs origin/main HEAD
-node <this skill's folder>/count-lines.mjs origin/main HEAD --skip "*.svg" --skip "fixtures/**"
+node .claude/skills/stacked-prs/scripts/count-lines.mjs origin/main HEAD
+node .claude/skills/stacked-prs/scripts/count-lines.mjs origin/main HEAD --skip "*.svg" --skip "fixtures/**"
 ```
 
 It prints source, tests and skipped lines, a verdict against 500 and 1,000, and the five largest source

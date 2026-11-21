@@ -20,10 +20,17 @@ const fakeHelper = (over: Partial<HelperPort> = {}) => {
 
 const alpha = { id: "a1", name: "Alpha" };
 
+// Real timers that don't keep the test process alive (the 60 s auto-sleep and 30 s hold timers would).
+const quietClock: NonNullable<VoiceRunnerPorts["clock"]> = {
+  setTimeout: (fn, ms) => setTimeout(fn, ms).unref(),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
 function setup(overrides: Partial<VoiceRunnerPorts> = {}) {
   const said: Array<[string, string]> = [];
   const interrupted: string[] = [];
   const ports: VoiceRunnerPorts = {
+    clock: quietClock,
     link: {
       say: async (id, text) => {
         said.push([id, text]);
