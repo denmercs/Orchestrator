@@ -2,6 +2,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 import {
+  claudeStepConfig,
+  cursorConfigured,
   cursorModelConfig,
   materializeProfile,
   pickProfile,
@@ -38,7 +40,8 @@ export async function hearthplayStepConfig(
   return { provider: "cursor/composer-2.5" };
 }
 
-// Initiative-loop and Story-pipeline steps on this repo (package @denmercs/orchestrator): Cursor only.
+// Initiative-loop and Story-pipeline steps on this repo (package @denmercs/orchestrator): Cursor, or Claude's deep
+// and fast profiles when the daemon has no Cursor provider (Paseo refuses a `cursor/...` agent then).
 export async function orchestratorStepConfig(
   step: LoopStep,
   root: string,
@@ -47,7 +50,9 @@ export async function orchestratorStepConfig(
 ): Promise<AgentCreateConfig> {
   if (!isOrchestratorRepo(root)) return fallback;
   try {
-    const profiles = profilesFromConfigGet(await profilesPort.config.get());
+    const got = await profilesPort.config.get();
+    const profiles = profilesFromConfigGet(got);
+    if (!cursorConfigured(got, profiles)) return claudeStepConfig(step, profiles) ?? fallback;
     const forced = productStepConfig(step, profiles);
     if (forced) return forced;
     if (step === "implement" || step === "fix") return cursorModelConfig(profiles, "composer-2.5");

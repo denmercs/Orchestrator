@@ -160,6 +160,43 @@ test("orchestratorStepConfig: plan on Opus, review on Grok, implement on Compose
   assert.deepEqual(await orchestratorStepConfig("plan", tempRoot(false, undefined, false), profiles, fallback), { provider: "claude" });
 });
 
+test("orchestratorStepConfig: Claude deep and fast profiles when the daemon has no Cursor provider", async () => {
+  const root = tempRoot(false, undefined, true);
+  const agentProfiles = [
+    { id: "opus", name: "Claude | Opus 5.5 - Planner", provider: "claude", model: "claude-opus-5-5", modeId: "auto" },
+    { id: "sonnet", name: "Claude | Sonnet 5.5 - Coding", provider: "claude", model: "claude-sonnet-5-5", modeId: "auto" },
+  ];
+  const withProviders = (providers: Record<string, unknown>) => ({
+    config: { get: async () => ({ daemon: { agentProfiles }, agents: { providers } }) },
+  });
+  const fallback = { provider: "claude" };
+  const { orchestratorStepConfig } = await import("./factory-manager");
+  const noCursor = withProviders({ kiro: { command: ["kiro-cli", "acp"] } });
+  const opus = { provider: "claude/claude-opus-5-5", modeId: "auto" };
+  const sonnet = { provider: "claude/claude-sonnet-5-5", modeId: "auto" };
+  assert.deepEqual(await orchestratorStepConfig("plan", root, noCursor, fallback), opus);
+  assert.deepEqual(await orchestratorStepConfig("review", root, noCursor, fallback), opus);
+  assert.deepEqual(await orchestratorStepConfig("diagnose", root, noCursor, fallback), opus);
+  assert.deepEqual(await orchestratorStepConfig("implement", root, noCursor, fallback), sonnet);
+  assert.deepEqual(await orchestratorStepConfig("fix", root, noCursor, fallback), sonnet);
+  assert.deepEqual(await orchestratorStepConfig("pr", root, noCursor, fallback), fallback);
+  // The daemon's real response: { requestId, config: { providers, agentProfiles } }, providers {} when none is set.
+  const daemon = (providers: Record<string, unknown>, profiles: unknown[] = agentProfiles) => ({
+    config: { get: async () => ({ requestId: "r", config: { agentProfiles: profiles, providers } }) },
+  });
+  assert.deepEqual(await orchestratorStepConfig("implement", root, daemon({}), fallback), sonnet);
+  assert.deepEqual(await orchestratorStepConfig("review", root, daemon({}), fallback), opus);
+  // A leftover Cursor profile doesn't win over a disabled Cursor entry, but stands in for a missing one.
+  const leftover = [...agentProfiles, { id: "c", name: "Coder", provider: "cursor", model: "composer-2.5" }];
+  assert.deepEqual(await orchestratorStepConfig("plan", root, daemon({ cursor: { enabled: false } }, leftover), fallback), opus);
+  assert.deepEqual(await orchestratorStepConfig("implement", root, daemon({}, leftover), fallback), { provider: "cursor/composer-2.5" });
+  // A disabled Cursor entry counts as missing; an enabled one, or no providers list at all, keeps the Cursor split.
+  assert.deepEqual(await orchestratorStepConfig("plan", root, withProviders({ cursor: { enabled: false } }), fallback), opus);
+  assert.deepEqual(await orchestratorStepConfig("review", root, withProviders({ cursor: {} }), fallback), { provider: "cursor/grok-4.7" });
+  const noList = { config: { get: async () => ({ daemon: { agentProfiles } }) } };
+  assert.deepEqual(await orchestratorStepConfig("review", root, noList, fallback), { provider: "cursor/grok-4.7" });
+});
+
 test("orchestratorStepConfig: diagnose stays on Grok when profiles are unavailable", async () => {
   const root = tempRoot(false, undefined, true);
   const { orchestratorStepConfig } = await import("./factory-manager");
