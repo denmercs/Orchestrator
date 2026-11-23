@@ -5,6 +5,8 @@ export {
   FALLBACK_AGENT_CONFIG,
   PRODUCT_PLAN_MODEL,
   PRODUCT_REVIEW_MODEL,
+  claudeStepConfig,
+  cursorConfigured,
   cursorModelConfig,
   materializeProfile,
   pickProfile,

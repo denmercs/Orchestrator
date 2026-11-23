@@ -120,6 +120,28 @@ export function profileForTier(profiles: AgentProfile[], tier: "deep" | "fast", 
   );
 }
 
+// Whether the daemon can start a Cursor agent. Cursor isn't built in, so Paseo answers "Provider cursor is not
+// configured" to a `cursor/...` agent unless its providers list (`config.providers` in the daemon's config response,
+// `agents.providers` in the file) has a `cursor` entry. A disabled entry always counts as missing. With no entry, a
+// profile on Cursor counts as Cursor being there (a plugin can register it), and so does a config with no list at all.
+// ponytail: config only — paseo.providers.listAvailable() would also see plugin-registered Cursor with no profile.
+export function cursorConfigured(got: unknown, profiles: AgentProfile[]): boolean {
+  const root = asRecord(got);
+  const config = asRecord(root?.config) ?? root;
+  const providers = asRecord(config?.providers) ?? asRecord(asRecord(config?.agents)?.providers);
+  const cursor = asRecord(providers?.cursor);
+  if (cursor) return cursor.enabled !== false;
+  return !providers || profiles.some((profile) => profile.provider === "cursor");
+}
+
+// Claude's profile for a loop step when Cursor isn't there: deep (Opus) for Plan, Review and Diagnose, fast
+// (Sonnet) for Implement and Fix CI. null for the PR step, or when no Claude profile carries the tier.
+export function claudeStepConfig(step: LoopStep, profiles: AgentProfile[]): AgentCreateConfig | null {
+  const tier = STEP_TIER[step];
+  const profile = tier ? profileForTier(profiles, tier, "claude") : null;
+  return profile ? materializeProfile(profile) : null;
+}
+
 // The loop step's default profile: the legacy `profiles` setting (id or name; nothing in the dashboard sets it
 // now), else the d1 tier
 // among profiles of the runner's provider, else the runner profile, else FALLBACK_AGENT_CONFIG.
